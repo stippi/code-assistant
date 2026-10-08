@@ -129,13 +129,26 @@ impl ToolBlockRenderer for DiffCardRenderer {
         } else {
             tool.name.replace('_', " ")
         };
-        header_left = header_left.child(
-            div()
-                .text_size(rems(0.75))
-                .text_color(header_text_color)
-                .overflow_hidden()
-                .child(header_label),
-        );
+        let label = div()
+            .id(SharedString::from(format!("tool-path-{}", tool.id)))
+            .text_size(rems(0.75))
+            .text_color(header_text_color)
+            .overflow_hidden()
+            .child(header_label);
+        // A single, still existing file opens in the Files view.
+        let single_path = get_param(tool, "path").filter(|_| tool.name != "delete_files");
+        header_left = header_left.child(match single_path {
+            Some(path) => crate::shared::open_file::clickable(
+                label,
+                crate::shared::open_file::OpenFileRequest {
+                    path: path.to_owned(),
+                    line: None,
+                    project: get_param(tool, "project").map(str::to_owned),
+                },
+            )
+            .into_any_element(),
+            None => label.into_any_element(),
+        });
 
         let mut header_right = div().flex().flex_row().items_center().gap_1();
         if has_error {

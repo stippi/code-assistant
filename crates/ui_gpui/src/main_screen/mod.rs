@@ -229,6 +229,7 @@ pub struct MainScreen {
     // Subscription to input area events
     _input_area_subscription: Subscription,
     _right_panel_subscription: Subscription,
+    _open_file_subscription: Subscription,
     _plan_banner_subscription: Subscription,
     _project_sidebar_subscription: Subscription,
     _new_project_dialog_subscription: Option<Subscription>,
@@ -282,6 +283,17 @@ impl MainScreen {
 
         // Create the right (review) sidebar panel.
         let right_panel = cx.new(|cx| right_panel::RightPanel::new(window, cx));
+        // File paths clicked anywhere (e.g. in tool cards) open in the panel.
+        let open_file_bus = cx.new(|_| crate::shared::open_file::OpenFileBus);
+        cx.set_global(crate::shared::open_file::OpenFileGlobal(
+            open_file_bus.clone(),
+        ));
+        let open_file_subscription = cx.subscribe(
+            &open_file_bus,
+            |this: &mut Self, _, request: &crate::shared::open_file::OpenFileRequest, cx| {
+                this.open_file_in_panel(request.clone(), cx);
+            },
+        );
         // Comment edits in the panel change the composer's draft.
         let right_panel_subscription = cx.subscribe(
             &right_panel,
@@ -333,6 +345,7 @@ impl MainScreen {
             context_limit_cache: None,
             _input_area_subscription: input_area_subscription,
             _right_panel_subscription: right_panel_subscription,
+            _open_file_subscription: open_file_subscription,
             _plan_banner_subscription: plan_banner_subscription,
             _project_sidebar_subscription: project_sidebar_subscription,
             _new_project_dialog_subscription: None,
@@ -367,6 +380,41 @@ impl MainScreen {
         cx: &mut Context<Self>,
     ) {
         self.toggle_right_sidebar(cx);
+    }
+
+    /// Show a file in the right panel's Files view, opening the panel. A file
+    /// of another project than the session's is not shown.
+    fn open_file_in_panel(
+        &mut self,
+        request: crate::shared::open_file::OpenFileRequest,
+        cx: &mut Context<Self>,
+    ) {
+        let session_project = self
+            .current_session_id
+            .as_ref()
+            .and_then(|id| self.sessions.iter().find(|s| &s.id == id))
+            .map(|s| s.initial_project.clone());
+        if let (Some(project), Some(session_project)) = (&request.project, &session_project)
+            && !project.is_empty()
+            && project != session_project
+        {
+            if let Some(gpui) = cx.try_global::<Gpui>() {
+                gpui.display_status(format!(
+                    "{} belongs to project {project}, not this session's",
+                    request.path
+                ));
+            }
+            return;
+        }
+        if self.current_session_id.is_none() {
+            return;
+        }
+        if self.right_sidebar_collapsed {
+            self.toggle_right_sidebar(cx);
+        }
+        self.right_panel.update(cx, |panel, cx| {
+            panel.open_file(request.path, request.line, cx)
+        });
     }
 
     fn toggle_right_sidebar(&mut self, cx: &mut Context<Self>) {

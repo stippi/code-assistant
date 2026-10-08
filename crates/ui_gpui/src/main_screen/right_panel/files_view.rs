@@ -101,6 +101,8 @@ pub struct FilesView {
     clear_filter: bool,
     /// A comment to reveal once the project root is known.
     pending_reveal: Option<LineComment>,
+    /// An absolute path (and line) to open once the project root is known.
+    pending_open: Option<(String, Option<usize>)>,
 
     watcher: Option<(PathBuf, TreeWatcher)>,
     watch_task: Option<Task<()>>,
@@ -140,6 +142,7 @@ impl FilesView {
             matches: Vec::new(),
             clear_filter: false,
             pending_reveal: None,
+            pending_open: None,
             watcher: None,
             watch_task: None,
             load_tasks: HashMap::new(),
@@ -148,9 +151,40 @@ impl FilesView {
         }
     }
 
+    #[cfg(test)]
+    pub fn viewer(&self) -> &Entity<FileViewer> {
+        &self.viewer
+    }
+
     pub fn set_comments(&mut self, comments: Vec<LineComment>, cx: &mut Context<Self>) {
         self.viewer
             .update(cx, |viewer, cx| viewer.set_comments(comments, cx));
+    }
+
+    /// Open `path`, relative to the project root or absolute inside it, and
+    /// select `line` (1-based). An absolute path waits for the root.
+    pub fn open_path(&mut self, path: String, line: Option<usize>, cx: &mut Context<Self>) {
+        let rel = if std::path::Path::new(&path).is_absolute() {
+            let Some(root) = self.root.clone() else {
+                self.pending_open = Some((path, line));
+                return;
+            };
+            match std::path::Path::new(&path).strip_prefix(&root) {
+                Ok(rel) => rel
+                    .iter()
+                    .map(|c| c.to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/"),
+                Err(_) => return,
+            }
+        } else {
+            path.trim_start_matches("./").to_owned()
+        };
+        self.open_file(rel, cx);
+        if let Some(line) = line {
+            self.viewer
+                .update(cx, |viewer, cx| viewer.reveal_line(line, cx));
+        }
     }
 
     /// Open the file of `comment` and its lines. Waits for the project root
@@ -327,6 +361,9 @@ impl FilesView {
         self.start_watcher(root, cx);
         if let Some(comment) = self.pending_reveal.take() {
             self.reveal_comment(comment, cx);
+        }
+        if let Some((path, line)) = self.pending_open.take() {
+            self.open_path(path, line, cx);
         }
     }
 

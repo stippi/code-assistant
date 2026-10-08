@@ -29,8 +29,12 @@ git) is out of scope here; see "Later: files written by the agent".
 
 ## Status
 
-Steps 1–5 of the order of work are built; step 6 (opening files from tool
-cards) is open.
+All steps of the order of work are built. File paths in tool cards (the
+header of file-editing cards, the file headers of `read_files` and
+`search_files` results) open the file in the Files view, at the shown line
+where there is one; requests travel over the app-wide
+`shared::open_file::OpenFileBus`. A file of another project than the
+session's is not opened.
 
 Decisions taken while building:
 

@@ -67,6 +67,8 @@ pub struct FileViewer {
     comment_editor: Option<Entity<CommentEditor>>,
     /// A comment to select once the editor holds its file.
     pending_reveal: Option<LineComment>,
+    /// A line (1-based) to select once the editor holds its file.
+    pending_line: Option<usize>,
     load_task: Option<Task<()>>,
     save_task: Option<Task<()>>,
     auto_save_task: Option<Task<()>>,
@@ -93,6 +95,7 @@ impl FileViewer {
             comments: Vec::new(),
             comment_editor: None,
             pending_reveal: None,
+            pending_line: None,
             load_task: None,
             save_task: None,
             auto_save_task: None,
@@ -163,6 +166,12 @@ impl FileViewer {
     /// the editor.
     pub fn reveal(&mut self, comment: LineComment, cx: &mut Context<Self>) {
         self.pending_reveal = Some(comment);
+        cx.notify();
+    }
+
+    /// Select line `line` (1-based) once the file is in the editor.
+    pub fn reveal_line(&mut self, line: usize, cx: &mut Context<Self>) {
+        self.pending_line = Some(line);
         cx.notify();
     }
 
@@ -603,6 +612,17 @@ impl Render for FileViewer {
             && let Some(comment) = self.pending_reveal.take()
         {
             self.apply_reveal(comment, window, cx);
+        }
+        if let Some(editor) = &self.editor
+            && let Some(line) = self.pending_line.take()
+        {
+            editor.update(cx, |editor, cx| {
+                let text = editor.text();
+                let row = line.clamp(1, text.lines_len().max(1)) - 1;
+                let range = text.line_start_offset(row)..text.line_end_offset(row);
+                editor.set_selected_range(range, cx);
+                editor.focus(window, cx);
+            });
         }
 
         let body = match &self.state {

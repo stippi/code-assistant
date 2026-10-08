@@ -78,15 +78,16 @@ impl ToolBlockRenderer for CodeCardRenderer {
         }
 
         let rem_size = window.rem_size();
+        let project = get_param(tool, "project");
 
         // Try to parse structured JSON output from render_for_ui()
         if let Ok(json) = serde_json::from_str::<Value>(output) {
             match json.get("kind").and_then(|k| k.as_str()) {
                 Some("read_files") => {
-                    return render_read_files_output(&json, theme, rem_size);
+                    return render_read_files_output(&json, project, theme, rem_size);
                 }
                 Some("search_files") => {
-                    return render_search_files_output(&json, theme, rem_size);
+                    return render_search_files_output(&json, project, theme, rem_size);
                 }
                 _ => {}
             }
@@ -101,8 +102,31 @@ impl ToolBlockRenderer for CodeCardRenderer {
 // read_files renderer
 // ---------------------------------------------------------------------------
 
+/// A file header that opens `path` at `line` in the Files view.
+fn open_file_label(
+    text: String,
+    path: &str,
+    line: usize,
+    project: Option<&str>,
+) -> gpui_kit::AnyElement {
+    use gpui_kit::InteractiveElement;
+    crate::shared::open_file::clickable(
+        div().id(SharedString::from(format!(
+            "open-file-{path}-{line}-{text}"
+        ))),
+        crate::shared::open_file::OpenFileRequest {
+            path: path.to_owned(),
+            line: Some(line),
+            project: project.map(str::to_owned),
+        },
+    )
+    .child(text)
+    .into_any()
+}
+
 fn render_read_files_output(
     json: &Value,
+    project: Option<&str>,
     theme: &gpui_kit::component::theme::Theme,
     rem_size: gpui_kit::Pixels,
 ) -> Option<AnyElement> {
@@ -154,14 +178,19 @@ fn render_read_files_output(
             continue;
         }
 
-        // File header
+        // File header; opens the file in the Files view.
         children.push(
             div()
                 .w_full()
                 .px_3()
                 .py_0p5()
                 .text_color(theme.muted_foreground.opacity(0.7))
-                .child(format!("── {} ──", path))
+                .child(open_file_label(
+                    format!("── {} ──", path),
+                    path,
+                    start_line,
+                    project,
+                ))
                 .into_any(),
         );
 
@@ -200,6 +229,7 @@ fn render_read_files_output(
 
 fn render_search_files_output(
     json: &Value,
+    project: Option<&str>,
     theme: &gpui_kit::component::theme::Theme,
     rem_size: gpui_kit::Pixels,
 ) -> Option<AnyElement> {
@@ -326,7 +356,12 @@ fn render_search_files_output(
                 .pt_1()
                 .pb_0p5()
                 .text_color(theme.muted_foreground.opacity(0.7))
-                .child(format!("── {}:{}-{} ──", file, start_line, end_line))
+                .child(open_file_label(
+                    format!("── {}:{}-{} ──", file, start_line, end_line),
+                    file,
+                    start_line,
+                    project,
+                ))
                 .into_any(),
         );
 

@@ -111,6 +111,25 @@ impl RightPanel {
             .update(cx, |v, cx| v.set_comments(comments, cx));
     }
 
+    /// The file the Files view shows, if any.
+    #[cfg(test)]
+    pub fn files_open_path(&self, cx: &gpui_kit::App) -> Option<String> {
+        self.files_view
+            .read(cx)
+            .viewer()
+            .read(cx)
+            .path()
+            .map(str::to_owned)
+    }
+
+    /// Show `path` (project-relative or absolute) in the Files view, with
+    /// `line` (1-based) selected when given.
+    pub fn open_file(&mut self, path: String, line: Option<usize>, cx: &mut Context<Self>) {
+        self.set_active_view(RightPanelView::Files, cx);
+        self.files_view
+            .update(cx, |v, cx| v.open_path(path, line, cx));
+    }
+
     /// Show where `comment` was made and open it for editing.
     pub fn reveal_comment(&mut self, comment: LineComment, cx: &mut Context<Self>) {
         if comment.in_diff {
