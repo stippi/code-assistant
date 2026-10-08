@@ -161,6 +161,15 @@ impl SessionSidebar {
             .max()
     }
 
+    /// The projects of the displayed folders, in order (`None`: no project).
+    #[cfg(test)]
+    pub(crate) fn folder_projects(&self) -> Vec<Option<String>> {
+        self.folders
+            .iter()
+            .map(|folder| folder.project.clone())
+            .collect()
+    }
+
     pub(super) fn render_folders(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         if self.folders.is_empty() {
             return vec![render_hint("No projects yet", cx).into_any_element()];

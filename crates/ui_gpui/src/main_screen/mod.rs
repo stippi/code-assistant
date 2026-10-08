@@ -208,6 +208,11 @@ pub struct MainScreen {
     /// Form for the viewed session's oldest open `ask_question` request.
     question_prompt: Option<Entity<question_prompt::QuestionPrompt>>,
 
+    /// Whether the sidebar got the first session listing. Without it, an
+    /// empty listing equals the initial `sessions` and never reaches the
+    /// sidebar, which then shows no project folders.
+    sidebar_sessions_synced: bool,
+
     // Sidebar animation
     left_animator: SidebarAnimator,
     right_animator: SidebarAnimator,
@@ -345,6 +350,7 @@ impl MainScreen {
             ui_scale: initial_scale,
             right_sidebar_width: px(initial_sidebar_width),
             right_sidebar_resizing: false,
+            sidebar_sessions_synced: false,
             resize_start_x: 0.0,
             resize_start_width: 0.0,
             context_limit_cache: None,
@@ -1697,11 +1703,16 @@ impl Render for MainScreen {
             sidebar.set_persisted_projects(persisted_projects, cx);
         });
 
+        let sessions_loaded = cx
+            .try_global::<Gpui>()
+            .is_some_and(|g| g.chat_sessions_loaded());
         // Update project sidebar if needed
         if self.sessions != sessions
             || self.session_lifecycles != session_lifecycles
             || self.current_session_id != current_session_id
+            || (sessions_loaded && !self.sidebar_sessions_synced)
         {
+            self.sidebar_sessions_synced = sessions_loaded;
             let previous_session_id = self.current_session_id.clone();
             self.sessions = sessions.clone();
             self.session_lifecycles = session_lifecycles.clone();
