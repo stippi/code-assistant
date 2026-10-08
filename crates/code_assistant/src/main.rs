@@ -103,6 +103,7 @@ fn main() -> Result<()> {
                     sandbox_policy: sandbox_mode.to_policy(sandbox_network),
                 };
 
+                app::migrate_session_store_on_stderr();
                 block_on(app::acp::run(verbose, config))
             }
             #[cfg(not(feature = "acp-frontend"))]
@@ -180,6 +181,7 @@ fn main() -> Result<()> {
             } else {
                 #[cfg(feature = "terminal-frontend")]
                 {
+                    app::migrate_session_store_on_stderr();
                     block_on(app::terminal::run(config))
                 }
                 #[cfg(not(feature = "terminal-frontend"))]

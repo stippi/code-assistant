@@ -27,7 +27,7 @@ document-conversion = ["code_assistant_core/document-conversion"]
 # Each frontend and protocol mode is an optional compile unit; a headless
 # build (--no-default-features) skips gpui and ratatui entirely.
 acp-frontend = ["dep:ui_acp"]
-gpui-frontend = ["dep:ui_gpui"]
+gpui-frontend = ["dep:ui_gpui", "dep:async-channel"]
 # The agent's browser live in the GPUI right panel.
 browser-panel = ["gpui-frontend", "ui_gpui/browser-panel"]
 mcp-server = ["dep:mcp_server"]
@@ -38,6 +38,8 @@ code_assistant_core = { path = "../code_assistant_core", default-features = fals
 mcp_server = { path = "../mcp_server", optional = true }
 ui_acp = { path = "../ui_acp", optional = true }
 ui_gpui = { path = "../ui_gpui", optional = true }
+# Migration progress from the backend thread to the GPUI startup window
+async-channel = { version = "2.5.0", optional = true }
 ui_terminal = { path = "../ui_terminal", optional = true }
 command_executor = { path = "../command_executor" }
 llm = { path = "../llm" }

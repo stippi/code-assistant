@@ -1,9 +1,9 @@
 //! Per-session GPUI-specific UI state that is persisted independently from the
-//! main session JSON file.
+//! main session record.
 //!
-//! Each session gets a small `<session_id>.ui_state.json` file in the sessions
-//! directory.  This avoids re-serialising the (potentially large) full session
-//! just because the user toggled a plan banner or collapsed a tool block.
+//! Each session gets a small `ui_state.json` file in its session folder. This
+//! avoids re-serialising the (potentially large) full session just because the
+//! user toggled a plan banner or collapsed a tool block.
 //!
 //! The [`UiStateStore`] keeps an in-memory cache of all loaded states and a
 //! dirty set, in front of an injected [`UiStatePersistence`].  Mutations are
@@ -11,6 +11,7 @@
 //! scheduled after the last mutation within a configurable window.
 
 use anyhow::Result;
+use code_assistant_core::persistence::SessionLayout;
 use gpui_kit::App;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -105,25 +106,24 @@ pub trait UiStatePersistence: Send + Sync {
     fn delete(&self, session_id: &str) -> Result<()>;
 }
 
-/// UI states as `<session_id>.ui_state.json` files next to the session files.
+/// UI states as `ui_state.json` files in the session folders.
 pub struct FileUiStatePersistence {
-    sessions_dir: PathBuf,
+    layout: SessionLayout,
 }
 
 impl FileUiStatePersistence {
-    pub fn new(sessions_dir: PathBuf) -> Self {
-        Self { sessions_dir }
+    pub fn new(layout: SessionLayout) -> Self {
+        Self { layout }
     }
 
-    fn file_path(&self, session_id: &str) -> PathBuf {
-        self.sessions_dir
-            .join(format!("{session_id}.ui_state.json"))
+    fn file_path(&self, session_id: &str) -> Result<PathBuf> {
+        self.layout.ui_state(session_id)
     }
 }
 
 impl UiStatePersistence for FileUiStatePersistence {
     fn load(&self, session_id: &str) -> Result<Option<UiSessionState>> {
-        let json = match std::fs::read_to_string(self.file_path(session_id)) {
+        let json = match std::fs::read_to_string(self.file_path(session_id)?) {
             Ok(json) => json,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e.into()),
@@ -132,15 +132,19 @@ impl UiStatePersistence for FileUiStatePersistence {
     }
 
     fn save(&self, session_id: &str, state: &UiSessionState) -> Result<()> {
+        // A deleted session keeps no state; writing would recreate its folder.
+        if !self.layout.session_dir(session_id)?.is_dir() {
+            return Ok(());
+        }
         let json = serde_json::to_string_pretty(state)?;
         code_assistant_core::utils::file_utils::atomic_write(
-            &self.file_path(session_id),
+            &self.file_path(session_id)?,
             json.as_bytes(),
         )
     }
 
     fn delete(&self, session_id: &str) -> Result<()> {
-        match std::fs::remove_file(self.file_path(session_id)) {
+        match std::fs::remove_file(self.file_path(session_id)?) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(e.into()),
@@ -556,8 +560,9 @@ mod tests {
     #[test]
     fn test_file_persistence_round_trips_and_deletes() {
         let dir = TempDir::new().unwrap();
-        let persistence = FileUiStatePersistence::new(dir.path().to_owned());
-        assert!(persistence.load("s1").unwrap().is_none());
+        std::fs::create_dir_all(dir.path().join("p/s1")).unwrap();
+        let persistence = FileUiStatePersistence::new(SessionLayout::new(dir.path().to_owned()));
+        assert!(persistence.load("p/s1").unwrap().is_none());
 
         let state = UiSessionState {
             scroll: Some(ScrollPosition {
@@ -567,23 +572,34 @@ mod tests {
             }),
             ..Default::default()
         };
-        persistence.save("s1", &state).unwrap();
+        persistence.save("p/s1", &state).unwrap();
         assert_eq!(
-            persistence.load("s1").unwrap().and_then(|s| s.scroll),
+            persistence.load("p/s1").unwrap().and_then(|s| s.scroll),
             state.scroll
         );
-        assert!(dir.path().join("s1.ui_state.json").exists());
+        assert!(dir.path().join("p/s1/ui_state.json").exists());
 
-        persistence.delete("s1").unwrap();
-        assert!(persistence.load("s1").unwrap().is_none());
-        persistence.delete("s1").unwrap();
+        persistence.delete("p/s1").unwrap();
+        assert!(persistence.load("p/s1").unwrap().is_none());
+        persistence.delete("p/s1").unwrap();
+    }
+
+    #[test]
+    fn test_file_persistence_does_not_recreate_a_deleted_session() {
+        let dir = TempDir::new().unwrap();
+        let persistence = FileUiStatePersistence::new(SessionLayout::new(dir.path().to_owned()));
+        persistence
+            .save("gone", &UiSessionState::default())
+            .unwrap();
+        assert!(!dir.path().join("gone").exists());
     }
 
     #[test]
     fn test_file_persistence_reports_a_corrupt_file() {
         let dir = TempDir::new().unwrap();
-        std::fs::write(dir.path().join("bad.ui_state.json"), "not valid json!!!").unwrap();
-        let persistence = FileUiStatePersistence::new(dir.path().to_owned());
+        std::fs::create_dir_all(dir.path().join("bad")).unwrap();
+        std::fs::write(dir.path().join("bad/ui_state.json"), "not valid json!!!").unwrap();
+        let persistence = FileUiStatePersistence::new(SessionLayout::new(dir.path().to_owned()));
         assert!(persistence.load("bad").is_err());
     }
 }

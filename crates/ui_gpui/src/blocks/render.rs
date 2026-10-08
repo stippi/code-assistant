@@ -183,8 +183,9 @@ impl BlockView {
 
         // Determine expansion state — purely based on ToolBlockState, no is_generating override
         let is_expanded = block.state == ToolBlockState::Expanded;
-        let has_output =
-            block.output.as_ref().is_some_and(|o| !o.is_empty()) || !block.images.is_empty();
+        let has_output = block.output.as_ref().is_some_and(|o| !o.is_empty())
+            || !block.images.is_empty()
+            || block.output_deferred;
         let can_expand = has_output;
 
         // Animation scale for smooth expand/collapse

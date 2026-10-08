@@ -15,6 +15,15 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
     // Setup dynamic types for MultiSessionManager
     let persistence = crate::persistence::FileSessionPersistence::new();
 
+    // Sessions in the old format are migrated first, on the backend thread,
+    // while the GUI shows the progress instead of the main window.
+    let (migration_tx, migration_rx) = if persistence.has_legacy_sessions() {
+        let (tx, rx) = async_channel::unbounded();
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+
     // In GPUI mode, don't use the current directory as default session path.
     // Sessions are project-based and get their path from the sidebar/projects.json.
     let session_config_template = SessionConfig {
@@ -75,6 +84,13 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
     // Start the backend thread: runs the service worker and the startup
     // session connection on its own tokio runtime.
     std::thread::spawn(move || {
+        if let Some(progress) = migration_tx {
+            super::migrate_session_store(&|update| {
+                let _ = progress.try_send(update);
+            });
+            // Dropping the sender tells the GUI the migration is done.
+        }
+
         let runtime = tokio::runtime::Runtime::new().unwrap();
 
         runtime.block_on(async {
@@ -168,7 +184,7 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
     });
 
     // Run the GUI in the main thread
-    gui.run_app();
+    gui.run_app(migration_rx);
 
     Ok(())
 }

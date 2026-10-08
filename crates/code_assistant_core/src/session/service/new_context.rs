@@ -135,7 +135,7 @@ impl SessionService {
                 return Ok(());
             }
             if let Some(instance) = manager.get_session(&session_id) {
-                let transcript = transcript_data(instance)?;
+                let transcript = transcript_data(&manager, instance)?;
                 ctx.notify_session(
                     &session_id,
                     UiEvent::SetMessages {

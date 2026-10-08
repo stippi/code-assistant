@@ -8,6 +8,7 @@ pub mod messages;
 mod root;
 pub mod settings_screen;
 pub mod sidebar;
+mod startup_window;
 pub mod stores;
 pub mod terminal;
 #[cfg(test)]
@@ -693,8 +694,15 @@ impl Gpui {
         (messages_view, project_sidebar)
     }
 
-    // Run the application
-    pub fn run_app(&self) {
+    /// Run the application. With `migration`, a window following the
+    /// session store's migration comes first, and the main window opens
+    /// once the sender is dropped.
+    pub fn run_app(
+        &self,
+        migration: Option<
+            async_channel::Receiver<code_assistant_core::persistence::MigrationProgress>,
+        >,
+    ) {
         let gpui_clone = self.clone();
 
         // Initialize app with assets
@@ -766,76 +774,92 @@ impl Gpui {
 
             init(cx);
 
-            // Create window – restore saved bounds or fall back to centered default.
-            let bounds = ui_settings
-                .window_bounds
-                .as_ref()
-                .filter(|b| b.is_valid())
-                .map(|b| b.to_gpui_bounds())
-                .unwrap_or_else(|| {
-                    gpui_kit::Bounds::centered(
-                        None,
-                        gpui_kit::size(gpui_kit::px(1100.0), gpui_kit::px(700.0)),
+            match migration {
+                Some(progress) => {
+                    let gpui = gpui_clone.clone();
+                    startup_window::show_until_done(
+                        progress,
+                        move |cx| gpui.open_main_window(frame_profile_mode, cx),
                         cx,
-                    )
-                });
-            // Open window with titlebar
-            let window = cx
-                .open_window(
-                    gpui_kit::WindowOptions {
-                        window_bounds: Some(gpui_kit::WindowBounds::Windowed(bounds)),
-                        titlebar: Some(gpui_kit::TitlebarOptions {
-                            title: Some(gpui_kit::SharedString::from("Code Assistant")),
-                            #[cfg(target_os = "macos")]
-                            appears_transparent: true,
-                            #[cfg(not(target_os = "macos"))]
-                            appears_transparent: false,
-                            traffic_light_position: Some(Point {
-                                x: px(16.),
-                                y: px(16.),
-                            }),
-                        }),
-                        ..Default::default()
-                    },
-                    |window, cx| {
-                        let (messages_view, project_sidebar) =
-                            gpui_clone.new_session_views(window, cx);
-                        if let sweep @ (shared::frame_profile::Mode::Scroll
-                        | shared::frame_profile::Mode::Wheel) = frame_profile_mode
-                        {
-                            let wheel = sweep == shared::frame_profile::Mode::Wheel;
-                            messages_view.update(cx, |view, cx| {
-                                view.start_profile_scroll_sweep(wheel, window, cx)
-                            });
-                        }
-
-                        // Create RootView
-                        let root_view = cx.new(|cx| {
-                            RootView::new(messages_view, project_sidebar.clone(), window, cx)
-                        });
-
-                        // Wrap in Root component
-                        cx.new(|cx| Root::new(root_view, window, cx))
-                    },
-                )
-                .expect("failed to open window");
-
-            // Focus the TextInput if window was created successfully
-            window
-                .update(cx, |_root, window, cx| {
-                    window.activate_window();
-                    window.set_window_title(&SharedString::from("Code Assistant"));
-                    // Get the MessageView from the Root
-                    if let Some(_view) = window
-                        .root::<gpui_kit::component::Root>()
-                        .and_then(|root| root)
-                    {
-                        // Activate window
-                        cx.activate(true);
-                    }
-                })
-                .expect("failed to update window");
+                    );
+                }
+                None => gpui_clone.open_main_window(frame_profile_mode, cx),
+            }
         });
+    }
+
+    /// Open the main window, at its saved bounds or centered.
+    fn open_main_window(&self, frame_profile_mode: shared::frame_profile::Mode, cx: &mut App) {
+        let gpui_clone = self.clone();
+        let ui_settings = cx.global::<UiSettingsGlobal>().0.clone();
+        // Create window – restore saved bounds or fall back to centered default.
+        let bounds = ui_settings
+            .window_bounds
+            .as_ref()
+            .filter(|b| b.is_valid())
+            .map(|b| b.to_gpui_bounds())
+            .unwrap_or_else(|| {
+                gpui_kit::Bounds::centered(
+                    None,
+                    gpui_kit::size(gpui_kit::px(1100.0), gpui_kit::px(700.0)),
+                    cx,
+                )
+            });
+        // Open window with titlebar
+        let window = cx
+            .open_window(
+                gpui_kit::WindowOptions {
+                    window_bounds: Some(gpui_kit::WindowBounds::Windowed(bounds)),
+                    titlebar: Some(gpui_kit::TitlebarOptions {
+                        title: Some(gpui_kit::SharedString::from("Code Assistant")),
+                        #[cfg(target_os = "macos")]
+                        appears_transparent: true,
+                        #[cfg(not(target_os = "macos"))]
+                        appears_transparent: false,
+                        traffic_light_position: Some(Point {
+                            x: px(16.),
+                            y: px(16.),
+                        }),
+                    }),
+                    ..Default::default()
+                },
+                |window, cx| {
+                    let (messages_view, project_sidebar) = gpui_clone.new_session_views(window, cx);
+                    if let sweep @ (shared::frame_profile::Mode::Scroll
+                    | shared::frame_profile::Mode::Wheel) = frame_profile_mode
+                    {
+                        let wheel = sweep == shared::frame_profile::Mode::Wheel;
+                        messages_view.update(cx, |view, cx| {
+                            view.start_profile_scroll_sweep(wheel, window, cx)
+                        });
+                    }
+
+                    // Create RootView
+                    let root_view = cx.new(|cx| {
+                        RootView::new(messages_view, project_sidebar.clone(), window, cx)
+                    });
+
+                    // Wrap in Root component
+                    cx.new(|cx| Root::new(root_view, window, cx))
+                },
+            )
+            .expect("failed to open window");
+
+        // Focus the TextInput if window was created successfully
+        window
+            .update(cx, |_root, window, cx| {
+                window.activate_window();
+                window.set_window_title(&SharedString::from("Code Assistant"));
+                // Get the MessageView from the Root
+                if let Some(_view) = window
+                    .root::<gpui_kit::component::Root>()
+                    .and_then(|root| root)
+                {
+                    // Activate window
+                    cx.activate(true);
+                }
+            })
+            .expect("failed to update window");
     }
 
     /// Snapshot of the skills available to the current session.

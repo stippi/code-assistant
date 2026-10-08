@@ -3,3 +3,4 @@
 
 mod composer;
 mod end_to_end;
+mod stored_outputs;

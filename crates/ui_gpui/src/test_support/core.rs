@@ -16,7 +16,7 @@ use tempfile::TempDir;
 pub struct TestCore {
     pub service: SessionService,
     runtime: tokio::runtime::Runtime,
-    _sessions_dir: TempDir,
+    sessions_dir: TempDir,
 }
 
 impl TestCore {
@@ -50,7 +50,7 @@ impl TestCore {
         Self {
             service,
             runtime,
-            _sessions_dir: sessions_dir,
+            sessions_dir,
         }
     }
 
@@ -58,6 +58,11 @@ impl TestCore {
     /// from (the UI's own calls go through its commands).
     pub fn block_on<F: Future>(&self, future: F) -> F::Output {
         self.runtime.block_on(future)
+    }
+
+    /// The core's session store, as another process sees it.
+    pub fn store(&self) -> FileSessionPersistence {
+        FileSessionPersistence::new_with_root_dir(self.sessions_dir.path().to_path_buf())
     }
 
     /// A new, empty session.

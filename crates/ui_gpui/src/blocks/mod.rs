@@ -227,6 +227,8 @@ pub struct BlockView {
     /// Focus target so a drag-select in the diff card can focus the block and
     /// Cmd/Ctrl-C reaches [`Self::copy_diff_selection`].
     focus_handle: FocusHandle,
+    /// Whether [`Self::load_deferred_output`] asked for the tool's output.
+    deferred_output_requested: bool,
 }
 
 impl BlockView {
@@ -280,7 +282,37 @@ impl BlockView {
             diff_selection: None,
             diff_dragging: false,
             focus_handle: cx.focus_handle(),
+            deferred_output_requested: false,
         }
+    }
+
+    /// Ask for the output a restored tool result left out
+    /// ([`ToolUseBlock::output_deferred`]) once the block shows it: when it
+    /// is expanded, which cards are unless collapsed by hand. It arrives as a
+    /// tool status update.
+    pub(crate) fn load_deferred_output(&mut self, cx: &mut Context<Self>) {
+        let Some(tool) = self.block.as_tool() else {
+            return;
+        };
+        if !tool.output_deferred
+            || tool.state != ToolBlockState::Expanded
+            || self.deferred_output_requested
+        {
+            return;
+        }
+        let (Some(session_id), Some(gpui)) =
+            (self.session_id.clone(), cx.try_global::<crate::Gpui>())
+        else {
+            return;
+        };
+        self.deferred_output_requested = true;
+        gpui.cmd_load_tool_output(session_id, tool.id.clone());
+    }
+
+    /// The block if it is the tool block `tool_id`, for assertions.
+    #[cfg(test)]
+    pub(crate) fn tool_block(&self, tool_id: &str) -> Option<&ToolUseBlock> {
+        self.block.as_tool().filter(|tool| tool.id == tool_id)
     }
 
     /// The block's focus handle (used by the diff card for Cmd/Ctrl-C).
@@ -572,6 +604,7 @@ impl BlockView {
         if let (Some(session_id), Some(tool)) = (&self.session_id, self.block.as_tool()) {
             ToolCollapseState::set(session_id, &tool.id, tool.state.clone(), cx);
         }
+        self.load_deferred_output(cx);
 
         self.start_expand_collapse_animation(should_expand, cx);
     }
@@ -718,6 +751,8 @@ mod tests {
     use super::*;
     use code_assistant_core::persistence::BranchInfo;
     use code_assistant_core::ui::ToolStatus;
+    use code_assistant_core::ui::ui_events::ToolResultData;
+    use gpui_kit::App;
     use gpui_kit::TestAppContext;
 
     /// Initialize globals needed for tests (theme).
@@ -833,13 +868,16 @@ mod tests {
                 container.add_tool_use_block("edit", "tool-2", cx);
 
                 let updated = container.update_tool_status(
-                    "tool-2",
-                    ToolStatus::Success,
-                    Some("Done".to_string()),
-                    Some("output text".to_string()),
-                    None,
-                    Some(1.5),
-                    vec![],
+                    &ToolResultData {
+                        tool_id: "tool-2".into(),
+                        status: ToolStatus::Success,
+                        message: Some("Done".to_string()),
+                        output: Some("output text".to_string()),
+                        styled_output: None,
+                        duration_seconds: Some(1.5),
+                        images: vec![],
+                        output_deferred: false,
+                    },
                     cx,
                 );
                 assert!(updated);
@@ -866,18 +904,33 @@ mod tests {
             container.update(cx, |container, cx| {
                 container.add_tool_use_block("edit", "tool-2", cx);
 
+                let revision = |container: &MessageContainer, cx: &App| {
+                    container.elements()[0]
+                        .read(cx)
+                        .block
+                        .as_tool()
+                        .unwrap()
+                        .revision
+                };
+                let before = revision(container, cx);
+
                 // Try to update a non-existent tool
                 let updated = container.update_tool_status(
-                    "non-existent",
-                    ToolStatus::Success,
-                    None,
-                    None,
-                    None,
-                    None,
-                    vec![],
+                    &ToolResultData {
+                        tool_id: "non-existent".into(),
+                        status: ToolStatus::Success,
+                        message: None,
+                        output: None,
+                        styled_output: None,
+                        duration_seconds: None,
+                        images: vec![],
+                        output_deferred: false,
+                    },
                     cx,
                 );
                 assert!(!updated);
+                // Caches derived from the other tool blocks stay valid.
+                assert_eq!(revision(container, cx), before);
             });
         });
     }

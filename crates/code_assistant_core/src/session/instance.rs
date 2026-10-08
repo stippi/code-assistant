@@ -6,7 +6,9 @@ use tokio::task::JoinHandle;
 
 // Agent instances are created on-demand, no need to import
 use crate::agent::SubAgentCancellationRegistry;
-use crate::persistence::{ChatMetadata, ChatSession, NodeId};
+use crate::persistence::{
+    ChatMetadata, ChatSession, FileSessionPersistence, JournalVersion, NodeId,
+};
 use crate::ui::streaming::create_stream_processor;
 use crate::ui::ui_events::{MessageData, MessageRole, UiEvent};
 use crate::ui::{DisplayFragment, UIError, UserInterface};
@@ -137,10 +139,87 @@ impl SessionActivity {
 /// Keyed by `tool_id` so only the most recent status per tool is retained.
 type ToolStatusBuffer = HashMap<String, crate::ui::ui_events::ToolResultData>;
 
+/// How UI data carries tool results stored outside the session record
+/// (large ones, see `persistence::blobs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StoredOutputs {
+    /// Read them and include their outputs.
+    Include,
+    /// Leave the outputs of successful runs out
+    /// ([`crate::ui::ui_events::ToolResultData::output_deferred`]).
+    /// Failures are included.
+    Defer,
+}
+
+/// What the conversation records about a tool result.
+struct RecordedToolResult {
+    is_error: bool,
+    duration_seconds: Option<f64>,
+}
+
+/// Reads the complete UI data of one tool result, without the session
+/// instance: the caller can let go of the session manager meanwhile.
+pub struct ToolOutputLoader {
+    persistence: FileSessionPersistence,
+    session_id: String,
+    execution: agent_core::SerializedToolExecution,
+    tool_registry: Arc<crate::tools::core::ToolRegistry>,
+    duration_seconds: Option<f64>,
+}
+
+impl ToolOutputLoader {
+    pub fn load(mut self) -> Result<crate::ui::ui_events::ToolResultData> {
+        self.persistence
+            .resolve_tool_results(&self.session_id, std::slice::from_mut(&mut self.execution))?;
+        tool_result_data(
+            &self.execution,
+            self.tool_registry.as_ref(),
+            self.duration_seconds,
+        )
+    }
+}
+
+/// The UI data of a tool execution whose result is resolved.
+fn tool_result_data(
+    serialized_execution: &agent_core::SerializedToolExecution,
+    tool_registry: &crate::tools::core::ToolRegistry,
+    duration_seconds: Option<f64>,
+) -> Result<crate::ui::ui_events::ToolResultData> {
+    let execution =
+        crate::tools::mcp::deserialize_tool_execution(serialized_execution, tool_registry)?;
+    let status = if execution.result.is_success() {
+        crate::ui::ToolStatus::Success
+    } else {
+        crate::ui::ToolStatus::Error
+    };
+    // Rendering for the UI doesn't deduplicate resources across executions:
+    // each result renders on its own, so it can be loaded on its own.
+    let output = execution
+        .result
+        .as_render()
+        .render_for_ui(&mut crate::tools::core::ResourcesTracker::new());
+    Ok(crate::ui::ui_events::ToolResultData {
+        message: Some(execution.result.as_render().status()),
+        output: Some(output),
+        styled_output: None, // Not available for restored sessions
+        duration_seconds,
+        // Image data from tools that produce visual output
+        images: execution.result.render_images(),
+        tool_id: execution.tool_request.id,
+        status,
+        output_deferred: false,
+    })
+}
+
 /// Represents a single session instance with its own agent and state
 pub struct SessionInstance {
-    /// The session data (messages, metadata, etc.)
+    /// The session data (messages, metadata, etc.), with its tool results
+    /// unresolved: results stored outside the record are read when needed
+    /// (see [`FileSessionPersistence::load_chat_session_unresolved`]).
     pub session: ChatSession,
+    /// The journal version `session` was read at; `None` when `session` may
+    /// differ from the journal.
+    loaded_version: Option<JournalVersion>,
 
     // Agent instances are created on-demand and moved into tokio tasks
     // We only track the task handle, not the agent itself
@@ -260,6 +339,7 @@ impl SessionInstance {
 
         Self {
             session,
+            loaded_version: None,
             task_handle: None,
             setup_task: None,
             sleep_guard: None,
@@ -439,19 +519,41 @@ impl SessionInstance {
         }
     }
 
-    /// Reload session data from persistence
-    /// This ensures SessionInstance has the latest state even if agents have made changes
+    /// Load a stored session, `None` when there is none.
+    pub fn load(
+        persistence: &FileSessionPersistence,
+        session_id: &str,
+        tool_registry: Arc<crate::tools::core::ToolRegistry>,
+    ) -> Result<Option<Self>> {
+        // Taken before reading: a write in between makes the next reload read.
+        let version = persistence.journal_version(session_id)?;
+        let Some(session) = persistence.load_chat_session_unresolved(session_id)? else {
+            return Ok(None);
+        };
+        let mut instance = Self::new(session, tool_registry);
+        instance.loaded_version = version;
+        Ok(Some(instance))
+    }
+
+    /// Bring the session up to date with persistence, where agents and
+    /// other processes store their changes. Reads only when the journal
+    /// changed since the last read.
     pub fn reload_from_persistence(
         &mut self,
-        persistence: &crate::persistence::FileSessionPersistence,
+        persistence: &FileSessionPersistence,
     ) -> anyhow::Result<()> {
-        if let Some(session) = persistence.load_chat_session(&self.session.id)? {
+        let version = persistence.journal_version(&self.session.id)?;
+        if version.is_some() && version == self.loaded_version {
+            return Ok(());
+        }
+        if let Some(session) = persistence.load_chat_session_unresolved(&self.session.id)? {
             debug!("Reloading session {} from persistence", self.session.id);
             self.session = session;
             if let Some(path) = self.session.config.effective_project_path() {
                 let _ = self.sandbox_context.register_root(path);
             }
         }
+        self.loaded_version = version;
         Ok(())
     }
 
@@ -488,14 +590,18 @@ impl SessionInstance {
     /// up to and including that node. This is used to restore the "edit mode"
     /// view (truncated to the branch parent) directly when connecting to a
     /// session whose draft is in edit mode, avoiding a full-then-truncate flash.
+    ///
+    /// Tool outputs stored outside the session record are deferred (see
+    /// [`Self::convert_tool_executions_to_ui_data`]).
     pub fn build_snapshot(
         &self,
+        persistence: &FileSessionPersistence,
         until_node_id: Option<crate::persistence::NodeId>,
     ) -> Result<crate::session::SessionSnapshot, anyhow::Error> {
         // Convert session messages to UI data (optionally truncated for edit mode)
         let mut messages =
             self.convert_messages_to_ui_data_until(self.session.config.tool_syntax, until_node_id)?;
-        let mut tool_results = self.convert_tool_executions_to_ui_data()?;
+        let mut tool_results = self.convert_tool_executions_to_ui_data(persistence)?;
 
         // Merge in the latest live tool statuses (e.g. from running
         // sub-agents). Only inject entries that don't already have a
@@ -787,20 +893,48 @@ impl SessionInstance {
         Ok(messages_data)
     }
 
-    /// Convert tool executions to UI tool result data
+    /// Convert the tool executions to UI tool result data for showing the
+    /// session. The outputs of successful runs stored outside the session
+    /// record are left out ([`crate::ui::ui_events::ToolResultData::output_deferred`]),
+    /// so showing a session reads none of them; see [`Self::tool_output_loader`].
     pub fn convert_tool_executions_to_ui_data(
         &self,
+        persistence: &FileSessionPersistence,
     ) -> Result<Vec<crate::ui::ui_events::ToolResultData>, anyhow::Error> {
-        use crate::tools::core::ResourcesTracker;
+        self.tool_results_ui_data(
+            persistence,
+            &self.session.tool_executions,
+            StoredOutputs::Defer,
+        )
+    }
 
-        // Build a lookup map: tool_use_id → duration (seconds) from ToolResult ContentBlocks
-        // in the persisted message tree. This gives us stable execution durations for restored sessions.
-        let tool_result_durations = self.build_tool_result_duration_map();
+    /// Convert the tool executions from index `first` on, outputs included:
+    /// what a frontend following the session gets appended.
+    pub fn convert_tool_executions_since_to_ui_data(
+        &self,
+        persistence: &FileSessionPersistence,
+        first: usize,
+    ) -> Result<Vec<crate::ui::ui_events::ToolResultData>, anyhow::Error> {
+        self.tool_results_ui_data(
+            persistence,
+            self.session
+                .tool_executions
+                .get(first..)
+                .unwrap_or_default(),
+            StoredOutputs::Include,
+        )
+    }
 
+    fn tool_results_ui_data(
+        &self,
+        persistence: &FileSessionPersistence,
+        executions: &[agent_core::SerializedToolExecution],
+        stored: StoredOutputs,
+    ) -> Result<Vec<crate::ui::ui_events::ToolResultData>, anyhow::Error> {
+        let recorded = self.recorded_tool_results();
         let mut tool_results = Vec::new();
-        let mut resources_tracker = ResourcesTracker::new();
 
-        for serialized_execution in &self.session.tool_executions {
+        for serialized_execution in executions {
             // A tool that has since disappeared (e.g. a reconfigured MCP
             // server) must not break rendering the session: skip its records.
             if !crate::tools::mcp::execution_renderable(
@@ -814,78 +948,111 @@ impl SessionInstance {
                 continue;
             }
 
-            // Deserialize the tool execution
-            let execution = crate::tools::mcp::deserialize_tool_execution(
-                serialized_execution,
+            let tool_id = &serialized_execution.tool_request.id;
+            let recorded = recorded.get(tool_id.as_str());
+            let duration_seconds = recorded.and_then(|result| result.duration_seconds);
+            let is_stored =
+                crate::persistence::is_blob_reference(&serialized_execution.result_json);
+            // The conversation records whether the run failed; failures are
+            // read, their output explains them.
+            if is_stored
+                && stored == StoredOutputs::Defer
+                && recorded.is_some_and(|result| !result.is_error)
+            {
+                tool_results.push(crate::ui::ui_events::ToolResultData {
+                    tool_id: tool_id.clone(),
+                    status: crate::ui::ToolStatus::Success,
+                    message: None,
+                    output: None,
+                    styled_output: None,
+                    duration_seconds,
+                    images: Vec::new(),
+                    output_deferred: true,
+                });
+                continue;
+            }
+
+            let mut execution = std::borrow::Cow::Borrowed(serialized_execution);
+            if is_stored {
+                persistence.resolve_tool_results(
+                    &self.session.id,
+                    std::slice::from_mut(execution.to_mut()),
+                )?;
+            }
+            tool_results.push(tool_result_data(
+                &execution,
                 self.tool_registry.as_ref(),
-            )?;
-
-            // Generate status and output from result
-            let success = execution.result.is_success();
-            let status = if success {
-                crate::ui::ToolStatus::Success
-            } else {
-                crate::ui::ToolStatus::Error
-            };
-
-            let short_output = execution.result.as_render().status();
-            // Use render_for_ui() to get the UI-specific output (e.g., JSON for spawn_agent)
-            let output = execution
-                .result
-                .as_render()
-                .render_for_ui(&mut resources_tracker);
-
-            let duration_seconds = tool_result_durations
-                .get(&execution.tool_request.id)
-                .copied();
-
-            // Collect image data from tools that produce visual output
-            let images = execution.result.render_images();
-
-            tool_results.push(crate::ui::ui_events::ToolResultData {
-                tool_id: execution.tool_request.id,
-                status,
-                message: Some(short_output),
-                output: Some(output),
-                styled_output: None, // Not available for restored sessions
                 duration_seconds,
-                images,
-            });
+            )?);
         }
 
         Ok(tool_results)
     }
 
-    /// Build a map from tool_use_id to execution duration (seconds) by scanning
-    /// ToolResult ContentBlocks in the persisted message tree.
-    fn build_tool_result_duration_map(&self) -> std::collections::HashMap<String, f64> {
-        let mut map = std::collections::HashMap::new();
+    /// Prepare reading the complete UI data of a tool result, which
+    /// [`StoredOutputs::Defer`] may have left out. `None` when the session
+    /// has no execution `tool_id`.
+    pub fn tool_output_loader(
+        &self,
+        persistence: &FileSessionPersistence,
+        tool_id: &str,
+    ) -> Option<ToolOutputLoader> {
+        let execution = self
+            .session
+            .tool_executions
+            .iter()
+            .find(|execution| execution.tool_request.id == tool_id)?;
+        Some(ToolOutputLoader {
+            persistence: persistence.clone(),
+            session_id: self.session.id.clone(),
+            execution: execution.clone(),
+            tool_registry: self.tool_registry.clone(),
+            duration_seconds: self
+                .recorded_tool_results()
+                .get(tool_id)
+                .and_then(|result| result.duration_seconds),
+        })
+    }
 
-        // Iterate over all messages in the active path (tree) or legacy messages
+    /// What the conversation records about each tool result, by tool use ID:
+    /// whether it failed and how long the run took (from the `ToolResult`
+    /// block timestamps, stable across restores).
+    fn recorded_tool_results(&self) -> HashMap<&str, RecordedToolResult> {
+        // Every branch, so executions outside the active path are covered too
         let messages: Vec<&llm::Message> = if !self.session.message_nodes.is_empty() {
             self.session
-                .active_path
-                .iter()
-                .filter_map(|node_id| self.session.message_nodes.get(node_id))
+                .message_nodes
+                .values()
                 .map(|node| &node.message)
                 .collect()
         } else {
             self.session.messages.iter().collect()
         };
 
+        let mut recorded = HashMap::new();
         for message in messages {
             if let llm::MessageContent::Structured(blocks) = &message.content {
                 for block in blocks {
-                    if let llm::ContentBlock::ToolResult { tool_use_id, .. } = block
-                        && let Some(duration) = block.duration()
+                    if let llm::ContentBlock::ToolResult {
+                        tool_use_id,
+                        is_error,
+                        ..
+                    } = block
                     {
-                        map.insert(tool_use_id.clone(), duration.as_secs_f64());
+                        recorded.insert(
+                            tool_use_id.as_str(),
+                            RecordedToolResult {
+                                is_error: is_error.unwrap_or(false),
+                                duration_seconds: block
+                                    .duration()
+                                    .map(|duration| duration.as_secs_f64()),
+                            },
+                        );
                     }
                 }
             }
         }
-
-        map
+        recorded
     }
 }
 
@@ -1013,6 +1180,7 @@ impl UserInterface for SessionEventPublisher {
                             styled_output: styled_output.clone(),
                             duration_seconds: *duration_seconds,
                             images: images.clone(),
+                            output_deferred: false,
                         },
                     );
                 }
@@ -1297,6 +1465,8 @@ mod tests {
             None,
         );
         let instance = SessionInstance::new(session, crate::tools::test_registry());
+        let dir = tempfile::tempdir().unwrap();
+        let persistence = FileSessionPersistence::new_with_root_dir(dir.path().to_path_buf());
         let publisher =
             instance.create_publisher(crate::session::event_stream::EventStream::new(), None);
 
@@ -1314,7 +1484,7 @@ mod tests {
         // A snapshot taken mid-stream carries the partial message tagged
         // with the pre-allocated node id, so a frontend rendering it stays
         // deduplicatable against the persisted message later.
-        let snapshot = instance.build_snapshot(None).unwrap();
+        let snapshot = instance.build_snapshot(&persistence, None).unwrap();
         let partial = snapshot.messages.last().expect("partial message present");
         assert_eq!(partial.node_id, Some(42));
         assert_eq!(partial.fragments.len(), 2);
@@ -1327,7 +1497,7 @@ mod tests {
                 error: None,
             })
             .await;
-        let snapshot = instance.build_snapshot(None).unwrap();
+        let snapshot = instance.build_snapshot(&persistence, None).unwrap();
         assert!(snapshot.messages.is_empty());
     }
 

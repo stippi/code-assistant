@@ -8,8 +8,10 @@
 //! | File pattern | Trigger | UI effect |
 //! |---|---|---|
 //! | `metadata.json`, `lifecycle.json` | Create / Modify / Remove | Refresh sidebar session list |
-//! | `<session_id>.json` | Modify | Reload session if currently viewed |
-//! | `<session_id>.agent.lock` | Create / Remove | Update activity state (agent running elsewhere) |
+//! | `<session_id>/journal.jsonl` | Modify | Reload session if currently viewed |
+//! | `<session_id>/agent.lock` | Create / Remove | Update activity state (agent running elsewhere) |
+//!
+//! Paths are mapped back to sessions by [`SessionLayout::classify`].
 //!
 //! # Cross-platform notes
 //!
@@ -27,15 +29,13 @@
 //! files* and flushes them on a debounce timer.  This guarantees at most one
 //! UI reaction per logical change, regardless of platform.
 
-use crate::persistence::FileSessionPersistence;
+use crate::persistence::{FileSessionPersistence, SessionLayout, SessionPath};
 use crate::session::instance::SessionActivityState;
 use crate::ui::ui_events::UiEvent;
 use crate::utils::file_utils;
 
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashSet;
-use std::fs;
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::{debug, trace, warn};
@@ -78,26 +78,30 @@ impl SessionWatcher {
         event_tx: async_channel::Sender<UiEvent>,
         current_session_id: Arc<Mutex<Option<String>>>,
     ) -> anyhow::Result<Self> {
-        let sessions_dir = persistence.sessions_dir()?;
+        let layout = persistence.layout().clone();
+        let sessions_dir = layout.sessions_dir().to_path_buf();
+        std::fs::create_dir_all(&sessions_dir)?;
         debug!("Starting filesystem watcher on {}", sessions_dir.display());
 
         let dirty = Arc::new(Mutex::new(DirtySet::default()));
 
         // --- notify callback (sync, runs on notify's background thread) ---
         let dirty_for_callback = dirty.clone();
+        let layout_for_callback = layout.clone();
         let mut watcher =
             notify::recommended_watcher(move |res: Result<Event, notify::Error>| match res {
-                Ok(event) => accumulate_event(&dirty_for_callback, &event),
+                Ok(event) => accumulate_event(&layout_for_callback, &dirty_for_callback, &event),
                 Err(e) => warn!("Filesystem watcher error: {e}"),
             })?;
 
-        watcher.watch(&sessions_dir, RecursiveMode::NonRecursive)?;
+        // Recursive: session records and agent locks live in session folders.
+        watcher.watch(&sessions_dir, RecursiveMode::Recursive)?;
 
         // --- debounce flush task (async, runs on the tokio runtime) ---
         let rt = tokio::runtime::Handle::current();
         rt.spawn(flush_loop(
             dirty,
-            sessions_dir,
+            layout,
             event_tx.clone(),
             current_session_id,
         ));
@@ -217,39 +221,21 @@ fn is_watched_config_change(file_name: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Classify a raw filesystem event and add it to the dirty set.
-fn accumulate_event(dirty: &Mutex<DirtySet>, event: &Event) {
+fn accumulate_event(layout: &SessionLayout, dirty: &Mutex<DirtySet>, event: &Event) {
     for path in &event.paths {
-        let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
+        let Some(kind) = layout.classify(path) else {
             continue;
         };
-
+        trace!("Watcher: {kind:?} changed ({:?})", event.kind);
         let mut set = dirty.lock().unwrap();
-
-        if file_name == "metadata.json" || file_name == "lifecycle.json" {
-            trace!("Watcher: {file_name} changed ({:?})", event.kind);
-            set.metadata_dirty = true;
-            continue;
-        }
-
-        if let Some(session_id) = file_name.strip_suffix(".agent.lock") {
-            trace!(
-                "Watcher: agent lock changed for {session_id} ({:?})",
-                event.kind
-            );
-            set.changed_agent_locks.insert(session_id.to_string());
-            continue;
-        }
-
-        if let Some(session_id) = file_name.strip_suffix(".json") {
-            // Skip non-session JSON files
-            if session_id.ends_with(".ui_state") || session_id == "metadata" {
-                continue;
+        match kind {
+            SessionPath::Index => set.metadata_dirty = true,
+            SessionPath::AgentLock(session_id) => {
+                set.changed_agent_locks.insert(session_id);
             }
-            trace!(
-                "Watcher: session file changed for {session_id} ({:?})",
-                event.kind
-            );
-            set.changed_session_ids.insert(session_id.to_string());
+            SessionPath::Record(session_id) => {
+                set.changed_session_ids.insert(session_id);
+            }
         }
     }
 }
@@ -261,11 +247,11 @@ fn accumulate_event(dirty: &Mutex<DirtySet>, event: &Event) {
 /// Periodically drain the dirty set and emit UI events.
 async fn flush_loop(
     dirty: Arc<Mutex<DirtySet>>,
-    sessions_dir: PathBuf,
+    layout: SessionLayout,
     event_tx: async_channel::Sender<UiEvent>,
     current_session_id: Arc<Mutex<Option<String>>>,
 ) {
-    let mut externally_locked_sessions = scan_external_agent_locks(&sessions_dir);
+    let mut externally_locked_sessions = scan_external_agent_locks(&layout);
 
     loop {
         tokio::time::sleep(DEBOUNCE_DURATION).await;
@@ -310,11 +296,9 @@ async fn flush_loop(
         // disappearance as external would let our own lock cleanup overwrite
         // richer local states such as Errored.
         for session_id in &snapshot.changed_agent_locks {
-            if let Some(activity_state) = activity_state_for_lock_change(
-                &sessions_dir,
-                session_id,
-                &mut externally_locked_sessions,
-            ) {
+            if let Some(activity_state) =
+                activity_state_for_lock_change(&layout, session_id, &mut externally_locked_sessions)
+            {
                 debug!("Watcher flush: agent lock for {session_id} → {activity_state:?}");
                 let _ = event_tx.try_send(UiEvent::UpdateSessionActivityState {
                     session_id: session_id.clone(),
@@ -339,12 +323,13 @@ async fn flush_loop(
 }
 
 fn activity_state_for_lock_change(
-    sessions_dir: &Path,
+    layout: &SessionLayout,
     session_id: &str,
     externally_locked_sessions: &mut HashSet<String>,
 ) -> Option<SessionActivityState> {
-    let is_locked = file_utils::is_agent_locked(sessions_dir, session_id);
-    let belongs_to_us = file_utils::agent_lock_belongs_to_current_process(sessions_dir, session_id);
+    let lock_path = layout.agent_lock(session_id).ok()?;
+    let is_locked = file_utils::is_agent_locked(&lock_path);
+    let belongs_to_us = file_utils::agent_lock_belongs_to_current_process(&lock_path);
 
     if is_locked {
         if belongs_to_us {
@@ -371,30 +356,19 @@ fn activity_state_for_lock_change(
     }
 }
 
-fn scan_external_agent_locks(sessions_dir: &Path) -> HashSet<String> {
-    let mut externally_locked_sessions = HashSet::new();
-
-    let Ok(entries) = fs::read_dir(sessions_dir) else {
-        return externally_locked_sessions;
+fn scan_external_agent_locks(layout: &SessionLayout) -> HashSet<String> {
+    let Ok(session_ids) = layout.session_ids() else {
+        return HashSet::new();
     };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
-        let Some(session_id) = file_name.strip_suffix(".agent.lock") else {
-            continue;
-        };
-
-        if file_utils::is_agent_locked(sessions_dir, session_id)
-            && !file_utils::agent_lock_belongs_to_current_process(sessions_dir, session_id)
-        {
-            externally_locked_sessions.insert(session_id.to_string());
-        }
-    }
-
-    externally_locked_sessions
+    session_ids
+        .into_iter()
+        .filter(|session_id| {
+            layout.agent_lock(session_id).is_ok_and(|lock_path| {
+                file_utils::is_agent_locked(&lock_path)
+                    && !file_utils::agent_lock_belongs_to_current_process(&lock_path)
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -420,10 +394,10 @@ mod tests {
     #[test]
     fn unknown_unlock_does_not_emit_idle() {
         let dir = tempdir().unwrap();
-        let sessions_dir = dir.path().to_path_buf();
+        let layout = SessionLayout::new(dir.path().to_path_buf());
         let mut external_locks = HashSet::new();
 
-        let state = activity_state_for_lock_change(&sessions_dir, "session-1", &mut external_locks);
+        let state = activity_state_for_lock_change(&layout, "session-1", &mut external_locks);
 
         assert_eq!(state, None);
         assert!(external_locks.is_empty());
@@ -432,35 +406,35 @@ mod tests {
     #[test]
     fn known_external_unlock_emits_idle_once() {
         let dir = tempdir().unwrap();
-        let sessions_dir = dir.path().to_path_buf();
+        let layout = SessionLayout::new(dir.path().to_path_buf());
         let mut external_locks = HashSet::from(["session-1".to_string()]);
 
-        let state = activity_state_for_lock_change(&sessions_dir, "session-1", &mut external_locks);
+        let state = activity_state_for_lock_change(&layout, "session-1", &mut external_locks);
 
         assert_eq!(state, Some(SessionActivityState::Idle));
         assert!(external_locks.is_empty());
 
-        let state = activity_state_for_lock_change(&sessions_dir, "session-1", &mut external_locks);
+        let state = activity_state_for_lock_change(&layout, "session-1", &mut external_locks);
         assert_eq!(state, None);
     }
 
     #[test]
     fn own_lock_events_are_ignored() {
         let dir = tempdir().unwrap();
-        let sessions_dir = dir.path().to_path_buf();
+        let layout = SessionLayout::new(dir.path().to_path_buf());
         let mut external_locks = HashSet::new();
-        let guard = file_utils::try_acquire_agent_lock(&sessions_dir, "session-1")
+        let guard = file_utils::try_acquire_agent_lock(&layout.agent_lock("session-1").unwrap())
             .unwrap()
             .unwrap();
 
-        let state = activity_state_for_lock_change(&sessions_dir, "session-1", &mut external_locks);
+        let state = activity_state_for_lock_change(&layout, "session-1", &mut external_locks);
 
         assert_eq!(state, None);
         assert!(external_locks.is_empty());
 
         drop(guard);
 
-        let state = activity_state_for_lock_change(&sessions_dir, "session-1", &mut external_locks);
+        let state = activity_state_for_lock_change(&layout, "session-1", &mut external_locks);
         assert_eq!(state, None);
         assert!(external_locks.is_empty());
     }
@@ -468,8 +442,9 @@ mod tests {
     #[test]
     fn foreign_lock_emits_running_then_idle() {
         let dir = tempdir().unwrap();
-        let sessions_dir = dir.path().to_path_buf();
-        let lock_path = sessions_dir.join("session-1.agent.lock");
+        let layout = SessionLayout::new(dir.path().to_path_buf());
+        let lock_path = layout.agent_lock("session-1").unwrap();
+        std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
         let mut lock_file = OpenOptions::new()
             .create(true)
             .truncate(true)
@@ -482,16 +457,16 @@ mod tests {
         lock_file.lock_exclusive().unwrap();
 
         let mut external_locks = HashSet::new();
-        let state = activity_state_for_lock_change(&sessions_dir, "session-1", &mut external_locks);
+        let state = activity_state_for_lock_change(&layout, "session-1", &mut external_locks);
 
         assert_eq!(state, Some(SessionActivityState::RunningExternally));
         assert!(external_locks.contains("session-1"));
 
         lock_file.unlock().unwrap();
         drop(lock_file);
-        fs::remove_file(lock_path).unwrap();
+        std::fs::remove_file(lock_path).unwrap();
 
-        let state = activity_state_for_lock_change(&sessions_dir, "session-1", &mut external_locks);
+        let state = activity_state_for_lock_change(&layout, "session-1", &mut external_locks);
 
         assert_eq!(state, Some(SessionActivityState::Idle));
         assert!(external_locks.is_empty());

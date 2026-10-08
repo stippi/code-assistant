@@ -7,9 +7,7 @@ use tokio::sync::Mutex;
 
 use crate::agent::{Agent, AgentComponents, DefaultSubAgentRunner, SubAgentCancellationRegistry};
 use crate::config::ProjectManager;
-use crate::persistence::{
-    ChatMetadata, ChatSession, FileSessionPersistence, SessionModelConfig, generate_session_id,
-};
+use crate::persistence::{ChatMetadata, ChatSession, FileSessionPersistence, SessionModelConfig};
 use crate::session::instance::SessionInstance;
 use crate::session::sleep_inhibitor::SleepInhibitor;
 use crate::session::{SessionCheckpoint, SessionConfig};
@@ -374,7 +372,7 @@ impl SessionManager {
             "Session is already running"
         );
         let lock =
-            file_utils::try_acquire_agent_lock(&self.persistence.sessions_dir()?, session_id)?
+            file_utils::try_acquire_agent_lock(&self.persistence.layout().agent_lock(session_id)?)?
                 .ok_or_else(|| anyhow::anyhow!("Session is running in another instance"))?;
         instance.begin_agent_run();
         instance.cancellation = cancellation;
@@ -561,8 +559,19 @@ impl SessionManager {
         session_config_override: Option<SessionConfig>,
         model_config: Option<SessionModelConfig>,
     ) -> Result<String> {
-        let session_id = generate_session_id();
+        let project_root = session_config_override
+            .as_ref()
+            .unwrap_or(&self.session_config_template)
+            .init_path
+            .clone();
+        let session_id = self.allocate_session_id(project_root.as_deref())?;
         self.create_session_with_id(session_id, name, session_config_override, model_config)
+    }
+
+    /// Reserve the ID of a new session of a project, for frontends that hand
+    /// out the ID before the session is created (ACP's deferred creation).
+    pub fn allocate_session_id(&self, project_root: Option<&std::path::Path>) -> Result<String> {
+        self.persistence.allocate_session_id(project_root)
     }
 
     /// Create a new session with a specific ID (used for deferred session creation in ACP)
@@ -615,16 +624,10 @@ impl SessionManager {
 
     /// Load a session from persistence and make it active
     pub fn load_session(&mut self, session_id: &str) -> Result<Vec<Message>> {
-        // Load from persistence
-        let session = self
-            .persistence
-            .load_chat_session(session_id)?
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
-
-        let messages = session.messages.clone();
-
-        // Create session instance
-        let instance = SessionInstance::new(session, self.tool_registry.clone());
+        let instance =
+            SessionInstance::load(&self.persistence, session_id, self.tool_registry.clone())?
+                .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
+        let messages = instance.session.messages.clone();
 
         // Add to active sessions
         self.active_sessions
@@ -690,7 +693,8 @@ impl SessionManager {
         // Build the owned snapshot for the frontend
         let mut snapshot = {
             let session_instance = self.active_sessions.get_mut(&session_id).unwrap();
-            let snapshot = session_instance.build_snapshot(edit_until_node_id)?;
+            let snapshot =
+                session_instance.build_snapshot(&self.persistence, edit_until_node_id)?;
             // Mark what the UI now knows about (baseline for future incremental diffs)
             session_instance.last_ui_synced_path = session_instance.session.active_path.clone();
             session_instance.last_ui_synced_tool_count =
@@ -787,11 +791,8 @@ impl SessionManager {
 
         // Case 1b: Paths identical but new tool results appeared
         if new_path == *synced_path {
-            let all_tool_results = session_instance.convert_tool_executions_to_ui_data()?;
-            let new_tool_results: Vec<_> = all_tool_results
-                .into_iter()
-                .skip(synced_tool_count)
-                .collect();
+            let new_tool_results = session_instance
+                .convert_tool_executions_since_to_ui_data(&self.persistence, synced_tool_count)?;
             if new_tool_results.is_empty() {
                 return Ok(Vec::new());
             }
@@ -815,11 +816,8 @@ impl SessionManager {
             let messages_data =
                 session_instance.convert_messages_from_nodes(new_node_ids, tool_syntax)?;
 
-            let all_tool_results = session_instance.convert_tool_executions_to_ui_data()?;
-            let new_tool_results: Vec<_> = all_tool_results
-                .into_iter()
-                .skip(synced_tool_count)
-                .collect();
+            let new_tool_results = session_instance
+                .convert_tool_executions_since_to_ui_data(&self.persistence, synced_tool_count)?;
 
             let mut events = Vec::new();
 
@@ -842,7 +840,7 @@ impl SessionManager {
 
         // Case 3: Paths diverged → full reload of the transcript
         debug!("Incremental refresh for {session_id}: paths diverged, full reload");
-        let snapshot = session_instance.build_snapshot(None)?;
+        let snapshot = session_instance.build_snapshot(&self.persistence, None)?;
         session_instance.last_ui_synced_path = session_instance.session.active_path.clone();
         session_instance.last_ui_synced_tool_count = session_instance.session.tool_executions.len();
         Ok(vec![
@@ -1139,6 +1137,37 @@ impl SessionManager {
             let pending_message_ref = session_instance.pending_message.clone();
             let pending_target = session_instance.pending_new_context_target.clone();
 
+            let mut tool_executions: Vec<_> = session_instance
+                .session
+                .tool_executions
+                .iter()
+                // A tool that has since disappeared (e.g. a reconfigured MCP
+                // server) must not brick the session: skip its records, the
+                // conversation itself lives in the messages.
+                .filter(|se| {
+                    let available =
+                        crate::tools::mcp::execution_renderable(se, self.tool_registry.as_ref());
+                    if !available {
+                        warn!(
+                            "Skipping recorded execution of unavailable tool '{}'",
+                            se.tool_name
+                        );
+                    }
+                    available
+                })
+                .cloned()
+                .collect();
+            // The instance leaves results stored outside the session record
+            // unread; a run needs all of them.
+            self.persistence
+                .resolve_tool_results(session_id, &mut tool_executions)?;
+            let tool_executions = tool_executions
+                .iter()
+                .map(|se| {
+                    crate::tools::mcp::deserialize_tool_execution(se, self.tool_registry.as_ref())
+                })
+                .collect::<Result<Vec<_>>>()?;
+
             let session_state = crate::session::SessionState {
                 session_id: session_id.to_string(),
                 name,
@@ -1146,33 +1175,7 @@ impl SessionManager {
                 active_path: session_instance.session.active_path.clone(),
                 next_node_id: session_instance.session.next_node_id,
                 messages: session_instance.session.get_active_messages_cloned(),
-                tool_executions: session_instance
-                    .session
-                    .tool_executions
-                    .iter()
-                    // A tool that has since disappeared (e.g. a reconfigured
-                    // MCP server) must not brick the session: skip its
-                    // records, the conversation itself lives in the messages.
-                    .filter(|se| {
-                        let available = crate::tools::mcp::execution_renderable(
-                            se,
-                            self.tool_registry.as_ref(),
-                        );
-                        if !available {
-                            warn!(
-                                "Skipping recorded execution of unavailable tool '{}'",
-                                se.tool_name
-                            );
-                        }
-                        available
-                    })
-                    .map(|se| {
-                        crate::tools::mcp::deserialize_tool_execution(
-                            se,
-                            self.tool_registry.as_ref(),
-                        )
-                    })
-                    .collect::<Result<Vec<_>>>()?,
+                tool_executions,
 
                 plan: session_instance.session.plan.clone(),
                 active_skills: session_instance.session.active_skills.clone(),
@@ -1574,6 +1577,33 @@ impl SessionManager {
         self.active_sessions.get(session_id)
     }
 
+    /// The UI data of a resident session's tool results, deferring outputs
+    /// stored outside the session record (see
+    /// [`SessionInstance::convert_tool_executions_to_ui_data`]).
+    pub fn tool_results_ui_data(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<crate::ui::ui_events::ToolResultData>> {
+        self.active_sessions
+            .get(session_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?
+            .convert_tool_executions_to_ui_data(&self.persistence)
+    }
+
+    /// Prepare reading the complete UI data of a tool result of a resident
+    /// session, to be done without the manager.
+    pub fn tool_output_loader(
+        &self,
+        session_id: &str,
+        tool_id: &str,
+    ) -> Result<crate::session::instance::ToolOutputLoader> {
+        self.active_sessions
+            .get(session_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?
+            .tool_output_loader(&self.persistence, tool_id)
+            .ok_or_else(|| anyhow::anyhow!("No tool execution {tool_id} in {session_id}"))
+    }
+
     /// Get a mutable session instance by ID
     pub fn get_session_mut(&mut self, session_id: &str) -> Option<&mut SessionInstance> {
         self.active_sessions.get_mut(session_id)
@@ -1610,7 +1640,7 @@ impl SessionManager {
             Ok(instance.session.model_config.clone())
         } else {
             // Load from persistence
-            match self.persistence.load_chat_session(session_id)? {
+            match self.persistence.load_chat_session_unresolved(session_id)? {
                 Some(mut session) => {
                     if let Some(config) = session.model_config.take() {
                         Ok(Some(config))
@@ -1639,7 +1669,7 @@ impl SessionManager {
             instance.session.clone()
         } else {
             self.persistence
-                .load_chat_session(session_id)?
+                .load_chat_session_unresolved(session_id)?
                 .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?
         };
 
@@ -2117,7 +2147,8 @@ impl SessionManager {
         if let Ok(metadata_list) = self.persistence.list_chat_sessions() {
             for meta in &metadata_list {
                 if meta.initial_project == project_name
-                    && let Ok(Some(session)) = self.persistence.load_chat_session(&meta.id)
+                    && let Ok(Some(session)) =
+                        self.persistence.load_chat_session_unresolved(&meta.id)
                     && let Some(path) = session.config.effective_project_path()
                 {
                     return Some(path.clone());
@@ -2141,10 +2172,10 @@ impl SessionManager {
             return false; // Our own agent holds the lock
         }
 
-        let Ok(sessions_dir) = self.persistence.sessions_dir() else {
+        let Ok(lock_path) = self.persistence.layout().agent_lock(session_id) else {
             return false;
         };
-        file_utils::is_agent_locked(&sessions_dir, session_id)
+        file_utils::is_agent_locked(&lock_path)
     }
 
     /// Get the latest session ID for auto-resuming
@@ -2195,20 +2226,13 @@ impl SessionManager {
     /// conversation delta and run-owned fields are written; settings changed
     /// meanwhile, by this or another process, stay untouched.
     pub fn commit_checkpoint(&mut self, checkpoint: SessionCheckpoint<'_>) -> Result<()> {
-        let session = self
-            .persistence
-            .update_entry(checkpoint.session_id, |session| {
-                session.apply_checkpoint(&checkpoint);
-                Ok(())
-            })?;
+        let metadata = self.persistence.commit_checkpoint(&checkpoint)?;
 
         // A run commits through a manager of its own that holds no active
         // instance, so the notification must not depend on one.
         self.events.publish_ui(
             checkpoint.session_id,
-            UiEvent::UpdateSessionMetadata {
-                metadata: session.metadata(),
-            },
+            UiEvent::UpdateSessionMetadata { metadata },
         );
         Ok(())
     }
@@ -2617,18 +2641,10 @@ mod tests {
         use std::time::Duration;
         let (mut manager, _dir) = build_manager(false);
         let id = manager.create_session(None).unwrap();
-        let lock_path = manager
-            .persistence
-            .sessions_dir()
-            .unwrap()
-            .join(format!("{id}.entry.lock"));
+        let lock_path = manager.persistence.layout().entry_lock(&id).unwrap();
         let lock = file_utils::lock_exclusive(&lock_path).unwrap();
         let mut latest = manager.persistence.load_chat_session(&id).unwrap().unwrap();
-        let path = manager
-            .persistence
-            .sessions_dir()
-            .unwrap()
-            .join(format!("{id}.json"));
+        let persistence = manager.persistence.clone();
         let (started_tx, started_rx) = mpsc::channel();
         let (done_tx, done_rx) = mpsc::channel();
         let worker_id = id.clone();
@@ -2643,14 +2659,14 @@ mod tests {
         let blocked = done_rx.recv_timeout(Duration::from_millis(200)).is_err();
         // The holder of the entry lock writes a newer conversation before releasing it.
         latest.add_message(Message::new_user("arrived during settings update"));
-        file_utils::atomic_write_json(&path, &latest).unwrap();
+        persistence.overwrite_journal_unlocked(&latest).unwrap();
         drop(lock);
         worker.join().unwrap();
         assert!(
             blocked,
             "settings must hold the entry lock across load and save"
         );
-        let saved: ChatSession = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let saved = persistence.load_chat_session(&id).unwrap().unwrap();
         assert_eq!(saved.get_active_messages().len(), 1);
         assert_eq!(
             saved.config.permission_tier,
