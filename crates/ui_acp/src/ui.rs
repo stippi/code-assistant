@@ -994,6 +994,9 @@ impl UserInterface for ACPUserUI {
             UiEvent::ConfigChanged => {
                 // Config file changes not relevant in ACP mode
             }
+            UiEvent::VoiceStatusChanged { .. } | UiEvent::VoiceTranscript { .. } => {
+                // Voice mode is GPUI-specific.
+            }
         }
         Ok(())
     }

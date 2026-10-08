@@ -22,6 +22,7 @@ default = [
     "mcp-server",
     "terminal-frontend",
     "document-conversion",
+    "voice",
 ]
 document-conversion = ["code_assistant_core/document-conversion"]
 # Each frontend and protocol mode is an optional compile unit; a headless
@@ -32,12 +33,15 @@ gpui-frontend = ["dep:ui_gpui", "dep:async-channel"]
 browser-panel = ["gpui-frontend", "ui_gpui/browser-panel"]
 mcp-server = ["dep:mcp_server"]
 terminal-frontend = ["dep:ui_terminal"]
+# Voice mode in the GPUI frontend: microphone and speakers via the audio crate.
+voice = ["gpui-frontend", "dep:audio"]
 
 [dependencies]
 code_assistant_core = { path = "../code_assistant_core", default-features = false }
 mcp_server = { path = "../mcp_server", optional = true }
 ui_acp = { path = "../ui_acp", optional = true }
 ui_gpui = { path = "../ui_gpui", optional = true }
+audio = { path = "../audio", optional = true }
 # Migration progress from the backend thread to the GPUI startup window
 async-channel = { version = "2.5.0", optional = true }
 ui_terminal = { path = "../ui_terminal", optional = true }

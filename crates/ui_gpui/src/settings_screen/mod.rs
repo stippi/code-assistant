@@ -7,6 +7,7 @@ pub(crate) mod provider_forms;
 pub(crate) mod provider_suggestions;
 mod providers_section;
 mod skills_section;
+mod voice_section;
 
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size};
@@ -23,6 +24,7 @@ pub enum SettingsSection {
     Models,
     Skills,
     McpServers,
+    Voice,
 }
 
 /// Events emitted by the settings screen.
@@ -43,6 +45,7 @@ pub struct SettingsScreen {
     general_section: Entity<general_section::GeneralSection>,
     skills_section: Entity<skills_section::SkillsSection>,
     mcp_section: Entity<mcp_section::McpSection>,
+    voice_section: Entity<voice_section::VoiceSection>,
 }
 
 impl SettingsScreen {
@@ -53,6 +56,7 @@ impl SettingsScreen {
         let general_section = cx.new(|cx| general_section::GeneralSection::new(window, cx));
         let skills_section = cx.new(|cx| skills_section::SkillsSection::new(window, cx));
         let mcp_section = cx.new(|cx| mcp_section::McpSection::new(window, cx));
+        let voice_section = cx.new(|cx| voice_section::VoiceSection::new(window, cx));
 
         Self {
             focus_handle: cx.focus_handle(),
@@ -62,6 +66,7 @@ impl SettingsScreen {
             general_section,
             skills_section,
             mcp_section,
+            voice_section,
         }
     }
 
@@ -103,6 +108,9 @@ impl SettingsScreen {
             }
             SettingsSection::McpServers => {
                 self.mcp_section.update(cx, |s, _cx| s.reload());
+            }
+            SettingsSection::Voice => {
+                self.voice_section.update(cx, |s, _cx| s.reload());
             }
             SettingsSection::General => {}
         }
@@ -282,6 +290,12 @@ impl Render for SettingsScreen {
                                         "MCP Servers",
                                         "icons/braces.svg",
                                         cx,
+                                    ))
+                                    .child(self.render_nav_item(
+                                        SettingsSection::Voice,
+                                        "Voice",
+                                        "icons/mic.svg",
+                                        cx,
                                     )),
                             ),
                     )
@@ -304,6 +318,7 @@ impl Render for SettingsScreen {
                             SettingsSection::McpServers => {
                                 self.mcp_section.clone().into_any_element()
                             }
+                            SettingsSection::Voice => self.voice_section.clone().into_any_element(),
                         },
                     )),
             )

@@ -1526,6 +1526,27 @@ impl SessionManager {
         self.persistence.list_chat_sessions()
     }
 
+    /// A filtered projection of a stored session, read without loading it
+    /// into the manager (see [`crate::session_query`]).
+    pub fn session_content(
+        &self,
+        session_id: &str,
+        projection: &crate::session_query::ContentProjection,
+    ) -> Result<crate::session_query::SessionContent> {
+        crate::session_query::get_session_content(&self.persistence, session_id, projection)
+    }
+
+    /// The activity state of every loaded session. Sessions not loaded are
+    /// idle.
+    pub fn activity_states(
+        &self,
+    ) -> HashMap<String, crate::session::instance::SessionActivityState> {
+        self.active_sessions
+            .iter()
+            .map(|(id, instance)| (id.clone(), instance.get_activity_state()))
+            .collect()
+    }
+
     /// Delete a session
     pub fn delete_session(&mut self, session_id: &str) -> Result<()> {
         // Remove from active sessions

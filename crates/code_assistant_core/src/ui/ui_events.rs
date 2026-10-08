@@ -389,4 +389,13 @@ pub enum UiEvent {
     /// Configuration files (providers.json / models.json) were changed on disk.
     /// The UI should reload model lists, settings sections, etc.
     ConfigChanged,
+
+    // === Voice mode (app-scoped) ===
+    /// The voice agent's state changed.
+    VoiceStatusChanged { status: crate::voice::VoiceStatus },
+    /// A line of the voice conversation: something said, a tool call, or a
+    /// notification delivered to the voice model.
+    VoiceTranscript {
+        entry: crate::voice::TranscriptEntry,
+    },
 }

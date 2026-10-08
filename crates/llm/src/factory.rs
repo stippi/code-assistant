@@ -366,12 +366,12 @@ pub async fn create_llm_client_from_configs(
 ///    }
 ///    ```
 #[derive(Debug)]
-struct AiCoreDeployment {
-    deployment_uuid: String,
-    api_type: AiCoreApiType,
+pub(crate) struct AiCoreDeployment {
+    pub(crate) deployment_uuid: String,
+    pub(crate) api_type: AiCoreApiType,
 }
 
-fn parse_aicore_deployment(model_id: &str, value: &Value) -> Result<AiCoreDeployment> {
+pub(crate) fn parse_aicore_deployment(model_id: &str, value: &Value) -> Result<AiCoreDeployment> {
     // Try simple string format first (backwards compatible)
     if let Some(uuid) = value.as_str() {
         return Ok(AiCoreDeployment {

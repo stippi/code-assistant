@@ -1080,8 +1080,22 @@ impl Gpui {
                 cx.refresh();
             }
 
+            UiEvent::VoiceStatusChanged { status } => {
+                if let code_assistant_core::voice::VoiceActivity::Failed(message) = &status.activity
+                {
+                    *self.current_error.lock().unwrap() =
+                        Some(format!("Voice mode stopped: {message}"));
+                }
+                self.apply_voice_status(status);
+                cx.refresh();
+            }
+            UiEvent::VoiceTranscript { entry } => {
+                self.append_voice_transcript(entry);
+                cx.refresh();
+            }
             UiEvent::ConfigChanged => {
                 debug!("UI: ConfigChanged event — config files modified on disk");
+                self.refresh_voice_configured();
                 self.config_generation
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 

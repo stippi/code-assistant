@@ -63,6 +63,8 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
     // Create the session command service. The GUI gets the handle; the
     // worker runs on the backend tokio runtime below. The GUI consumes the
     // broadcast stream (see ui_gpui's event bridge).
+    #[cfg(feature = "voice")]
+    let voice_events = events.clone();
     let (service, service_worker) = SessionService::new(
         multi_session_manager,
         Arc::new(AgentRuntimeOptions {
@@ -77,6 +79,20 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
         events,
     );
     gui.set_session_service(service.clone());
+
+    // Voice mode: a global voice agent over all sessions. Its worker runs
+    // on the backend runtime next to the session service's.
+    #[cfg(feature = "voice")]
+    let voice_worker = {
+        let (voice, worker) = code_assistant_core::voice::VoiceService::new(
+            service.clone(),
+            voice_events,
+            super::voice::audio_factory(),
+            code_assistant_core::voice::default_connector_factory(),
+        );
+        gui.set_voice_service(voice);
+        worker
+    };
 
     let gui_for_thread = gui.clone();
     let task = config.task.clone();
@@ -126,6 +142,8 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                 tracing::warn!("Startup settlement failed: {e:#}");
             }
             let worker = tokio::spawn(service_worker);
+            #[cfg(feature = "voice")]
+            tokio::spawn(voice_worker);
 
             // Pre-warm the registry (connects configured MCP servers) in the
             // background: remote servers take seconds, and the sidebar's

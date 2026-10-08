@@ -582,6 +582,33 @@ impl SessionService {
         .await
     }
 
+    /// A filtered projection of a stored session's content, read without
+    /// making it the active session.
+    pub async fn session_content(
+        &self,
+        session_id: String,
+        projection: crate::session_query::ContentProjection,
+    ) -> Result<crate::session_query::SessionContent> {
+        self.call(move |ctx| async move {
+            let manager = ctx.manager.lock().await;
+            manager.session_content(&session_id, &projection)
+        })
+        .await
+    }
+
+    /// The activity state of every loaded session; sessions absent from
+    /// the map are idle.
+    pub async fn session_activity_states(
+        &self,
+    ) -> Result<std::collections::HashMap<String, crate::session::instance::SessionActivityState>>
+    {
+        self.call(move |ctx| async move {
+            let manager = ctx.manager.lock().await;
+            Ok(manager.activity_states())
+        })
+        .await
+    }
+
     /// Incremental session refresh triggered by the file watcher. Compares
     /// the on-disk state with the in-memory state and emits only the delta
     /// as [`UiEvent`]s; falls back to a full reload if that fails.
