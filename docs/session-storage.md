@@ -230,11 +230,15 @@ rendering the result. So showing a session reads none of them:
   conversation's `tool_result` blocks, which record `is_error` and the
   timestamps. Failures and results without a `tool_result` block are read,
   their output explains them.
-- **On demand**: `SessionService::load_tool_output` returns one result
-  complete. It takes the record from the manager and reads the blob after
-  letting go of it. GPUI asks when the block shows the output: cards that
-  are expanded right away, inline blocks when expanded. The answer arrives
-  as a tool status update.
+- **On demand**: `SessionService::load_tool_outputs` returns results
+  complete, all asked for in one call; one that can't be read is left out.
+  It takes the records from the manager and reads the blobs after letting
+  go of it. GPUI asks when blocks show the output: for all cards expanded
+  right away in one request, for an inline block when it is expanded. The
+  answer arrives as `UiEvent::ToolOutputsLoaded`, tagged with its session:
+  tool IDs are only unique per session, so GPUI drops answers for a session
+  it no longer shows. The outputs are no new content, so a transcript that
+  follows its tail jumps to stay at the bottom instead of animating there.
 - **Rendering for the UI doesn't deduplicate**: only `read_files::render`
   (the LLM's view) uses the `ResourcesTracker`, so each result renders on
   its own the same as in sequence.

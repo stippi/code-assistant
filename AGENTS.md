@@ -95,7 +95,7 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
   in content-addressed `blobs/`; checkpoints append deltas only
 - Resident sessions keep those results unread; snapshots defer their
   outputs (`ToolResultData::output_deferred`), frontends fetch them with
-  `SessionService::load_tool_output`; agent runs resolve all of them
+  `SessionService::load_tool_outputs`; agent runs resolve all of them
 - Flat legacy session files are migrated at startup; see
   `docs/session-storage.md`
 

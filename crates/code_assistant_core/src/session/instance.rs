@@ -168,6 +168,10 @@ pub struct ToolOutputLoader {
 }
 
 impl ToolOutputLoader {
+    pub fn tool_id(&self) -> &str {
+        &self.execution.tool_request.id
+    }
+
     pub fn load(mut self) -> Result<crate::ui::ui_events::ToolResultData> {
         self.persistence
             .resolve_tool_results(&self.session_id, std::slice::from_mut(&mut self.execution))?;
@@ -435,6 +439,11 @@ impl SessionInstance {
 
     /// Terminate the running agent and release the cross-process agent lock.
     pub fn terminate_agent(&mut self) {
+        // Release before stopping: the stopped run resolves its outcome on
+        // another thread, and whoever observes that may rely on the locks
+        // being gone.
+        self.agent_lock = None;
+        self.sleep_guard = None;
         self.request_stop();
         if let Some(handle) = self.setup_task.take() {
             handle.abort();
@@ -443,9 +452,6 @@ impl SessionInstance {
             handle.abort();
             self.clear_fragment_buffer();
         }
-        // Release the cross-process agent lock
-        self.agent_lock = None;
-        self.sleep_guard = None;
         self.set_activity_state(SessionActivityState::Idle);
     }
 

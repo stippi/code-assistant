@@ -75,6 +75,22 @@ impl Gpui {
         self.update_all_messages(cx, |message_container, cx| {
             message_container.apply_tool_results(|tool_id| by_id.get(tool_id).copied(), cx);
         });
+        self.load_shown_deferred_outputs(cx);
+    }
+
+    /// Ask for the outputs that shown tool blocks lack, in one request.
+    fn load_shown_deferred_outputs(&self, cx: &mut gpui_kit::AsyncApp) {
+        let Some(session_id) = self.current_session_id.lock().unwrap().clone() else {
+            return;
+        };
+        let containers = self.message_queue.lock().unwrap().clone();
+        let tool_ids: Vec<String> = containers
+            .iter()
+            .flat_map(|container| cx.update_entity(container, |c, cx| c.claim_deferred_outputs(cx)))
+            .collect();
+        if !tool_ids.is_empty() {
+            self.cmd_load_tool_outputs(session_id, tool_ids);
+        }
     }
 
     pub(crate) fn process_ui_event_async(&self, event: UiEvent, cx: &mut gpui_kit::AsyncApp) {
@@ -237,6 +253,23 @@ impl Gpui {
                     message_container.update_tool_status(&result, cx);
                 });
                 self.auto_scroll_if_following(cx);
+            }
+
+            UiEvent::ToolOutputsLoaded {
+                session_id,
+                results,
+            } => {
+                // Asked for by a session no longer shown, whose tool IDs may
+                // recur in this one.
+                if !self.is_current_session(&session_id) {
+                    debug!("Dropping tool outputs loaded for {session_id}");
+                    return;
+                }
+                self.apply_tool_results(&results, cx);
+                self.update_messages_view(cx, |view, cx| {
+                    view.keep_tail_in_view();
+                    cx.notify();
+                });
             }
 
             UiEvent::EndTool { id } => {

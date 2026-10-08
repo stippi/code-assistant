@@ -42,7 +42,11 @@ fn a_message_sent_while_the_agent_works_waits_for_it(cx: &mut TestAppContext) {
     let mut test = MainScreenTest::with_core(cx, waiting_for_the_model());
     test.open_new_session();
     test.send("first");
-    test.wait_until("the agent works", |test| test.agent_is_running());
+    // Not just running: until its request is sent, the agent takes a waiting
+    // message into it.
+    test.wait_until("the model is asked", |test| {
+        test.agent_waits_for_the_model()
+    });
 
     test.send("second");
     test.wait_until("the message waits", |test| test.pending_message().is_some());

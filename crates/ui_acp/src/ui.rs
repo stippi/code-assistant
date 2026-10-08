@@ -985,6 +985,9 @@ impl UserInterface for ACPUserUI {
             UiEvent::UpdateReviewFiles | UiEvent::UpdateReviewDiff => {
                 // Review panel is GPUI-specific.
             }
+            UiEvent::ToolOutputsLoaded { .. } => {
+                // Deferred tool outputs are only asked for by GPUI.
+            }
             UiEvent::UpdateAllowedModels { .. } => {
                 // Model dropdown filtering is GPUI-specific.
             }

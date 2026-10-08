@@ -549,23 +549,39 @@ impl SessionService {
         .await
     }
 
-    /// The complete UI data of a tool result of a loaded session, including
-    /// an output its snapshot deferred
-    /// ([`crate::ui::ui_events::ToolResultData::output_deferred`]). Runs
-    /// apart from the session's commands; the result is read without holding
-    /// up other sessions.
-    pub async fn load_tool_output(
+    /// The complete UI data of tool results of a loaded session, including
+    /// the outputs its snapshot deferred
+    /// ([`crate::ui::ui_events::ToolResultData::output_deferred`]). One call
+    /// for all of them, so a frontend gets them together; a result that
+    /// can't be read is left out. Runs apart from the session's commands;
+    /// the results are read without holding up other sessions.
+    pub async fn load_tool_outputs(
         &self,
         session_id: String,
-        tool_id: String,
-    ) -> Result<crate::ui::ui_events::ToolResultData> {
+        tool_ids: Vec<String>,
+    ) -> Result<Vec<ToolResultData>> {
         self.call_io(move |ctx| async move {
-            let loader = ctx
+            let loaders = ctx
                 .manager
                 .lock()
                 .await
-                .tool_output_loader(&session_id, &tool_id)?;
-            tokio::task::spawn_blocking(move || loader.load()).await?
+                .tool_output_loaders(&session_id, &tool_ids)?;
+            let results = tokio::task::spawn_blocking(move || {
+                loaders
+                    .into_iter()
+                    .filter_map(|loader| {
+                        let tool_id = loader.tool_id().to_string();
+                        loader
+                            .load()
+                            .inspect_err(|e| {
+                                warn!("Failed to load the output of tool {tool_id}: {e:#}")
+                            })
+                            .ok()
+                    })
+                    .collect()
+            })
+            .await?;
+            Ok(results)
         })
         .await
     }

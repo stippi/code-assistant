@@ -228,7 +228,7 @@ pub struct BlockView {
     /// Focus target so a drag-select in the diff card can focus the block and
     /// Cmd/Ctrl-C reaches [`Self::copy_diff_selection`].
     focus_handle: FocusHandle,
-    /// Whether [`Self::load_deferred_output`] asked for the tool's output.
+    /// Whether [`Self::claim_deferred_output`] handed out the tool's ID.
     deferred_output_requested: bool,
     /// A text block of line comments shows them listed instead of folded.
     comments_expanded: bool,
@@ -312,27 +312,22 @@ impl BlockView {
         }
     }
 
-    /// Ask for the output a restored tool result left out
-    /// ([`ToolUseBlock::output_deferred`]) once the block shows it: when it
-    /// is expanded, which cards are unless collapsed by hand. It arrives as a
-    /// tool status update.
-    pub(crate) fn load_deferred_output(&mut self, cx: &mut Context<Self>) {
-        let Some(tool) = self.block.as_tool() else {
-            return;
-        };
+    /// The tool's ID, once, if the block shows an output a restored tool
+    /// result left out ([`ToolUseBlock::output_deferred`]): when it is
+    /// expanded, which cards are unless collapsed by hand. The caller asks
+    /// for it; it arrives as [`UiEvent::ToolOutputsLoaded`].
+    ///
+    /// [`UiEvent::ToolOutputsLoaded`]: code_assistant_core::ui::UiEvent::ToolOutputsLoaded
+    pub(crate) fn claim_deferred_output(&mut self) -> Option<String> {
+        let tool = self.block.as_tool()?;
         if !tool.output_deferred
             || tool.state != ToolBlockState::Expanded
             || self.deferred_output_requested
         {
-            return;
+            return None;
         }
-        let (Some(session_id), Some(gpui)) =
-            (self.session_id.clone(), cx.try_global::<crate::Gpui>())
-        else {
-            return;
-        };
         self.deferred_output_requested = true;
-        gpui.cmd_load_tool_output(session_id, tool.id.clone());
+        Some(tool.id.clone())
     }
 
     /// The block if it is the tool block `tool_id`, for assertions.
@@ -630,7 +625,12 @@ impl BlockView {
         if let (Some(session_id), Some(tool)) = (&self.session_id, self.block.as_tool()) {
             ToolCollapseState::set(session_id, &tool.id, tool.state.clone(), cx);
         }
-        self.load_deferred_output(cx);
+        if let Some(tool_id) = self.claim_deferred_output()
+            && let (Some(session_id), Some(gpui)) =
+                (self.session_id.clone(), cx.try_global::<crate::Gpui>())
+        {
+            gpui.cmd_load_tool_outputs(session_id, vec![tool_id]);
+        }
 
         self.start_expand_collapse_animation(should_expand, cx);
     }
