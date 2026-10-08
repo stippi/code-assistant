@@ -213,6 +213,16 @@ impl MessageContainer {
         elements.clone()
     }
 
+    /// The IDs of the tool blocks that show an output their restored result
+    /// left out and haven't asked for it yet
+    /// ([`BlockView::claim_deferred_output`]).
+    pub fn claim_deferred_outputs(&self, cx: &mut Context<Self>) -> Vec<String> {
+        self.elements()
+            .iter()
+            .filter_map(|view| view.update(cx, |view, _| view.claim_deferred_output()))
+            .collect()
+    }
+
     /// Returns true if this container has no block elements.
     pub fn is_empty(&self) -> bool {
         self.elements.lock().unwrap().is_empty()
@@ -467,7 +477,6 @@ impl MessageContainer {
                 } else if !view.is_generating {
                     view.set_generating(true);
                 }
-                view.load_deferred_output(cx);
 
                 updated = true;
                 cx.notify();

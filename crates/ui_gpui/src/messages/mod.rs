@@ -412,6 +412,15 @@ impl MessagesView {
         }
     }
 
+    /// Keep a following list at the bottom after items grew without new
+    /// content (e.g. a tool output that was read later): jump instead of
+    /// animating. A list that doesn't follow keeps its anchor.
+    pub fn keep_tail_in_view(&self) {
+        if self.follow_tail {
+            self.scroll_to_bottom_instant();
+        }
+    }
+
     /// Stop any running smooth-scroll animation.
     fn stop_animation(&mut self) {
         self.animation_active.set(false);
@@ -806,6 +815,13 @@ impl MessagesView {
 
     /// Update the pending message for the current session
     /// The message waiting for the running agent, as shown.
+    /// Whether the list follows its tail, and whether it is scrolling there
+    /// animated.
+    #[cfg(test)]
+    pub(crate) fn scroll_state(&self) -> (bool, bool) {
+        (self.follow_tail, self.animation_active.get())
+    }
+
     #[cfg(test)]
     pub(crate) fn pending_message(&self) -> Option<String> {
         self.current_pending_message.lock().unwrap().clone()

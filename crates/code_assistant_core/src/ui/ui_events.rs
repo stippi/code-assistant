@@ -41,7 +41,7 @@ pub struct ToolResultData {
     pub images: Vec<ImageData>,
     /// The result is complete except for `output`, `styled_output` and
     /// `images`, which are left out because reading it is expensive (it is
-    /// stored outside the session record). `SessionService::load_tool_output`
+    /// stored outside the session record). `SessionService::load_tool_outputs`
     /// returns it complete.
     pub output_deferred: bool,
 }
@@ -243,6 +243,14 @@ pub enum UiEvent {
     ClearMessages,
     /// Update metadata for a single session without refreshing the entire list
     UpdateSessionMetadata { metadata: ChatMetadata },
+    /// Outputs a frontend asked for with `SessionService::load_tool_outputs`
+    /// arrived: complete results for tool blocks shown with
+    /// [`ToolResultData::output_deferred`]. Not new content, so no reason to
+    /// scroll; tool IDs are only unique per session.
+    ToolOutputsLoaded {
+        session_id: String,
+        results: Vec<ToolResultData>,
+    },
     /// A session's lifecycle record changed (visited, settled, un-settled).
     /// Relevant for every view's sidebar, not only the session's own.
     UpdateSessionLifecycle {

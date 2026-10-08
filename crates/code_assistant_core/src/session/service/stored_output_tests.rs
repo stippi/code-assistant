@@ -125,12 +125,16 @@ async fn showing_a_session_leaves_large_successful_outputs_unread() {
 
     std::fs::write(&blob, blob_content).unwrap();
     let loaded = service
-        .load_tool_output(id.clone(), "large".into())
+        .load_tool_outputs(id.clone(), vec!["large".into(), "unknown".into()])
         .await
         .unwrap();
+    // One call for all of them; a tool the session doesn't know is left out.
+    assert_eq!(loaded.len(), 1);
+    let loaded = &loaded[0];
+    assert_eq!(loaded.tool_id, "large");
     assert!(!loaded.output_deferred);
     assert_eq!(loaded.status, ToolStatus::Success);
-    assert!(loaded.output.unwrap().contains(&large));
+    assert!(loaded.output.as_ref().unwrap().contains(&large));
 }
 
 #[cfg(unix)]

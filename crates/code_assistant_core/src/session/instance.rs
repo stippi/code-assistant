@@ -168,6 +168,10 @@ pub struct ToolOutputLoader {
 }
 
 impl ToolOutputLoader {
+    pub fn tool_id(&self) -> &str {
+        &self.execution.tool_request.id
+    }
+
     pub fn load(mut self) -> Result<crate::ui::ui_events::ToolResultData> {
         self.persistence
             .resolve_tool_results(&self.session_id, std::slice::from_mut(&mut self.execution))?;

@@ -166,6 +166,19 @@ impl MainScreenTest {
         view.read_with(&self.cx, |view, _| view.pending_message())
     }
 
+    /// Whether the transcript follows its tail, and whether it is scrolling
+    /// there animated.
+    pub fn scroll_state(&mut self) -> (bool, bool) {
+        let view = self
+            .gpui
+            .messages_view
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the messages view");
+        view.read_with(&self.cx, |view, _| view.scroll_state())
+    }
+
     /// Click the element rendered with `debug_selector(selector)`.
     pub fn click(&mut self, selector: &'static str) {
         let bounds = self
