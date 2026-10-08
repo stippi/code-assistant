@@ -76,7 +76,7 @@ impl Gpui {
             match service.list_sessions().await {
                 Ok(sessions) => {
                     *gpui.session_lifecycles.lock().unwrap() = lifecycles;
-                    *gpui.chat_sessions.lock().unwrap() = sessions.clone();
+                    gpui.set_chat_sessions(sessions.clone());
                     gpui.push_event(UiEvent::UpdateChatList { sessions });
                 }
                 Err(e) => gpui.display_error(format!("Failed to list sessions: {e:#}")),
