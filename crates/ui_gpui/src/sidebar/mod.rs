@@ -19,7 +19,7 @@ use crate::shared::segmented_switch::segmented_switch;
 use crate::shared::settings::SidebarView;
 use code_assistant_core::persistence::ChatMetadata;
 use code_assistant_core::session::instance::SessionActivityState;
-use code_assistant_core::session::lifecycle::SessionLifecycle;
+use code_assistant_core::session::lifecycle::{AwaitingUser, SessionLifecycle};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::popover::Popover;
 use gpui_kit::component::scroll::ScrollableElement;
@@ -85,7 +85,7 @@ pub struct SessionSidebar {
     selected_session_id: Option<String>,
     focus_handle: FocusHandle,
     activity_states: HashMap<String, SessionActivityState>,
-    awaiting_permission: HashSet<String>,
+    awaiting_user: HashMap<String, AwaitingUser>,
     _item_subscriptions: Vec<Subscription>,
     _picker_subscription: Subscription,
 }
@@ -116,7 +116,7 @@ impl SessionSidebar {
             selected_session_id: None,
             focus_handle: cx.focus_handle(),
             activity_states: HashMap::new(),
-            awaiting_permission: HashSet::new(),
+            awaiting_user: HashMap::new(),
             _item_subscriptions: Vec::new(),
             _picker_subscription: picker_subscription,
         }
@@ -174,7 +174,7 @@ impl SessionSidebar {
                 .cloned()
                 .unwrap_or_default();
             let activity = self.activity_states.get(&session.id).cloned();
-            let awaiting = self.awaiting_permission.contains(&session.id);
+            let awaiting = self.awaiting_user.get(&session.id).copied();
             let entity = match existing.remove(&session.id) {
                 Some(entity) => {
                     entity.update(cx, |item, cx| {
@@ -192,7 +192,7 @@ impl SessionSidebar {
                 if let Some(state) = activity {
                     item.update_activity_state(state, cx);
                 }
-                item.set_awaiting_permission(awaiting, cx);
+                item.set_awaiting_user(awaiting, cx);
                 item.set_show_project(show_project, cx);
             });
             self._item_subscriptions
@@ -291,16 +291,21 @@ impl SessionSidebar {
         cx.notify();
     }
 
-    /// The sessions with an open permission request.
-    pub fn set_awaiting_permission(&mut self, sessions: HashSet<String>, cx: &mut Context<Self>) {
-        if self.awaiting_permission == sessions {
+    /// The sessions blocked on the user (open permission request or
+    /// questions), and what for.
+    pub fn set_awaiting_user(
+        &mut self,
+        sessions: HashMap<String, AwaitingUser>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.awaiting_user == sessions {
             return;
         }
         for (id, item) in &self.items {
-            let awaiting = sessions.contains(id);
-            item.update(cx, |item, cx| item.set_awaiting_permission(awaiting, cx));
+            let awaiting = sessions.get(id).copied();
+            item.update(cx, |item, cx| item.set_awaiting_user(awaiting, cx));
         }
-        self.awaiting_permission = sessions;
+        self.awaiting_user = sessions;
         cx.notify();
     }
 

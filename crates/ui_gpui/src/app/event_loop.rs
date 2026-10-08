@@ -666,14 +666,14 @@ impl Gpui {
                 );
 
                 // Update the project sidebar
-                let awaiting = self.sessions_awaiting_permission();
+                let awaiting = self.sessions_awaiting_user();
                 self.update_project_sidebar(cx, |sidebar, cx| {
                     sidebar.update_single_session_activity_state(
                         session_id.clone(),
                         activity_state.clone(),
                         cx,
                     );
-                    sidebar.set_awaiting_permission(awaiting, cx);
+                    sidebar.set_awaiting_user(awaiting, cx);
                 });
                 // The viewed session's agent stopped under the user's eyes:
                 // that counts as having seen the result.
@@ -877,10 +877,12 @@ impl Gpui {
             // State tracked by the event bridge; the main screen renders the
             // prompt and the sidebar flags the asking session.
             UiEvent::RequestToolPermission { .. }
-            | UiEvent::ToolPermissionRequestResolved { .. } => {
-                let awaiting = self.sessions_awaiting_permission();
+            | UiEvent::ToolPermissionRequestResolved { .. }
+            | UiEvent::RequestUserQuestions { .. }
+            | UiEvent::UserQuestionsResolved { .. } => {
+                let awaiting = self.sessions_awaiting_user();
                 self.update_project_sidebar(cx, |sidebar, cx| {
-                    sidebar.set_awaiting_permission(awaiting, cx);
+                    sidebar.set_awaiting_user(awaiting, cx);
                 });
                 cx.refresh();
             }

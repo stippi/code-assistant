@@ -256,6 +256,7 @@ impl SessionSidebar {
             .flatten()
             .map(|attention| match attention {
                 Attention::NeedsApproval => (cx.theme().warning, "Needs approval"),
+                Attention::NeedsAnswer => (cx.theme().warning, "Needs answer"),
                 Attention::Failed => (cx.theme().danger, "Failed"),
                 Attention::Unread => (cx.theme().primary, "Unread"),
             });

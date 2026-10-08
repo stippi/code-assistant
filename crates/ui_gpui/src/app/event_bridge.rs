@@ -66,6 +66,21 @@ impl Gpui {
                     self.save_draft_for_session(&session_id, &handoff_draft(&prompt), &[], None);
                 }
             }
+            EventPayload::Ui(UiEvent::RequestUserQuestions { request }) => {
+                // Kept for the session that asked, like permission prompts.
+                if let Some(session_id) = event.session_id {
+                    let mut pending = self.pending_user_questions.lock().unwrap();
+                    if !pending
+                        .iter()
+                        .any(|(_, r)| r.request_id == request.request_id)
+                    {
+                        pending.push((session_id, request.clone()));
+                    }
+                }
+                let _ = self
+                    .handle_app_event(UiEvent::RequestUserQuestions { request })
+                    .await;
+            }
             EventPayload::Ui(UiEvent::RequestToolPermission { request }) => {
                 // Kept for the session that asked, whichever one is viewed:
                 // that session's prompt renders it, the sidebar flags it.
@@ -94,7 +109,8 @@ impl Gpui {
                     // Prompts kept for the session that asked them may be
                     // settled while another one is viewed.
                     UiEvent::NewContextTargetResolved { .. }
-                    | UiEvent::ToolPermissionRequestResolved { .. } => true,
+                    | UiEvent::ToolPermissionRequestResolved { .. }
+                    | UiEvent::UserQuestionsResolved { .. } => true,
                     // Everything else: app-scoped events pass, session-scoped
                     // events only for the viewed session.
                     _ => event.session_id.is_none() || is_current_session,
@@ -129,6 +145,16 @@ impl Gpui {
                 .map(|request| (session_id.clone(), request.clone())),
         );
         drop(permissions);
+
+        let mut questions = self.pending_user_questions.lock().unwrap();
+        questions.retain(|(asking, _)| asking != session_id);
+        questions.extend(
+            snapshot
+                .pending_questions
+                .iter()
+                .map(|request| (session_id.clone(), request.clone())),
+        );
+        drop(questions);
 
         let mut target = self.pending_new_context_target.lock().unwrap();
         if let Some(request) = &snapshot.pending_new_context_target {
@@ -170,6 +196,12 @@ impl Gpui {
             }
             UiEvent::ToolPermissionRequestResolved { request_id } => {
                 self.pending_permission_requests
+                    .lock()
+                    .unwrap()
+                    .retain(|(_, r)| &r.request_id != request_id);
+            }
+            UiEvent::UserQuestionsResolved { request_id } => {
+                self.pending_user_questions
                     .lock()
                     .unwrap()
                     .retain(|(_, r)| &r.request_id != request_id);
@@ -431,6 +463,7 @@ mod tests {
             mcp_servers: Vec::new(),
             pending_permission_requests,
             pending_new_context_target: None,
+            pending_questions: Vec::new(),
         }
     }
 
@@ -531,5 +564,35 @@ mod tests {
 
         gpui.apply_snapshot(&snapshot("a", Vec::new()));
         assert!(gpui.get_pending_new_context_target("a").is_none());
+    }
+
+    #[test]
+    fn user_questions_are_kept_for_the_asking_session_until_resolved() {
+        use code_assistant_core::session::questions::UserQuestionRequest;
+
+        let request = UserQuestionRequest::new(None, Vec::new());
+        let request_id = request.request_id.clone();
+        // Asked while another session is viewed: still kept, sidebar flags it.
+        let gpui = viewing("b");
+        futures::executor::block_on(
+            gpui.handle_stream_event(ui_event("a", UiEvent::RequestUserQuestions { request })),
+        );
+        assert!(gpui.get_pending_user_question("a").is_some());
+        assert!(gpui.get_pending_user_question("b").is_none());
+        assert_eq!(
+            gpui.sessions_awaiting_user().get("a"),
+            Some(&code_assistant_core::session::lifecycle::AwaitingUser::Answer)
+        );
+
+        futures::executor::block_on(
+            gpui.handle_stream_event(ui_event("a", UiEvent::UserQuestionsResolved { request_id })),
+        );
+        assert!(gpui.get_pending_user_question("a").is_none());
+
+        // A snapshot restores the open questions of its session.
+        let mut connected = snapshot("a", Vec::new());
+        connected.pending_questions = vec![UserQuestionRequest::new(None, Vec::new())];
+        gpui.apply_snapshot(&connected);
+        assert!(gpui.get_pending_user_question("a").is_some());
     }
 }

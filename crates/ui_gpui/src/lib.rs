@@ -260,6 +260,16 @@ pub struct Gpui {
     // enabled state, shown in the input-bar MCP toggle menu.
     current_mcp_servers: Arc<Mutex<Vec<code_assistant_core::ui::ui_events::McpServerToggle>>>,
 
+    // `ask_question` requests awaiting the user's answers, each with the
+    // session asking it, in arrival order.
+    pending_user_questions: Arc<
+        Mutex<
+            Vec<(
+                String,
+                code_assistant_core::session::questions::UserQuestionRequest,
+            )>,
+        >,
+    >,
     // Tool permission requests awaiting the user's decision, each with the
     // session asking it, in arrival order; rendered as prompts above that
     // session's input.
@@ -530,6 +540,7 @@ impl Gpui {
         *self.current_permission_tier.lock().unwrap() = None;
         self.current_mcp_servers.lock().unwrap().clear();
         self.pending_permission_requests.lock().unwrap().clear();
+        self.pending_user_questions.lock().unwrap().clear();
         *self.pending_new_context_target.lock().unwrap() = None;
         *self.current_worktree_data.lock().unwrap() = None;
         self.set_current_review_listing(None);
@@ -605,6 +616,7 @@ impl Gpui {
             current_permission_tier: Arc::new(Mutex::new(None)),
             current_mcp_servers: Arc::new(Mutex::new(Vec::new())),
             pending_permission_requests: Arc::new(Mutex::new(Vec::new())),
+            pending_user_questions: Arc::new(Mutex::new(Vec::new())),
             pending_new_context_target: Arc::new(Mutex::new(None)),
             prepared_handoff: Arc::new(Mutex::new(None)),
 
@@ -860,13 +872,22 @@ impl Gpui {
 
     /// The sessions with a permission request still open, whichever session
     /// is viewed. The sidebar flags them as needing the user now.
-    pub fn sessions_awaiting_permission(&self) -> std::collections::HashSet<String> {
-        self.pending_permission_requests
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(asking, _)| asking.clone())
-            .collect()
+    /// Sessions blocked on the user and what for. A permission prompt
+    /// outranks open questions: it is what the agent waits on right now.
+    pub fn sessions_awaiting_user(
+        &self,
+    ) -> std::collections::HashMap<String, code_assistant_core::session::lifecycle::AwaitingUser>
+    {
+        use code_assistant_core::session::lifecycle::AwaitingUser;
+
+        let mut sessions = std::collections::HashMap::new();
+        for (asking, _) in self.pending_user_questions.lock().unwrap().iter() {
+            sessions.insert(asking.clone(), AwaitingUser::Answer);
+        }
+        for (asking, _) in self.pending_permission_requests.lock().unwrap().iter() {
+            sessions.insert(asking.clone(), AwaitingUser::Approval);
+        }
+        sessions
     }
 
     pub fn get_current_session_id(&self) -> Option<String> {
@@ -941,6 +962,19 @@ impl Gpui {
             .filter(|(asking, _)| asking == session_id)
             .map(|(_, request)| request.clone())
             .collect()
+    }
+
+    /// The oldest open `ask_question` request of `session_id`, if any.
+    pub fn get_pending_user_question(
+        &self,
+        session_id: &str,
+    ) -> Option<code_assistant_core::session::questions::UserQuestionRequest> {
+        self.pending_user_questions
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(asking, _)| asking == session_id)
+            .map(|(_, request)| request.clone())
     }
 
     /// The open target question of `session_id`, if any.

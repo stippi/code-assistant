@@ -170,11 +170,22 @@ impl LifecycleConfig {
     }
 }
 
+/// What a blocked agent waits on the user for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AwaitingUser {
+    /// An open tool permission request.
+    Approval,
+    /// Open `ask_question` questions.
+    Answer,
+}
+
 /// What a session that is not settled looks like from the outside.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionStatus {
     /// The agent waits for the user to allow a tool call: act now.
     NeedsApproval,
+    /// The agent waits for the user to answer its questions: act now.
+    NeedsAnswer,
     /// The agent is busy; nothing to do for the user.
     Working,
     /// The agent waits out a rate limit.
@@ -189,9 +200,11 @@ pub enum SessionStatus {
 }
 
 impl SessionStatus {
-    pub fn resolve(activity: &SessionActivityState, awaiting_permission: bool) -> Self {
-        if awaiting_permission {
-            return Self::NeedsApproval;
+    pub fn resolve(activity: &SessionActivityState, awaiting: Option<AwaitingUser>) -> Self {
+        match awaiting {
+            Some(AwaitingUser::Approval) => return Self::NeedsApproval,
+            Some(AwaitingUser::Answer) => return Self::NeedsAnswer,
+            None => {}
         }
         match activity {
             SessionActivityState::Idle => Self::Ready,
@@ -214,7 +227,7 @@ impl SessionStatus {
         match self {
             Self::Working | Self::RateLimited | Self::RunningElsewhere => true,
             Self::Ready => !unread,
-            Self::NeedsApproval | Self::Failed => false,
+            Self::NeedsApproval | Self::NeedsAnswer | Self::Failed => false,
         }
     }
 }
@@ -445,16 +458,20 @@ mod tests {
             },
         ] {
             assert_eq!(
-                SessionStatus::resolve(&activity, true),
+                SessionStatus::resolve(&activity, Some(AwaitingUser::Approval)),
                 SessionStatus::NeedsApproval
+            );
+            assert_eq!(
+                SessionStatus::resolve(&activity, Some(AwaitingUser::Answer)),
+                SessionStatus::NeedsAnswer
             );
         }
         assert_eq!(
-            SessionStatus::resolve(&SessionActivityState::WaitingForResponse, false),
+            SessionStatus::resolve(&SessionActivityState::WaitingForResponse, None),
             SessionStatus::Working
         );
         assert_eq!(
-            SessionStatus::resolve(&SessionActivityState::Idle, false),
+            SessionStatus::resolve(&SessionActivityState::Idle, None),
             SessionStatus::Ready
         );
     }
@@ -465,6 +482,7 @@ mod tests {
         assert!(SessionStatus::Ready.should_recede(false, false));
         assert!(!SessionStatus::Ready.should_recede(true, false));
         assert!(!SessionStatus::NeedsApproval.should_recede(false, false));
+        assert!(!SessionStatus::NeedsAnswer.should_recede(false, false));
         assert!(!SessionStatus::Failed.should_recede(false, false));
         assert!(!SessionStatus::Working.should_recede(true, true));
     }

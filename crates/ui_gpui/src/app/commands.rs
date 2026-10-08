@@ -480,6 +480,28 @@ impl Gpui {
         });
     }
 
+    /// Answer (`Some`) or decline (`None`) a pending `ask_question` request.
+    /// The prompt dismisses when UserQuestionsResolved arrives via the stream.
+    pub(crate) fn cmd_answer_questions(
+        &self,
+        session_id: String,
+        request_id: String,
+        answers: Option<Vec<code_assistant_core::session::questions::QuestionAnswer>>,
+    ) {
+        let Some(service) = self.session_service() else {
+            return;
+        };
+        let gpui = self.clone();
+        self.dispatch(async move {
+            if let Err(e) = service
+                .answer_questions(session_id, request_id, answers)
+                .await
+            {
+                gpui.display_error(format!("{e:#}"));
+            }
+        });
+    }
+
     /// Answer the open `/new` / `/handoff` target question. The prompt
     /// dismisses when NewContextTargetResolved arrives via the stream.
     pub(crate) fn cmd_respond_new_context_target(

@@ -19,6 +19,7 @@ pub mod manager;
 pub mod new_context;
 pub mod permissions;
 pub mod pull_request;
+pub mod questions;
 pub mod service;
 pub mod sleep_inhibitor;
 pub mod turn;
@@ -66,6 +67,8 @@ pub struct SessionSnapshot {
     pub pending_permission_requests: Vec<permissions::ToolPermissionRequestData>,
     /// The open `/new` / `/handoff` target question, if any.
     pub pending_new_context_target: Option<new_context::NewContextTargetRequest>,
+    /// `ask_question` requests still awaiting answers.
+    pub pending_questions: Vec<questions::UserQuestionRequest>,
 }
 
 impl SessionSnapshot {
@@ -119,6 +122,11 @@ impl SessionSnapshot {
         });
         for request in &self.pending_permission_requests {
             events.push(UiEvent::RequestToolPermission {
+                request: request.clone(),
+            });
+        }
+        for request in &self.pending_questions {
+            events.push(UiEvent::RequestUserQuestions {
                 request: request.clone(),
             });
         }

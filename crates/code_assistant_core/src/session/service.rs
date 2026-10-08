@@ -1012,6 +1012,28 @@ impl SessionService {
         .await
     }
 
+    /// Answer a pending `ask_question` request
+    /// ([`UiEvent::RequestUserQuestions`]): `Some` carries one answer per
+    /// question, `None` declines. Unknown request ids are ignored.
+    pub async fn answer_questions(
+        &self,
+        session_id: String,
+        request_id: String,
+        answers: Option<Vec<crate::session::questions::QuestionAnswer>>,
+    ) -> Result<()> {
+        use crate::session::questions::QuestionOutcome;
+        let outcome = match answers {
+            Some(answers) => QuestionOutcome::Answered(answers),
+            None => QuestionOutcome::Declined,
+        };
+        self.call_control(move |ctx| async move {
+            let manager = ctx.manager.lock().await;
+            manager.resolve_question_request(&session_id, &request_id, outcome)?;
+            Ok(())
+        })
+        .await
+    }
+
     // ========================================================================
     // Session branching
     // ========================================================================
@@ -3008,6 +3030,85 @@ mod tests {
             let event = subscription.recv().await.unwrap();
             if let crate::session::event_stream::EventPayload::Ui(
                 UiEvent::ToolPermissionRequestResolved { request_id: rid },
+            ) = event.payload
+            {
+                assert_eq!(rid, request_id);
+                break;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn answer_questions_resolves_pending_request() {
+        use crate::session::questions::{
+            QuestionAnswer, QuestionOption, QuestionOutcome, UserQuestion, UserQuestionRequest,
+        };
+
+        let tmp = tempfile::tempdir().unwrap();
+        let (service, manager) = test_service_with_manager(tmp.path());
+        let id = service.create_session(None, None).await.unwrap();
+
+        // Build the same publisher the agent would talk to and ask.
+        let publisher = {
+            let manager = manager.lock().await;
+            manager
+                .get_session(&id)
+                .unwrap()
+                .create_publisher(manager.event_stream().clone(), None)
+        };
+        let mut subscription = service.subscribe();
+        let question = UserQuestion {
+            question: "Which database?".to_string(),
+            header: "Database".to_string(),
+            options: ["Postgres", "SQLite"]
+                .into_iter()
+                .map(|label| QuestionOption {
+                    label: label.to_string(),
+                    description: String::new(),
+                })
+                .collect(),
+            multi_select: false,
+        };
+        let ask_task = tokio::spawn(async move {
+            publisher
+                .ask_questions(UserQuestionRequest::new(
+                    Some("tool-1".to_string()),
+                    vec![question],
+                ))
+                .await
+        });
+
+        let request_id = loop {
+            let event = subscription.recv().await.unwrap();
+            if let crate::session::event_stream::EventPayload::Ui(UiEvent::RequestUserQuestions {
+                request,
+            }) = event.payload
+            {
+                assert_eq!(request.tool_id.as_deref(), Some("tool-1"));
+                break request.request_id;
+            }
+        };
+        // Open requests are part of the snapshot for late-connecting views.
+        let snapshot = service.load_session(id.clone(), None).await.unwrap();
+        assert_eq!(snapshot.pending_questions.len(), 1);
+
+        let answers = vec![QuestionAnswer {
+            selected: vec!["SQLite".to_string()],
+            comment: "keep it embedded".to_string(),
+        }];
+        service
+            .answer_questions(id.clone(), request_id.clone(), Some(answers.clone()))
+            .await
+            .unwrap();
+        assert_eq!(
+            ask_task.await.unwrap().unwrap(),
+            QuestionOutcome::Answered(answers)
+        );
+
+        loop {
+            let event = subscription.recv().await.unwrap();
+            if let crate::session::event_stream::EventPayload::Ui(
+                UiEvent::UserQuestionsResolved { request_id: rid },
             ) = event.payload
             {
                 assert_eq!(rid, request_id);
