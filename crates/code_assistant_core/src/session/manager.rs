@@ -1592,16 +1592,25 @@ impl SessionManager {
 
     /// Prepare reading the complete UI data of a tool result of a resident
     /// session, to be done without the manager.
-    pub fn tool_output_loader(
+    pub fn tool_output_loaders(
         &self,
         session_id: &str,
-        tool_id: &str,
-    ) -> Result<crate::session::instance::ToolOutputLoader> {
-        self.active_sessions
+        tool_ids: &[String],
+    ) -> Result<Vec<crate::session::instance::ToolOutputLoader>> {
+        let session = self
+            .active_sessions
             .get(session_id)
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?
-            .tool_output_loader(&self.persistence, tool_id)
-            .ok_or_else(|| anyhow::anyhow!("No tool execution {tool_id} in {session_id}"))
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
+        Ok(tool_ids
+            .iter()
+            .filter_map(|tool_id| {
+                let loader = session.tool_output_loader(&self.persistence, tool_id);
+                if loader.is_none() {
+                    warn!("No tool execution {tool_id} in {session_id}");
+                }
+                loader
+            })
+            .collect())
     }
 
     /// Get a mutable session instance by ID

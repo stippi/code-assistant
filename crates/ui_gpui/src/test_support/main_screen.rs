@@ -166,6 +166,19 @@ impl MainScreenTest {
         view.read_with(&self.cx, |view, _| view.pending_message())
     }
 
+    /// Whether the transcript follows its tail, and whether it is scrolling
+    /// there animated.
+    pub fn scroll_state(&mut self) -> (bool, bool) {
+        let view = self
+            .gpui
+            .messages_view
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the messages view");
+        view.read_with(&self.cx, |view, _| view.scroll_state())
+    }
+
     /// Click the element rendered with `debug_selector(selector)`.
     pub fn click(&mut self, selector: &'static str) {
         let bounds = self
@@ -192,6 +205,15 @@ impl MainScreenTest {
             .is_some_and(|state| {
                 *state != code_assistant_core::session::instance::SessionActivityState::Idle
             })
+    }
+
+    /// Whether the viewed session's agent waits for the model's answer: it
+    /// sent its request, so a message sent now waits for the next one.
+    pub fn agent_waits_for_the_model(&mut self) -> bool {
+        matches!(
+            *self.gpui.current_session_activity_state.lock().unwrap(),
+            Some(code_assistant_core::session::instance::SessionActivityState::WaitingForResponse)
+        )
     }
 
     /// Show a session, as selecting it in the sidebar ends up doing once the
