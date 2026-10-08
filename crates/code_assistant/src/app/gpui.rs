@@ -44,9 +44,9 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
     );
     session_manager.set_tool_registry_provider(registry_provider.as_provider());
     let multi_session_manager = Arc::new(Mutex::new(session_manager));
-    // Connecting configured MCP servers is async; it happens on the backend
-    // runtime below (before the service worker starts) so the GUI comes up
-    // immediately.
+    // Connecting configured MCP servers is async; it happens in the
+    // background on the backend runtime below, so neither the GUI nor the
+    // session service waits for it.
     let manager_for_mcp = multi_session_manager.clone();
     let registry_provider_for_warm = registry_provider.clone();
 
@@ -77,15 +77,6 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
         let runtime = tokio::runtime::Runtime::new().unwrap();
 
         runtime.block_on(async {
-            // Pre-warm the registry (connects configured MCP servers) and
-            // swap it in before the service worker processes its first
-            // command, so every agent sees the MCP tools immediately. Later
-            // runs re-consult the provider, so settings edits apply without
-            // restarting the app. Commands the GUI issues in the meantime
-            // queue in the service channel.
-            let warmed = registry_provider_for_warm.current().await;
-            manager_for_mcp.lock().await.set_tool_registry(warmed);
-
             // Wakeup scheduler: lets agents arm timed continuations of their
             // session (schedule_wakeup tool).
             let wakeup_handle = code_assistant_core::session::spawn_wakeup_scheduler(
@@ -109,28 +100,6 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                 code_assistant_core::session::lifecycle::run_lifecycle_sweeper(service.clone()),
             );
 
-            // Goal controller: while the app is open, drives the sessions'
-            // user-set durable goals (/goal) one bounded turn at a time. The
-            // verdicts come from an LLM evaluator on the configured model;
-            // without a usable provider the goals simply stay parked.
-            match llm::factory::create_llm_client_from_model(&config.model, None, false, None).await
-            {
-                Ok(provider) => {
-                    code_assistant_core::goals::spawn_goal_controller(
-                        code_assistant_core::goals::GoalController::with_stores(
-                            service.clone(),
-                            code_assistant_core::goals::default_goals_path(),
-                            code_assistant_core::goals::default_waits_path(),
-                            Arc::new(code_assistant_core::goals::LlmGoalEvaluator::new(provider)),
-                        ),
-                        std::time::Duration::from_secs(30),
-                    );
-                }
-                Err(e) => {
-                    warn!("goal controller disabled (no evaluator provider): {e:#}");
-                }
-            }
-
             // Long-unused sessions settle before the first listing, in one
             // write, so the sidebar does not paint them only to sweep them.
             if let Err(e) = manager_for_mcp.lock().await.settle_inactive(
@@ -140,6 +109,51 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                 tracing::warn!("Startup settlement failed: {e:#}");
             }
             let worker = tokio::spawn(service_worker);
+
+            // Pre-warm the registry (connects configured MCP servers) in the
+            // background: remote servers take seconds, and the sidebar's
+            // first listing must not wait for them. An agent run starting
+            // meanwhile asks the same provider, which finishes this build
+            // and hands out the same registry; later runs re-consult it, so
+            // settings edits apply without restarting the app.
+            {
+                let manager = manager_for_mcp.clone();
+                tokio::spawn(async move {
+                    let warmed = registry_provider_for_warm.current().await;
+                    manager.lock().await.set_tool_registry(warmed);
+                });
+            }
+
+            // Goal controller: while the app is open, drives the sessions'
+            // user-set durable goals (/goal) one bounded turn at a time. The
+            // verdicts come from an LLM evaluator on the configured model;
+            // without a usable provider the goals simply stay parked. Built
+            // in the background, like the registry: the first listing does
+            // not need it.
+            let goal_service = service.clone();
+            let goal_model = config.model.clone();
+            tokio::spawn(async move {
+                match llm::factory::create_llm_client_from_model(&goal_model, None, false, None)
+                    .await
+                {
+                    Ok(provider) => {
+                        code_assistant_core::goals::spawn_goal_controller(
+                            code_assistant_core::goals::GoalController::with_stores(
+                                goal_service,
+                                code_assistant_core::goals::default_goals_path(),
+                                code_assistant_core::goals::default_waits_path(),
+                                Arc::new(code_assistant_core::goals::LlmGoalEvaluator::new(
+                                    provider,
+                                )),
+                            ),
+                            std::time::Duration::from_secs(30),
+                        );
+                    }
+                    Err(e) => {
+                        warn!("goal controller disabled (no evaluator provider): {e:#}");
+                    }
+                }
+            });
 
             startup(&service, &gui_for_thread, task).await;
 
