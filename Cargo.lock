@@ -6736,6 +6736,7 @@ dependencies = [
  "async-trait",
  "axum 0.8.9",
  "command_executor",
+ "futures",
  "http 1.4.0",
  "reqwest 0.13.4",
  "rmcp",

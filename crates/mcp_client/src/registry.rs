@@ -10,6 +10,8 @@ use crate::config::{McpServerConfig, McpServersConfig};
 use crate::tool::McpTool;
 use anyhow::Result;
 use async_trait::async_trait;
+use futures::future::join_all;
+use rmcp::model::Tool as McpToolDescriptor;
 use std::borrow::Cow;
 use std::sync::Arc;
 use tools_core::registry::ToolRegistry;
@@ -61,25 +63,13 @@ pub async fn register_mcp_tools(
     config: &McpServersConfig,
     extra_capabilities: &[&'static str],
 ) -> Vec<McpServerStatus> {
-    let mut statuses = Vec::new();
-    for (name, server_config) in config.enabled_servers() {
-        let result = async {
-            let connection = McpServerConnection::connect(name, server_config, None).await?;
-            register_connection_tools(
-                registry,
-                Arc::new(connection),
-                server_config,
-                extra_capabilities,
-            )
-            .await
-        }
-        .await;
-        statuses.push(McpServerStatus {
-            server: name.clone(),
-            result: result.map_err(|error| format!("{error:#}")),
-        });
-    }
-    statuses
+    let servers: Vec<_> = config.enabled_servers().collect();
+    let discovered = join_all(servers.iter().map(|(name, server_config)| async move {
+        let connection = McpServerConnection::connect(name, server_config, None).await?;
+        discover(Arc::new(connection)).await
+    }))
+    .await;
+    register_discovered(registry, servers, discovered, extra_capabilities)
 }
 
 /// Like [`register_mcp_tools`], but obtains each server's connection from a
@@ -93,19 +83,51 @@ pub async fn register_mcp_tools_pooled(
     extra_capabilities: &[&'static str],
     provider: &dyn ConnectionProvider,
 ) -> Vec<McpServerStatus> {
-    let mut statuses = Vec::new();
-    for (name, server_config) in config.enabled_servers() {
-        let result = async {
-            let connection = provider.get_or_connect(name, server_config).await?;
-            register_connection_tools(registry, connection, server_config, extra_capabilities).await
-        }
-        .await;
-        statuses.push(McpServerStatus {
-            server: name.clone(),
-            result: result.map_err(|error| format!("{error:#}")),
-        });
-    }
-    statuses
+    let servers: Vec<_> = config.enabled_servers().collect();
+    let discovered = join_all(servers.iter().map(|(name, server_config)| async move {
+        discover(provider.get_or_connect(name, server_config).await?).await
+    }))
+    .await;
+    register_discovered(registry, servers, discovered, extra_capabilities)
+}
+
+/// A connected server and the tools it offers.
+type Discovered = (Arc<McpServerConnection>, Vec<McpToolDescriptor>);
+
+async fn discover(connection: Arc<McpServerConnection>) -> Result<Discovered> {
+    let descriptors = connection.list_tools().await?;
+    Ok((connection, descriptors))
+}
+
+/// Register what the servers offered, in configuration order, so the
+/// registry does not depend on which server answered first. Connecting and
+/// listing run concurrently beforehand: they are network round trips or
+/// process launches, and done one after another they add up to seconds.
+fn register_discovered(
+    registry: &mut ToolRegistry,
+    servers: Vec<(&String, &McpServerConfig)>,
+    discovered: Vec<Result<Discovered>>,
+    extra_capabilities: &[&'static str],
+) -> Vec<McpServerStatus> {
+    servers
+        .into_iter()
+        .zip(discovered)
+        .map(|((name, server_config), result)| {
+            let result = result.map(|(connection, descriptors)| {
+                register_tools(
+                    registry,
+                    connection,
+                    descriptors,
+                    server_config,
+                    extra_capabilities,
+                )
+            });
+            McpServerStatus {
+                server: name.clone(),
+                result: result.map_err(|error| format!("{error:#}")),
+            }
+        })
+        .collect()
 }
 
 /// Register the enabled tools of an already-connected server. Split out so
@@ -118,6 +140,22 @@ pub async fn register_connection_tools(
     extra_capabilities: &[&'static str],
 ) -> Result<Vec<String>> {
     let descriptors = connection.list_tools().await?;
+    Ok(register_tools(
+        registry,
+        connection,
+        descriptors,
+        config,
+        extra_capabilities,
+    ))
+}
+
+fn register_tools(
+    registry: &mut ToolRegistry,
+    connection: Arc<McpServerConnection>,
+    descriptors: Vec<McpToolDescriptor>,
+    config: &McpServerConfig,
+    extra_capabilities: &[&'static str],
+) -> Vec<String> {
     let mut registered = Vec::new();
     for descriptor in descriptors {
         if !config.is_tool_enabled(&descriptor.name) {
@@ -133,7 +171,7 @@ pub async fn register_connection_tools(
         tools = registered.len(),
         "registered MCP tools"
     );
-    Ok(registered)
+    registered
 }
 
 fn capabilities_for(server: &str, extra: &[&'static str]) -> Vec<Cow<'static, str>> {
