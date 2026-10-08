@@ -1,9 +1,10 @@
-//! The right sidebar's view switcher.
+//! The right sidebar's views.
 //!
 //! The sidebar hosts the [`review_view::ReviewView`], the project's files
 //! ([`files_view::FilesView`]) and, with the `browser-panel` feature, the
-//! agent's browser ([`browser::BrowserPanel`]), switched in a header above
-//! them. The shown view is remembered per session.
+//! agent's browser ([`browser::BrowserPanel`]). The title bar switches
+//! between them ([`RightPanelView::ALL`]). The shown view is remembered per
+//! session.
 
 #[cfg(feature = "browser-panel")]
 mod browser;
@@ -31,6 +32,14 @@ pub enum RightPanelView {
 }
 
 impl RightPanelView {
+    /// Every view with its label, in switch order.
+    pub const ALL: &[(RightPanelView, &'static str)] = &[
+        (RightPanelView::Review, "Review"),
+        (RightPanelView::Files, "Files"),
+        #[cfg(feature = "browser-panel")]
+        (RightPanelView::Browser, "Browser"),
+    ];
+
     /// Stable string used for persistence.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -143,7 +152,6 @@ impl RightPanel {
         }
     }
 
-    #[allow(dead_code)]
     pub fn active_view(&self) -> RightPanelView {
         self.active_view
     }
@@ -200,38 +208,6 @@ impl RightPanel {
             self.files_view.update(cx, |v, cx| v.reload(cx));
         }
     }
-
-    fn render_header(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        use gpui_kit::component::ActiveTheme;
-        let panel = cx.entity().downgrade();
-        let views: &[(RightPanelView, &str)] = &[
-            (RightPanelView::Review, "Review"),
-            (RightPanelView::Files, "Files"),
-            #[cfg(feature = "browser-panel")]
-            (RightPanelView::Browser, "Browser"),
-        ];
-        div()
-            .flex_none()
-            .flex()
-            .items_center()
-            .px_2()
-            .py(gpui_kit::px(8.))
-            .bg(cx.theme().title_bar)
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .child(crate::shared::segmented_switch::segmented_switch(
-                "right-panel-view",
-                views,
-                self.active_view,
-                move |view, _, cx| {
-                    panel
-                        .update(cx, |panel, cx| panel.set_active_view(view, cx))
-                        .ok();
-                },
-                window,
-                cx,
-            ))
-    }
 }
 
 impl Focusable for RightPanel {
@@ -241,18 +217,13 @@ impl Focusable for RightPanel {
 }
 
 impl Render for RightPanel {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let body = match self.active_view {
             RightPanelView::Review => self.review_view.clone().into_any_element(),
             RightPanelView::Files => self.files_view.clone().into_any_element(),
             #[cfg(feature = "browser-panel")]
             RightPanelView::Browser => self.browser.clone().into_any_element(),
         };
-        div()
-            .flex()
-            .flex_col()
-            .size_full()
-            .child(self.render_header(window, cx))
-            .child(div().flex_1().min_h_0().child(body))
+        div().size_full().child(body)
     }
 }

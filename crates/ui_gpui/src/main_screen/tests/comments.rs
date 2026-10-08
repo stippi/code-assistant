@@ -1,4 +1,5 @@
-//! Line comments in the composer and file requests to the right panel.
+//! Line comments in the composer, and the right panel: file requests and
+//! the title bar switch.
 
 use crate::main_screen::right_panel::{CommentChange, RightPanelView};
 use crate::shared::open_file::{OpenFileRequest, request};
@@ -132,4 +133,25 @@ fn an_open_file_request_shows_the_file_in_the_panel(cx: &mut TestAppContext) {
         assert_eq!(panel.active_view(), RightPanelView::Files);
         assert_eq!(panel.files_open_path(cx).as_deref(), Some("src/lib.rs"));
     });
+}
+
+fn panel_state(test: &mut MainScreenTest) -> Option<RightPanelView> {
+    let (collapsed, panel) = test.main_screen.read_with(&test.cx, |s, _| {
+        (s.right_sidebar_collapsed, s.right_panel.clone())
+    });
+    (!collapsed).then(|| panel.read_with(&test.cx, |panel, _| panel.active_view()))
+}
+
+#[gpui_kit::test]
+fn the_title_bar_switch_opens_switches_and_closes_the_panel(cx: &mut TestAppContext) {
+    let mut test = MainScreenTest::new(cx);
+    test.view_session("a");
+    assert_eq!(panel_state(&mut test), None);
+
+    test.click("right-panel-view-Files");
+    assert_eq!(panel_state(&mut test), Some(RightPanelView::Files));
+    test.click("right-panel-view-Review");
+    assert_eq!(panel_state(&mut test), Some(RightPanelView::Review));
+    test.click("right-panel-view-Review");
+    assert_eq!(panel_state(&mut test), None);
 }

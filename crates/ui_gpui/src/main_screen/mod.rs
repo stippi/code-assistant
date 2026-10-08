@@ -417,6 +417,23 @@ impl MainScreen {
         });
     }
 
+    /// A click on a view in the title bar's switch.
+    fn on_right_panel_view_clicked(
+        &mut self,
+        view: right_panel::RightPanelView,
+        cx: &mut Context<Self>,
+    ) {
+        if self.right_sidebar_collapsed {
+            self.toggle_right_sidebar(cx);
+        } else if self.right_panel.read(cx).active_view() == view {
+            self.toggle_right_sidebar(cx);
+            return;
+        }
+        self.right_panel
+            .update(cx, |panel, cx| panel.set_active_view(view, cx));
+        cx.notify();
+    }
+
     fn toggle_right_sidebar(&mut self, cx: &mut Context<Self>) {
         let should_expand = self.right_sidebar_collapsed;
         self.right_sidebar_collapsed = !self.right_sidebar_collapsed;
@@ -1991,31 +2008,30 @@ impl Render for MainScreen {
                             .flex()
                             .items_center()
                             .gap_1()
-                            // Review (right) sidebar toggle button
-                            .child(
-                                div()
-                                    .id("toggle-right-sidebar-btn")
-                                    .size(px(28.))
-                                    .rounded_sm()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(cx.theme().muted))
-                                    .child(
-                                        Icon::default()
-                                            .path(SharedString::from(
-                                                if self.right_sidebar_collapsed {
-                                                    "icons/panel_right_open.svg"
-                                                } else {
-                                                    "icons/panel_right_close.svg"
-                                                },
-                                            ))
-                                            .with_size(Size::Small)
-                                            .text_color(cx.theme().muted_foreground),
-                                    )
-                                    .on_click(cx.listener(Self::on_toggle_right_sidebar)),
-                            )
+                            // Right panel views: a click opens the panel on
+                            // a view or switches to it; clicking the shown
+                            // one closes the panel.
+                            .child({
+                                let shown = (!self.right_sidebar_collapsed)
+                                    .then(|| self.right_panel.read(cx).active_view());
+                                let screen = cx.entity().downgrade();
+                                div().mr_1().child(
+                                    crate::shared::segmented_switch::segmented_toggle(
+                                        "right-panel-view",
+                                        right_panel::RightPanelView::ALL,
+                                        shown,
+                                        move |view, _, cx| {
+                                            screen
+                                                .update(cx, |screen, cx| {
+                                                    screen.on_right_panel_view_clicked(view, cx)
+                                                })
+                                                .ok();
+                                        },
+                                        window,
+                                        cx,
+                                    ),
+                                )
+                            })
                             .child(
                                 div()
                                     .id("about-btn")

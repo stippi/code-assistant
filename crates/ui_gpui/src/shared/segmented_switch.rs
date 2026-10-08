@@ -1,5 +1,6 @@
 //! A switch between a few views, as in the left sidebar's header (Active |
-//! Projects) and the right panel's (Review | Browser).
+//! Projects) and the title bar's right panel switch (Review | Files |
+//! Browser).
 //!
 //! A segmented control like gpui-component's, drawn here because that one
 //! paints its active segment from the theme's global background token and
@@ -31,6 +32,32 @@ pub fn segmented_switch<T: Copy + PartialEq + 'static>(
     window: &mut Window,
     cx: &mut App,
 ) -> impl IntoElement {
+    switch(id, segments, Some(selected), false, on_select, window, cx)
+}
+
+/// Like [`segmented_switch`], but nothing may be selected (no pill), and
+/// clicking the selected segment calls `on_click` too, so a click on it can
+/// mean "close".
+pub fn segmented_toggle<T: Copy + PartialEq + 'static>(
+    id: &'static str,
+    segments: &[(T, &'static str)],
+    selected: Option<T>,
+    on_click: impl Fn(T, &mut Window, &mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) -> impl IntoElement {
+    switch(id, segments, selected, true, on_click, window, cx)
+}
+
+fn switch<T: Copy + PartialEq + 'static>(
+    id: &'static str,
+    segments: &[(T, &'static str)],
+    selected: Option<T>,
+    selected_clickable: bool,
+    on_select: impl Fn(T, &mut Window, &mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) -> impl IntoElement {
     let (track, active) = if cx.theme().is_dark() {
         (hsla(0., 0., 0., 0.25), hsla(0., 0., 1., 0.12))
     } else {
@@ -43,11 +70,9 @@ pub fn segmented_switch<T: Copy + PartialEq + 'static>(
             .blur_radius(px(1.))
             .spread_radius(px(-1.)),
     ];
-    let index = segments
-        .iter()
-        .position(|(value, _)| *value == selected)
-        .unwrap_or_default();
-    let target = rems(index as f32 * (SEGMENT_WIDTH.0 + SEGMENT_GAP.0));
+    let index =
+        selected.and_then(|selected| segments.iter().position(|(value, _)| *value == selected));
+    let target = rems(index.unwrap_or_default() as f32 * (SEGMENT_WIDTH.0 + SEGMENT_GAP.0));
     let pill_left = spring(
         (id, "left"),
         target,
@@ -68,21 +93,24 @@ pub fn segmented_switch<T: Copy + PartialEq + 'static>(
         .p(TRACK_PADDING)
         .rounded_lg()
         .bg(track)
-        .child(
-            div()
-                .absolute()
-                .top(TRACK_PADDING)
-                .left(rems(TRACK_PADDING.0 + pill_left.0))
-                .w(SEGMENT_WIDTH)
-                .h(SEGMENT_HEIGHT)
-                .rounded_md()
-                .bg(active)
-                .shadow(shadow),
-        )
+        .when(index.is_some(), |track| {
+            track.child(
+                div()
+                    .absolute()
+                    .top(TRACK_PADDING)
+                    .left(rems(TRACK_PADDING.0 + pill_left.0))
+                    .w(SEGMENT_WIDTH)
+                    .h(SEGMENT_HEIGHT)
+                    .rounded_md()
+                    .bg(active)
+                    .shadow(shadow),
+            )
+        })
         .children(segments.iter().enumerate().map(|(i, &(value, label))| {
             let on_select = on_select.clone();
             div()
                 .id(SharedString::from(format!("{id}-{label}")))
+                .debug_selector(move || format!("{id}-{label}"))
                 .w(SEGMENT_WIDTH)
                 .h(SEGMENT_HEIGHT)
                 .flex()
@@ -90,12 +118,17 @@ pub fn segmented_switch<T: Copy + PartialEq + 'static>(
                 .justify_center()
                 .text_size(rems(0.8125))
                 .map(|el| {
-                    if i == index {
+                    let is_selected = index == Some(i);
+                    if is_selected && !selected_clickable {
                         el.text_color(foreground)
                     } else {
+                        let el = if is_selected {
+                            el.text_color(foreground)
+                        } else {
+                            el.text_color(muted)
+                                .hover(move |s| s.text_color(foreground))
+                        };
                         el.cursor_pointer()
-                            .text_color(muted)
-                            .hover(move |s| s.text_color(foreground))
                             .on_click(move |_: &ClickEvent, window, cx| {
                                 on_select(value, window, cx)
                             })

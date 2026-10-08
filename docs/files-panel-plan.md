@@ -60,6 +60,9 @@ Decisions taken while building:
   reveal it again (Review or Files).
 - **Re-anchoring** happens after a load or save in the editor
   (`line_comments::locate`); diff comments are not re-anchored.
+- **Switching views** happens in the title bar (Review | Files | Browser),
+  which replaced the panel toggle button: a click opens the panel on that
+  view or switches to it; clicking the shown view closes the panel.
 - **Watching** uses a new `fs_explorer::watch::TreeWatcher` (the git
   `ChangeWatcher` only covers repositories and does not say which paths
   changed).
