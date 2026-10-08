@@ -1,5 +1,6 @@
 use crate::persistence::{ConversationPath, MessageNode, NodeId, SessionModelConfig};
 use crate::types::{PlanState, ToolSyntax};
+use crate::utils::serde_fallback::{or_default, or_else};
 use agent_core::types::SerializedToolExecution;
 use agent_core::types::ToolExecution;
 use llm::Message;
@@ -140,20 +141,24 @@ impl SessionSnapshot {
 }
 
 /// Static configuration stored with each session.
+///
+/// Enum-valued settings fall back to their default when the stored value is
+/// unknown to this build (written by a newer build or naming a removed
+/// option), so a stale setting never prevents loading the session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub init_path: Option<PathBuf>,
     #[serde(default)]
     pub initial_project: String,
-    #[serde(default = "default_tool_syntax")]
+    #[serde(default, deserialize_with = "or_default")]
     pub tool_syntax: ToolSyntax,
     #[serde(default)]
     pub use_diff_blocks: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "or_default")]
     pub sandbox_policy: SandboxPolicy,
     /// When to ask the user for permission before running a tool.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "permission_tier_or_strictest")]
     pub permission_tier: PermissionTier,
     /// If set, the session operates inside this git worktree instead of `init_path`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -171,8 +176,13 @@ pub struct SessionConfig {
     pub disabled_mcp_servers: Vec<String>,
 }
 
-fn default_tool_syntax() -> ToolSyntax {
-    ToolSyntax::Native
+/// An unknown tier (e.g. one only another build offers) must not silently
+/// drop the session to the permissive default; ask before every tool instead.
+fn permission_tier_or_strictest<'de, D>(deserializer: D) -> Result<PermissionTier, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    or_else(deserializer, || PermissionTier::AllTools)
 }
 
 impl Default for SessionConfig {
@@ -180,7 +190,7 @@ impl Default for SessionConfig {
         Self {
             init_path: None,
             initial_project: String::new(),
-            tool_syntax: default_tool_syntax(),
+            tool_syntax: ToolSyntax::default(),
             use_diff_blocks: false,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             permission_tier: PermissionTier::default(),
@@ -309,5 +319,46 @@ impl SessionState {
             next_request_id: Some(max_request_id + 1),
             model_config: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_config_survives_unknown_setting_values() {
+        let config: SessionConfig = serde_json::from_str(
+            r#"{
+                "initial_project": "demo",
+                "tool_syntax": "Yaml",
+                "sandbox_policy": {"mode": "future-policy"},
+                "permission_tier": "auto",
+                "branch": "feature/x"
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.initial_project, "demo");
+        assert_eq!(config.tool_syntax, ToolSyntax::Native);
+        assert_eq!(config.sandbox_policy, SandboxPolicy::DangerFullAccess);
+        assert_eq!(config.permission_tier, PermissionTier::AllTools);
+        assert_eq!(config.branch.as_deref(), Some("feature/x"));
+    }
+
+    #[test]
+    fn session_config_keeps_known_setting_values() {
+        let original = SessionConfig {
+            tool_syntax: ToolSyntax::Caret,
+            sandbox_policy: SandboxPolicy::ReadOnly,
+            permission_tier: PermissionTier::OutwardTools,
+            ..SessionConfig::default()
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let config: SessionConfig = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(config.tool_syntax, ToolSyntax::Caret);
+        assert_eq!(config.sandbox_policy, SandboxPolicy::ReadOnly);
+        assert_eq!(config.permission_tier, PermissionTier::OutwardTools);
     }
 }

@@ -15,7 +15,9 @@ all without confirmation.
 | `all-tools` | Ask before every tool call. |
 
 The tier is stored per session in `SessionConfig.permission_tier` and takes
-effect on the next agent run. Answer options on each prompt are **allow
+effect on the next agent run. A stored tier this build doesn't know (written
+by a newer build, or since removed) loads as `all-tools` rather than failing
+the session load or silently dropping to `bypass-all`. Answer options on each prompt are **allow
 once**, **always allow this tool for this session**, and **deny**. Session
 grants live on the `SessionInstance` (shared with sub-agents) and survive
 across agent runs but are not persisted. A denial is returned to the LLM as

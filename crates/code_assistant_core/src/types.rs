@@ -90,9 +90,10 @@ pub struct PlanState {
 pub use crate::tools::core::ToolError;
 
 /// Specifies the tool invocation syntax
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub enum ToolSyntax {
     /// Native tools via API
+    #[default]
     Native,
     /// Tools through custom system message with XML tags
     Xml,
