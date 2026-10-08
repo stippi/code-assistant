@@ -292,6 +292,15 @@ pub enum UiEvent {
     /// A permission request was settled (answered, or dropped by a stop
     /// request); open prompts for it should dismiss.
     ToolPermissionRequestResolved { request_id: String },
+    /// The agent asks the user multiple-choice questions (`ask_question`).
+    /// Answered via `SessionService::answer_questions`; a
+    /// [`UiEvent::UserQuestionsResolved`] follows once settled.
+    RequestUserQuestions {
+        request: crate::session::questions::UserQuestionRequest,
+    },
+    /// A question request was settled (answered, declined, or dropped by a
+    /// stop request); an open prompt for it should dismiss.
+    UserQuestionsResolved { request_id: String },
     /// `/new` or `/handoff` asks where the new context continues. Answered
     /// via `SessionService::respond_new_context_target`; a
     /// [`UiEvent::NewContextTargetResolved`] follows once settled.

@@ -8,7 +8,7 @@
 
 use code_assistant_core::persistence::ChatMetadata;
 use code_assistant_core::session::instance::SessionActivityState;
-use code_assistant_core::session::lifecycle::{SessionLifecycle, SessionStatus};
+use code_assistant_core::session::lifecycle::{AwaitingUser, SessionLifecycle, SessionStatus};
 use code_assistant_core::session::pull_request::{ChecksState, PullRequestState, ReviewDecision};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme, StyledExt};
@@ -41,6 +41,7 @@ fn violet() -> Hsla {
 pub(super) enum Attention {
     Unread,
     Failed,
+    NeedsAnswer,
     NeedsApproval,
 }
 
@@ -63,7 +64,7 @@ pub struct SessionListItem {
     is_selected: bool,
     is_hovered: bool,
     activity_state: SessionActivityState,
-    awaiting_permission: bool,
+    awaiting_user: Option<AwaitingUser>,
     /// Whether the subtitle names the project; not inside a project folder.
     show_project: bool,
     focus_handle: FocusHandle,
@@ -82,7 +83,7 @@ impl SessionListItem {
             is_selected,
             is_hovered: false,
             activity_state: SessionActivityState::Idle,
-            awaiting_permission: false,
+            awaiting_user: None,
             show_project: true,
             focus_handle: cx.focus_handle(),
         }
@@ -120,9 +121,9 @@ impl SessionListItem {
         }
     }
 
-    pub fn set_awaiting_permission(&mut self, awaiting: bool, cx: &mut Context<Self>) {
-        if self.awaiting_permission != awaiting {
-            self.awaiting_permission = awaiting;
+    pub fn set_awaiting_user(&mut self, awaiting: Option<AwaitingUser>, cx: &mut Context<Self>) {
+        if self.awaiting_user != awaiting {
+            self.awaiting_user = awaiting;
             cx.notify();
         }
     }
@@ -135,7 +136,7 @@ impl SessionListItem {
     }
 
     pub(super) fn status(&self) -> SessionStatus {
-        SessionStatus::resolve(&self.activity_state, self.awaiting_permission)
+        SessionStatus::resolve(&self.activity_state, self.awaiting_user)
     }
 
     /// A settled session is never unread: the user put it away.
@@ -146,6 +147,7 @@ impl SessionListItem {
     pub(super) fn attention(&self) -> Option<Attention> {
         match self.status() {
             SessionStatus::NeedsApproval => Some(Attention::NeedsApproval),
+            SessionStatus::NeedsAnswer => Some(Attention::NeedsAnswer),
             SessionStatus::Failed => Some(Attention::Failed),
             SessionStatus::Ready if self.is_unread() => Some(Attention::Unread),
             _ => None,
@@ -292,6 +294,7 @@ impl Render for SessionListItem {
 
         let (status_label, status_color): (Option<&'static str>, Hsla) = match status {
             SessionStatus::NeedsApproval => (Some("Needs approval"), cx.theme().warning),
+            SessionStatus::NeedsAnswer => (Some("Needs answer"), cx.theme().warning),
             SessionStatus::Working => (Some("Working"), cx.theme().muted_foreground),
             SessionStatus::RateLimited => (Some("Rate limited"), cx.theme().warning),
             SessionStatus::Failed => (Some("Failed"), cx.theme().danger),
@@ -393,6 +396,12 @@ impl Render for SessionListItem {
                             gpui_kit::svg()
                                 .size(px(13.))
                                 .path("icons/shield_question.svg")
+                                .text_color(status_color),
+                        ),
+                        SessionStatus::NeedsAnswer => el.child(
+                            gpui_kit::svg()
+                                .size(px(13.))
+                                .path("icons/message_circle_question.svg")
                                 .text_color(status_color),
                         ),
                         SessionStatus::Failed => el.child(

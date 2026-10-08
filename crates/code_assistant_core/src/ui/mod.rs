@@ -40,6 +40,19 @@ pub trait UserInterface: Send + Sync {
 
     /// Clear rate limit notification
     fn clear_rate_limit(&self);
+
+    /// Ask the user multiple-choice questions and wait for the answers
+    /// (`ask_question` tool). Default: unsupported — only frontends with a
+    /// human in the loop implement it.
+    async fn ask_questions(
+        &self,
+        _request: crate::session::questions::UserQuestionRequest,
+    ) -> Result<crate::session::questions::QuestionOutcome, UIError> {
+        Err(UIError::IOError(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "This frontend cannot ask the user questions",
+        )))
+    }
 }
 
 /// Implements the agent core's UI boundary on top of a [`UserInterface`]:

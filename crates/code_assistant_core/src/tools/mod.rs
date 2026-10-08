@@ -50,9 +50,18 @@ use std::sync::Arc;
 /// configuration (`tools.json`) from disk. Intended for the wiring layer:
 /// create one per process entry point and share the `Arc`.
 pub fn default_registry() -> Arc<ToolRegistry> {
+    default_registry_for(false)
+}
+
+/// [`default_registry`], plus the [interactive tools](register_interactive_tools)
+/// when `interactive` is set.
+pub fn default_registry_for(interactive: bool) -> Arc<ToolRegistry> {
     let config = ToolsConfig::load().unwrap_or_default();
     let mut registry = ToolRegistry::new();
     register_default_tools(&mut registry, &config);
+    if interactive {
+        register_interactive_tools(&mut registry);
+    }
     Arc::new(registry)
 }
 
@@ -66,10 +75,14 @@ pub fn default_registry() -> Arc<ToolRegistry> {
 pub async fn default_registry_with_mcp(
     local_mcp_dir: Option<&std::path::Path>,
     pool: &dyn mcp_client::ConnectionProvider,
+    interactive: bool,
 ) -> Arc<ToolRegistry> {
     let config = ToolsConfig::load().unwrap_or_default();
     let mut registry = ToolRegistry::new();
     register_default_tools(&mut registry, &config);
+    if interactive {
+        register_interactive_tools(&mut registry);
+    }
     mcp::register_configured_mcp_tools_in(&mut registry, local_mcp_dir, pool).await;
     Arc::new(registry)
 }
@@ -82,6 +95,13 @@ pub fn test_registry() -> Arc<ToolRegistry> {
     let mut registry = ToolRegistry::new();
     register_default_tools(&mut registry, &ToolsConfig::default());
     Arc::new(registry)
+}
+
+/// Register the tools that need a frontend able to render them for a human
+/// at the screen (`ask_question`). Only the GPUI wiring offers them; other
+/// frontends would leave the agent waiting on a prompt nobody sees.
+pub fn register_interactive_tools(registry: &mut ToolRegistry) {
+    registry.register(Box::new(impls::AskQuestionTool));
 }
 
 /// Register all of code-assistant's tools in the given registry. Tools that

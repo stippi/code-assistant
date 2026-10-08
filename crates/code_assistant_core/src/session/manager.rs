@@ -1899,6 +1899,21 @@ impl SessionManager {
         ))
     }
 
+    /// Feed the user's answers back to a pending `ask_question` request.
+    /// Returns false when the request is unknown (already settled).
+    pub fn resolve_question_request(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        outcome: crate::session::questions::QuestionOutcome,
+    ) -> Result<bool> {
+        let instance = self
+            .active_sessions
+            .get(session_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
+        Ok(instance.pending_questions.resolve(request_id, outcome))
+    }
+
     /// Feed a user's decision back to a pending permission request.
     /// Returns false when the request is unknown (already settled).
     pub fn resolve_permission_request(

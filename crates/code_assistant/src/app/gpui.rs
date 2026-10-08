@@ -43,12 +43,13 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
     // Rebuilds the tool registry from the current configuration at the start
     // of every agent run (connecting configured MCP servers), so settings
     // edits apply on the next run without restarting the app.
-    let registry_provider = code_assistant_core::tools::ConfigToolRegistry::new();
+    // GPUI renders `ask_question` prompts, so it offers the interactive tools.
+    let registry_provider = code_assistant_core::tools::ConfigToolRegistry::new_interactive();
     let mut session_manager = SessionManager::new(
         persistence,
         session_config_template,
         config.model.clone(),
-        code_assistant_core::tools::default_registry(),
+        code_assistant_core::tools::default_registry_for(true),
         events.clone(),
     );
     session_manager.set_tool_registry_provider(registry_provider.as_provider());

@@ -68,6 +68,12 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
 - Gate lives in the agent loop (`tools_core::ToolPermissions`); prompts go
   through the `PermissionMediator` seam; see `docs/permission-tiers.md`
 
+### Asking the User
+- `ask_question` tool: up to 4 multiple-choice questions (radio/checkbox +
+  comment each); GPUI-only via `tools::register_interactive_tools`; flows
+  through `UserInterface::ask_questions` and
+  `SessionService::answer_questions`; see `docs/ask-question-tool.md`
+
 ### Session Storage
 - One folder per session below `sessions/`, the ID is its path:
   `<project-slug>/<YYYY-MM-DD>-<NNN>` (`persistence::layout`)

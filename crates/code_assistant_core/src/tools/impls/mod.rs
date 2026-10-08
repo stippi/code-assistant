@@ -1,4 +1,5 @@
 // Tool implementations
+pub mod ask_question;
 pub mod browser;
 pub mod delete_files;
 pub mod edit;
@@ -26,6 +27,7 @@ pub mod write_file;
 pub mod write_stdin;
 
 // Re-export all tools for registration
+pub use ask_question::AskQuestionTool;
 pub use delete_files::DeleteFilesTool;
 pub use edit::EditTool;
 pub use execute_command::ExecuteCommandTool;

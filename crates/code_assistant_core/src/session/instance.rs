@@ -268,6 +268,9 @@ pub struct SessionInstance {
     /// The open `/new` / `/handoff` target question, if any.
     pub pending_new_context_target: Arc<crate::session::new_context::PendingTargetRequest>,
 
+    /// `ask_question` requests currently awaiting the user's answers.
+    pub pending_questions: Arc<crate::session::questions::PendingQuestions>,
+
     /// The last message a handoff was prepared for while idle, so each
     /// state of the session is prepared at most once.
     pub handoff_prepared_for: Option<crate::persistence::NodeId>,
@@ -353,6 +356,7 @@ impl SessionInstance {
                 crate::session::permissions::PendingPermissionRequests::default(),
             ),
             pending_new_context_target: Arc::default(),
+            pending_questions: Arc::default(),
             handoff_prepared_for: None,
             sub_agent_cancellation_registry: Arc::new(SubAgentCancellationRegistry::default()),
             pty_sessions: Arc::new(pty_session::PtySessionManager::default()),
@@ -381,6 +385,7 @@ impl SessionInstance {
             .store(true, std::sync::atomic::Ordering::Relaxed);
         self.pending_permission_requests.deny_all();
         self.pending_new_context_target.cancel();
+        self.pending_questions.cancel_all();
     }
 
     /// Reset per-run state when a new agent starts: clears a previous stop
@@ -395,6 +400,7 @@ impl SessionInstance {
         }
         self.pending_permission_requests.deny_all();
         self.pending_new_context_target.cancel();
+        self.pending_questions.cancel_all();
     }
 
     /// Get the current activity state
@@ -573,6 +579,7 @@ impl SessionInstance {
             stop_requested: self.stop_requested.clone(),
             session_id: self.session.id.clone(),
             turn_recorder,
+            pending_questions: self.pending_questions.clone(),
         })
     }
 
@@ -654,6 +661,7 @@ impl SessionInstance {
             ),
             pending_permission_requests: self.pending_permission_requests.snapshot(),
             pending_new_context_target: self.pending_new_context_target.snapshot(),
+            pending_questions: self.pending_questions.snapshot(),
         })
     }
 
@@ -1072,6 +1080,8 @@ struct SessionEventPublisher {
     /// Synchronous tee for a controller-started turn (see
     /// [`crate::session::turn`]); `None` for ordinary user turns.
     turn_recorder: Option<Arc<crate::session::turn::TurnRecorder>>,
+    /// Open `ask_question` requests (see [`SessionInstance::pending_questions`]).
+    pending_questions: Arc<crate::session::questions::PendingQuestions>,
 }
 
 impl SessionEventPublisher {
@@ -1272,6 +1282,48 @@ impl UserInterface for SessionEventPublisher {
     fn clear_rate_limit(&self) {
         self.publish_activity_change(self.activity.on_rate_limit_cleared());
     }
+
+    async fn ask_questions(
+        &self,
+        request: crate::session::questions::UserQuestionRequest,
+    ) -> Result<crate::session::questions::QuestionOutcome, UIError> {
+        use crate::session::questions::QuestionOutcome;
+
+        let request_id = request.request_id.clone();
+        let rx = self.pending_questions.insert(request.clone());
+        self.events
+            .publish_ui(&self.session_id, UiEvent::RequestUserQuestions { request });
+        // Settles the request on every exit, including a caller that drops
+        // this future because its run was cancelled.
+        let _settled = QuestionGuard {
+            publisher: self,
+            request_id,
+        };
+        // A dropped responder (stop request, new agent run) counts as cancelled.
+        Ok(rx.await.unwrap_or(QuestionOutcome::Cancelled))
+    }
+}
+
+/// Removes the pending question entry (so a late answer is a no-op) and
+/// tells every view the request is settled, whichever way the wait ended.
+struct QuestionGuard<'a> {
+    publisher: &'a SessionEventPublisher,
+    request_id: String,
+}
+
+impl Drop for QuestionGuard<'_> {
+    fn drop(&mut self) {
+        self.publisher.pending_questions.resolve(
+            &self.request_id,
+            crate::session::questions::QuestionOutcome::Cancelled,
+        );
+        self.publisher.events.publish_ui(
+            &self.publisher.session_id,
+            UiEvent::UserQuestionsResolved {
+                request_id: self.request_id.clone(),
+            },
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1400,6 +1452,7 @@ mod tests {
             stop_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             session_id: session_id.to_string(),
             turn_recorder: None,
+            pending_questions: Arc::default(),
         }
     }
 
