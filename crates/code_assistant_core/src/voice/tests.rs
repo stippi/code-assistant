@@ -145,8 +145,18 @@ struct Harness {
     sessions: SessionService,
     voice: VoiceService,
     server: Server,
+    /// The servers of the connections that renew the first one, in order.
+    renewals: Vec<Server>,
     audio: FakeAudio,
     _dir: tempfile::TempDir,
+}
+
+/// Like OpenAI, the server announces the session before the client speaks
+/// and then accepts its `session.update` (queued up front: the client reads
+/// them in order).
+fn confirm_session(server: &Server) {
+    server.send(ServerEvent::SessionCreated);
+    server.send(ServerEvent::SessionUpdated);
 }
 
 /// Never answers, like a connection attempt into a blackholed network.
@@ -216,13 +226,28 @@ fn session_service(dir: &tempfile::TempDir) -> (SessionService, EventStream) {
 
 /// A running voice session over [`session_service`].
 async fn harness() -> Harness {
+    harness_with_renewals(0).await
+}
+
+/// Like [`harness`], with `renewals` more connections for reconnects.
+async fn harness_with_renewals(renewals: usize) -> Harness {
     let dir = tempfile::tempdir().unwrap();
     let (sessions, events) = session_service(&dir);
     let (connection, mut server) = scripted_connection();
-    // Like OpenAI, the server confirms the session before the client speaks.
-    server.send(ServerEvent::SessionCreated);
+    confirm_session(&server);
+    let mut connections = Vec::new();
+    let mut renewal_servers = Vec::new();
+    for _ in 0..renewals {
+        let (connection, server) = scripted_connection();
+        confirm_session(&server);
+        connections.push(connection);
+        renewal_servers.push(server);
+    }
+    // The connector hands them out from the back.
+    connections.reverse();
+    connections.push(connection);
     let connector: Arc<dyn RealtimeConnector> = Arc::new(ScriptedConnector {
-        connections: Mutex::new(vec![connection]),
+        connections: Mutex::new(connections),
     });
     let audio = FakeAudio::default();
     let (voice, voice_worker) = VoiceService::with_config_loader(
@@ -243,6 +268,7 @@ async fn harness() -> Harness {
         sessions,
         voice,
         server,
+        renewals: renewal_servers,
         audio,
         _dir: dir,
     }
@@ -253,6 +279,7 @@ fn response_created() -> ServerEvent {
         response: ResponseInfo {
             id: "r".into(),
             status: None,
+            status_details: None,
         },
     }
 }
@@ -262,6 +289,7 @@ fn response_done() -> ServerEvent {
         response: ResponseInfo {
             id: "r".into(),
             status: Some("completed".into()),
+            status_details: None,
         },
     }
 }
@@ -587,6 +615,7 @@ fn rejecting_connection() -> RealtimeConnection {
         error: llm::realtime::ErrorInfo {
             message: "Incorrect API key provided".into(),
             code: Some("invalid_api_key".into()),
+            event_id: None,
         },
     });
     server
@@ -639,7 +668,7 @@ async fn a_connection_closed_before_the_session_started_fails() {
 async fn rejected_reconnects_end_voice_mode_instead_of_looping() {
     let dir = tempfile::tempdir().unwrap();
     let (first, server) = scripted_connection();
-    server.send(ServerEvent::SessionCreated);
+    confirm_session(&server);
     let (voice, mut statuses) = scripted_voice(
         &dir,
         vec![
@@ -660,4 +689,109 @@ async fn rejected_reconnects_end_voice_mode_instead_of_looping() {
     let message = wait_for_failure(&mut statuses, Duration::from_secs(60)).await;
     assert!(message.contains("could not be renewed"), "{message}");
     assert!(message.contains("Incorrect API key provided"), "{message}");
+}
+
+fn server_error(message: &str, event_id: Option<&str>) -> ServerEvent {
+    ServerEvent::Error {
+        error: llm::realtime::ErrorInfo {
+            message: message.into(),
+            code: None,
+            event_id: event_id.map(str::to_string),
+        },
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rejected_voice_settings_fail_instead_of_running_on_defaults() {
+    let dir = tempfile::tempdir().unwrap();
+    let (connection, server) = scripted_connection();
+    server.send(ServerEvent::SessionCreated);
+    server.send(server_error("Invalid value: 'nobody'", None));
+    let (voice, mut statuses) = scripted_voice(&dir, vec![connection]);
+    voice.start();
+    let message = wait_for_failure(&mut statuses, WAIT).await;
+    assert!(message.contains("rejected the voice settings"), "{message}");
+    assert!(message.contains("'nobody'"), "{message}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_survived_error_shows_until_an_answer_completes() {
+    let h = harness().await;
+    let mut events = h.sessions.subscribe();
+    // Our cancel raced the end of the response: nothing to show.
+    h.server
+        .send(server_error("no active response", Some("cancel-7")));
+    h.server.send(server_error("Tool schema invalid", None));
+    let status = wait_for_status(&mut events, WAIT, |s| s.error.is_some()).await;
+    assert_eq!(status.error.as_deref(), Some("Tool schema invalid"));
+
+    h.server.send(response_created());
+    h.server.send(response_done());
+    wait_for_status(&mut events, WAIT, |s| s.error.is_none()).await;
+    h.voice.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_answer_shows_its_reason() {
+    let h = harness().await;
+    let mut events = h.sessions.subscribe();
+    h.server.send(response_created());
+    h.server.send(ServerEvent::ResponseDone {
+        response: ResponseInfo {
+            id: "r".into(),
+            status: Some("failed".into()),
+            status_details: Some(serde_json::json!({
+                "type": "failed",
+                "error": {"type": "server_error", "message": "The server had an error"}
+            })),
+        },
+    });
+    let status = wait_for_status(&mut events, WAIT, |s| s.error.is_some()).await;
+    assert!(
+        status.error.unwrap().contains("The server had an error"),
+        "reason shown"
+    );
+    h.voice.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_renewed_session_learns_which_answer_the_user_cut_off() {
+    let mut h = harness_with_renewals(1).await;
+    h.server.send(response_created());
+    h.server.send(audio_delta("speech", 24_000));
+    h.server.send(ServerEvent::AudioTranscriptDone {
+        item_id: "speech".into(),
+        transcript: "The build failed in two tests".into(),
+    });
+    h.audio
+        .wait_for("the queued audio", |a| a.queued == 24_000)
+        .await;
+    h.audio.play(12_000);
+    h.server.send(ServerEvent::SpeechStarted);
+    h.server
+        .expect("truncate", |e| {
+            matches!(e, ClientEvent::TruncateItem { .. })
+        })
+        .await;
+
+    h.server.to_client.send(Incoming::Closed(None)).unwrap();
+    let mut renewal = h.renewals.remove(0);
+    renewal
+        .expect("session.update", |e| {
+            matches!(e, ClientEvent::SessionUpdate(_))
+        })
+        .await;
+    let ClientEvent::SystemMessage(summary) = renewal
+        .expect("the conversation so far", |e| {
+            matches!(e, ClientEvent::SystemMessage(_))
+        })
+        .await
+    else {
+        unreachable!()
+    };
+    assert!(
+        summary.contains("The build failed in two tests [interrupted by the user]"),
+        "{summary}"
+    );
+    h.voice.stop();
 }

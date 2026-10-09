@@ -219,7 +219,8 @@ sink.
 | server `response.done` / cancelled | attach held tool outputs; in `Speaking`, wait for the drain (playback timer: pending audio + 5 s), or act as drained if nothing is pending |
 | server `input_audio_buffer.speech_started` (barge-in) | cancel timers; if `Speaking`: `response.cancel` (deferred until `response.created` when our create is still in flight) and `StopPlayback` (agent: clear the queue, `conversation.item.truncate` to the samples played). Audio deltas play only in `Speaking`, so late audio of the cancelled response is dropped → `UserTurn` |
 | server `input_audio_buffer.speech_stopped` | stays `UserTurn`; the server's VAD creates the response. If none follows within 8 s, the model answers unanswered tool outputs, or else the floor is free again |
-| server `error` | when our `response.create` was in flight: give the floor back (no wedge) |
+| server `error` for our `response.create` (`event_id` prefix `create-`) | give the floor back (no wedge) |
+| create watchdog (10 s without `response.created`) | same: give the floor back |
 | sink `Drained` (or fallback timer) | if tool outputs are unanswered and no tool runs any more → `response.create`; otherwise → `Cooling` + start the cooling timer |
 | cooling timer fires | `Cooling` → `Idle`; flush notifications if any are queued |
 | tool completed | response still open → hold until `response.done`; otherwise attach, and the output counts as unanswered until the next response starts. `Speaking` → answered after `Drained`; `UserTurn` → **no** `response.create` (the model uses it in its next answer, or answers when the user's turn ends without one); `Cooling`/`Idle` → `response.create` once the last running tool is done, so several calls of one response get one answer |
@@ -250,13 +251,25 @@ session) and to fast ones.
 
 ## Session lifetime and reconnect
 
-- Start: open the realtime session → `session.update` (instructions, tools,
-  voice, turn detection, input transcription on) → start capture.
+- Start: open the realtime session, wait for `session.created`, send
+  `session.update` (instructions, tools, voice, turn detection, input
+  transcription on), wait for `session.updated` → start capture. OpenAI
+  accepts the WebSocket even with an invalid key and then sends `error` and
+  closes; an `error` or a close before `session.updated` fails the attempt
+  with the server's message (a rejected `session.update` would otherwise
+  leave the session on server defaults, without tools or instructions).
+- Errors during a session: client events whose errors are expected carry
+  an `event_id` prefix (`create-`, `cancel-`, `truncate-`). Errors for a
+  cancel or a truncate are logged only (the response or item ended
+  first). Every other error, and a `response.done` with status `failed`,
+  is shown: as an *Error* line in the transcript and on the status chip
+  (`VoiceStatus::error`) until a response completes again.
 - Realtime sessions have a maximum duration and can drop. The agent keeps a
   local text transcript (user transcripts + assistant transcripts + tool
   calls). On a closed connection it reconnects (three attempts, backing
   off), re-sends `session.update`, seeds the last 30 transcript lines as one
-  system message, and keeps the notification queue (flushed after a cooling
+  system message (an answer the user barged into is marked as interrupted,
+  since its transcript says more than they heard), and keeps the notification queue (flushed after a cooling
   period). Tool results of the old connection are dropped.
 - Stop: the toggle, or an error that cannot be retried. Capture and
   playback stop, the socket closes, and the queue is dropped.

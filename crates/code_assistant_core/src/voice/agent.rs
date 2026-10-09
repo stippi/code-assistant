@@ -17,9 +17,10 @@ use crate::session::event_stream::{EventStream, StreamError, Subscription};
 use crate::ui::UiEvent;
 use anyhow::{Context, Result, anyhow, bail};
 use llm::realtime::{
-    ClientEvent, Incoming, RealtimeConnection, RealtimeConnector, SAMPLE_RATE, ServerEvent,
-    SessionSettings, decode_pcm16,
+    ClientEvent, ErrorCause, Incoming, RealtimeConnection, RealtimeConnector, SAMPLE_RATE,
+    ServerEvent, SessionSettings, decode_pcm16,
 };
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -42,6 +43,8 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
 /// Transcript entries replayed into a renewed realtime session.
 const RESEED_ENTRIES: usize = 30;
+/// Appended to an assistant transcript the user barged into.
+const INTERRUPTED_MARK: &str = "[interrupted by the user]";
 
 const INSTRUCTIONS: &str = "\
 You are the voice assistant of a coding-agent app. The user talks to you hands-free about their \
@@ -80,6 +83,12 @@ pub(super) struct VoiceAgent {
     muted: bool,
     status: VoiceStatus,
     transcript: Vec<TranscriptEntry>,
+    /// The assistant item of the latest assistant transcript entry, and the
+    /// entry's index.
+    last_assistant_entry: Option<(String, usize)>,
+    /// Assistant items the user barged into: their transcript says more than
+    /// the user heard.
+    interrupted_items: HashSet<String>,
     /// Samples handed to the speakers since the devices opened.
     queued_samples: u64,
     /// The assistant item whose audio plays, with the sample offset its
@@ -105,7 +114,8 @@ impl VoiceAgent {
             NotificationSource::new(service.clone(), config.notify, open_requests.clone()).await?;
         let tools = VoiceTools::new(service, open_requests);
 
-        let connection = connect(connector.as_ref()).await?;
+        let settings = session_settings(&config, connector.as_ref());
+        let connection = connect(connector.as_ref(), settings).await?;
         let (audio_tx, audio_rx) = mpsc::unbounded_channel();
         let audio = audio_factory(audio_tx).context("Failed to open the audio devices")?;
         let (tool_tx, tool_rx) = mpsc::unbounded_channel();
@@ -135,10 +145,11 @@ impl VoiceAgent {
                 ..VoiceStatus::default()
             },
             transcript: Vec::new(),
+            last_assistant_entry: None,
+            interrupted_items: HashSet::new(),
             queued_samples: 0,
             audio_item: None,
         };
-        agent.send(ClientEvent::SessionUpdate(agent.session_settings()));
         Ok(agent)
     }
 
@@ -207,8 +218,19 @@ impl VoiceAgent {
             ServerEvent::ResponseCreated { .. } => self.floor_input(FloorInput::ResponseCreated),
             ServerEvent::OutputItemAdded { .. } => {}
             ServerEvent::AudioDelta { item_id, delta } => self.on_audio_delta(item_id, &delta),
-            ServerEvent::AudioTranscriptDone { transcript, .. } => {
-                self.record(TranscriptRole::Assistant, transcript)
+            ServerEvent::AudioTranscriptDone {
+                item_id,
+                transcript,
+            } => {
+                let transcript = if self.interrupted_items.contains(&item_id) {
+                    format!("{transcript} {INTERRUPTED_MARK}")
+                } else {
+                    transcript
+                };
+                self.record(TranscriptRole::Assistant, transcript);
+                if self.transcript.last().map(|e| e.role) == Some(TranscriptRole::Assistant) {
+                    self.last_assistant_entry = Some((item_id, self.transcript.len() - 1));
+                }
             }
             ServerEvent::InputTranscription { transcript, .. } => {
                 self.record(TranscriptRole::User, transcript)
@@ -228,19 +250,44 @@ impl VoiceAgent {
                     "Realtime response {} done: {:?}",
                     response.id, response.status
                 );
+                match response.status.as_deref() {
+                    Some("failed") => self.report_error(format!(
+                        "The model's answer failed: {}",
+                        response
+                            .status_reason()
+                            .unwrap_or_else(|| "no reason given".into())
+                    )),
+                    Some("incomplete") => warn!(
+                        "Realtime response {} incomplete: {}",
+                        response.id,
+                        response.status_reason().unwrap_or_default()
+                    ),
+                    Some("completed") if self.status.error.is_some() => {
+                        self.status.error = None;
+                        self.publish_status();
+                    }
+                    _ => {}
+                }
                 let pending = self.pending_playback();
                 self.floor_input(FloorInput::ResponseDone {
                     pending_playback: pending,
                 });
             }
-            ServerEvent::Error { error } => {
-                warn!(
-                    "Realtime error ({}): {}",
+            ServerEvent::Error { error } => match error.cause() {
+                // Cancelling a response that just ended, truncating audio
+                // that raced the item's end: the floor moved on already.
+                ErrorCause::CancelResponse | ErrorCause::TruncateItem => debug!(
+                    "Realtime error for our {:?} ({}): {}",
+                    error.cause(),
                     error.code.as_deref().unwrap_or("-"),
                     error.message
-                );
-                self.floor_input(FloorInput::ServerError);
-            }
+                ),
+                ErrorCause::CreateResponse => {
+                    self.report_error(error.message);
+                    self.floor_input(FloorInput::CreateFailed);
+                }
+                ErrorCause::Other => self.report_error(error.message),
+            },
             ServerEvent::Other => {}
         }
     }
@@ -346,6 +393,7 @@ impl VoiceAgent {
         if let Some((item_id, start)) = self.audio_item.take()
             && played < self.queued_samples
         {
+            self.mark_interrupted(&item_id);
             let heard = played.saturating_sub(start);
             self.send(ClientEvent::TruncateItem {
                 item_id,
@@ -378,11 +426,11 @@ impl VoiceAgent {
             if attempt > 0 {
                 tokio::time::sleep(Duration::from_secs(1 << attempt)).await;
             }
-            match connect(self.connector.as_ref()).await {
+            let settings = session_settings(&self.config, self.connector.as_ref());
+            match connect(self.connector.as_ref(), settings).await {
                 Ok(connection) => {
                     self.connection = connection;
                     self.generation += 1;
-                    self.send(ClientEvent::SessionUpdate(self.session_settings()));
                     if let Some(summary) = self.transcript_summary() {
                         self.send(ClientEvent::SystemMessage(summary));
                     }
@@ -409,7 +457,7 @@ impl VoiceAgent {
                 TranscriptRole::User => Some(format!("User: {}", entry.text)),
                 TranscriptRole::Assistant => Some(format!("You: {}", entry.text)),
                 TranscriptRole::Tool => Some(format!("(tool call: {})", entry.text)),
-                TranscriptRole::Notification => None,
+                TranscriptRole::Notification | TranscriptRole::Error => None,
             })
             .collect();
         (!lines.is_empty()).then(|| {
@@ -420,17 +468,25 @@ impl VoiceAgent {
         })
     }
 
-    fn session_settings(&self) -> SessionSettings {
-        SessionSettings {
-            model: self
-                .connector
-                .declares_model()
-                .then(|| self.config.model.clone()),
-            instructions: INSTRUCTIONS.to_string(),
-            voice: self.config.voice.clone(),
-            tools: VoiceTools::definitions(),
-            turn_detection: self.config.turn_detection(),
-            transcription_model: self.config.transcription(),
+    /// An error the session survives: logged, shown in the transcript and
+    /// on the status until a response completes again.
+    fn report_error(&mut self, message: String) {
+        warn!("Realtime error: {message}");
+        self.record(TranscriptRole::Error, message.clone());
+        self.status.error = Some(message);
+        self.publish_status();
+    }
+
+    /// The user barged into `item_id`. Its transcript, already recorded or
+    /// still to come, says more than the user heard.
+    fn mark_interrupted(&mut self, item_id: &str) {
+        self.interrupted_items.insert(item_id.to_string());
+        if let Some((id, index)) = &self.last_assistant_entry
+            && id == item_id
+            && let Some(entry) = self.transcript.get_mut(*index)
+        {
+            entry.text = format!("{} {INTERRUPTED_MARK}", entry.text);
+            self.last_assistant_entry = None;
         }
     }
 
@@ -479,16 +535,34 @@ impl VoiceAgent {
     }
 }
 
-/// Open a session and wait until the server confirms it. A server that
-/// rejects the session (an invalid API key, an unknown model) still accepts
-/// the WebSocket, then sends an `error` event and closes; that is a failed
-/// attempt carrying the server's message, not a connection.
-async fn connect(connector: &dyn RealtimeConnector) -> Result<RealtimeConnection> {
+/// Open a session, configure it, and wait until the server accepted both.
+/// A server that rejects the session (an invalid API key, an unknown model)
+/// still accepts the WebSocket, then sends an `error` event and closes; a
+/// rejected `session.update` (an unknown voice or transcription model, a
+/// tool schema) would leave the session on server defaults. Either is a
+/// failed attempt carrying the server's message, not a connection.
+async fn connect(
+    connector: &dyn RealtimeConnector,
+    settings: SessionSettings,
+) -> Result<RealtimeConnection> {
     tokio::time::timeout(CONNECT_TIMEOUT, async {
         let mut connection = connector.connect().await?;
+        let mut configuring = false;
         loop {
             match connection.incoming.recv().await {
-                Some(Incoming::Event(ServerEvent::SessionCreated)) => return Ok(connection),
+                Some(Incoming::Event(ServerEvent::SessionCreated)) if !configuring => {
+                    let _ = connection
+                        .outgoing
+                        .send(ClientEvent::SessionUpdate(settings.clone()));
+                    configuring = true;
+                }
+                Some(Incoming::Event(ServerEvent::SessionUpdated)) if configuring => {
+                    return Ok(connection);
+                }
+                Some(Incoming::Event(ServerEvent::Error { error })) if configuring => bail!(
+                    "The realtime server rejected the voice settings: {}",
+                    error.message
+                ),
                 Some(Incoming::Event(ServerEvent::Error { error })) => {
                     bail!(
                         "The realtime server rejected the session: {}",
@@ -513,6 +587,17 @@ async fn connect(connector: &dyn RealtimeConnector) -> Result<RealtimeConnection
             CONNECT_TIMEOUT.as_secs()
         )
     })?
+}
+
+fn session_settings(config: &VoiceConfig, connector: &dyn RealtimeConnector) -> SessionSettings {
+    SessionSettings {
+        model: connector.declares_model().then(|| config.model.clone()),
+        instructions: INSTRUCTIONS.to_string(),
+        voice: config.voice.clone(),
+        tools: VoiceTools::definitions(),
+        turn_detection: config.turn_detection(),
+        transcription_model: config.transcription(),
+    }
 }
 
 fn samples_to_ms(samples: u64) -> u64 {
