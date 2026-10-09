@@ -96,6 +96,15 @@ impl MainScreen {
                 label.to_string()
             };
             let speaking = status.activity == VoiceActivity::Speaking;
+            let chip_color = if status.error.is_some() {
+                cx.theme().danger
+            } else {
+                cx.theme().muted_foreground
+            };
+            let chip_tooltip = SharedString::from(match &status.error {
+                Some(error) => format!("{error}\n\nShow the transcript"),
+                None => "Show the transcript".to_string(),
+            });
             row = row
                 .child(
                     div()
@@ -108,7 +117,7 @@ impl MainScreen {
                         .gap_1()
                         .cursor_pointer()
                         .text_xs()
-                        .text_color(cx.theme().muted_foreground)
+                        .text_color(chip_color)
                         .hover(|s| s.bg(cx.theme().muted))
                         .when(self.voice_transcript_open, |el| el.bg(cx.theme().muted))
                         .child(
@@ -122,7 +131,9 @@ impl MainScreen {
                                 }),
                         )
                         .child(SharedString::from(label))
-                        .tooltip(|window, cx| Tooltip::new("Show the transcript").build(window, cx))
+                        .tooltip(move |window, cx| {
+                            Tooltip::new(chip_tooltip.clone()).build(window, cx)
+                        })
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.voice_transcript_open = !this.voice_transcript_open;
                             cx.notify();
@@ -182,6 +193,7 @@ impl MainScreen {
                 TranscriptRole::Assistant => ("Assistant", cx.theme().primary),
                 TranscriptRole::Tool => ("Tool", cx.theme().muted_foreground),
                 TranscriptRole::Notification => ("Notification", cx.theme().muted_foreground),
+                TranscriptRole::Error => ("Error", cx.theme().danger),
             };
             // A notification's first lines name the conversations; the
             // instructions to the model below them are noise here.

@@ -41,6 +41,9 @@ pub struct FloorConfig {
     /// How long after the user stopped speaking the floor stays theirs when
     /// no response follows.
     pub user_turn_grace: Duration,
+    /// How long our `response.create` may go unanswered before the floor
+    /// is given back (a lost request must not wedge it).
+    pub response_start_grace: Duration,
 }
 
 impl Default for FloorConfig {
@@ -49,6 +52,7 @@ impl Default for FloorConfig {
             cooling: Duration::from_millis(1500),
             playback_grace: Duration::from_secs(5),
             user_turn_grace: Duration::from_secs(8),
+            response_start_grace: Duration::from_secs(10),
         }
     }
 }
@@ -73,6 +77,8 @@ pub enum Timer {
     Cooling,
     /// The user stopped speaking but no response followed.
     UserTurn,
+    /// Our `response.create` got no `response.created`.
+    ResponseStart,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -93,8 +99,8 @@ pub enum FloorInput {
     CaptureMuted,
     /// The speakers played everything queued.
     PlaybackDrained,
-    /// The server reported an error.
-    ServerError,
+    /// The server refused our `response.create`.
+    CreateFailed,
     /// A tool call started running.
     ToolStarted,
     /// A tool call finished.
@@ -261,16 +267,7 @@ impl Floor {
                     self.playback_finished(&mut out);
                 }
             }
-            FloorInput::ServerError => {
-                if self.create_pending {
-                    self.create_pending = false;
-                    self.response_open = false;
-                    self.cancel_on_create = false;
-                    if self.state == FloorState::Speaking {
-                        self.playback_finished(&mut out);
-                    }
-                }
-            }
+            FloorInput::CreateFailed => self.create_failed(&mut out),
             FloorInput::ToolStarted => self.tools_running += 1,
             FloorInput::ToolCompleted { call_id, output } => {
                 self.tools_running = self.tools_running.saturating_sub(1);
@@ -328,11 +325,26 @@ impl Floor {
                             self.flush(&mut out);
                         }
                     }
+                    Timer::ResponseStart => self.create_failed(&mut out),
                     Timer::Cooling | Timer::UserTurn => {}
                 }
             }
         }
         out
+    }
+
+    /// Our `response.create` was refused or never answered: give the floor
+    /// back.
+    fn create_failed(&mut self, out: &mut Vec<FloorCommand>) {
+        if !self.create_pending {
+            return;
+        }
+        self.create_pending = false;
+        self.response_open = false;
+        self.cancel_on_create = false;
+        if self.state == FloorState::Speaking {
+            self.playback_finished(out);
+        }
     }
 
     fn waiting_for_playback(&self) -> bool {
@@ -375,6 +387,7 @@ impl Floor {
         self.response_open = true;
         self.state = FloorState::Speaking;
         out.push(FloorCommand::CreateResponse);
+        self.start_timer(Timer::ResponseStart, self.config.response_start_grace, out);
     }
 
     fn start_timer(&mut self, timer: Timer, after: Duration, out: &mut Vec<FloorCommand>) {
@@ -593,7 +606,8 @@ mod tests {
                     output: "out".into()
                 },
                 C::CancelTimer,
-                C::CreateResponse
+                C::CreateResponse,
+                C::StartTimer(Timer::ResponseStart, Duration::from_secs(10)),
             ]
         );
     }
@@ -612,7 +626,8 @@ mod tests {
                     call_id: "c1".into(),
                     output: "out".into()
                 },
-                C::CreateResponse
+                C::CreateResponse,
+                C::StartTimer(Timer::ResponseStart, Duration::from_secs(10)),
             ]
         );
     }
@@ -802,11 +817,36 @@ mod tests {
     fn failed_create_does_not_wedge_the_floor() {
         let mut floor = floor();
         floor.handle(finished("a"));
-        floor.handle(I::ServerError);
+        floor.handle(I::CreateFailed);
         assert_eq!(floor.state(), FloorState::Cooling);
         floor.handle(I::TimerFired(Timer::Cooling));
         assert_eq!(floor.state(), FloorState::Idle);
         assert!(creates(&floor.handle(finished("b"))));
+    }
+
+    #[test]
+    fn an_unanswered_create_gives_the_floor_back() {
+        let mut floor = floor();
+        let out = floor.handle(finished("a"));
+        assert!(out.contains(&C::StartTimer(
+            Timer::ResponseStart,
+            Duration::from_secs(10)
+        )));
+        assert_eq!(floor.state(), FloorState::Speaking);
+        floor.handle(I::TimerFired(Timer::ResponseStart));
+        assert_eq!(floor.state(), FloorState::Cooling);
+        floor.handle(I::TimerFired(Timer::Cooling));
+        assert!(creates(&floor.handle(finished("b"))));
+    }
+
+    #[test]
+    fn a_created_response_disarms_the_create_watchdog() {
+        let mut floor = floor();
+        floor.handle(finished("a"));
+        floor.handle(I::ResponseCreated);
+        // A watchdog firing late (its cancel raced it) changes nothing.
+        assert!(floor.handle(I::TimerFired(Timer::ResponseStart)).is_empty());
+        assert_eq!(floor.state(), FloorState::Speaking);
     }
 
     #[test]

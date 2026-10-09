@@ -8,6 +8,7 @@
 use base64::Engine;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Sample rate of the PCM16 mono audio both directions use.
 pub const SAMPLE_RATE: u32 = 24_000;
@@ -59,8 +60,33 @@ pub enum ClientEvent {
     SystemMessage(String),
 }
 
+/// Event id prefixes of the client events whose errors callers tell apart
+/// (see [`ErrorInfo::cause`]).
+const CREATE_ID_PREFIX: &str = "create-";
+const CANCEL_ID_PREFIX: &str = "cancel-";
+const TRUNCATE_ID_PREFIX: &str = "truncate-";
+
+fn event_id(prefix: &str) -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    format!("{prefix}{}", NEXT.fetch_add(1, Ordering::Relaxed))
+}
+
 impl ClientEvent {
     pub fn to_json(&self) -> Value {
+        let mut event = self.payload();
+        let prefix = match self {
+            ClientEvent::CreateResponse => Some(CREATE_ID_PREFIX),
+            ClientEvent::CancelResponse => Some(CANCEL_ID_PREFIX),
+            ClientEvent::TruncateItem { .. } => Some(TRUNCATE_ID_PREFIX),
+            _ => None,
+        };
+        if let Some(prefix) = prefix {
+            event["event_id"] = json!(event_id(prefix));
+        }
+        event
+    }
+
+    fn payload(&self) -> Value {
         match self {
             ClientEvent::SessionUpdate(settings) => {
                 let tools: Vec<Value> = settings
@@ -162,6 +188,22 @@ pub struct ResponseInfo {
     /// `completed`, `cancelled`, `failed` or `incomplete` once done.
     #[serde(default)]
     pub status: Option<String>,
+    /// Why a response failed or stopped early.
+    #[serde(default)]
+    pub status_details: Option<Value>,
+}
+
+impl ResponseInfo {
+    /// The reason in `status_details`: the error's message for a failed
+    /// response, the reason (`max_output_tokens`, `content_filter`) for an
+    /// incomplete one.
+    pub fn status_reason(&self) -> Option<String> {
+        let details = self.status_details.as_ref()?;
+        let text = |value: Option<&Value>| value.and_then(Value::as_str).map(str::to_string);
+        text(details.pointer("/error/message"))
+            .or_else(|| text(details.pointer("/error/code")))
+            .or_else(|| text(details.get("reason")))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -170,6 +212,30 @@ pub struct ErrorInfo {
     pub message: String,
     #[serde(default)]
     pub code: Option<String>,
+    /// The client event the error answers, when it answers one.
+    #[serde(default)]
+    pub event_id: Option<String>,
+}
+
+/// Which of our client events an error answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorCause {
+    CreateResponse,
+    CancelResponse,
+    TruncateItem,
+    /// Another event, or the session itself.
+    Other,
+}
+
+impl ErrorInfo {
+    pub fn cause(&self) -> ErrorCause {
+        match self.event_id.as_deref() {
+            Some(id) if id.starts_with(CREATE_ID_PREFIX) => ErrorCause::CreateResponse,
+            Some(id) if id.starts_with(CANCEL_ID_PREFIX) => ErrorCause::CancelResponse,
+            Some(id) if id.starts_with(TRUNCATE_ID_PREFIX) => ErrorCause::TruncateItem,
+            _ => ErrorCause::Other,
+        }
+    }
 }
 
 /// A server event. Event names follow the GA protocol; the beta names of
@@ -257,6 +323,61 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn errors_name_the_client_event_they_answer() {
+        let create = ClientEvent::CreateResponse.to_json();
+        let id = create["event_id"].as_str().unwrap().to_string();
+        let text = format!(
+            r#"{{"type":"error","error":{{"type":"invalid_request_error",
+            "code":"conversation_already_has_active_response","message":"busy","event_id":"{id}"}}}}"#
+        );
+        let ServerEvent::Error { error } = ServerEvent::parse(&text).unwrap() else {
+            panic!("wrong event");
+        };
+        assert_eq!(error.cause(), ErrorCause::CreateResponse);
+
+        let cancel = ClientEvent::CancelResponse.to_json();
+        let truncate = ClientEvent::TruncateItem {
+            item_id: "i".into(),
+            audio_end_ms: 1,
+        }
+        .to_json();
+        let cause = |event: &Value| {
+            ErrorInfo {
+                message: String::new(),
+                code: None,
+                event_id: event["event_id"].as_str().map(str::to_string),
+            }
+            .cause()
+        };
+        assert_eq!(cause(&cancel), ErrorCause::CancelResponse);
+        assert_eq!(cause(&truncate), ErrorCause::TruncateItem);
+        assert_eq!(cause(&json!({})), ErrorCause::Other);
+        assert_ne!(
+            create["event_id"],
+            ClientEvent::CreateResponse.to_json()["event_id"]
+        );
+    }
+
+    #[test]
+    fn response_status_reasons() {
+        let failed: ResponseInfo = serde_json::from_value(json!({
+            "id": "r", "status": "failed",
+            "status_details": {"type": "failed", "error": {"type": "server_error", "message": "boom"}}
+        }))
+        .unwrap();
+        assert_eq!(failed.status_reason().as_deref(), Some("boom"));
+        let incomplete: ResponseInfo = serde_json::from_value(json!({
+            "id": "r", "status": "incomplete",
+            "status_details": {"type": "incomplete", "reason": "max_output_tokens"}
+        }))
+        .unwrap();
+        assert_eq!(
+            incomplete.status_reason().as_deref(),
+            Some("max_output_tokens")
+        );
     }
 
     #[test]

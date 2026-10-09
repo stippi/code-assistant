@@ -87,6 +87,9 @@ pub struct VoiceStatus {
     pub muted: bool,
     /// Notifications waiting for a free floor.
     pub queued_notifications: usize,
+    /// The latest error the session survived (a refused request, a failed
+    /// answer); cleared once an answer completes again.
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,6 +100,8 @@ pub enum TranscriptRole {
     Tool,
     /// A background notification delivered to the model.
     Notification,
+    /// An error the server reported.
+    Error,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

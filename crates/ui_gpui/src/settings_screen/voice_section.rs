@@ -276,8 +276,9 @@ impl Render for VoiceSection {
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
                             .child(
-                                "No provider with a realtime API yet. Add an OpenAI or AI Core \
-                                 provider under Providers.",
+                                "No provider with a realtime API yet. Add an OpenAI provider with \
+                                 an API key (a ChatGPT subscription has no realtime access) or \
+                                 an AI Core provider under Providers.",
                             )
                             .into_any_element()
                     } else {

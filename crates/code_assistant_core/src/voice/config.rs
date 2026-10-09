@@ -148,6 +148,16 @@ mod tests {
     }
 
     #[test]
+    fn a_chatgpt_subscription_login_serves_no_realtime() {
+        let p = provider("openai-responses-ws", json!({"codex_auth": true}));
+        assert!(!supports_realtime(&p));
+        let err = llm::realtime::connector_for_provider(&p, "gpt-realtime", None)
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("ChatGPT subscription"));
+    }
+
+    #[test]
     fn ai_core_needs_a_deployment_for_the_voice_model() {
         let p = provider(
             "ai-core",

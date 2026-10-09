@@ -15,7 +15,7 @@ mod transport;
 
 pub use aicore::AiCoreConnector;
 pub use events::{
-    ClientEvent, ConversationItem, ErrorInfo, ResponseInfo, SAMPLE_RATE, ServerEvent,
+    ClientEvent, ConversationItem, ErrorCause, ErrorInfo, ResponseInfo, SAMPLE_RATE, ServerEvent,
     SessionSettings, ToolDefinition, decode_pcm16, encode_pcm16,
 };
 pub use transport::{RealtimeEndpoint, WsConnector};
@@ -54,19 +54,25 @@ pub trait RealtimeConnector: Send + Sync {
     }
 }
 
-/// Provider types that can serve realtime sessions.
-pub const REALTIME_PROVIDER_TYPES: &[&str] = &[
-    "openai",
-    "openai-responses",
-    "openai-responses-ws",
-    "ai-core",
-];
-
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 
-/// Whether a provider can serve realtime sessions.
+/// Whether a provider can serve realtime sessions: OpenAI types with an API
+/// key, and AI Core. A ChatGPT subscription login (`codex_auth`) cannot; its
+/// token grants no access to the Realtime API.
 pub fn supports_realtime(provider: &ProviderConfig) -> bool {
-    REALTIME_PROVIDER_TYPES.contains(&provider.provider.as_str())
+    match provider.provider.as_str() {
+        "openai" | "openai-responses" | "openai-responses-ws" => !uses_codex_auth(provider),
+        "ai-core" => true,
+        _ => false,
+    }
+}
+
+fn uses_codex_auth(provider: &ProviderConfig) -> bool {
+    provider
+        .config
+        .get("codex_auth")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 /// The connector for `model` on a provider from `providers.json`.
@@ -91,6 +97,13 @@ pub fn connector_for_provider(
     };
     match provider.provider.as_str() {
         "openai" | "openai-responses" | "openai-responses-ws" => {
+            if uses_codex_auth(provider) {
+                bail!(
+                    "Provider '{}' signs in with a ChatGPT subscription, which has no access to \
+                     the Realtime API; voice mode needs an OpenAI provider with an API key",
+                    provider.label
+                );
+            }
             let api_key = text("api_key")?;
             let base_url = text("base_url").unwrap_or_else(|_| DEFAULT_OPENAI_BASE_URL.into());
             let mut endpoint = RealtimeEndpoint::openai(&base_url, &api_key, model);
