@@ -9,6 +9,8 @@ use anyhow::{Context, Result};
 use coreaudio::audio_unit::audio_format::LinearPcmFlags;
 use coreaudio::audio_unit::render_callback::{self, data};
 use coreaudio::audio_unit::{AudioUnit, Element, IOType, SampleFormat, Scope, StreamFormat};
+use objc2::msg_send;
+use objc2::runtime::{AnyClass, AnyObject};
 use std::sync::Arc;
 use tracing::debug;
 
@@ -27,12 +29,41 @@ struct DuckingConfiguration {
 
 type Args = render_callback::Args<data::NonInterleaved<f32>>;
 
+#[link(name = "AVFoundation", kind = "framework")]
+unsafe extern "C" {
+    static AVMediaTypeAudio: *const AnyObject;
+}
+
+// AVAuthorizationStatus
+const AUTHORIZATION_RESTRICTED: isize = 1;
+const AUTHORIZATION_DENIED: isize = 2;
+
+/// A microphone the user denied delivers silence, not an error. Check up
+/// front; an undecided permission lets the system ask on first capture.
+fn check_microphone_permission() -> Result<()> {
+    let Some(device) = AnyClass::get(c"AVCaptureDevice") else {
+        return Ok(());
+    };
+    // SAFETY: a class method taking an AVMediaType (an NSString constant
+    // of the linked framework) and returning an NSInteger.
+    let status: isize =
+        unsafe { msg_send![device, authorizationStatusForMediaType: AVMediaTypeAudio] };
+    match status {
+        AUTHORIZATION_DENIED | AUTHORIZATION_RESTRICTED => anyhow::bail!(
+            "Microphone access is denied; allow it in System Settings → Privacy & Security → \
+             Microphone"
+        ),
+        _ => Ok(()),
+    }
+}
+
 pub struct Devices {
     unit: AudioUnit,
 }
 
 impl Devices {
     pub fn start(shared: Arc<Shared>) -> Result<Self> {
+        check_microphone_permission()?;
         let mut unit = AudioUnit::new_uninitialized(IOType::VoiceProcessingIO)
             .context("No voice-processing audio unit")?;
         let enable: u32 = 1;

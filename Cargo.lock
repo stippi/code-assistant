@@ -822,6 +822,7 @@ dependencies = [
  "anyhow",
  "coreaudio-rs 0.14.2",
  "cpal",
+ "objc2 0.6.4",
  "tracing",
 ]
 

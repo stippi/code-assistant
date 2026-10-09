@@ -282,6 +282,10 @@ session) and to fast ones.
 - macOS bundle: `NSMicrophoneUsageDescription` in `Info.plist` and the
   `com.apple.security.device.audio-input` entitlement for the hardened
   runtime.
+- A microphone the user denied records silence instead of failing, so on
+  macOS the `audio` crate checks the permission first: voice mode does not
+  start and the failure names the setting. An undecided permission lets the
+  system ask on the first capture.
 - The voice agent posts into sessions like a user would, so those sessions
   show the message as a normal user message. Later, a small "via voice"
   marker on the message could be added.
