@@ -70,7 +70,9 @@ impl SessionSource for FileSessionPersistence {
     }
 
     fn load(&self, session_id: &str) -> Result<Option<ChatSession>> {
-        self.load_chat_session(session_id)
+        // Queries read the messages only; the stored tool results of the
+        // execution records can stay on disk.
+        self.load_chat_session_unresolved(session_id)
     }
 }
 

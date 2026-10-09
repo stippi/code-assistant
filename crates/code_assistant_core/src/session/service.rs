@@ -609,9 +609,13 @@ impl SessionService {
         session_id: String,
         projection: crate::session_query::ContentProjection,
     ) -> Result<crate::session_query::SessionContent> {
-        self.call(move |ctx| async move {
-            let manager = ctx.manager.lock().await;
-            manager.session_content(&session_id, &projection)
+        self.call_io(move |ctx| async move {
+            let source = ctx.manager.lock().await.session_source();
+            tokio::task::spawn_blocking(move || {
+                crate::session_query::get_session_content(source.as_ref(), &session_id, &projection)
+            })
+            .await
+            .context("Reading the session was aborted")?
         })
         .await
     }

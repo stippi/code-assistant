@@ -1284,7 +1284,7 @@ impl SessionManager {
                 permission_handler.clone(),
                 permissions.clone(),
                 self.tool_registry.clone(),
-                Some(Arc::new(self.persistence.clone())),
+                Some(self.session_source()),
                 self.hooks_factory.clone(),
             )
             .with_parent_cancellation(cancellation.clone())
@@ -1323,7 +1323,7 @@ impl SessionManager {
                 .active_sessions
                 .get(session_id)
                 .map(|instance| instance.terminal_interrupts.clone()),
-            session_source: Some(Arc::new(self.persistence.clone())),
+            session_source: Some(self.session_source()),
             hooks_factory: self.hooks_factory.clone(),
         };
 
@@ -1526,14 +1526,10 @@ impl SessionManager {
         self.persistence.list_chat_sessions()
     }
 
-    /// A filtered projection of a stored session, read without loading it
-    /// into the manager (see [`crate::session_query`]).
-    pub fn session_content(
-        &self,
-        session_id: &str,
-        projection: &crate::session_query::ContentProjection,
-    ) -> Result<crate::session_query::SessionContent> {
-        crate::session_query::get_session_content(&self.persistence, session_id, projection)
+    /// The stored sessions, for [`crate::session_query`] reads that do not
+    /// load a session into the manager.
+    pub fn session_source(&self) -> Arc<dyn crate::session_query::SessionSource> {
+        Arc::new(self.persistence.clone())
     }
 
     /// The activity state of every loaded session. Sessions not loaded are
