@@ -274,7 +274,8 @@ session) and to fast ones.
   "· N waiting" for queued notifications) and a mute button. Events arrive
   as app-scoped `UiEvent::VoiceStatusChanged` and `UiEvent::VoiceTranscript`
   (`session_id: None` on the `EventStream`); `Gpui` mirrors them
-  (`app/voice.rs`). A failure shows in the error popover.
+  (`app/voice.rs`). A failure shows as a "Voice stopped" chip next to the
+  microphone, with the reason in its tooltip, until voice mode starts again.
 - The status chip opens the transcript popover.
 - Settings → *Voice*: provider, model, voice, transcription model, VAD
   eagerness, cooling time, notify scope.

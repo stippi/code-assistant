@@ -1114,11 +1114,8 @@ impl Gpui {
             }
 
             UiEvent::VoiceStatusChanged { status } => {
-                if let code_assistant_core::voice::VoiceActivity::Failed(message) = &status.activity
-                {
-                    *self.current_error.lock().unwrap() =
-                        Some(format!("Voice mode stopped: {message}"));
-                }
+                // A failure shows in the title bar's voice controls, not in
+                // the error popover: that belongs to the viewed session.
                 self.apply_voice_status(status);
                 cx.refresh();
             }

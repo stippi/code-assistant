@@ -17,7 +17,11 @@ impl MainScreen {
         }
         let status = gpui.voice_status();
         let active = status.activity.is_active();
-        let failed = matches!(status.activity, VoiceActivity::Failed(_));
+        let failure = match &status.activity {
+            VoiceActivity::Failed(message) => Some(SharedString::from(message.clone())),
+            _ => None,
+        };
+        let failed = failure.is_some();
         // Without a voice model there is nothing to start; a running voice
         // session stays controllable either way.
         if !gpui.voice_configured() && !active && !failed {
@@ -62,6 +66,21 @@ impl MainScreen {
             }));
 
         let mut row = div().flex().items_center().gap_1().mr_1();
+        if let Some(message) = failure {
+            row = row.child(
+                div()
+                    .id("voice-failure-chip")
+                    .h(px(24.))
+                    .px_2()
+                    .rounded_md()
+                    .flex()
+                    .items_center()
+                    .text_xs()
+                    .text_color(cx.theme().danger)
+                    .child("Voice stopped")
+                    .tooltip(move |window, cx| Tooltip::new(message.clone()).build(window, cx)),
+            );
+        }
         if active {
             let muted = status.muted;
             let label = match status.activity {
