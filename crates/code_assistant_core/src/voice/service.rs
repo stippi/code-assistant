@@ -10,6 +10,7 @@ use anyhow::Result;
 use llm::realtime::RealtimeConnector;
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::{error, info};
@@ -80,8 +81,7 @@ impl VoiceService {
                     }
                     Command::Stop => {
                         if let Some(r) = running.take() {
-                            let _ = r.control.send(Control::Stop);
-                            let _ = r.task.await;
+                            r.stop().await;
                         }
                         publish(&events, VoiceStatus::default());
                     }
@@ -93,8 +93,7 @@ impl VoiceService {
                 }
             }
             if let Some(r) = running {
-                let _ = r.control.send(Control::Stop);
-                let _ = r.task.await;
+                r.stop().await;
             }
         };
         (Self { tx }, worker)
@@ -116,6 +115,24 @@ impl VoiceService {
 struct Running {
     control: mpsc::UnboundedSender<Control>,
     task: JoinHandle<()>,
+}
+
+/// How long a running agent gets to wind down on its own.
+const STOP_GRACE: Duration = Duration::from_secs(1);
+
+impl Running {
+    /// Ask the agent to stop. One that does not get to its control channel
+    /// in time (a connection attempt or a reconnect backoff) is aborted.
+    async fn stop(mut self) {
+        let _ = self.control.send(Control::Stop);
+        if tokio::time::timeout(STOP_GRACE, &mut self.task)
+            .await
+            .is_err()
+        {
+            self.task.abort();
+            let _ = self.task.await;
+        }
+    }
 }
 
 fn start(

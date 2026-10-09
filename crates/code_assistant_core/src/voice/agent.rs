@@ -34,6 +34,9 @@ pub(super) enum Control {
 }
 
 const RECONNECT_ATTEMPTS: u32 = 3;
+/// Bounds one connection attempt, including the credentials and endpoint
+/// lookups a connector does first.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 /// Transcript entries replayed into a renewed realtime session.
 const RESEED_ENTRIES: usize = 30;
 
@@ -101,7 +104,7 @@ impl VoiceAgent {
             NotificationSource::new(service.clone(), config.notify, open_requests.clone()).await?;
         let tools = VoiceTools::new(service, open_requests);
 
-        let connection = connector.connect().await?;
+        let connection = connect(connector.as_ref()).await?;
         let (audio_tx, audio_rx) = mpsc::unbounded_channel();
         let audio = audio_factory(audio_tx).context("Failed to open the audio devices")?;
         let (tool_tx, tool_rx) = mpsc::unbounded_channel();
@@ -361,7 +364,7 @@ impl VoiceAgent {
             if attempt > 0 {
                 tokio::time::sleep(Duration::from_secs(1 << attempt)).await;
             }
-            match self.connector.connect().await {
+            match connect(self.connector.as_ref()).await {
                 Ok(connection) => {
                     self.connection = connection;
                     self.generation += 1;
@@ -454,6 +457,17 @@ impl VoiceAgent {
             status: self.status.clone(),
         });
     }
+}
+
+async fn connect(connector: &dyn RealtimeConnector) -> Result<RealtimeConnection> {
+    tokio::time::timeout(CONNECT_TIMEOUT, connector.connect())
+        .await
+        .map_err(|_| {
+            anyhow!(
+                "No realtime connection after {}s",
+                CONNECT_TIMEOUT.as_secs()
+            )
+        })?
 }
 
 fn samples_to_ms(samples: u64) -> u64 {

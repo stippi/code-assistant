@@ -137,10 +137,44 @@ struct Harness {
     _dir: tempfile::TempDir,
 }
 
-/// A running voice session; every agent run in the session service answers
-/// "done".
-async fn harness() -> Harness {
-    let dir = tempfile::tempdir().unwrap();
+/// Never answers, like a connection attempt into a blackholed network.
+struct HangingConnector;
+
+#[async_trait::async_trait]
+impl RealtimeConnector for HangingConnector {
+    async fn connect(&self) -> anyhow::Result<RealtimeConnection> {
+        std::future::pending().await
+    }
+}
+
+fn test_config() -> VoiceConfig {
+    VoiceConfig {
+        provider: "test".into(),
+        cooling_ms: 50,
+        ..VoiceConfig::default()
+    }
+}
+
+/// A voice service whose connection attempts never finish, with a
+/// subscription to its status events.
+fn hanging_voice(
+    dir: &tempfile::TempDir,
+) -> (VoiceService, crate::session::event_stream::Subscription) {
+    let (sessions, events) = session_service(dir);
+    let statuses = sessions.subscribe();
+    let (voice, worker) = VoiceService::with_config_loader(
+        sessions,
+        events,
+        FakeAudio::default().factory(),
+        Arc::new(|_| Ok(Arc::new(HangingConnector) as Arc<dyn RealtimeConnector>)),
+        Arc::new(test_config),
+    );
+    tokio::spawn(worker);
+    (voice, statuses)
+}
+
+/// A session service whose agent runs all answer "done".
+fn session_service(dir: &tempfile::TempDir) -> (SessionService, EventStream) {
     let events = EventStream::new();
     let manager = Arc::new(tokio::sync::Mutex::new(SessionManager::new(
         FileSessionPersistence::new_with_root_dir(dir.path().to_path_buf()),
@@ -165,7 +199,13 @@ async fn harness() -> Harness {
     });
     let (sessions, worker) = SessionService::new(manager, runtime, events.clone());
     tokio::spawn(worker);
+    (sessions, events)
+}
 
+/// A running voice session over [`session_service`].
+async fn harness() -> Harness {
+    let dir = tempfile::tempdir().unwrap();
+    let (sessions, events) = session_service(&dir);
     let (connection, mut server) = scripted_connection();
     let connector: Arc<dyn RealtimeConnector> = Arc::new(ScriptedConnector {
         connections: Mutex::new(vec![connection]),
@@ -176,11 +216,7 @@ async fn harness() -> Harness {
         events,
         audio.factory(),
         Arc::new(move |_| Ok(connector.clone())),
-        Arc::new(|| VoiceConfig {
-            provider: "test".into(),
-            cooling_ms: 50,
-            ..VoiceConfig::default()
-        }),
+        Arc::new(test_config),
     );
     tokio::spawn(voice_worker);
     voice.start();
@@ -417,20 +453,58 @@ async fn status_events_follow_the_floor() {
     let h = harness().await;
     let mut events = h.sessions.subscribe();
     h.server.send(response_created());
-    let status = tokio::time::timeout(WAIT, async {
+    let status =
+        wait_for_status(&mut events, WAIT, |s| s.activity == VoiceActivity::Speaking).await;
+    assert!(!status.muted);
+    h.voice.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stop_ends_a_connection_attempt_that_hangs() {
+    let dir = tempfile::tempdir().unwrap();
+    let (voice, mut statuses) = hanging_voice(&dir);
+    voice.start();
+    wait_for_status(&mut statuses, WAIT, |s| {
+        s.activity == VoiceActivity::Connecting
+    })
+    .await;
+    voice.stop();
+    wait_for_status(&mut statuses, WAIT, |s| s.activity == VoiceActivity::Off).await;
+}
+
+async fn wait_for_status(
+    events: &mut crate::session::event_stream::Subscription,
+    within: Duration,
+    pred: impl Fn(&VoiceStatus) -> bool,
+) -> VoiceStatus {
+    tokio::time::timeout(within, async {
         loop {
             if let Ok(event) = events.recv().await
                 && let crate::session::event_stream::EventPayload::Ui(UiEvent::VoiceStatusChanged {
                     status,
                 }) = event.payload
-                && status.activity == VoiceActivity::Speaking
+                && pred(&status)
             {
                 return status;
             }
         }
     })
     .await
-    .expect("speaking status");
-    assert!(!status.muted);
-    h.voice.stop();
+    .expect("voice status")
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_connection_attempt_that_hangs_times_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let (voice, mut statuses) = hanging_voice(&dir);
+    voice.start();
+    // Paused time runs ahead to the connect timeout.
+    let status = wait_for_status(&mut statuses, Duration::from_secs(60), |s| {
+        matches!(s.activity, VoiceActivity::Failed(_))
+    })
+    .await;
+    let VoiceActivity::Failed(message) = status.activity else {
+        unreachable!()
+    };
+    assert!(message.contains("No realtime connection"), "{message}");
 }
