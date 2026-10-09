@@ -347,14 +347,14 @@ impl VoiceAgent {
     /// the rest.
     fn stop_playback(&mut self) {
         let played = self.audio.played_samples();
-        if let Some((item_id, start)) = self.audio_item.take() {
-            if played < self.queued_samples {
-                let heard = played.saturating_sub(start);
-                self.send(ClientEvent::TruncateItem {
-                    item_id,
-                    audio_end_ms: samples_to_ms(heard),
-                });
-            }
+        if let Some((item_id, start)) = self.audio_item.take()
+            && played < self.queued_samples
+        {
+            let heard = played.saturating_sub(start);
+            self.send(ClientEvent::TruncateItem {
+                item_id,
+                audio_end_ms: samples_to_ms(heard),
+            });
         }
         self.audio.clear_playback();
         self.queued_samples = played;
