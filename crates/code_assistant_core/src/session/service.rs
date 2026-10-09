@@ -453,7 +453,11 @@ impl SessionService {
                 if let Some(path) = manager.resolve_project_path(&project) {
                     config.init_path = Some(path);
                 }
-                manager.create_session_with_config(name, Some(config), None)
+                // Like a session without a project, it starts on the
+                // default model: without one, no agent can run in it.
+                let model_config =
+                    SessionModelConfig::new(manager.default_model_name().to_string());
+                manager.create_session_with_config(name, Some(config), Some(model_config))
             } else {
                 manager.create_session(name)
             }
@@ -594,6 +598,37 @@ impl SessionService {
         self.call(move |ctx| async move {
             let manager = ctx.manager.lock().await;
             manager.list_all_sessions()
+        })
+        .await
+    }
+
+    /// A filtered projection of a stored session's content, read without
+    /// making it the active session.
+    pub async fn session_content(
+        &self,
+        session_id: String,
+        projection: crate::session_query::ContentProjection,
+    ) -> Result<crate::session_query::SessionContent> {
+        self.call_io(move |ctx| async move {
+            let source = ctx.manager.lock().await.session_source();
+            tokio::task::spawn_blocking(move || {
+                crate::session_query::get_session_content(source.as_ref(), &session_id, &projection)
+            })
+            .await
+            .context("Reading the session was aborted")?
+        })
+        .await
+    }
+
+    /// The activity state of every loaded session; sessions absent from
+    /// the map are idle.
+    pub async fn session_activity_states(
+        &self,
+    ) -> Result<std::collections::HashMap<String, crate::session::instance::SessionActivityState>>
+    {
+        self.call(move |ctx| async move {
+            let manager = ctx.manager.lock().await;
+            Ok(manager.activity_states())
         })
         .await
     }
@@ -2574,6 +2609,20 @@ mod tests {
 
         service.delete_session(id).await.unwrap();
         assert!(service.list_sessions().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn create_session_in_a_project_gets_the_default_model() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (service, manager) = test_service_with_manager(tmp.path());
+
+        let id = service
+            .create_session(None, Some("project".to_string()))
+            .await
+            .unwrap();
+
+        let model_config = manager.lock().await.get_session_model_config(&id).unwrap();
+        assert_eq!(model_config.unwrap().model_name, "test-model");
     }
 
     #[tokio::test(flavor = "multi_thread")]

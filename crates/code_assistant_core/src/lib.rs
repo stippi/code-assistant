@@ -29,6 +29,7 @@ pub mod types;
 pub mod ui;
 pub mod utils;
 pub mod version;
+pub mod voice;
 
 // Mock building blocks (LLM provider, UI, project manager, tool fixtures).
 // Compiled for our own tests and, behind the `test-utils` feature, for

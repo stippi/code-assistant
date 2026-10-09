@@ -345,6 +345,10 @@ pub struct Gpui {
     /// input-area completion and submit-time invocation. Refreshed on
     /// session load via [`Gpui::refresh_skills`].
     skills: Arc<Mutex<Vec<SkillCatalogEntry>>>,
+
+    /// Voice mode: the handle (absent when the build has no audio), its
+    /// status and the transcript of the current voice conversation.
+    voice: app::voice::VoiceState,
 }
 
 /// State for a pending message edit (for branching)
@@ -655,6 +659,8 @@ impl Gpui {
             config_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
 
             skills: Arc::new(Mutex::new(Vec::new())),
+
+            voice: app::voice::VoiceState::default(),
         }
     }
 

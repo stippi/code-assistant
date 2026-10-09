@@ -1284,7 +1284,7 @@ impl SessionManager {
                 permission_handler.clone(),
                 permissions.clone(),
                 self.tool_registry.clone(),
-                Some(Arc::new(self.persistence.clone())),
+                Some(self.session_source()),
                 self.hooks_factory.clone(),
             )
             .with_parent_cancellation(cancellation.clone())
@@ -1323,7 +1323,7 @@ impl SessionManager {
                 .active_sessions
                 .get(session_id)
                 .map(|instance| instance.terminal_interrupts.clone()),
-            session_source: Some(Arc::new(self.persistence.clone())),
+            session_source: Some(self.session_source()),
             hooks_factory: self.hooks_factory.clone(),
         };
 
@@ -1524,6 +1524,23 @@ impl SessionManager {
     /// List all available sessions (both active and persisted)
     pub fn list_all_sessions(&self) -> Result<Vec<ChatMetadata>> {
         self.persistence.list_chat_sessions()
+    }
+
+    /// The stored sessions, for [`crate::session_query`] reads that do not
+    /// load a session into the manager.
+    pub fn session_source(&self) -> Arc<dyn crate::session_query::SessionSource> {
+        Arc::new(self.persistence.clone())
+    }
+
+    /// The activity state of every loaded session. Sessions not loaded are
+    /// idle.
+    pub fn activity_states(
+        &self,
+    ) -> HashMap<String, crate::session::instance::SessionActivityState> {
+        self.active_sessions
+            .iter()
+            .map(|(id, instance)| (id.clone(), instance.get_activity_state()))
+            .collect()
     }
 
     /// Delete a session

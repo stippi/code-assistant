@@ -1113,8 +1113,19 @@ impl Gpui {
                 cx.refresh();
             }
 
+            UiEvent::VoiceStatusChanged { status } => {
+                // A failure shows in the title bar's voice controls, not in
+                // the error popover: that belongs to the viewed session.
+                self.apply_voice_status(status);
+                cx.refresh();
+            }
+            UiEvent::VoiceTranscript { entry } => {
+                self.append_voice_transcript(entry);
+                cx.refresh();
+            }
             UiEvent::ConfigChanged => {
                 debug!("UI: ConfigChanged event — config files modified on disk");
+                self.refresh_voice_configured();
                 self.config_generation
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 

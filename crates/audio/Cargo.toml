@@ -1,0 +1,18 @@
+[package]
+name = "audio"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0"
+tracing = "0.1"
+
+# macOS: the voice-processing I/O unit (echo cancellation, as in FaceTime).
+[target.'cfg(target_os = "macos")'.dependencies]
+coreaudio-rs = { version = "0.14", default-features = false, features = ["audio_unit", "core_audio"] }
+# The microphone permission (AVFoundation).
+objc2 = "0.6"
+
+# Elsewhere: plain device streams with half-duplex gating.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+cpal = "0.15"

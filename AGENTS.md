@@ -19,7 +19,7 @@ This is a Rust-based AI coding agent harness with multiple operational modes.
 ### Crate Layers
 
 ```
-Layer 0 (generic):    llm  command_executor  pty_session  fs_explorer  sandbox  web  git  terminal  terminal_output
+Layer 0 (generic):    llm  command_executor  pty_session  fs_explorer  sandbox  web  git  terminal  terminal_output  audio
 Layer 1 (generic):    tools_core        — tool trait, registry, render, spec, permissions
                       mcp_client        — wraps MCP server tools as registry tools
 Layer 2 (generic):    agent_core        — agent loop, hook traits, dialect trait, AgentUi trait
@@ -73,6 +73,20 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
   comment each); GPUI-only via `tools::register_interactive_tools`; flows
   through `UserInterface::ask_questions` and
   `SessionService::answer_questions`; see `docs/ask-question-tool.md`
+
+### Voice Mode
+- A global voice agent next to the sessions (`code_assistant_core::voice`):
+  a realtime speech model (`llm::realtime`, OpenAI Realtime protocol) with
+  tools only for conversations (list, read, message/create)
+- Configured in `<config_dir>/voice.json` (*Settings → Voice*), started from
+  the GPUI title bar; driven through `VoiceService`, observed via app-scoped
+  `UiEvent::VoiceStatusChanged` / `VoiceTranscript`
+- `voice::floor::Floor` is a pure state machine deciding when background
+  notifications (a conversation finished / waits) may speak: never over the
+  user or the model, only after playback drained plus a quiet period
+- Audio through the `VoiceAudio` seam; the binary's `voice` feature plugs in
+  the `audio` crate (macOS voice-processing I/O with echo cancellation,
+  `cpal` half-duplex elsewhere); see `docs/voice-mode.md`
 
 ### Session Storage
 - One folder per session below `sessions/`, the ID is its path:

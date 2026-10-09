@@ -3,6 +3,7 @@ pub mod project_dialog;
 mod question_prompt;
 pub mod right_panel;
 mod status_popover;
+mod voice_control;
 
 use crate::shared::{frame_profile, ui_state};
 use crate::sidebar::{SessionSidebar, SessionSidebarEvent};
@@ -208,6 +209,8 @@ pub struct MainScreen {
     /// Form for the viewed session's oldest open `ask_question` request.
     question_prompt: Option<Entity<question_prompt::QuestionPrompt>>,
 
+    /// Whether the voice transcript popover below the title bar is open.
+    voice_transcript_open: bool,
     /// Whether the sidebar got the first session listing. Without it, an
     /// empty listing equals the initial `sessions` and never reaches the
     /// sidebar, which then shows no project folders.
@@ -350,6 +353,7 @@ impl MainScreen {
             ui_scale: initial_scale,
             right_sidebar_width: px(initial_sidebar_width),
             right_sidebar_resizing: false,
+            voice_transcript_open: false,
             sidebar_sessions_synced: false,
             resize_start_x: 0.0,
             resize_start_width: 0.0,
@@ -2102,6 +2106,8 @@ impl Render for MainScreen {
                                     ),
                                 )
                             })
+                            // Voice mode, next to the right panel views
+                            .children(self.render_voice_controls(cx))
                             .child(
                                 div()
                                     .id("about-btn")
@@ -2300,6 +2306,8 @@ impl Render for MainScreen {
                         }
                     }),
             )
+            // Voice transcript popover below the title bar
+            .children(self.render_voice_transcript(cx))
             // Modal dialog overlay for new project creation
             .when_some(new_project_dialog, |el, dialog| el.child(dialog))
             // Modal "About" dialog overlay

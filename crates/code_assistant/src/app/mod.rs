@@ -6,6 +6,8 @@ pub mod gpui;
 pub mod server;
 #[cfg(feature = "terminal-frontend")]
 pub mod terminal;
+#[cfg(feature = "voice")]
+pub mod voice;
 
 pub use code_assistant_core::config::AgentRunConfig;
 use code_assistant_core::persistence::{FileSessionPersistence, MigrationProgress};
