@@ -1,0 +1,11 @@
+{
+  "servers": {
+    "parallel": {
+      "url": "https://search.parallel.ai/mcp",
+      "headers": {
+        "User-Agent": "code-assistant/parallel-search-example"
+      },
+      "enabled_tools": ["web_search", "web_fetch"]
+    }
+  }
+}

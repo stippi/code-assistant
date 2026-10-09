@@ -320,6 +320,149 @@ async fn connects_and_calls_over_http() {
     assert_eq!(rendered, "echo: over http");
 }
 
+/// Exercise the shipped configuration through registration and dispatch, while
+/// observing the HTTP requests rather than just asserting a header string.
+#[tokio::test]
+async fn parallel_example_sends_anonymous_identified_requests() {
+    use crate::{McpServersConfig, McpTransport, register_mcp_tools};
+    use axum::{body::Body, extract::Request, middleware::Next};
+    use rmcp::transport::streamable_http_server::{
+        session::local::LocalSessionManager,
+        tower::{StreamableHttpServerConfig, StreamableHttpService},
+    };
+    use std::sync::Mutex;
+
+    struct ParallelFixture;
+    impl ServerHandler for ParallelFixture {
+        async fn list_tools(
+            &self,
+            _: Option<PaginatedRequestParams>,
+            _: RequestContext<RoleServer>,
+        ) -> Result<ListToolsResult, ErrorData> {
+            Ok(ListToolsResult::with_all_items(
+                ["web_search", "web_fetch", "unrelated"]
+                    .into_iter()
+                    .map(|name| {
+                        McpToolDescriptor::new(name, name, schema(json!({"type": "object"})))
+                    })
+                    .collect(),
+            ))
+        }
+
+        async fn call_tool(
+            &self,
+            request: CallToolRequestParams,
+            _: RequestContext<RoleServer>,
+        ) -> Result<CallToolResponse, ErrorData> {
+            Ok(CallToolResult::success(vec![ContentBlock::text(format!(
+                "{}: {}",
+                request.name,
+                json!(request.arguments)
+            ))])
+            .into())
+        }
+    }
+
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let captured = requests.clone();
+    let service = StreamableHttpService::new(
+        || Ok(ParallelFixture),
+        Arc::new(LocalSessionManager::default()),
+        StreamableHttpServerConfig::default(),
+    );
+    let router =
+        axum::Router::new()
+            .nest_service("/mcp", service)
+            .layer(axum::middleware::from_fn(
+                move |request: Request, next: Next| {
+                    let captured = captured.clone();
+                    async move {
+                        let (parts, body) = request.into_parts();
+                        let bytes = axum::body::to_bytes(body, 1024 * 1024).await.unwrap();
+                        captured.lock().unwrap().push((
+                            parts.uri.path().to_string(),
+                            parts.headers.clone(),
+                            serde_json::from_slice::<serde_json::Value>(&bytes)
+                                .unwrap_or(serde_json::Value::Null),
+                        ));
+                        next.run(Request::from_parts(parts, Body::from(bytes)))
+                            .await
+                    }
+                },
+            ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+    let mut config: McpServersConfig =
+        serde_json::from_str(include_str!("../examples/parallel-search.json")).unwrap();
+    let McpTransport::Http { url: endpoint, .. } =
+        &mut config.servers.get_mut("parallel").unwrap().transport
+    else {
+        panic!("expected HTTP");
+    };
+    assert_eq!(endpoint, "https://search.parallel.ai/mcp");
+    *endpoint = url;
+    assert!(config.substitute_env_values(|_| None).is_empty());
+    let mut registry = ToolRegistry::new();
+    let statuses = register_mcp_tools(&mut registry, &config, &["scope:agent"]).await;
+    let registered = statuses[0].result.as_ref().unwrap();
+    assert_eq!(
+        registered,
+        &["mcp__parallel__web_search", "mcp__parallel__web_fetch"]
+    );
+
+    let calls = [
+        (
+            "web_search",
+            json!({"objective": "Rust ownership", "search_queries": ["Rust ownership rules"]}),
+        ),
+        (
+            "web_fetch",
+            json!({"urls": ["https://doc.rust-lang.org/book/"], "objective": "Rust ownership"}),
+        ),
+    ];
+    for (name, mut params) in calls.clone() {
+        let output = registry
+            .get(&format!("mcp__parallel__{name}"))
+            .unwrap()
+            .invoke(&mut test_context(), &mut params)
+            .await
+            .unwrap();
+        assert!(output.is_success());
+        assert!(
+            output.to_json().unwrap()["text"]
+                .as_str()
+                .unwrap()
+                .contains("Rust")
+        );
+    }
+    let requests = requests.lock().unwrap();
+    for (path, headers, _) in requests.iter() {
+        assert_eq!(path, "/mcp");
+        assert_eq!(
+            headers["user-agent"],
+            "code-assistant/parallel-search-example"
+        );
+        assert!(!headers.contains_key("authorization"));
+    }
+    assert!(
+        requests
+            .iter()
+            .any(|(_, _, body)| body["method"] == "tools/list")
+    );
+    for (name, params) in calls {
+        assert!(
+            requests
+                .iter()
+                .any(|(_, _, body)| body["method"] == "tools/call"
+                    && body["params"]["name"] == name
+                    && body["params"]["arguments"] == params)
+        );
+    }
+    server.abort();
+}
+
 /// Serve a minimal HTTP endpoint that answers every request with `401` and a
 /// `WWW-Authenticate` challenge — the reactive OAuth trigger. Returns its
 /// `/mcp` URL and the server task (aborted on drop).

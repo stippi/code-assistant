@@ -159,6 +159,9 @@ substitution in `env`/`headers` values). Configuration changes apply on the
 next agent run — no restart required. A running agent keeps the tool set it
 started with; the next message picks up added, removed or re-configured servers.
 
+For free, keyless web search and page fetching, see the optional
+[Parallel Search MCP example](parallel-search-mcp.md).
+
 Each server is reached over one of two transports, selected by the fields you
 give it — a `command` runs it as a child process over stdio, a `url` connects
 over HTTP (streamable transport):
