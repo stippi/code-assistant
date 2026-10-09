@@ -449,6 +449,32 @@ async fn barge_in_cancels_and_truncates_to_what_was_heard() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_response_cancelled_before_its_audio_stays_silent() {
+    let mut h = harness().await;
+    let id = h.sessions.create_session(None, None).await.unwrap();
+    h.sessions
+        .send_user_message(id.clone(), "go".into(), Vec::new(), None)
+        .await
+        .unwrap();
+    wait_idle(&h.sessions, &id).await;
+    // The finish is announced on the free floor...
+    h.server
+        .expect("response.create", |e| *e == ClientEvent::CreateResponse)
+        .await;
+    // ...and the user speaks up before that response exists.
+    h.server.send(ServerEvent::SpeechStarted);
+    h.server.send(response_created());
+    h.server
+        .expect("response.cancel", |e| *e == ClientEvent::CancelResponse)
+        .await;
+    // Audio generated before the server handled the cancel.
+    h.server.send(audio_delta("notification", 2_400));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(h.audio.0.lock().unwrap().queued, 0, "played over the user");
+    h.voice.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn status_events_follow_the_floor() {
     let h = harness().await;
     let mut events = h.sessions.subscribe();

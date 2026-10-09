@@ -82,8 +82,6 @@ pub(super) struct VoiceAgent {
     /// The assistant item whose audio plays, with the sample offset its
     /// audio starts at.
     audio_item: Option<(String, u64)>,
-    /// The item playback was stopped for; its late audio deltas are dropped.
-    discarded_item: Option<String>,
 }
 
 impl VoiceAgent {
@@ -136,7 +134,6 @@ impl VoiceAgent {
             transcript: Vec::new(),
             queued_samples: 0,
             audio_item: None,
-            discarded_item: None,
         };
         agent.send(ClientEvent::SessionUpdate(agent.session_settings()));
         Ok(agent)
@@ -247,7 +244,9 @@ impl VoiceAgent {
     }
 
     fn on_audio_delta(&mut self, item_id: String, delta: &str) {
-        if self.discarded_item.as_deref() == Some(item_id.as_str()) {
+        // Audio of a response the user interrupted, generated before the
+        // server got our cancel (invariant 5).
+        if !self.floor.plays_audio() {
             return;
         }
         let samples = match decode_pcm16(delta) {
@@ -332,11 +331,10 @@ impl VoiceAgent {
             if played < self.queued_samples {
                 let heard = played.saturating_sub(start);
                 self.send(ClientEvent::TruncateItem {
-                    item_id: item_id.clone(),
+                    item_id,
                     audio_end_ms: samples_to_ms(heard),
                 });
             }
-            self.discarded_item = Some(item_id);
         }
         self.audio.clear_playback();
         self.queued_samples = played;

@@ -217,7 +217,7 @@ sink.
 | server `response.output_audio.delta` | (agent) queue for the speakers; remember the item and the sample offset its audio starts at |
 | server `response.output_item.done` (function call) | (agent) spawn the tool → `ToolStarted` |
 | server `response.done` / cancelled | attach held tool outputs; in `Speaking`, wait for the drain (playback timer: pending audio + 5 s), or act as drained if nothing is pending |
-| server `input_audio_buffer.speech_started` (barge-in) | cancel timers; if `Speaking`: `response.cancel` (deferred until `response.created` when our create is still in flight) and `StopPlayback` (agent: clear the queue, `conversation.item.truncate` to the samples played, drop late deltas of that item) → `UserTurn` |
+| server `input_audio_buffer.speech_started` (barge-in) | cancel timers; if `Speaking`: `response.cancel` (deferred until `response.created` when our create is still in flight) and `StopPlayback` (agent: clear the queue, `conversation.item.truncate` to the samples played). Audio deltas play only in `Speaking`, so late audio of the cancelled response is dropped → `UserTurn` |
 | server `input_audio_buffer.speech_stopped` | stays `UserTurn`; the server's VAD creates the response. If none follows within 8 s the floor is free again |
 | server `error` | when our `response.create` was in flight: give the floor back (no wedge) |
 | sink `Drained` (or fallback timer) | if a trigger is pending (tool outputs attached during `Speaking`) → `response.create`; otherwise → `Cooling` + start the cooling timer |

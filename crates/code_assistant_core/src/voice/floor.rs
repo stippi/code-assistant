@@ -172,6 +172,13 @@ impl Floor {
         self.state
     }
 
+    /// Whether model audio goes to the speakers. Only while the model has
+    /// the floor: after a barge-in, audio the server generated before it
+    /// got the cancel is dropped.
+    pub fn plays_audio(&self) -> bool {
+        self.state == FloorState::Speaking
+    }
+
     pub fn queued_notifications(&self) -> usize {
         self.queue.len()
     }
