@@ -219,6 +219,8 @@ async fn harness() -> Harness {
     let dir = tempfile::tempdir().unwrap();
     let (sessions, events) = session_service(&dir);
     let (connection, mut server) = scripted_connection();
+    // Like OpenAI, the server confirms the session before the client speaks.
+    server.send(ServerEvent::SessionCreated);
     let connector: Arc<dyn RealtimeConnector> = Arc::new(ScriptedConnector {
         connections: Mutex::new(vec![connection]),
     });
@@ -237,7 +239,6 @@ async fn harness() -> Harness {
             matches!(e, ClientEvent::SessionUpdate(_))
         })
         .await;
-    server.send(ServerEvent::SessionCreated);
     Harness {
         sessions,
         voice,
@@ -553,4 +554,110 @@ async fn a_connection_attempt_that_hangs_times_out() {
         unreachable!()
     };
     assert!(message.contains("No realtime connection"), "{message}");
+}
+
+/// A voice service over scripted connections (handed out in order), with a
+/// subscription to its status events.
+fn scripted_voice(
+    dir: &tempfile::TempDir,
+    mut connections: Vec<RealtimeConnection>,
+) -> (VoiceService, crate::session::event_stream::Subscription) {
+    let (sessions, events) = session_service(dir);
+    let statuses = sessions.subscribe();
+    connections.reverse();
+    let connector: Arc<dyn RealtimeConnector> = Arc::new(ScriptedConnector {
+        connections: Mutex::new(connections),
+    });
+    let (voice, worker) = VoiceService::with_config_loader(
+        sessions,
+        events,
+        FakeAudio::default().factory(),
+        Arc::new(move |_| Ok(connector.clone())),
+        Arc::new(test_config),
+    );
+    tokio::spawn(worker);
+    (voice, statuses)
+}
+
+/// What OpenAI does with an invalid API key: accept the WebSocket, send an
+/// `error` event, close.
+fn rejecting_connection() -> RealtimeConnection {
+    let (connection, server) = scripted_connection();
+    server.send(ServerEvent::Error {
+        error: llm::realtime::ErrorInfo {
+            message: "Incorrect API key provided".into(),
+            code: Some("invalid_api_key".into()),
+        },
+    });
+    server
+        .to_client
+        .send(Incoming::Closed(Some(
+            "3000 invalid_request_error.invalid_api_key".into(),
+        )))
+        .unwrap();
+    connection
+}
+
+async fn wait_for_failure(
+    statuses: &mut crate::session::event_stream::Subscription,
+    within: Duration,
+) -> String {
+    let status = wait_for_status(statuses, within, |s| {
+        matches!(s.activity, VoiceActivity::Failed(_))
+    })
+    .await;
+    let VoiceActivity::Failed(message) = status.activity else {
+        unreachable!()
+    };
+    message
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rejected_session_fails_with_the_servers_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let (voice, mut statuses) = scripted_voice(&dir, vec![rejecting_connection()]);
+    voice.start();
+    let message = wait_for_failure(&mut statuses, WAIT).await;
+    assert!(message.contains("Incorrect API key provided"), "{message}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_connection_closed_before_the_session_started_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let (connection, server) = scripted_connection();
+    server
+        .to_client
+        .send(Incoming::Closed(Some("1011 internal error".into())))
+        .unwrap();
+    let (voice, mut statuses) = scripted_voice(&dir, vec![connection]);
+    voice.start();
+    let message = wait_for_failure(&mut statuses, WAIT).await;
+    assert!(message.contains("1011 internal error"), "{message}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn rejected_reconnects_end_voice_mode_instead_of_looping() {
+    let dir = tempfile::tempdir().unwrap();
+    let (first, server) = scripted_connection();
+    server.send(ServerEvent::SessionCreated);
+    let (voice, mut statuses) = scripted_voice(
+        &dir,
+        vec![
+            first,
+            rejecting_connection(),
+            rejecting_connection(),
+            rejecting_connection(),
+        ],
+    );
+    voice.start();
+    wait_for_status(&mut statuses, WAIT, |s| {
+        s.activity == VoiceActivity::Listening
+    })
+    .await;
+    // The session ends (its maximum duration, say); every renewal is refused.
+    server.to_client.send(Incoming::Closed(None)).unwrap();
+    // Paused time runs ahead through the reconnect backoff.
+    let message = wait_for_failure(&mut statuses, Duration::from_secs(60)).await;
+    assert!(message.contains("could not be renewed"), "{message}");
+    assert!(message.contains("Incorrect API key provided"), "{message}");
 }

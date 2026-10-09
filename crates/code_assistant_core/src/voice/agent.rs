@@ -15,7 +15,7 @@ use super::{
 use crate::session::SessionService;
 use crate::session::event_stream::{EventStream, StreamError, Subscription};
 use crate::ui::UiEvent;
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use llm::realtime::{
     ClientEvent, Incoming, RealtimeConnection, RealtimeConnector, SAMPLE_RATE, ServerEvent,
     SessionSettings, decode_pcm16,
@@ -35,7 +35,7 @@ pub(super) enum Control {
 
 const RECONNECT_ATTEMPTS: u32 = 3;
 /// Bounds one connection attempt, including the credentials and endpoint
-/// lookups a connector does first.
+/// lookups a connector does first and the server's `session.created`.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 /// Bounds one voice tool call; all of them return without waiting for a
 /// conversation's agent.
@@ -131,7 +131,7 @@ impl VoiceAgent {
             timer: None,
             muted: false,
             status: VoiceStatus {
-                activity: VoiceActivity::Connecting,
+                activity: VoiceActivity::Listening,
                 ..VoiceStatus::default()
             },
             transcript: Vec::new(),
@@ -202,12 +202,8 @@ impl VoiceAgent {
 
     fn on_server_event(&mut self, event: ServerEvent) {
         match event {
-            ServerEvent::SessionCreated | ServerEvent::SessionUpdated => {
-                if self.status.activity == VoiceActivity::Connecting {
-                    self.status.activity = VoiceActivity::Listening;
-                    self.publish_status();
-                }
-            }
+            // `connect` waited for `session.created`.
+            ServerEvent::SessionCreated | ServerEvent::SessionUpdated => {}
             ServerEvent::ResponseCreated { .. } => self.floor_input(FloorInput::ResponseCreated),
             ServerEvent::OutputItemAdded { .. } => {}
             ServerEvent::AudioDelta { item_id, delta } => self.on_audio_delta(item_id, &delta),
@@ -392,6 +388,8 @@ impl VoiceAgent {
                     }
                     let commands = self.floor.reconnected();
                     self.execute(commands);
+                    self.status.activity = self.floor_activity();
+                    self.publish_status();
                     return Ok(());
                 }
                 Err(e) => {
@@ -456,16 +454,20 @@ impl VoiceAgent {
         if self.status.activity == VoiceActivity::Connecting {
             return;
         }
-        let activity = match self.floor.state() {
-            FloorState::Speaking => VoiceActivity::Speaking,
-            FloorState::UserTurn => VoiceActivity::UserSpeaking,
-            FloorState::Idle | FloorState::Cooling => VoiceActivity::Listening,
-        };
+        let activity = self.floor_activity();
         let queued = self.floor.queued_notifications();
         if activity != self.status.activity || queued != self.status.queued_notifications {
             self.status.activity = activity;
             self.status.queued_notifications = queued;
             self.publish_status();
+        }
+    }
+
+    fn floor_activity(&self) -> VoiceActivity {
+        match self.floor.state() {
+            FloorState::Speaking => VoiceActivity::Speaking,
+            FloorState::UserTurn => VoiceActivity::UserSpeaking,
+            FloorState::Idle | FloorState::Cooling => VoiceActivity::Listening,
         }
     }
 
@@ -477,15 +479,40 @@ impl VoiceAgent {
     }
 }
 
+/// Open a session and wait until the server confirms it. A server that
+/// rejects the session (an invalid API key, an unknown model) still accepts
+/// the WebSocket, then sends an `error` event and closes; that is a failed
+/// attempt carrying the server's message, not a connection.
 async fn connect(connector: &dyn RealtimeConnector) -> Result<RealtimeConnection> {
-    tokio::time::timeout(CONNECT_TIMEOUT, connector.connect())
-        .await
-        .map_err(|_| {
-            anyhow!(
-                "No realtime connection after {}s",
-                CONNECT_TIMEOUT.as_secs()
-            )
-        })?
+    tokio::time::timeout(CONNECT_TIMEOUT, async {
+        let mut connection = connector.connect().await?;
+        loop {
+            match connection.incoming.recv().await {
+                Some(Incoming::Event(ServerEvent::SessionCreated)) => return Ok(connection),
+                Some(Incoming::Event(ServerEvent::Error { error })) => {
+                    bail!(
+                        "The realtime server rejected the session: {}",
+                        error.message
+                    )
+                }
+                Some(Incoming::Event(_)) => {}
+                Some(Incoming::Closed(reason)) => bail!(
+                    "The realtime server closed the connection before the session started{}",
+                    reason.map(|r| format!(" ({r})")).unwrap_or_default()
+                ),
+                None => {
+                    bail!("The realtime server closed the connection before the session started")
+                }
+            }
+        }
+    })
+    .await
+    .map_err(|_| {
+        anyhow!(
+            "No realtime connection after {}s",
+            CONNECT_TIMEOUT.as_secs()
+        )
+    })?
 }
 
 fn samples_to_ms(samples: u64) -> u64 {
