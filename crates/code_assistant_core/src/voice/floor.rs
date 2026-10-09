@@ -145,8 +145,10 @@ pub struct Floor {
     /// Tool outputs that completed while a response was open; attached at
     /// `response.done`.
     held_outputs: Vec<(String, String)>,
-    /// Outputs were attached after generation; respond once playback ends.
-    pending_trigger: bool,
+    /// Tool outputs were attached that no response has answered yet. The
+    /// model answers them once every tool is done and the floor is free:
+    /// after playback, or when the user's turn ends without a response.
+    unanswered_outputs: bool,
     tools_running: usize,
     armed: Option<Timer>,
     queue: NotificationQueue,
@@ -161,7 +163,7 @@ impl Floor {
             create_pending: false,
             cancel_on_create: false,
             held_outputs: Vec::new(),
-            pending_trigger: false,
+            unanswered_outputs: false,
             tools_running: 0,
             armed: None,
             queue: NotificationQueue::default(),
@@ -204,11 +206,13 @@ impl Floor {
             FloorInput::ResponseCreated => {
                 self.create_pending = false;
                 self.response_open = true;
-                self.cancel_timer(&mut out);
                 if self.cancel_on_create {
+                    // The user's turn and its timer go on.
                     self.cancel_on_create = false;
                     out.push(FloorCommand::CancelResponse);
                 } else {
+                    self.cancel_timer(&mut out);
+                    self.unanswered_outputs = false;
                     self.state = FloorState::Speaking;
                 }
             }
@@ -216,14 +220,9 @@ impl Floor {
                 self.response_open = false;
                 self.create_pending = false;
                 self.cancel_on_create = false;
-                let attached = !self.held_outputs.is_empty();
                 for (call_id, output) in self.held_outputs.drain(..) {
+                    self.unanswered_outputs = true;
                     out.push(FloorCommand::SendToolOutput { call_id, output });
-                }
-                // Over the user the model folds the outputs into its next
-                // answer instead (invariant 2).
-                if attached && self.state != FloorState::UserTurn {
-                    self.pending_trigger = true;
                 }
                 if self.state == FloorState::Speaking {
                     if pending_playback.is_zero() {
@@ -247,7 +246,6 @@ impl Floor {
                     }
                     out.push(FloorCommand::StopPlayback);
                 }
-                self.pending_trigger = false;
                 self.state = FloorState::UserTurn;
             }
             FloorInput::SpeechStopped => {
@@ -276,14 +274,16 @@ impl Floor {
                 if self.response_open {
                     self.held_outputs.push((call_id, output));
                 } else {
+                    self.unanswered_outputs = true;
                     out.push(FloorCommand::SendToolOutput { call_id, output });
-                    match self.state {
-                        FloorState::Speaking => self.pending_trigger = true,
-                        FloorState::UserTurn => {}
-                        FloorState::Cooling | FloorState::Idle => {
-                            self.cancel_timer(&mut out);
-                            self.create_response(&mut out);
-                        }
+                    // While the model speaks, the answer waits for the
+                    // drain; over the user, the model folds the outputs
+                    // into its next answer (invariant 2).
+                    if matches!(self.state, FloorState::Cooling | FloorState::Idle)
+                        && self.tools_running == 0
+                    {
+                        self.cancel_timer(&mut out);
+                        self.answer_outputs(&mut out);
                     }
                 }
             }
@@ -320,8 +320,10 @@ impl Floor {
                         self.flush(&mut out);
                     }
                     Timer::UserTurn if self.state == FloorState::UserTurn => {
-                        self.state = FloorState::Idle;
-                        self.flush(&mut out);
+                        if !self.answer_outputs(&mut out) {
+                            self.state = FloorState::Idle;
+                            self.flush(&mut out);
+                        }
                     }
                     Timer::Cooling | Timer::UserTurn => {}
                 }
@@ -336,13 +338,20 @@ impl Floor {
 
     fn playback_finished(&mut self, out: &mut Vec<FloorCommand>) {
         self.cancel_timer(out);
-        if self.pending_trigger {
-            self.pending_trigger = false;
-            self.create_response(out);
-        } else {
+        if !self.answer_outputs(out) {
             self.state = FloorState::Cooling;
             self.start_timer(Timer::Cooling, self.config.cooling, out);
         }
+    }
+
+    /// Have the model answer unanswered tool outputs, once all tools of
+    /// the response are done. Whether it did.
+    fn answer_outputs(&mut self, out: &mut Vec<FloorCommand>) -> bool {
+        if !self.unanswered_outputs || self.tools_running > 0 {
+            return false;
+        }
+        self.create_response(out);
+        true
     }
 
     /// Deliver queued notifications, only from a free floor and not while
@@ -549,6 +558,20 @@ mod tests {
     }
 
     #[test]
+    fn cancelling_our_response_keeps_the_user_turn_timer() {
+        let mut floor = floor();
+        run(
+            &mut floor,
+            vec![finished("a"), I::SpeechStarted, I::SpeechStopped],
+        );
+        assert_eq!(floor.handle(I::ResponseCreated), vec![C::CancelResponse]);
+        floor.handle(done(0));
+        // No answer to the user follows: the floor frees up after all.
+        floor.handle(I::TimerFired(Timer::UserTurn));
+        assert_eq!(floor.state(), FloorState::Idle);
+    }
+
+    #[test]
     fn tool_call_round_trip_triggers_a_follow_up_response() {
         let mut floor = floor();
         // The model's response is just a function call; the tool runs after
@@ -628,7 +651,74 @@ mod tests {
     }
 
     #[test]
-    fn barge_in_drops_a_pending_trigger() {
+    fn a_tool_output_over_the_user_is_answered_when_the_user_says_nothing() {
+        let mut floor = floor();
+        run(
+            &mut floor,
+            vec![
+                I::ResponseCreated,
+                I::ToolStarted,
+                done(0),
+                I::SpeechStarted,
+                completed("c1"),
+                I::SpeechStopped,
+            ],
+        );
+        let out = floor.handle(I::TimerFired(Timer::UserTurn));
+        assert!(creates(&out), "the result is still unanswered: {out:?}");
+    }
+
+    #[test]
+    fn a_response_to_the_user_answers_a_tool_output_too() {
+        let mut floor = floor();
+        run(
+            &mut floor,
+            vec![
+                I::ResponseCreated,
+                I::ToolStarted,
+                done(0),
+                I::SpeechStarted,
+                completed("c1"),
+                I::SpeechStopped,
+                I::ResponseCreated,
+            ],
+        );
+        let out = run(&mut floor, vec![done(0), I::TimerFired(Timer::Cooling)]);
+        assert!(!creates(&out));
+        assert_eq!(floor.state(), FloorState::Idle);
+    }
+
+    #[test]
+    fn several_tool_calls_get_one_answer_once_all_are_done() {
+        let mut floor = floor();
+        run(
+            &mut floor,
+            vec![I::ResponseCreated, I::ToolStarted, I::ToolStarted, done(0)],
+        );
+        let out = floor.handle(completed("c1"));
+        assert!(!creates(&out), "c2 still runs: {out:?}");
+        assert!(creates(&floor.handle(completed("c2"))));
+    }
+
+    #[test]
+    fn several_tool_outputs_while_audio_plays_wait_for_the_last_one() {
+        let mut floor = floor();
+        run(
+            &mut floor,
+            vec![
+                I::ResponseCreated,
+                I::ToolStarted,
+                I::ToolStarted,
+                done(1200),
+                completed("c1"),
+            ],
+        );
+        assert!(!creates(&floor.handle(I::PlaybackDrained)));
+        assert!(creates(&floor.handle(completed("c2"))));
+    }
+
+    #[test]
+    fn barge_in_leaves_a_pending_answer_to_the_user_turn() {
         let mut floor = floor();
         run(
             &mut floor,

@@ -218,11 +218,11 @@ sink.
 | server `response.output_item.done` (function call) | (agent) spawn the tool → `ToolStarted` |
 | server `response.done` / cancelled | attach held tool outputs; in `Speaking`, wait for the drain (playback timer: pending audio + 5 s), or act as drained if nothing is pending |
 | server `input_audio_buffer.speech_started` (barge-in) | cancel timers; if `Speaking`: `response.cancel` (deferred until `response.created` when our create is still in flight) and `StopPlayback` (agent: clear the queue, `conversation.item.truncate` to the samples played). Audio deltas play only in `Speaking`, so late audio of the cancelled response is dropped → `UserTurn` |
-| server `input_audio_buffer.speech_stopped` | stays `UserTurn`; the server's VAD creates the response. If none follows within 8 s the floor is free again |
+| server `input_audio_buffer.speech_stopped` | stays `UserTurn`; the server's VAD creates the response. If none follows within 8 s, the model answers unanswered tool outputs, or else the floor is free again |
 | server `error` | when our `response.create` was in flight: give the floor back (no wedge) |
-| sink `Drained` (or fallback timer) | if a trigger is pending (tool outputs attached during `Speaking`) → `response.create`; otherwise → `Cooling` + start the cooling timer |
+| sink `Drained` (or fallback timer) | if tool outputs are unanswered and no tool runs any more → `response.create`; otherwise → `Cooling` + start the cooling timer |
 | cooling timer fires | `Cooling` → `Idle`; flush notifications if any are queued |
-| tool completed | response still open → hold until `response.done`; `Speaking` after generation → attach and set the pending trigger (fired on `Drained`); `UserTurn` → attach **without** `response.create` (the model uses it in its next answer); `Cooling`/`Idle` → attach + `response.create` |
+| tool completed | response still open → hold until `response.done`; otherwise attach, and the output counts as unanswered until the next response starts. `Speaking` → answered after `Drained`; `UserTurn` → **no** `response.create` (the model uses it in its next answer, or answers when the user's turn ends without one); `Cooling`/`Idle` → `response.create` once the last running tool is done, so several calls of one response get one answer |
 | notification arrives | always queue; `Speaking`/`UserTurn` → nothing more; `Cooling` → restart the cooling timer (groups finishes that land close together); `Idle` → flush now |
 | `get_conversation` read | drop that conversation's queued notification |
 
