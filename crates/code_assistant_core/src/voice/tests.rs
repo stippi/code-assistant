@@ -104,6 +104,18 @@ impl FakeAudio {
         })
     }
 
+    /// Wait until the voice agent, on its own task, brought the devices
+    /// into the state `pred` expects.
+    async fn wait_for(&self, what: &str, pred: impl Fn(&AudioState) -> bool) {
+        tokio::time::timeout(WAIT, async {
+            while !pred(&self.0.lock().unwrap()) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
+    }
+
     /// The speakers played this many samples, and drained if that was all.
     fn play(&self, samples: u64) {
         let mut state = self.0.lock().unwrap();
@@ -294,6 +306,9 @@ async fn a_finish_while_the_model_speaks_waits_for_playback_and_silence() {
     // The model is talking: one second of audio is queued.
     h.server.send(response_created());
     h.server.send(audio_delta("speech", 24_000));
+    h.audio
+        .wait_for("the queued audio", |a| a.queued == 24_000)
+        .await;
     h.sessions
         .send_user_message(id.clone(), "go".into(), Vec::new(), None)
         .await
@@ -423,8 +438,10 @@ async fn barge_in_cancels_and_truncates_to_what_was_heard() {
     let mut h = harness().await;
     h.server.send(response_created());
     h.server.send(audio_delta("speech", 24_000));
+    h.audio
+        .wait_for("the queued audio", |a| a.queued == 24_000)
+        .await;
     // Half a second played when the user interrupts.
-    tokio::time::sleep(Duration::from_millis(50)).await;
     h.audio.play(12_000);
     h.server.send(ServerEvent::SpeechStarted);
 
@@ -444,7 +461,10 @@ async fn barge_in_cancels_and_truncates_to_what_was_heard() {
             audio_end_ms: 500
         }
     );
-    assert_eq!(h.audio.0.lock().unwrap().clears, 1);
+    // The agent clears the speakers right after it sent the truncate.
+    h.audio
+        .wait_for("the cleared speakers", |a| a.clears == 1)
+        .await;
     h.voice.stop();
 }
 
