@@ -15,7 +15,7 @@ mod transport;
 
 pub use aicore::AiCoreConnector;
 pub use events::{
-    ClientEvent, ConversationItem, ErrorInfo, ResponseInfo, SAMPLE_RATE, ServerEvent,
+    ClientEvent, ConversationItem, ErrorCause, ErrorInfo, ResponseInfo, SAMPLE_RATE, ServerEvent,
     SessionSettings, ToolDefinition, decode_pcm16, encode_pcm16,
 };
 pub use transport::{RealtimeEndpoint, WsConnector};
