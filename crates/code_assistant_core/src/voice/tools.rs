@@ -42,6 +42,15 @@ pub struct ToolOutcome {
     pub effects: Vec<ToolEffect>,
 }
 
+impl ToolOutcome {
+    pub fn error(error: anyhow::Error) -> Self {
+        Self {
+            output: json!({ "error": format!("{error:#}") }).to_string(),
+            effects: Vec::new(),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct VoiceTools {
     service: SessionService,
@@ -122,7 +131,7 @@ impl VoiceTools {
         } else {
             match serde_json::from_str(arguments) {
                 Ok(value) => value,
-                Err(e) => return error_outcome(anyhow!("invalid arguments: {e}")),
+                Err(e) => return ToolOutcome::error(anyhow!("invalid arguments: {e}")),
             }
         };
         let result = match name {
@@ -132,7 +141,7 @@ impl VoiceTools {
             "get_conversation" => self.get_conversation(arguments).await,
             other => Err(anyhow!("unknown tool {other}")),
         };
-        result.unwrap_or_else(error_outcome)
+        result.unwrap_or_else(ToolOutcome::error)
     }
 
     async fn list_conversations(&self, arguments: Value) -> Result<ToolOutcome> {
@@ -313,13 +322,6 @@ impl VoiceTools {
                 | SessionActivityState::RateLimited { .. },
             ) => "running".into(),
         }
-    }
-}
-
-fn error_outcome(error: anyhow::Error) -> ToolOutcome {
-    ToolOutcome {
-        output: json!({ "error": format!("{error:#}") }).to_string(),
-        effects: Vec::new(),
     }
 }
 

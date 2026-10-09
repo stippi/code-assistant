@@ -88,6 +88,9 @@ pub enum FloorInput {
     SpeechStarted,
     /// The user stopped speaking.
     SpeechStopped,
+    /// The microphone was muted: the user cannot be speaking any more,
+    /// though the server never reports the end of their speech.
+    CaptureMuted,
     /// The speakers played everything queued.
     PlaybackDrained,
     /// The server reported an error.
@@ -248,7 +251,7 @@ impl Floor {
                 }
                 self.state = FloorState::UserTurn;
             }
-            FloorInput::SpeechStopped => {
+            FloorInput::SpeechStopped | FloorInput::CaptureMuted => {
                 if self.state == FloorState::UserTurn {
                     self.start_timer(Timer::UserTurn, self.config.user_turn_grace, &mut out);
                 }
@@ -780,6 +783,19 @@ mod tests {
         );
         let out = floor.handle(I::TimerFired(Timer::UserTurn));
         assert!(notifies(&out));
+    }
+
+    #[test]
+    fn muting_mid_sentence_hands_the_floor_back() {
+        // The server hears no end of speech from a muted microphone.
+        let mut floor = floor();
+        run(&mut floor, vec![I::SpeechStarted, finished("a")]);
+        let out = floor.handle(I::CaptureMuted);
+        assert_eq!(
+            out,
+            vec![C::StartTimer(Timer::UserTurn, Duration::from_secs(8))]
+        );
+        assert!(notifies(&floor.handle(I::TimerFired(Timer::UserTurn))));
     }
 
     #[test]

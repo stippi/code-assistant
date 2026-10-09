@@ -37,6 +37,9 @@ const RECONNECT_ATTEMPTS: u32 = 3;
 /// Bounds one connection attempt, including the credentials and endpoint
 /// lookups a connector does first.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+/// Bounds one voice tool call; all of them return without waiting for a
+/// conversation's agent.
+const TOOL_TIMEOUT: Duration = Duration::from_secs(30);
 /// Transcript entries replayed into a renewed realtime session.
 const RESEED_ENTRIES: usize = 30;
 
@@ -149,6 +152,9 @@ impl VoiceAgent {
                     Some(Control::SetMuted(muted)) => {
                         self.muted = muted;
                         self.audio.set_capture_muted(muted);
+                        if muted {
+                            self.floor_input(FloorInput::CaptureMuted);
+                        }
                         self.publish_status();
                     }
                     Some(Control::Stop) | None => return Ok(()),
@@ -275,7 +281,21 @@ impl VoiceAgent {
         let tx = self.tool_tx.clone();
         let generation = self.generation;
         tokio::spawn(async move {
-            let outcome = tools.call(&name, &arguments).await;
+            // Every call must report back: the floor holds notifications
+            // while a tool runs.
+            let call = tokio::spawn(async move { tools.call(&name, &arguments).await });
+            let abort = call.abort_handle();
+            let outcome = match tokio::time::timeout(TOOL_TIMEOUT, call).await {
+                Ok(Ok(outcome)) => outcome,
+                Ok(Err(e)) => ToolOutcome::error(anyhow!("The tool failed: {e}")),
+                Err(_) => {
+                    abort.abort();
+                    ToolOutcome::error(anyhow!(
+                        "The tool did not finish within {}s",
+                        TOOL_TIMEOUT.as_secs()
+                    ))
+                }
+            };
             let _ = tx.send((generation, call_id, outcome));
         });
     }

@@ -260,8 +260,10 @@ session) and to fast ones.
   period). Tool results of the old connection are dropped.
 - Stop: the toggle, or an error that cannot be retried. Capture and
   playback stop, the socket closes, and the queue is dropped.
-- Mute: capture is paused, and notifications are still delivered (they only
-  speak from `Idle`, which a muted user is in).
+- Mute: captured audio is dropped (the device stays open). A user turn in
+  progress ends as if the user had stopped speaking, since the server never
+  hears the end of it. Notifications are still delivered: they speak from
+  `Idle`, which a muted user is in.
 - Voice runs keep no transcript on disk in v1. The live transcript is kept
   in memory for the UI popover and for reconnect.
 
