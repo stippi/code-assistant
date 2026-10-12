@@ -27,6 +27,27 @@ pub enum HiddenToolBlockType {
     Thinking,
 }
 
+/// A user message the wakeup scheduler injected (`[scheduled wakeup] …`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct WakeupMessage {
+    /// The prompt the agent passed to `schedule_wakeup`.
+    pub prompt: String,
+    /// The `schedule_wakeup` block it answers is in the same turn: that block
+    /// shows the wakeup fired, and this message is not shown at all.
+    pub linked: bool,
+}
+
+/// Outcome of looking for the `schedule_wakeup` block a wakeup answers.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WakeupLink {
+    /// The block was found and marked as fired.
+    Linked,
+    /// Not in this container, keep looking further back.
+    NotHere,
+    /// A user message: the turn starts here, stop looking.
+    TurnBoundary,
+}
+
 /// Container for all elements within a single message (one LLM request/response).
 /// Each MessageContainer maps to exactly one item in the virtualized list,
 /// enabling efficient scroll virtualization.
@@ -52,6 +73,8 @@ pub struct MessageContainer {
     session_id: Arc<Mutex<Option<String>>>,
     /// Monotonic block identifier source for stable per-block view state.
     next_block_id: Arc<Mutex<u64>>,
+    /// Set when this is a wakeup message rather than one the user wrote.
+    wakeup: Arc<Mutex<Option<WakeupMessage>>>,
 }
 
 impl MessageContainer {
@@ -67,6 +90,7 @@ impl MessageContainer {
             branch_info: Arc::new(Mutex::new(None)),
             session_id: Arc::new(Mutex::new(None)),
             next_block_id: Arc::new(Mutex::new(0)),
+            wakeup: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -174,6 +198,9 @@ impl MessageContainer {
     /// `"<role>: <text>"` with the text of its text blocks, for assertions.
     #[cfg(test)]
     pub(crate) fn transcript_line(&self, cx: &gpui_kit::App) -> String {
+        if let Some(wakeup) = self.wakeup() {
+            return format!("wakeup: {}", wakeup.prompt);
+        }
         let role = match self.role {
             MessageRole::User => "user",
             MessageRole::Assistant => "assistant",
@@ -196,6 +223,62 @@ impl MessageContainer {
         self.elements()
             .iter()
             .find_map(|block| block.read(cx).tool_block(tool_id).cloned())
+    }
+
+    /// Mark this user message as an injected wakeup.
+    pub fn set_wakeup(&self, wakeup: WakeupMessage) {
+        *self.wakeup.lock().unwrap() = Some(wakeup);
+    }
+
+    pub fn wakeup(&self) -> Option<WakeupMessage> {
+        self.wakeup.lock().unwrap().clone()
+    }
+
+    /// The prompt, if this is a user message the wakeup scheduler injected.
+    pub fn wakeup_prompt(&self, cx: &gpui_kit::App) -> Option<String> {
+        if !self.is_user_message() {
+            return None;
+        }
+        let first = self.elements().into_iter().next()?;
+        match first.read(cx).block.as_ref() {
+            BlockData::TextBlock(text) => {
+                code_assistant_core::session::wakeup::wakeup_prompt(&text.content)
+                    .map(str::to_string)
+            }
+            _ => None,
+        }
+    }
+
+    /// Look for the not yet fired `schedule_wakeup` block with this prompt
+    /// and mark it as fired.
+    pub fn link_wakeup(&self, prompt: &str, cx: &mut Context<Self>) -> WakeupLink {
+        if self.is_user_message() {
+            return WakeupLink::TurnBoundary;
+        }
+        for element in self.elements().iter().rev() {
+            let linked = element.update(cx, |view, cx| {
+                let matches = view.block.as_tool().is_some_and(|tool| {
+                    tool.name == "schedule_wakeup"
+                        && !tool.wakeup_fired
+                        && tool
+                            .parameters
+                            .iter()
+                            .any(|p| p.name == "prompt" && p.value.trim() == prompt)
+                });
+                if matches {
+                    view.block_mut()
+                        .as_tool_mut()
+                        .expect("a tool block")
+                        .wakeup_fired = true;
+                    cx.notify();
+                }
+                matches
+            });
+            if linked {
+                return WakeupLink::Linked;
+            }
+        }
+        WakeupLink::NotHere
     }
 
     pub fn is_user_message(&self) -> bool {
@@ -400,6 +483,7 @@ impl MessageContainer {
             duration_seconds,
             images: Vec::new(),
             revision: 0,
+            wakeup_fired: false,
         });
         let view = cx.new(|cx| {
             BlockView::new(
@@ -726,6 +810,7 @@ impl MessageContainer {
                 duration_seconds: None,
                 images: Vec::new(),
                 revision: 0,
+                wakeup_fired: false,
             };
 
             tool.parameters.push(ParameterBlock {

@@ -8,7 +8,7 @@ use code_assistant_core::ui::ui_events::ToolResultData;
 use code_assistant_core::ui::{DisplayFragment, UiEvent};
 use std::collections::HashMap;
 
-use super::super::blocks::{MessageContainer, MessageRole};
+use super::super::blocks::{MessageContainer, MessageRole, WakeupLink, WakeupMessage};
 use gpui_kit::Entity;
 use tracing::{debug, trace, warn};
 
@@ -154,7 +154,9 @@ impl Gpui {
 
                         new_message
                     });
-                    queue.push(new_message);
+                    queue.push(new_message.clone());
+                    drop(queue);
+                    self.recognize_wakeup(&new_message, cx);
                 }
 
                 // Sync ListState and reset pending message
@@ -381,6 +383,7 @@ impl Gpui {
                         message_data.fragments,
                         cx,
                     );
+                    self.recognize_wakeup(&current_container, cx);
                 }
 
                 // Apply tool results to update tool blocks with their execution results
@@ -489,6 +492,7 @@ impl Gpui {
                         message_data.fragments,
                         cx,
                     );
+                    self.recognize_wakeup(&current_container, cx);
                 }
 
                 // Apply tool results
@@ -1048,6 +1052,7 @@ impl Gpui {
                         message_data.fragments,
                         cx,
                     );
+                    self.recognize_wakeup(&current_container, cx);
                 }
 
                 // Apply tool results
@@ -1295,5 +1300,30 @@ impl Gpui {
                 }
             }
         }
+    }
+
+    /// If `message`, the last in the queue, is a wakeup message, mark it as
+    /// one, and mark the `schedule_wakeup` block it answers as fired when
+    /// that is in the turn the message follows.
+    fn recognize_wakeup(&self, message: &Entity<MessageContainer>, cx: &mut gpui_kit::AsyncApp) {
+        let Some(prompt) = cx.update_entity(message, |message, cx| message.wakeup_prompt(cx))
+        else {
+            return;
+        };
+        let queue = self.message_queue.lock().unwrap().clone();
+        let mut linked = false;
+        for container in queue.iter().rev().filter(|c| *c != message) {
+            match cx.update_entity(container, |c, cx| c.link_wakeup(&prompt, cx)) {
+                WakeupLink::Linked => {
+                    linked = true;
+                    break;
+                }
+                WakeupLink::TurnBoundary => break,
+                WakeupLink::NotHere => {}
+            }
+        }
+        cx.update_entity(message, |message, _| {
+            message.set_wakeup(WakeupMessage { prompt, linked })
+        });
     }
 }

@@ -159,7 +159,9 @@ impl BlockView {
         let theme = cx.theme().clone();
 
         // Icon
-        let icon = file_icons::get().get_tool_icon(&block.name);
+        let icon = renderer
+            .icon(block)
+            .or_else(|| file_icons::get().get_tool_icon(&block.name));
         let (icon_color, desc_color) = match block.status {
             ToolStatus::Error => (theme.danger, theme.danger),
             ToolStatus::Running | ToolStatus::Pending | ToolStatus::Success => {
@@ -180,6 +182,20 @@ impl BlockView {
 
         // Optional right-aligned pill (e.g. the MCP server name).
         let header_tag = renderer.header_tag(block);
+
+        // A description that changes with time (a countdown) renders again
+        // when it is due to.
+        if self.refresh_task.is_none()
+            && let Some(after) = renderer.refresh_after(block)
+        {
+            self.refresh_task = Some(cx.spawn(async move |view, cx| {
+                cx.background_executor().timer(after).await;
+                let _ = view.update(cx, |view, cx| {
+                    view.refresh_task = None;
+                    cx.notify();
+                });
+            }));
+        }
 
         // Determine expansion state — purely based on ToolBlockState, no is_generating override
         let is_expanded = block.state == ToolBlockState::Expanded;

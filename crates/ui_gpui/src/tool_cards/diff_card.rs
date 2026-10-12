@@ -1743,6 +1743,7 @@ mod tests {
             duration_seconds: None,
             images: Vec::new(),
             revision: 0,
+            wakeup_fired: false,
         };
         assert_eq!(extract_path_or_paths(&tool), "src/main.rs");
     }
@@ -1766,6 +1767,7 @@ mod tests {
             duration_seconds: None,
             images: Vec::new(),
             revision: 0,
+            wakeup_fired: false,
         };
         assert_eq!(extract_path_or_paths(&tool), "a.rs, b.rs");
     }

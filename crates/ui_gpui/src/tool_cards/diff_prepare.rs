@@ -203,6 +203,7 @@ pub(crate) mod tests {
             duration_seconds: None,
             images: Vec::new(),
             revision: 0,
+            wakeup_fired: false,
         }
     }
 

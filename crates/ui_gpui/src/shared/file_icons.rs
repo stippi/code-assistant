@@ -52,6 +52,9 @@ pub const TOOL_UPDATE_PLAN: &str = "todo_list"; // todo_list.svg
 pub const TOOL_SPAWN_AGENT: &str = "rerun"; // rerun.svg - for spawning sub-agents
 pub const TOOL_VIEW_DOCUMENTS: &str = "file_generic"; // file_generic.svg - for viewing documents
 pub const TOOL_MCP: &str = "mcp"; // link.svg - generic icon for MCP server tools
+pub const TOOL_SCHEDULE_WAKEUP: &str = "alarm_clock"; // alarm_clock.svg
+pub const TOOL_WAKEUP_FIRED: &str = "alarm_clock_check"; // alarm_clock_check.svg
+pub const TOOL_CANCEL_WAKEUP: &str = "alarm_clock_off"; // alarm_clock_off.svg
 pub const TOOL_GENERIC: &str = "file_code"; // file_code.svg
 
 const FILE_TYPES_ASSET: &str = "icons/file_icons/file_types.json";
@@ -145,6 +148,9 @@ impl FileIcons {
             TOOL_SPAWN_AGENT => Some("icons/rerun.svg"),
             TOOL_VIEW_DOCUMENTS => Some("icons/file_generic.svg"),
             TOOL_MCP => Some("icons/link.svg"),
+            TOOL_SCHEDULE_WAKEUP => Some("icons/alarm_clock.svg"),
+            TOOL_WAKEUP_FIRED => Some("icons/alarm_clock_check.svg"),
+            TOOL_CANCEL_WAKEUP => Some("icons/alarm_clock_off.svg"),
             TOOL_GENERIC => Some("icons/file_code.svg"),
             // For file_types.json types we missed
             _ => None,
@@ -251,6 +257,8 @@ impl FileIcons {
             "update_plan" => TOOL_UPDATE_PLAN,
             "spawn_agent" => TOOL_SPAWN_AGENT,
             "view_documents" => TOOL_VIEW_DOCUMENTS,
+            "schedule_wakeup" => TOOL_SCHEDULE_WAKEUP,
+            "cancel_wakeup" => TOOL_CANCEL_WAKEUP,
             _ => TOOL_GENERIC,
         };
 

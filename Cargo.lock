@@ -12146,6 +12146,7 @@ dependencies = [
  "async-channel",
  "async-trait",
  "base64 0.22.1",
+ "chrono",
  "code_assistant_core",
  "command_executor",
  "dirs 5.0.1",
