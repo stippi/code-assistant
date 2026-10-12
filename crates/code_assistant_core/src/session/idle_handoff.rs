@@ -1,5 +1,5 @@
 //! Prepared handoffs (see `docs/handoff.md`): when a long session goes
-//! idle, a timer gives the user two minutes; if they stay away, the core has
+//! idle, a timer gives the user four minutes; if they stay away, the core has
 //! the agent write a handoff prompt while the prompt cache is still warm and
 //! offers it in the composer as `/new <prompt>`.
 //!
@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use tracing::warn;
 
 /// How long a session must stay without user activity.
-pub const IDLE_DELAY: Duration = Duration::from_secs(120);
+pub const IDLE_DELAY: Duration = Duration::from_secs(240);
 
 /// Configuration persisted at `<config_dir>/handoff.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

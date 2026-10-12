@@ -230,7 +230,7 @@ impl Render for GeneralSection {
                             .text_color(cx.theme().muted_foreground)
                             .child(
                                 "When a session whose last request had at least this many \
-                                 input tokens stays idle for two minutes, the agent prepares \
+                                 input tokens stays idle for four minutes, the agent prepares \
                                  a /new prompt for a follow-up session while the prompt cache \
                                  is still warm. 0 turns this off.",
                             ),
