@@ -408,10 +408,11 @@ pub const GOOGLE_SCHEMA_KEYS: &[&str] = &[
 /// the very same `Schema` type, so realtime callers need the same
 /// projection.
 pub fn sanitize_google_schema(schema: &serde_json::Value) -> serde_json::Value {
-    use serde_json::Value;
+    use serde_json::{Map, Value};
     match schema {
-        Value::Object(map) => Value::Object(
-            map.iter()
+        Value::Object(map) => {
+            let mut sanitized: Map<String, Value> = map
+                .iter()
                 .filter(|(key, _)| GOOGLE_SCHEMA_KEYS.contains(&key.as_str()))
                 .map(|(key, value)| {
                     let value = match key.as_str() {
@@ -432,8 +433,27 @@ pub fn sanitize_google_schema(schema: &serde_json::Value) -> serde_json::Value {
                     };
                     (key.clone(), value)
                 })
-                .collect(),
-        ),
+                .collect();
+
+            // JSON Schema permits union types such as
+            // `"type": ["string", "number", "boolean"]`, while Gemini's
+            // Schema.type accepts only one scalar enum value. Preserve the
+            // union by expressing it with the supported `anyOf` keyword.
+            if sanitized.get("type").is_some_and(Value::is_array)
+                && let Some(Value::Array(types)) = sanitized.remove("type")
+            {
+                sanitized.entry("anyOf".to_string()).or_insert_with(|| {
+                    Value::Array(
+                        types
+                            .into_iter()
+                            .map(|schema_type| json!({ "type": schema_type }))
+                            .collect(),
+                    )
+                });
+            }
+
+            Value::Object(sanitized)
+        }
         Value::Array(items) => Value::Array(items.iter().map(sanitize_google_schema).collect()),
         other => other.clone(),
     }
@@ -1641,6 +1661,36 @@ mod tests {
             "required": ["name"]
         });
         assert_eq!(sanitize_google_schema(&schema), schema);
+    }
+
+    #[test]
+    fn sanitize_google_schema_converts_union_type_arrays_to_any_of() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "value": {
+                    "type": ["string", "number", "boolean"],
+                    "description": "A scalar value"
+                }
+            }
+        });
+
+        assert_eq!(
+            sanitize_google_schema(&schema),
+            json!({
+                "type": "object",
+                "properties": {
+                    "value": {
+                        "description": "A scalar value",
+                        "anyOf": [
+                            {"type": "string"},
+                            {"type": "number"},
+                            {"type": "boolean"}
+                        ]
+                    }
+                }
+            })
+        );
     }
 
     /// The declarations the request builder emits must be clean, not just
