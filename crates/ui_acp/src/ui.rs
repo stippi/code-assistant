@@ -327,6 +327,10 @@ impl ToolCallState {
                     } else {
                         content.push(text_content(output));
                     }
+                } else if self.tool_name.as_deref() == Some("schedule_wakeup") {
+                    content.push(text_content(
+                        render_wakeup_output(&output).unwrap_or(output),
+                    ));
                 } else {
                     content.push(text_content(output));
                 }
@@ -436,6 +440,25 @@ fn text_content(text: String) -> acp::ToolCallContent {
 
 /// Render SubAgentOutput JSON as markdown for ACP display.
 /// Returns None if the JSON is not valid SubAgentOutput.
+/// `schedule_wakeup` reports its result as JSON for frontends; say it in words.
+fn render_wakeup_output(json_str: &str) -> Option<String> {
+    use code_assistant_core::tools::impls::wakeup::ScheduleWakeupOutput;
+    let output = ScheduleWakeupOutput::from_ui_output(json_str)?;
+    Some(match output.fires_at {
+        Some(fires_at) => format!(
+            "Wakeup #{} armed, fires at {}",
+            output.wakeup_id,
+            fires_at
+                .with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M:%S")
+        ),
+        None => format!(
+            "Wakeup #{} armed, fires in {}s",
+            output.wakeup_id, output.delay_seconds
+        ),
+    })
+}
+
 fn render_sub_agent_output_as_markdown(json_str: &str) -> Option<String> {
     use code_assistant_core::agent::sub_agent::{SubAgentOutput, SubAgentToolStatus};
 

@@ -21,6 +21,11 @@ use tracing::{debug, warn};
 /// can tell it from a human message.
 pub const WAKEUP_PREFIX: &str = "[scheduled wakeup]";
 
+/// The prompt of an injected wakeup message, or `None` for any other message.
+pub fn wakeup_prompt(message: &str) -> Option<&str> {
+    message.strip_prefix(WAKEUP_PREFIX).map(str::trim)
+}
+
 /// Delivers a fired wakeup into a session. The production implementation is
 /// [`SessionService`]; tests substitute a recorder.
 #[async_trait::async_trait]
@@ -242,6 +247,15 @@ mod tests {
                 .unwrap()
                 .push((session_id.to_string(), message.to_string()));
         }
+    }
+
+    #[test]
+    fn wakeup_prompt_recognizes_only_framed_messages() {
+        assert_eq!(
+            wakeup_prompt(&format!("{WAKEUP_PREFIX} check the build")),
+            Some("check the build")
+        );
+        assert_eq!(wakeup_prompt("check the build"), None);
     }
 
     fn recording_scheduler() -> (WakeupHandle, Arc<RecordingSink>) {

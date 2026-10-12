@@ -20,10 +20,21 @@ pub struct ScheduleWakeupInput {
     pub prompt: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScheduleWakeupOutput {
     pub wakeup_id: u64,
     pub delay_seconds: u64,
+    /// Wall-clock time the wakeup fires; absent in results recorded before
+    /// it was introduced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fires_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl ScheduleWakeupOutput {
+    /// Parse the UI output ([`Render::render_for_ui`]) back into the result.
+    pub fn from_ui_output(output: &str) -> Option<Self> {
+        serde_json::from_str(output).ok()
+    }
 }
 
 impl Render for ScheduleWakeupOutput {
@@ -40,6 +51,11 @@ impl Render for ScheduleWakeupOutput {
              It is not persisted — it is lost if the application exits.",
             self.wakeup_id, self.delay_seconds
         )
+    }
+
+    /// The result as JSON, so frontends can show the fire time.
+    fn render_for_ui(&self, _tracker: &mut ResourcesTracker) -> String {
+        serde_json::to_string(self).unwrap_or_default()
     }
 }
 
@@ -112,11 +128,15 @@ impl Tool for ScheduleWakeupTool {
             .wakeups
             .as_ref()
             .ok_or_else(|| anyhow!("Wakeups are unavailable in this context"))?;
-        let wakeup_id = wakeups.arm(Duration::from_secs(input.delay_seconds), prompt.to_string());
+        let delay = Duration::from_secs(input.delay_seconds);
+        let wakeup_id = wakeups.arm(delay, prompt.to_string());
 
         Ok(ScheduleWakeupOutput {
             wakeup_id,
             delay_seconds: input.delay_seconds,
+            fires_at: chrono::TimeDelta::from_std(delay)
+                .ok()
+                .map(|delay| chrono::Utc::now() + delay),
         })
     }
 }
@@ -220,6 +240,26 @@ mod tests {
         let output = tool.execute(&mut context, &mut input).await.unwrap();
         assert!(output.wakeup_id >= 1);
         assert_eq!(output.delay_seconds, 60);
+        let fires_in = output.fires_at.unwrap() - chrono::Utc::now();
+        assert!((55..=60).contains(&fires_in.num_seconds()));
+    }
+
+    #[test]
+    fn ui_output_round_trips() {
+        let output = ScheduleWakeupOutput {
+            wakeup_id: 3,
+            delay_seconds: 1200,
+            fires_at: Some(chrono::Utc::now()),
+        };
+        let ui = output.render_for_ui(&mut ResourcesTracker::new());
+        assert_eq!(ScheduleWakeupOutput::from_ui_output(&ui), Some(output));
+    }
+
+    #[test]
+    fn results_recorded_without_fire_time_still_parse() {
+        let parsed =
+            ScheduleWakeupOutput::from_ui_output(r#"{"wakeup_id":1,"delay_seconds":60}"#).unwrap();
+        assert_eq!(parsed.fires_at, None);
     }
 
     #[tokio::test]
