@@ -216,6 +216,7 @@ mod tests {
         McpServerConfig {
             transport,
             enabled: true,
+            off_in_new_sessions: false,
             enabled_tools: None,
             disabled_tools: Vec::new(),
         }

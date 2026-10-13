@@ -514,6 +514,20 @@ impl SessionManager {
         &self.session_config_template
     }
 
+    /// The config a brand-new session starts from: the template, with the MCP
+    /// servers configured to start switched off added to its disabled list.
+    /// Sessions derived from another one (e.g. a fresh start) copy that
+    /// session's config instead.
+    pub fn new_session_config(&self) -> SessionConfig {
+        let mut config = self.session_config_template.clone();
+        for name in crate::tools::mcp::mcp_servers_off_in_new_sessions() {
+            if !config.disabled_mcp_servers.contains(&name) {
+                config.disabled_mcp_servers.push(name);
+            }
+        }
+        config
+    }
+
     /// Create a new session and return its ID
     pub fn create_session(&mut self, name: Option<String>) -> Result<String> {
         // Always create sessions with a default model config
@@ -584,8 +598,7 @@ impl SessionManager {
     ) -> Result<String> {
         let session_name = name.unwrap_or_default(); // Empty string if no name provided
 
-        let mut config =
-            session_config_override.unwrap_or_else(|| self.session_config_template.clone());
+        let mut config = session_config_override.unwrap_or_else(|| self.new_session_config());
 
         // Resolve `use_diff_blocks` from the chosen model's `edit_format`,
         // unless the CLI override (`--use-diff-format`) forces it on.
@@ -2600,6 +2613,25 @@ mod tests {
         assert_eq!(stored.message_count(), 2);
         let instance = owner.get_session(&id).unwrap();
         assert_eq!(instance.session.active_path, vec![1, 2]);
+    }
+
+    #[test]
+    fn new_sessions_start_with_servers_marked_off_switched_off() {
+        let config_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            config_dir.path().join("mcp-servers.json"),
+            r#"{ "servers": {
+                "on": { "command": "a" },
+                "quiet": { "command": "b", "off_in_new_sessions": true }
+            } }"#,
+        )
+        .unwrap();
+        temp_env::with_var("CODE_ASSISTANT_CONFIG_DIR", Some(config_dir.path()), || {
+            let (mut manager, _dir) = build_manager(false);
+            let id = manager.create_session(None).unwrap();
+            let config = &manager.get_session(&id).unwrap().session.config;
+            assert_eq!(config.disabled_mcp_servers, vec!["quiet".to_string()]);
+        });
     }
 
     #[test]

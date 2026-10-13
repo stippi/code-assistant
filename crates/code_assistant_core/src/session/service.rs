@@ -448,7 +448,7 @@ impl SessionService {
                 // Resolve the project path so the new session gets the correct
                 // CWD — either from projects.json or from a sibling session
                 // that already ran in that (temporary) project.
-                let mut config = manager.session_config_template().clone();
+                let mut config = manager.new_session_config();
                 config.initial_project = project.clone();
                 if let Some(path) = manager.resolve_project_path(&project) {
                     config.init_path = Some(path);
@@ -1479,7 +1479,7 @@ impl SessionService {
             .context("Failed to save project")?;
 
             let mut manager = ctx.manager.lock().await;
-            let mut config = manager.session_config_template().clone();
+            let mut config = manager.new_session_config();
             config.initial_project = name.clone();
             config.init_path = Some(path);
             let session_id = manager

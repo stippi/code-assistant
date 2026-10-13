@@ -252,6 +252,15 @@ pub fn load_local_mcp_json(dir: &Path) -> Option<McpServersConfig> {
     }
 }
 
+/// Global MCP servers that new sessions start with switched off (their
+/// `off_in_new_sessions` flag). Read raw, like [`session_mcp_servers`]; an
+/// unreadable config switches nothing off.
+pub fn mcp_servers_off_in_new_sessions() -> Vec<String> {
+    load_mcp_servers_config_raw()
+        .map(|config| config.servers_off_in_new_sessions())
+        .unwrap_or_default()
+}
+
 /// The MCP servers available to a session and whether each is enabled for it.
 /// The list is the global `mcp-servers.json` enabled servers plus, when the
 /// project declares a `.mcp.json`, that file's servers; a name present in
