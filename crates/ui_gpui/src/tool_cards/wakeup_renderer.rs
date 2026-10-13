@@ -2,8 +2,10 @@
 //!
 //! A scheduled wakeup counts down to when it fires. From the call on, the
 //! line starts the same ("Wakeup in 20 min"); the fire time is appended once
-//! known. Once the wakeup message arrived in the same turn
-//! (`ToolUseBlock::wakeup_fired`), the line says it fired, and expanding it
+//! known. Once it fired — the stored result says so, or for results recorded
+//! before that, the wakeup message arrived in the same turn
+//! (`ToolUseBlock::wakeup_fired`) — the line says when. A wakeup armed by an
+//! earlier process that never fired was lost with it. Expanding the line
 //! shows the prompt.
 
 use super::inline_renderer::{render_inline_output, render_inline_output_text};
@@ -11,6 +13,7 @@ use super::{CardRenderContext, ToolBlockRenderer, ToolBlockStyle};
 use crate::blocks::{BlockView, ToolUseBlock};
 use crate::shared::file_icons;
 use chrono::{DateTime, Local};
+use code_assistant_core::session::wakeup::process_instance;
 use code_assistant_core::tools::impls::wakeup::ScheduleWakeupOutput;
 use gpui_kit::{AnyElement, Context, SharedString, Window};
 use std::time::Duration;
@@ -33,20 +36,27 @@ impl ToolBlockRenderer for WakeupToolRenderer {
                 None => "Cancel wakeup".to_string(),
             };
         }
-        describe_schedule(tool, Local::now())
+        describe_schedule(tool, Local::now(), process_instance())
     }
 
     fn icon(&self, tool: &ToolUseBlock) -> Option<SharedString> {
-        tool.wakeup_fired
-            .then(|| file_icons::get().get_type_icon(file_icons::TOOL_WAKEUP_FIRED))
-            .flatten()
+        let icon = match state(tool, process_instance()) {
+            WakeupState::Fired { .. } => file_icons::TOOL_WAKEUP_FIRED,
+            WakeupState::Lost { .. } => file_icons::TOOL_CANCEL_WAKEUP,
+            WakeupState::Requested | WakeupState::Armed { .. } => return None,
+        };
+        file_icons::get().get_type_icon(icon)
     }
 
     fn refresh_after(&self, tool: &ToolUseBlock) -> Option<Duration> {
-        if tool.wakeup_fired {
+        let WakeupState::Armed {
+            fires_at: Some(fires_at),
+            ..
+        } = state(tool, process_instance())
+        else {
             return None;
-        }
-        let remaining = (fires_at(tool)? - Local::now()).to_std().ok()?;
+        };
+        let remaining = (fires_at - Local::now()).to_std().ok()?;
         Some(until_display_changes(remaining))
     }
 
@@ -75,42 +85,88 @@ fn param<'a>(tool: &'a ToolUseBlock, name: &str) -> Option<&'a str> {
         .map(|p| p.value.as_str())
 }
 
-fn output(tool: &ToolUseBlock) -> Option<ScheduleWakeupOutput> {
-    ScheduleWakeupOutput::from_ui_output(tool.output.as_deref()?)
+/// Where a scheduled wakeup stands. Fire times are absent in results
+/// recorded before they carried them.
+enum WakeupState {
+    /// Called, not executed yet (or failed).
+    Requested,
+    Armed {
+        fires_at: Option<DateTime<Local>>,
+        delay_seconds: u64,
+    },
+    Fired {
+        at: Option<DateTime<Local>>,
+    },
+    /// Armed by an earlier process, which exited before it fired.
+    Lost {
+        fires_at: Option<DateTime<Local>>,
+    },
 }
 
-fn fires_at(tool: &ToolUseBlock) -> Option<DateTime<Local>> {
-    Some(output(tool)?.fires_at?.with_timezone(&Local))
-}
-
-fn describe_schedule(tool: &ToolUseBlock, now: DateTime<Local>) -> String {
-    let Some(output) = output(tool) else {
-        // Not executed yet (or failed): what was asked for.
-        return match param(tool, "delay_seconds").and_then(|d| d.parse().ok()) {
-            Some(delay) => format!("Wakeup in {}", format_remaining(Duration::from_secs(delay))),
-            None => "Wakeup".to_string(),
-        };
+fn state(tool: &ToolUseBlock, this_process: &str) -> WakeupState {
+    let Some(output) = tool
+        .output
+        .as_deref()
+        .and_then(ScheduleWakeupOutput::from_ui_output)
+    else {
+        return WakeupState::Requested;
     };
-    let Some(fires_at) = output.fires_at.map(|t| t.with_timezone(&Local)) else {
-        // Recorded before results carried the fire time.
-        return if tool.wakeup_fired {
-            "Woke up".to_string()
-        } else {
-            let delay = Duration::from_secs(output.delay_seconds);
-            format!("Wakeup in {}", format_remaining(delay))
-        };
-    };
-    let when = format_when(fires_at, now);
-    if tool.wakeup_fired {
-        return format!("Woke up {when}");
-    }
-    match (fires_at - now).to_std() {
-        Ok(remaining) if !remaining.is_zero() => {
-            format!("Wakeup in {} · {when}", format_remaining(remaining))
+    let local = |time: chrono::DateTime<chrono::Utc>| time.with_timezone(&Local);
+    let fires_at = output.fires_at.map(local);
+    if output.fired_at.is_some() || tool.wakeup_fired {
+        WakeupState::Fired {
+            at: output.fired_at.map(local).or(fires_at),
         }
-        // Due, but no wakeup message (yet): it may still be on its way, or
-        // was cancelled or lost with a restart.
-        _ => format!("Wakeup {when}"),
+    } else if output
+        .armed_by
+        .is_some_and(|armed_by| armed_by != this_process)
+    {
+        WakeupState::Lost { fires_at }
+    } else {
+        WakeupState::Armed {
+            fires_at,
+            delay_seconds: output.delay_seconds,
+        }
+    }
+}
+
+fn describe_schedule(tool: &ToolUseBlock, now: DateTime<Local>, this_process: &str) -> String {
+    match state(tool, this_process) {
+        WakeupState::Requested => match param(tool, "delay_seconds").and_then(|d| d.parse().ok()) {
+            Some(delay) => {
+                format!("Wakeup in {}", format_remaining(Duration::from_secs(delay)))
+            }
+            None => "Wakeup".to_string(),
+        },
+        WakeupState::Armed {
+            fires_at: None,
+            delay_seconds,
+        } => format!(
+            "Wakeup in {}",
+            format_remaining(Duration::from_secs(delay_seconds))
+        ),
+        WakeupState::Armed {
+            fires_at: Some(fires_at),
+            ..
+        } => {
+            let when = format_when(fires_at, now);
+            match (fires_at - now).to_std() {
+                Ok(remaining) if !remaining.is_zero() => {
+                    format!("Wakeup in {} · {when}", format_remaining(remaining))
+                }
+                // Due, but not fired (yet): it is on its way, or was cancelled.
+                _ => format!("Wakeup {when}"),
+            }
+        }
+        WakeupState::Fired { at: Some(at) } => format!("Woke up {}", format_when(at, now)),
+        WakeupState::Fired { at: None } => "Woke up".to_string(),
+        WakeupState::Lost {
+            fires_at: Some(fires_at),
+        } => format!(
+            "Wakeup lost with a restart · was due {}",
+            format_when(fires_at, now)
+        ),
+        WakeupState::Lost { fires_at: None } => "Wakeup lost with a restart".to_string(),
     }
 }
 
@@ -166,11 +222,31 @@ mod tests {
     use crate::tool_cards::tests::make_tool;
     use chrono::TimeZone;
 
+    const HERE: &str = "this-process";
+
     fn now() -> DateTime<Local> {
         Local.with_ymd_and_hms(2026, 10, 12, 14, 12, 0).unwrap()
     }
 
     fn scheduled(delay_seconds: u64, fires_at: DateTime<Local>) -> ToolUseBlock {
+        with_output(delay_seconds, fires_at, |_| {})
+    }
+
+    /// A `schedule_wakeup` block armed by this process, its result adjusted
+    /// by `adjust`.
+    fn with_output(
+        delay_seconds: u64,
+        fires_at: DateTime<Local>,
+        adjust: impl FnOnce(&mut ScheduleWakeupOutput),
+    ) -> ToolUseBlock {
+        let mut output = ScheduleWakeupOutput {
+            wakeup_id: 1,
+            delay_seconds,
+            fires_at: Some(fires_at.to_utc()),
+            armed_by: Some(HERE.to_string()),
+            fired_at: None,
+        };
+        adjust(&mut output);
         let mut tool = make_tool(
             "schedule_wakeup",
             &[
@@ -178,41 +254,37 @@ mod tests {
                 ("prompt", "check the build"),
             ],
         );
-        tool.output = Some(
-            serde_json::to_string(&ScheduleWakeupOutput {
-                wakeup_id: 1,
-                delay_seconds,
-                fires_at: Some(fires_at.to_utc()),
-            })
-            .unwrap(),
-        );
+        tool.output = Some(serde_json::to_string(&output).unwrap());
         tool
     }
 
     #[test]
     fn before_execution_shows_the_requested_delay() {
         let tool = make_tool("schedule_wakeup", &[("delay_seconds", "1200")]);
-        assert_eq!(describe_schedule(&tool, now()), "Wakeup in 20 min");
+        assert_eq!(describe_schedule(&tool, now(), HERE), "Wakeup in 20 min");
         let bare = make_tool("schedule_wakeup", &[]);
-        assert_eq!(describe_schedule(&bare, now()), "Wakeup");
+        assert_eq!(describe_schedule(&bare, now(), HERE), "Wakeup");
     }
 
     #[test]
     fn armed_wakeup_counts_down() {
         let tool = scheduled(1200, now() + chrono::Duration::seconds(1190));
         assert_eq!(
-            describe_schedule(&tool, now()),
+            describe_schedule(&tool, now(), HERE),
             "Wakeup in 20 min · at 14:31"
         );
         let tool = scheduled(30, now() + chrono::Duration::seconds(30));
-        assert_eq!(describe_schedule(&tool, now()), "Wakeup in 30 s · at 14:12");
+        assert_eq!(
+            describe_schedule(&tool, now(), HERE),
+            "Wakeup in 30 s · at 14:12"
+        );
     }
 
     #[test]
     fn other_days_show_the_date() {
         let tool = scheduled(86_400, now() + chrono::Duration::days(1));
         assert_eq!(
-            describe_schedule(&tool, now()),
+            describe_schedule(&tool, now(), HERE),
             "Wakeup in 24 h · on Oct 13 at 14:12"
         );
     }
@@ -223,8 +295,9 @@ mod tests {
             let requested = make_tool("schedule_wakeup", &[("delay_seconds", &delay.to_string())]);
             // Executed a moment after the call.
             let armed = scheduled(delay, now() + chrono::Duration::seconds(delay as i64));
-            let before = describe_schedule(&requested, now());
-            let after = describe_schedule(&armed, now() + chrono::Duration::milliseconds(200));
+            let before = describe_schedule(&requested, now(), HERE);
+            let after =
+                describe_schedule(&armed, now() + chrono::Duration::milliseconds(200), HERE);
             assert!(after.starts_with(&before), "{before:?} → {after:?}");
         }
     }
@@ -232,21 +305,57 @@ mod tests {
     #[test]
     fn due_wakeup_without_message_claims_nothing() {
         let tool = scheduled(60, now() - chrono::Duration::seconds(5));
-        assert_eq!(describe_schedule(&tool, now()), "Wakeup at 14:11");
+        assert_eq!(describe_schedule(&tool, now(), HERE), "Wakeup at 14:11");
     }
 
     #[test]
-    fn fired_wakeup_says_so() {
-        let mut tool = scheduled(60, now() - chrono::Duration::seconds(5));
+    fn fired_wakeup_says_when() {
+        let fired_at = now() - chrono::Duration::seconds(3);
+        let tool = with_output(60, now() - chrono::Duration::seconds(5), |output| {
+            output.fired_at = Some(fired_at.to_utc());
+        });
+        assert_eq!(describe_schedule(&tool, now(), HERE), "Woke up at 14:11");
+        // Also when it was armed by an earlier process.
+        assert_eq!(describe_schedule(&tool, now(), "later"), "Woke up at 14:11");
+    }
+
+    #[test]
+    fn wakeup_message_of_the_turn_marks_older_results_fired() {
+        let mut tool = with_output(60, now() - chrono::Duration::seconds(5), |output| {
+            output.armed_by = None;
+        });
         tool.wakeup_fired = true;
-        assert_eq!(describe_schedule(&tool, now()), "Woke up at 14:11");
+        assert_eq!(describe_schedule(&tool, now(), HERE), "Woke up at 14:11");
+    }
+
+    #[test]
+    fn wakeup_of_an_earlier_process_was_lost() {
+        let tool = scheduled(1200, now() + chrono::Duration::seconds(600));
+        assert_eq!(
+            describe_schedule(&tool, now(), "later"),
+            "Wakeup lost with a restart · was due at 14:22"
+        );
+    }
+
+    #[test]
+    fn results_without_process_count_as_armed() {
+        let tool = with_output(1200, now() + chrono::Duration::seconds(600), |output| {
+            output.armed_by = None;
+        });
+        assert_eq!(
+            describe_schedule(&tool, now(), "later"),
+            "Wakeup in 10 min · at 14:22"
+        );
     }
 
     #[test]
     fn results_without_fire_time_fall_back_to_the_delay() {
         let mut tool = make_tool("schedule_wakeup", &[]);
         tool.output = Some(r#"{"wakeup_id":1,"delay_seconds":5400}"#.to_string());
-        assert_eq!(describe_schedule(&tool, now()), "Wakeup in 1 h 30 min");
+        assert_eq!(
+            describe_schedule(&tool, now(), HERE),
+            "Wakeup in 1 h 30 min"
+        );
     }
 
     #[test]

@@ -1309,6 +1309,15 @@ impl SessionManager {
                 crate::session::wakeup::SessionWakeups {
                     handle,
                     session_id: session_id.to_string(),
+                    used_ids: self
+                        .active_sessions
+                        .get(session_id)
+                        .map(|instance| {
+                            crate::session::wakeup::highest_wakeup_id(
+                                &instance.session.tool_executions,
+                            )
+                        })
+                        .unwrap_or(0),
                 }
             }),
             pty_sessions: self
@@ -1590,6 +1599,60 @@ impl SessionManager {
     }
 
     /// Get a session instance by ID
+    /// Record in the stored result of `schedule_wakeup` that wakeup
+    /// `wakeup_id` fired, and return the result's new UI data. `None` when
+    /// this process armed no such wakeup in the session.
+    pub fn mark_wakeup_fired(
+        &mut self,
+        session_id: &str,
+        wakeup_id: u64,
+    ) -> Result<Option<crate::ui::ui_events::ToolResultData>> {
+        use crate::tools::core::{Render, ResourcesTracker};
+        use crate::tools::impls::wakeup::ScheduleWakeupOutput;
+
+        let mut fired = None;
+        let session = self.persistence.update_entry(session_id, |session| {
+            let armed_here = |output: &ScheduleWakeupOutput| {
+                output.wakeup_id == wakeup_id
+                    && output.armed_by.as_deref()
+                        == Some(crate::session::wakeup::process_instance())
+            };
+            for exec in &mut session.tool_executions {
+                if exec.tool_name != "schedule_wakeup" {
+                    continue;
+                }
+                let Ok(mut output) =
+                    serde_json::from_value::<ScheduleWakeupOutput>(exec.result_json.clone())
+                else {
+                    continue;
+                };
+                if armed_here(&output) {
+                    output.fired_at = Some(chrono::Utc::now());
+                    exec.result_json = serde_json::to_value(&output)?;
+                    fired = Some((exec.tool_request.id.clone(), output));
+                    break;
+                }
+            }
+            Ok(())
+        })?;
+        if let Some(instance) = self.active_sessions.get_mut(session_id) {
+            instance.session = session;
+        }
+        Ok(fired.map(|(tool_id, output)| {
+            let mut tracker = ResourcesTracker::new();
+            crate::ui::ui_events::ToolResultData {
+                tool_id,
+                status: crate::ui::ToolStatus::Success,
+                message: Some(output.status()),
+                output: Some(output.render_for_ui(&mut tracker)),
+                styled_output: None,
+                duration_seconds: None,
+                images: Vec::new(),
+                output_deferred: false,
+            }
+        }))
+    }
+
     pub fn get_session(&self, session_id: &str) -> Option<&SessionInstance> {
         self.active_sessions.get(session_id)
     }

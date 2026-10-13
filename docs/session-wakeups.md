@@ -76,15 +76,18 @@ way other cross-component handles are, at service construction time.
 
 On fire, the scheduler goes through the `SessionService` command bus:
 
-1. Build the wakeup message: a user-role message with unambiguous framing,
-   `[scheduled wakeup] {prompt}` (constant `WAKEUP_PREFIX`), so the agent
-   and the transcript can tell it from a human message.
-2. If the session is idle: `add_user_message` + `start_agent_for_session`
+1. Record in the stored `schedule_wakeup` result that it fired
+   (`fired_at`, `SessionManager::mark_wakeup_fired`) and send the result's
+   update to frontends.
+2. Build the wakeup message: a user-role message with unambiguous framing,
+   `[scheduled wakeup #{id}] {prompt}` (`wakeup_message`), so the agent and
+   the transcript can tell it from a human message.
+3. If the session is idle: `add_user_message` + `start_agent_for_session`
    (the `send_user_message_impl` path).
-3. If a turn is running: write into the `pending_message` slot
+4. If a turn is running: write into the `pending_message` slot
    (`queue_structured_user_message` path) — the running turn picks it up at
    its next iteration; no second task is spawned.
-4. If the session no longer exists: drop silently.
+5. If the session no longer exists: drop silently.
 
 The turn then ends naturally (`LoopFlow::GetUserInput` → task returns →
 `Idle`), keeping the session idle-but-alive for the next wakeup.
@@ -99,6 +102,13 @@ wake the parent — if that turns out useful it needs its own semantics.
 - Input: `delay_seconds: u64` (clamped to a sane range), `prompt: String`.
 - Effect: arms a wakeup for the calling session (session id from
   `ToolContext`), returns the wakeup id and resolved fire time.
+- Ids are numbered per session and continue across restarts (seeded from
+  the highest id in the session's history), so the model sees short ids;
+  internally a wakeup is identified by session and id.
+- The result records the process that armed it (`armed_by`,
+  `process_instance()`). A frontend shows a wakeup armed by another process
+  that never fired as lost with a restart. The text the model sees leaves
+  out `fired_at`, so the conversation never changes after the fact.
 
 `cancel_wakeup` — input: wakeup id. Cancels if still armed.
 

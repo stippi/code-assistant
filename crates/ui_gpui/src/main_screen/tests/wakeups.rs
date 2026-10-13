@@ -4,13 +4,18 @@
 use crate::test_support::{MainScreenTest, TestCore};
 use agent_core::{SerializedToolExecution, ToolRequest};
 use code_assistant_core::mocks::MockLLMProvider;
-use code_assistant_core::session::wakeup::WAKEUP_PREFIX;
+use code_assistant_core::session::wakeup::wakeup_message;
 use gpui_kit::TestAppContext;
 use llm::{ContentBlock, Message};
 
 /// A session whose agent scheduled a wakeup and ended its turn, then
 /// `between` was said, then the wakeup fired.
 fn core_with_fired_wakeup(between: &[Message]) -> (TestCore, String) {
+    core_with_wakeup_message(between, &wakeup_message(1, "check the build"))
+}
+
+/// Like [`core_with_fired_wakeup`], with the wakeup message as `fired`.
+fn core_with_wakeup_message(between: &[Message], fired: &str) -> (TestCore, String) {
     let core = TestCore::new(MockLLMProvider::new(Vec::new()).into_factory());
     let session_id = core.create_session();
     let input = serde_json::json!({ "delay_seconds": 60, "prompt": "check the build" });
@@ -40,9 +45,7 @@ fn core_with_fired_wakeup(between: &[Message]) -> (TestCore, String) {
             for message in between {
                 session.add_message(message.clone());
             }
-            session.add_message(Message::new_user(format!(
-                "{WAKEUP_PREFIX} check the build"
-            )));
+            session.add_message(Message::new_user(fired));
             session.tool_executions = vec![execution.clone()];
             Ok(())
         })
@@ -82,6 +85,27 @@ fn wakeup_after_the_user_spoke_shows_on_its_own(cx: &mut TestAppContext) {
         Message::new_user("anything else?"),
         Message::new_assistant("No."),
     ]);
+    let mut test = show(cx, core, session_id);
+
+    assert!(!test.tool_block("wake").unwrap().wakeup_fired);
+    assert_eq!(
+        test.transcript().last().map(String::as_str),
+        Some("wakeup: check the build")
+    );
+}
+
+#[gpui_kit::test]
+fn wakeup_message_without_id_is_linked_by_its_prompt(cx: &mut TestAppContext) {
+    let (core, session_id) = core_with_wakeup_message(&[], "[scheduled wakeup] check the build");
+    let mut test = show(cx, core, session_id);
+
+    assert!(test.tool_block("wake").unwrap().wakeup_fired);
+    assert_eq!(test.transcript().len(), 3);
+}
+
+#[gpui_kit::test]
+fn wakeup_message_of_another_id_is_not_linked(cx: &mut TestAppContext) {
+    let (core, session_id) = core_with_wakeup_message(&[], &wakeup_message(2, "check the build"));
     let mut test = show(cx, core, session_id);
 
     assert!(!test.tool_block("wake").unwrap().wakeup_fired);

@@ -9,6 +9,7 @@ use code_assistant_core::persistence::{BranchInfo, NodeId};
 
 use crate::shared::image;
 use agent_core::ui::ContextBoundary;
+use code_assistant_core::tools::impls::wakeup::ScheduleWakeupOutput;
 use code_assistant_core::ui::ToolStatus;
 use code_assistant_core::ui::ui_events::ToolResultData;
 use gpui_kit::{Context, Entity, prelude::*};
@@ -27,9 +28,11 @@ pub enum HiddenToolBlockType {
     Thinking,
 }
 
-/// A user message the wakeup scheduler injected (`[scheduled wakeup] …`).
+/// A user message the wakeup scheduler injected (`[scheduled wakeup #3] …`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct WakeupMessage {
+    /// The wakeup's id; `None` in messages recorded before they carried it.
+    pub id: Option<u64>,
     /// The prompt the agent passed to `schedule_wakeup`.
     pub prompt: String,
     /// The `schedule_wakeup` block it answers is in the same turn: that block
@@ -234,37 +237,53 @@ impl MessageContainer {
         self.wakeup.lock().unwrap().clone()
     }
 
-    /// The prompt, if this is a user message the wakeup scheduler injected.
-    pub fn wakeup_prompt(&self, cx: &gpui_kit::App) -> Option<String> {
+    /// The wakeup, not yet linked, if this is a user message the wakeup
+    /// scheduler injected.
+    pub fn parse_wakeup(&self, cx: &gpui_kit::App) -> Option<WakeupMessage> {
         if !self.is_user_message() {
             return None;
         }
         let first = self.elements().into_iter().next()?;
-        match first.read(cx).block.as_ref() {
-            BlockData::TextBlock(text) => {
-                code_assistant_core::session::wakeup::wakeup_prompt(&text.content)
-                    .map(str::to_string)
-            }
-            _ => None,
-        }
+        let BlockData::TextBlock(text) = first.read(cx).block.as_ref() else {
+            return None;
+        };
+        let parsed = code_assistant_core::session::wakeup::parse_wakeup_message(&text.content)?;
+        Some(WakeupMessage {
+            id: parsed.id,
+            prompt: parsed.prompt.to_string(),
+            linked: false,
+        })
     }
 
-    /// Look for the not yet fired `schedule_wakeup` block with this prompt
+    /// Look for the `schedule_wakeup` block `wakeup` answers — by its id, or
+    /// for messages without one, the not yet fired block with its prompt —
     /// and mark it as fired.
-    pub fn link_wakeup(&self, prompt: &str, cx: &mut Context<Self>) -> WakeupLink {
+    pub fn link_wakeup(&self, wakeup: &WakeupMessage, cx: &mut Context<Self>) -> WakeupLink {
         if self.is_user_message() {
             return WakeupLink::TurnBoundary;
         }
-        for element in self.elements().iter().rev() {
-            let linked = element.update(cx, |view, cx| {
-                let matches = view.block.as_tool().is_some_and(|tool| {
-                    tool.name == "schedule_wakeup"
-                        && !tool.wakeup_fired
+        let answers = |tool: &ToolUseBlock| {
+            if tool.name != "schedule_wakeup" {
+                return false;
+            }
+            match wakeup.id {
+                Some(id) => tool
+                    .output
+                    .as_deref()
+                    .and_then(ScheduleWakeupOutput::from_ui_output)
+                    .is_some_and(|output| output.wakeup_id == id),
+                None => {
+                    !tool.wakeup_fired
                         && tool
                             .parameters
                             .iter()
-                            .any(|p| p.name == "prompt" && p.value.trim() == prompt)
-                });
+                            .any(|p| p.name == "prompt" && p.value.trim() == wakeup.prompt)
+                }
+            }
+        };
+        for element in self.elements().iter().rev() {
+            let linked = element.update(cx, |view, cx| {
+                let matches = view.block.as_tool().is_some_and(answers);
                 if matches {
                     view.block_mut()
                         .as_tool_mut()
