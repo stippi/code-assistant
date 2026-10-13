@@ -8,7 +8,7 @@ use code_assistant_core::ui::ui_events::ToolResultData;
 use code_assistant_core::ui::{DisplayFragment, UiEvent};
 use std::collections::HashMap;
 
-use super::super::blocks::{MessageContainer, MessageRole};
+use super::super::blocks::{MessageContainer, MessageRole, WakeupLink};
 use gpui_kit::Entity;
 use tracing::{debug, trace, warn};
 
@@ -154,7 +154,9 @@ impl Gpui {
 
                         new_message
                     });
-                    queue.push(new_message);
+                    queue.push(new_message.clone());
+                    drop(queue);
+                    self.recognize_wakeup(&new_message, cx);
                 }
 
                 // Sync ListState and reset pending message
@@ -352,6 +354,7 @@ impl Gpui {
                 // This ensures the virtual list has fine-grained items (one per
                 // LLM request/node) so that GPUI's list virtualization can skip
                 // off-screen items efficiently.
+                let mut added = Vec::new();
                 for message_data in messages {
                     let current_container = {
                         let mut queue = self.message_queue.lock().unwrap();
@@ -381,10 +384,14 @@ impl Gpui {
                         message_data.fragments,
                         cx,
                     );
+                    added.push(current_container);
                 }
 
                 // Apply tool results to update tool blocks with their execution results
                 self.apply_tool_results(&tool_results, cx);
+                for container in &added {
+                    self.recognize_wakeup(container, cx);
+                }
 
                 // Ensure we always end with an Assistant container
                 // This is crucial for sessions that are waiting for responses or actively running agents
@@ -461,6 +468,7 @@ impl Gpui {
 
                 let session_id = self.current_session_id.lock().unwrap().clone();
 
+                let mut added = Vec::new();
                 for message_data in messages {
                     let current_container = {
                         let mut queue = self.message_queue.lock().unwrap();
@@ -489,10 +497,14 @@ impl Gpui {
                         message_data.fragments,
                         cx,
                     );
+                    added.push(current_container);
                 }
 
                 // Apply tool results
                 self.apply_tool_results(&tool_results, cx);
+                for container in &added {
+                    self.recognize_wakeup(container, cx);
+                }
 
                 self.notify_messages_appended(old_len, cx);
             }
@@ -671,6 +683,20 @@ impl Gpui {
                 self.update_project_sidebar(cx, |sidebar, cx| {
                     sidebar.update_session_lifecycle(session_id, lifecycle, cx);
                 });
+            }
+            UiEvent::UpdateArmedWakeups {
+                session_id,
+                wakeups,
+            } => {
+                let next = wakeups.first().map(|wakeup| wakeup.fires_at);
+                self.update_project_sidebar(cx, |sidebar, cx| {
+                    sidebar.update_session_wakeup(session_id.clone(), next, cx);
+                });
+                if self.is_current_session(&session_id) {
+                    self.update_messages_view(cx, |view, cx| {
+                        view.set_armed_wakeups(wakeups, cx);
+                    });
+                }
             }
             UiEvent::UpdateSessionActivityState {
                 session_id,
@@ -1020,6 +1046,7 @@ impl Gpui {
                 }
 
                 // Process message data
+                let mut added = Vec::new();
                 for message_data in messages {
                     let current_container = {
                         let mut queue = self.message_queue.lock().unwrap();
@@ -1048,10 +1075,14 @@ impl Gpui {
                         message_data.fragments,
                         cx,
                     );
+                    added.push(current_container);
                 }
 
                 // Apply tool results
                 self.apply_tool_results(&tool_results, cx);
+                for container in &added {
+                    self.recognize_wakeup(container, cx);
+                }
 
                 // Ensure we end with an Assistant container for the edit response
                 {
@@ -1295,5 +1326,31 @@ impl Gpui {
                 }
             }
         }
+    }
+
+    /// If `message` is a wakeup message, mark it as one, and mark the
+    /// `schedule_wakeup` block it answers as fired when that is in the turn
+    /// the message follows. Expects the tool results before `message` to be
+    /// applied: the block is found by the wakeup id in its result.
+    fn recognize_wakeup(&self, message: &Entity<MessageContainer>, cx: &mut gpui_kit::AsyncApp) {
+        let Some(mut wakeup) = cx.update_entity(message, |message, cx| message.parse_wakeup(cx))
+        else {
+            return;
+        };
+        let queue = self.message_queue.lock().unwrap().clone();
+        let Some(position) = queue.iter().position(|c| c == message) else {
+            return;
+        };
+        for container in queue[..position].iter().rev() {
+            match cx.update_entity(container, |c, cx| c.link_wakeup(&wakeup, cx)) {
+                WakeupLink::Linked => {
+                    wakeup.linked = true;
+                    break;
+                }
+                WakeupLink::TurnBoundary => break,
+                WakeupLink::NotHere => {}
+            }
+        }
+        cx.update_entity(message, |message, _| message.set_wakeup(wakeup));
     }
 }

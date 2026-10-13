@@ -219,6 +219,9 @@ pub struct BlockView {
     /// Timer that clears [`Self::copied_feedback_until`] after the checkmark
     /// feedback window elapses. Dropped/replaced on each copy.
     copied_feedback_task: Option<Task<()>>,
+    /// Timer that renders an inline tool block again whose description
+    /// changes with time (`ToolBlockRenderer::refresh_after`).
+    refresh_task: Option<Task<()>>,
     /// Current whole-line selection within this block's diff card body, if
     /// any. Drag-selecting rows sets it; the header's Copy button and
     /// Cmd/Ctrl-C read from it. Only meaningful for file-editing tool blocks.
@@ -298,6 +301,7 @@ impl BlockView {
             write_file_diff_mode,
             copied_feedback_until: None,
             copied_feedback_task: None,
+            refresh_task: None,
             diff_selection: None,
             diff_dragging: false,
             focus_handle: cx.focus_handle(),

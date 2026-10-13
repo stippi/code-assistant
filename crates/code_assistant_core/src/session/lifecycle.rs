@@ -190,6 +190,9 @@ pub enum SessionStatus {
     Working,
     /// The agent waits out a rate limit.
     RateLimited,
+    /// The agent stopped, but a wakeup it scheduled will continue the
+    /// session; nothing to do for the user.
+    Scheduled,
     /// The agent stopped with an error.
     Failed,
     /// Another code-assistant process runs this session.
@@ -200,13 +203,19 @@ pub enum SessionStatus {
 }
 
 impl SessionStatus {
-    pub fn resolve(activity: &SessionActivityState, awaiting: Option<AwaitingUser>) -> Self {
+    /// `wakeup_armed`: a wakeup is still to fire in the session.
+    pub fn resolve(
+        activity: &SessionActivityState,
+        awaiting: Option<AwaitingUser>,
+        wakeup_armed: bool,
+    ) -> Self {
         match awaiting {
             Some(AwaitingUser::Approval) => return Self::NeedsApproval,
             Some(AwaitingUser::Answer) => return Self::NeedsAnswer,
             None => {}
         }
         match activity {
+            SessionActivityState::Idle if wakeup_armed => Self::Scheduled,
             SessionActivityState::Idle => Self::Ready,
             SessionActivityState::AgentRunning | SessionActivityState::WaitingForResponse => {
                 Self::Working
@@ -225,7 +234,7 @@ impl SessionStatus {
             return false;
         }
         match self {
-            Self::Working | Self::RateLimited | Self::RunningElsewhere => true,
+            Self::Working | Self::RateLimited | Self::Scheduled | Self::RunningElsewhere => true,
             Self::Ready => !unread,
             Self::NeedsApproval | Self::NeedsAnswer | Self::Failed => false,
         }
@@ -458,22 +467,38 @@ mod tests {
             },
         ] {
             assert_eq!(
-                SessionStatus::resolve(&activity, Some(AwaitingUser::Approval)),
+                SessionStatus::resolve(&activity, Some(AwaitingUser::Approval), true),
                 SessionStatus::NeedsApproval
             );
             assert_eq!(
-                SessionStatus::resolve(&activity, Some(AwaitingUser::Answer)),
+                SessionStatus::resolve(&activity, Some(AwaitingUser::Answer), true),
                 SessionStatus::NeedsAnswer
             );
         }
         assert_eq!(
-            SessionStatus::resolve(&SessionActivityState::WaitingForResponse, None),
+            SessionStatus::resolve(&SessionActivityState::WaitingForResponse, None, true),
             SessionStatus::Working
         );
         assert_eq!(
-            SessionStatus::resolve(&SessionActivityState::Idle, None),
+            SessionStatus::resolve(&SessionActivityState::Idle, None, false),
             SessionStatus::Ready
         );
+    }
+
+    #[test]
+    fn idle_session_with_a_wakeup_to_fire_is_scheduled() {
+        assert_eq!(
+            SessionStatus::resolve(&SessionActivityState::Idle, None, true),
+            SessionStatus::Scheduled
+        );
+        let failed = SessionActivityState::Errored {
+            message: "x".into(),
+        };
+        assert_eq!(
+            SessionStatus::resolve(&failed, None, true),
+            SessionStatus::Failed
+        );
+        assert!(SessionStatus::Scheduled.should_recede(true, false));
     }
 
     #[test]

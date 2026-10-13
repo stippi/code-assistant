@@ -131,6 +131,7 @@ impl MainScreenTest {
                 .iter()
                 .map(|message| message.read(cx))
                 .filter(|message| !message.is_empty())
+                .filter(|message| message.wakeup().is_none_or(|wakeup| !wakeup.linked))
                 .map(|message| message.transcript_line(cx))
                 .collect()
         })

@@ -74,6 +74,10 @@ pub struct ToolUseBlock {
     /// Counts mutable accesses (see [`BlockData::as_tool_mut`]), so caches
     /// derived from the block can tell cheaply that nothing changed.
     pub revision: u64,
+    /// A `schedule_wakeup` block whose wakeup message followed it: the block
+    /// shows that it fired, the message itself is not shown (see
+    /// `MessageContainer::link_wakeup`).
+    pub wakeup_fired: bool,
 }
 
 /// Parameter for a tool

@@ -7,6 +7,7 @@ use crate::Gpui;
 use crate::shared::frame_profile;
 
 use code_assistant_core::session::instance::SessionActivityState;
+use code_assistant_core::session::wakeup::ArmedWakeupInfo;
 
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::{ActiveTheme, Icon};
@@ -30,6 +31,15 @@ use super::blocks::MessageContainer;
 
 /// Braille spinner frames for the activity indicator.
 const BRAILLE_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+/// Frame duration of the slow spinner of a session waiting for a wakeup.
+const WAKEUP_SPINNER_FRAME_MS: u128 = 500;
+
+fn wall_clock_millis() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
 
 /// Maximum width of the message content area. On wide viewports, messages
 /// stay centered rather than stretching edge-to-edge for comfortable reading.
@@ -90,6 +100,11 @@ pub struct MessagesView {
     last_animation_offset: Rc<Cell<f32>>,
     /// Task that ticks the braille spinner animation.
     _spinner_task: Option<Task<()>>,
+    /// The viewed session's wakeups still to fire, soonest first; shown
+    /// below the transcript while the agent is not running.
+    armed_wakeups: Vec<ArmedWakeupInfo>,
+    /// Renders the wakeup countdown again when its text changes.
+    wakeup_refresh_task: Option<Task<()>>,
 
     // -- Edge auto-scroll state (drag-to-select near a viewport edge) --
     /// Bounds of the message list viewport in window coordinates, captured
@@ -185,6 +200,8 @@ impl MessagesView {
             animation_active,
             last_animation_offset,
             _spinner_task: Some(spinner_task),
+            armed_wakeups: Vec::new(),
+            wakeup_refresh_task: None,
             list_bounds: Rc::new(Cell::new(Bounds::default())),
             edge_scroll_velocity: Rc::new(Cell::new(0.0)),
             edge_drag_active: Rc::new(Cell::new(false)),
@@ -878,6 +895,18 @@ impl MessagesView {
     /// the agent ended in a state that suggests an unfinished iteration
     /// (e.g. crashed mid-tool-call). When true and the session is idle, the
     /// MessagesView shows a floating Resume button above the input area.
+    pub fn set_armed_wakeups(&mut self, wakeups: Vec<ArmedWakeupInfo>, cx: &mut Context<Self>) {
+        if self.armed_wakeups != wakeups {
+            self.armed_wakeups = wakeups;
+            self.wakeup_refresh_task = None;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn armed_wakeups(&self) -> &[ArmedWakeupInfo] {
+        &self.armed_wakeups
+    }
+
     pub fn set_is_resumable(&self, is_resumable: bool) {
         self.is_resumable.set(is_resumable);
     }
@@ -940,9 +969,36 @@ impl Render for MessagesView {
                 )
             });
 
+        // Wakeups still to fire, while nothing else shows that the session
+        // goes on.
+        let agent_running = self
+            .activity_state
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
+            .is_some_and(|s| !s.is_terminal());
+        let has_wakeups = !self.armed_wakeups.is_empty() && !agent_running;
+        if has_wakeups && self.wakeup_refresh_task.is_none() {
+            let next = self.armed_wakeups[0].fires_at.with_timezone(&chrono::Local);
+            // The next spinner frame, or earlier when the countdown changes.
+            let next_frame = Duration::from_millis(
+                (WAKEUP_SPINNER_FRAME_MS - wall_clock_millis() % WAKEUP_SPINNER_FRAME_MS) as u64,
+            );
+            let after = crate::tool_cards::wakeup_renderer::countdown_changes_after(next)
+                .map_or(next_frame, |countdown| countdown.min(next_frame));
+            self.wakeup_refresh_task = Some(cx.spawn(async move |view, cx| {
+                cx.background_executor().timer(after).await;
+                let _ = view.update(cx, |view, cx| {
+                    view.wakeup_refresh_task = None;
+                    cx.notify();
+                });
+            }));
+        }
+
         let pending_index = total_items;
         let activity_index = total_items + if has_pending { 1 } else { 0 };
-        let item_count = activity_index + if has_activity { 1 } else { 0 };
+        let wakeups_index = activity_index + if has_activity { 1 } else { 0 };
+        let item_count = wakeups_index + if has_wakeups { 1 } else { 0 };
 
         // Build the virtualized list. The render callback is only invoked for
         // items that are within the visible viewport + overdraw zone.
@@ -958,6 +1014,8 @@ impl Render for MessagesView {
                     message_item::render_message(this, index, window, cx)
                 } else if index == pending_index && has_pending {
                     activity_indicator::render_pending_message(this, cx)
+                } else if index == wakeups_index && has_wakeups {
+                    activity_indicator::render_armed_wakeups(this, cx)
                 } else {
                     // Activity indicator (last item)
                     activity_indicator::render_activity_indicator(this, cx)
