@@ -31,6 +31,15 @@ use super::blocks::MessageContainer;
 
 /// Braille spinner frames for the activity indicator.
 const BRAILLE_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+/// Frame duration of the slow spinner of a session waiting for a wakeup.
+const WAKEUP_SPINNER_FRAME_MS: u128 = 500;
+
+fn wall_clock_millis() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
 
 /// Maximum width of the message content area. On wide viewports, messages
 /// stay centered rather than stretching edge-to-edge for comfortable reading.
@@ -940,15 +949,19 @@ impl Render for MessagesView {
         let has_wakeups = !self.armed_wakeups.is_empty() && !agent_running;
         if has_wakeups && self.wakeup_refresh_task.is_none() {
             let next = self.armed_wakeups[0].fires_at.with_timezone(&chrono::Local);
-            if let Some(after) = crate::tool_cards::wakeup_renderer::countdown_changes_after(next) {
-                self.wakeup_refresh_task = Some(cx.spawn(async move |view, cx| {
-                    cx.background_executor().timer(after).await;
-                    let _ = view.update(cx, |view, cx| {
-                        view.wakeup_refresh_task = None;
-                        cx.notify();
-                    });
-                }));
-            }
+            // The next spinner frame, or earlier when the countdown changes.
+            let next_frame = Duration::from_millis(
+                (WAKEUP_SPINNER_FRAME_MS - wall_clock_millis() % WAKEUP_SPINNER_FRAME_MS) as u64,
+            );
+            let after = crate::tool_cards::wakeup_renderer::countdown_changes_after(next)
+                .map_or(next_frame, |countdown| countdown.min(next_frame));
+            self.wakeup_refresh_task = Some(cx.spawn(async move |view, cx| {
+                cx.background_executor().timer(after).await;
+                let _ = view.update(cx, |view, cx| {
+                    view.wakeup_refresh_task = None;
+                    cx.notify();
+                });
+            }));
         }
 
         let pending_index = total_items;

@@ -2,7 +2,7 @@
 //!
 //! Shows braille spinners for loading states and pending message cards.
 
-use super::{BRAILLE_FRAMES, MessagesView};
+use super::{BRAILLE_FRAMES, MessagesView, WAKEUP_SPINNER_FRAME_MS, wall_clock_millis};
 use code_assistant_core::session::instance::SessionActivityState;
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::{Context, div, prelude::*, rems};
@@ -142,14 +142,13 @@ pub fn render_activity_indicator(
     }
 }
 
-/// Render the wakeups still to fire in the viewed session, like an inline
-/// tool line: without it, an idle session that goes on later would look
+/// Render the wakeups still to fire in the viewed session, with a slow
+/// spinner: without it, an idle session that goes on later would look
 /// finished once its `schedule_wakeup` block scrolled out of view.
 pub fn render_armed_wakeups(
     view: &MessagesView,
     cx: &mut Context<MessagesView>,
 ) -> gpui_kit::AnyElement {
-    use crate::shared::file_icons;
     use crate::tool_cards::wakeup_renderer::countdown;
 
     let wakeups = view.armed_wakeups();
@@ -163,6 +162,7 @@ pub fn render_armed_wakeups(
         n => format!("{n} wakeups · next {countdown}"),
     };
     let color = cx.theme().muted_foreground;
+    let frame = (wall_clock_millis() / WAKEUP_SPINNER_FRAME_MS) as usize % BRAILLE_FRAMES.len();
     div()
         .id("armed-wakeups")
         .w_full()
@@ -176,12 +176,15 @@ pub fn render_armed_wakeups(
                 .gap_1p5()
                 .py_1p5()
                 .px_3()
-                .child(file_icons::render_icon_container(
-                    &file_icons::get().get_type_icon(file_icons::TOOL_SCHEDULE_WAKEUP),
-                    14.0,
-                    color,
-                    "⏰",
-                ))
+                .child(
+                    div()
+                        .w(gpui_kit::px(14.))
+                        .flex()
+                        .justify_center()
+                        .text_size(rems(0.875))
+                        .text_color(color)
+                        .child(BRAILLE_FRAMES[frame]),
+                )
                 .child(div().text_size(rems(0.8125)).text_color(color).child(text)),
         )
         .into_any_element()
