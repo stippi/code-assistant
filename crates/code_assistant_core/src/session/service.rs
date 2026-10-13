@@ -448,11 +448,9 @@ impl SessionService {
                 // Resolve the project path so the new session gets the correct
                 // CWD — either from projects.json or from a sibling session
                 // that already ran in that (temporary) project.
-                let mut config = manager.session_config_template().clone();
+                let path = manager.resolve_project_path(&project);
+                let mut config = manager.new_session_config(path);
                 config.initial_project = project.clone();
-                if let Some(path) = manager.resolve_project_path(&project) {
-                    config.init_path = Some(path);
-                }
                 // Like a session without a project, it starts on the
                 // default model: without one, no agent can run in it.
                 let model_config =
@@ -1068,19 +1066,21 @@ impl SessionService {
         .await
     }
 
-    /// Set the MCP servers deactivated for a session (by config name) and fan
-    /// out the refreshed list. Mirrors [`change_permission_tier`].
+    /// Switch an MCP server (by config name) on or off for a session, which
+    /// its project's next sessions follow, and fan out the refreshed list.
+    /// Mirrors [`change_permission_tier`].
     ///
     /// [`change_permission_tier`]: Self::change_permission_tier
-    pub async fn set_disabled_mcp_servers(
+    pub async fn set_mcp_server_enabled(
         &self,
         session_id: String,
-        disabled: Vec<String>,
+        name: String,
+        enabled: bool,
     ) -> Result<()> {
         self.call_session(session_id.clone(), move |ctx| async move {
             let servers = {
                 let mut manager = ctx.manager.lock().await;
-                manager.set_session_disabled_mcp_servers(&session_id, disabled)?
+                manager.set_session_mcp_server_enabled(&session_id, &name, enabled)?
             };
             ctx.notify_session(&session_id, UiEvent::UpdateMcpServers { servers });
             Ok(())
@@ -1500,9 +1500,8 @@ impl SessionService {
             .context("Failed to save project")?;
 
             let mut manager = ctx.manager.lock().await;
-            let mut config = manager.session_config_template().clone();
+            let mut config = manager.new_session_config(Some(path));
             config.initial_project = name.clone();
-            config.init_path = Some(path);
             let session_id = manager
                 .create_session_with_config(None, Some(config), None)
                 .context("Project saved but failed to create session")?;
@@ -2125,7 +2124,6 @@ fn schedule_agent_impl(
     let instance = manager.get_session(session_id).unwrap();
     let run_session_config = instance.session.config.clone();
     let project_dir = run_session_config.effective_project_path().cloned();
-    let disabled = run_session_config.disabled_mcp_servers.clone();
     let permission_handler = manager.permission_mediator(session_id)?;
     // The manager owns setup_task; the task must not own the manager back.
     let owner = Arc::downgrade(&ctx.manager);
@@ -2218,9 +2216,8 @@ fn schedule_agent_impl(
                 events.publish_ui(
                     &task_session,
                     UiEvent::UpdateMcpServers {
-                        servers: crate::tools::mcp::session_mcp_servers(
-                            project_dir.as_deref(),
-                            &disabled,
+                        servers: crate::tools::mcp_selection::session_mcp_servers(
+                            &run_session_config,
                         ),
                     },
                 );

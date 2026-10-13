@@ -74,9 +74,11 @@ follow-up.
 
 ## Per-session server toggles
 
-Each session can deactivate individual servers (global or project-local) via
-the MCP selector in the input bar; the set persists in the session config
-(`disabled_mcp_servers`). Deactivation filters the **tool set** offered to
+Each session can switch individual servers (global or project-local) on and
+off via the MCP selector in the input bar; the state persists in the session
+config (`enabled_mcp_servers` / `disabled_mcp_servers`), and the project
+remembers the last switch for its next sessions (see "Which servers a session
+has on" in [mcp-client-mode.md](mcp-client-mode.md)). Deactivation filters the **tool set** offered to
 and callable by that session's agent (via the per-server
 `scope:mcp-<server>` capability tag) — it does not prevent the server
 process from starting, since registries and their connections are shared
