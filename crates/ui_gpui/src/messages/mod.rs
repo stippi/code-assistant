@@ -35,6 +35,10 @@ const BRAILLE_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦
 /// stay centered rather than stretching edge-to-edge for comfortable reading.
 const MAX_MESSAGE_WIDTH: f32 = 720.0;
 
+/// How long the "previous user message" button's show condition must hold
+/// before the button appears.
+const PREVIOUS_BUTTON_DELAY: Duration = Duration::from_millis(300);
+
 /// Persisted scroll state for a single session.
 ///
 /// The `anchor` is the list's *logical* scroll position (an item index plus a
@@ -114,6 +118,11 @@ pub struct MessagesView {
     /// whenever we switch away. Restored when the session is shown again so
     /// the user sees it exactly as they left it.
     saved_scroll: HashMap<String, SavedScroll>,
+    /// Whether the "previous user message" button is shown, decided after
+    /// each layout pass (see [`should_show_previous_button`]).
+    show_previous_button: Rc<Cell<bool>>,
+    /// Since when the button's show condition holds uninterrupted.
+    show_previous_since: Rc<Cell<Option<Instant>>>,
 }
 
 impl MessagesView {
@@ -183,6 +192,8 @@ impl MessagesView {
             profile_sweep_task: None,
             displayed_session_id: None,
             saved_scroll: HashMap::new(),
+            show_previous_button: Rc::new(Cell::new(false)),
+            show_previous_since: Rc::new(Cell::new(None)),
         }
     }
 
@@ -635,6 +646,26 @@ impl MessagesView {
         self.scroll_to_bottom();
     }
 
+    /// Scroll up so the end of the previous user message sits near the top
+    /// of the viewport. Called from the "previous user message" button.
+    pub fn scroll_to_previous_user_message(&mut self, cx: &mut Context<Self>) {
+        let Some(ix) =
+            previous_user_message_index(&self.list_state, &self.message_queue.lock().unwrap(), cx)
+        else {
+            return;
+        };
+        self.stop_animation();
+        self.follow_tail = false;
+        self.list_state.scroll_to(ListOffset {
+            item_ix: ix + 1,
+            offset_in_item: px(0.),
+        });
+        self.list_state
+            .scroll_by(-previous_user_message_margin(&self.list_state));
+        self.persist_current_scroll(cx);
+        cx.notify();
+    }
+
     // -----------------------------------------------------------------
     // Edge auto-scroll (drag-to-select near a viewport edge)
     // -----------------------------------------------------------------
@@ -975,6 +1006,9 @@ impl Render for MessagesView {
         }
 
         let show_scroll_button = !self.follow_tail && total_items > 0;
+        // Decided after layout (see on_children_prepainted below), when the
+        // list's scroll anchor is resolved.
+        let show_previous_button = self.show_previous_button.get();
 
         // Resume button: shown when the session ended in a "stuck" state
         // (last message is a user message or an assistant message with
@@ -994,11 +1028,53 @@ impl Render for MessagesView {
         div()
             .on_children_prepainted({
                 let list_bounds = self.list_bounds.clone();
-                move |bounds_vec: Vec<Bounds<Pixels>>, _window, _app| {
+                let list_state = self.list_state.clone();
+                let message_queue = self.message_queue.clone();
+                let show_previous_button = self.show_previous_button.clone();
+                let show_previous_since = self.show_previous_since.clone();
+                let follow_tail = self.follow_tail;
+                let entity = cx.entity().downgrade();
+                move |bounds_vec: Vec<Bounds<Pixels>>, _window, app| {
                     if let Some(first) = bounds_vec.first()
                         && list_bounds.get() != *first
                     {
                         list_bounds.set(*first);
+                    }
+                    // Before layout the list may still be anchored past its
+                    // last item, which made a render-time check flicker. Here
+                    // the anchor is resolved; re-render only on a change.
+                    let wanted = should_show_previous_button(
+                        &list_state,
+                        &message_queue.lock().unwrap(),
+                        follow_tail,
+                        app,
+                    );
+                    // Appear only once the condition held for a moment, so
+                    // transient layouts (e.g. while a new message scrolls
+                    // in) don't flash the button; hide right away.
+                    let show = if wanted {
+                        let since = show_previous_since.get().unwrap_or_else(|| {
+                            // Re-check once the delay is over.
+                            let entity = entity.clone();
+                            app.spawn(async move |cx| {
+                                cx.background_executor().timer(PREVIOUS_BUTTON_DELAY).await;
+                                let _ = entity.update(cx, |_, cx| cx.notify());
+                            })
+                            .detach();
+                            let now = Instant::now();
+                            show_previous_since.set(Some(now));
+                            now
+                        });
+                        since.elapsed() >= PREVIOUS_BUTTON_DELAY
+                    } else {
+                        show_previous_since.take();
+                        false
+                    };
+                    if show_previous_button.replace(show) != show {
+                        let entity = entity.clone();
+                        app.defer(move |cx| {
+                            let _ = entity.update(cx, |_, cx| cx.notify());
+                        });
                     }
                 }
             })
@@ -1039,60 +1115,49 @@ impl Render for MessagesView {
                 }),
             )
             .child(message_list)
-            .when(show_scroll_button, |el| {
-                let is_dark = cx.theme().is_dark();
-                let btn_bg = cx.theme().muted;
-                // Hover must be fully opaque — opacity() sets alpha and causes
-                // see-through artifacts. Use a solid theme token instead.
-                let btn_hover_bg = cx.theme().secondary;
-                let btn_border = if is_dark {
-                    cx.theme().muted_foreground.opacity(0.4)
-                } else {
-                    cx.theme().border
-                };
-                let btn_hover_border = cx.theme().muted_foreground;
+            .when(show_scroll_button || show_previous_button, |el| {
                 el.child(
-                    // Full-width absolute wrapper to center the button horizontally
+                    // Stacked in the bottom-right corner, clear of the scrollbar
                     div()
                         .absolute()
                         .bottom_4()
-                        .w_full()
+                        .right_6()
                         .flex()
-                        .justify_center()
-                        .child(
-                            div()
-                                .id("scroll-to-bottom")
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .w_8()
-                                .h_8()
-                                .rounded_full()
-                                .bg(btn_bg)
-                                .border_1()
-                                .border_color(btn_border)
-                                .shadow_md()
-                                .cursor(gpui_kit::CursorStyle::PointingHand)
-                                .hover(move |s| s.bg(btn_hover_bg).border_color(btn_hover_border))
-                                .child(
-                                    Icon::default()
-                                        .path(SharedString::from("icons/chevron_down.svg"))
-                                        .text_color(cx.theme().muted_foreground)
-                                        .size(px(16.)),
+                        .flex_col()
+                        .gap_2()
+                        .when(show_previous_button, |row| {
+                            row.child(
+                                round_scroll_button(
+                                    "scroll-to-previous-user-message",
+                                    "icons/chevron_up.svg",
+                                    cx,
                                 )
-                                .on_click(cx.listener(|this, _event, _window, cx| {
-                                    this.activate_follow_tail();
-                                    this.persist_current_scroll(cx);
-                                    cx.notify();
-                                })),
-                        ),
+                                .on_click(cx.listener(
+                                    |this, _event, _window, cx| {
+                                        this.scroll_to_previous_user_message(cx);
+                                    },
+                                )),
+                            )
+                        })
+                        .when(show_scroll_button, |row| {
+                            row.child(
+                                round_scroll_button(
+                                    "scroll-to-bottom",
+                                    "icons/chevron_down.svg",
+                                    cx,
+                                )
+                                .on_click(cx.listener(
+                                    |this, _event, _window, cx| {
+                                        this.activate_follow_tail();
+                                        this.persist_current_scroll(cx);
+                                        cx.notify();
+                                    },
+                                )),
+                            )
+                        }),
                 )
             })
             .when(show_resume_button, |el| {
-                // When the scroll-to-bottom button is also visible, lift the
-                // resume button so they don't overlap. Both are anchored to
-                // the bottom of the messages area.
-                let bottom_offset = if show_scroll_button { px(56.) } else { px(16.) };
                 let btn_bg = cx.theme().primary;
                 let btn_hover_bg = cx.theme().primary_hover;
                 let btn_fg = cx.theme().primary_foreground;
@@ -1101,7 +1166,7 @@ impl Render for MessagesView {
                     // Full-width absolute wrapper to center the button horizontally
                     div()
                         .absolute()
-                        .bottom(bottom_offset)
+                        .bottom_4()
                         .w_full()
                         .flex()
                         .justify_center()
@@ -1146,6 +1211,94 @@ impl Render for MessagesView {
             .vertical_scrollbar(&self.list_state)
             .into_any()
     }
+}
+
+/// How far below the viewport top the end of a user message lands when
+/// jumping to it, so a bit of the message stays visible above its reply.
+fn previous_user_message_margin(list_state: &ListState) -> Pixels {
+    let viewport = list_state.viewport_bounds().size.height;
+    (viewport * 0.25).max(px(48.))
+}
+
+/// The last user message whose end lies above the viewport top (beyond the
+/// jump margin), i.e. the one the "previous user message" button scrolls to.
+fn previous_user_message_index(
+    list_state: &ListState,
+    messages: &[Entity<MessageContainer>],
+    cx: &App,
+) -> Option<usize> {
+    let top = list_state.logical_scroll_top();
+    let margin = previous_user_message_margin(list_state);
+    // The message's end is the start of the next row; only rows ending at or
+    // before the top row qualify.
+    let last_candidate = top.item_ix.min(messages.len()).checked_sub(1)?;
+    (0..=last_candidate).rev().find(|&ix| {
+        // A message ending just above the top would barely move (or move
+        // down) once the margin is applied; skip to the one before it.
+        let ends_right_above = ix + 1 == top.item_ix && top.offset_in_item < margin;
+        !ends_right_above && messages[ix].read(cx).is_user_message()
+    })
+}
+
+/// Show the "previous user message" button only while the last user message
+/// is out of view and there is a user message above to jump to. Needs a
+/// laid-out list (resolved scroll anchor), so call it after layout.
+///
+/// While following the tail, a last user message below the viewport is on
+/// its way into view (the list is animating to the bottom), so it counts as
+/// visible.
+fn should_show_previous_button(
+    list_state: &ListState,
+    messages: &[Entity<MessageContainer>],
+    follow_tail: bool,
+    cx: &App,
+) -> bool {
+    let Some(last_user) = messages.iter().rposition(|m| m.read(cx).is_user_message()) else {
+        return false;
+    };
+    let out_of_view = list_state.item_is_above_viewport(last_user) == Some(true)
+        || (!follow_tail && list_state.item_is_below_viewport(last_user) == Some(true));
+    out_of_view && previous_user_message_index(list_state, messages, cx).is_some()
+}
+
+/// A small round button floating over the bottom of the message list (scroll
+/// to bottom / to the previous user message).
+fn round_scroll_button(
+    id: &'static str,
+    icon: &'static str,
+    cx: &Context<MessagesView>,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let is_dark = cx.theme().is_dark();
+    let btn_bg = cx.theme().muted;
+    // Hover must be fully opaque — opacity() sets alpha and causes
+    // see-through artifacts. Use a solid theme token instead.
+    let btn_hover_bg = cx.theme().secondary;
+    let btn_border = if is_dark {
+        cx.theme().muted_foreground.opacity(0.4)
+    } else {
+        cx.theme().border
+    };
+    let btn_hover_border = cx.theme().muted_foreground;
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .justify_center()
+        .w_8()
+        .h_8()
+        .rounded_full()
+        .bg(btn_bg)
+        .border_1()
+        .border_color(btn_border)
+        .shadow_md()
+        .cursor(gpui_kit::CursorStyle::PointingHand)
+        .hover(move |s| s.bg(btn_hover_bg).border_color(btn_hover_border))
+        .child(
+            Icon::default()
+                .path(SharedString::from(icon))
+                .text_color(cx.theme().muted_foreground)
+                .size(px(16.)),
+        )
 }
 
 #[cfg(test)]
