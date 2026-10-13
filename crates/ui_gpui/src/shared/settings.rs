@@ -2,9 +2,10 @@
 //!
 //! Stores theme, font scale, and window bounds to disk so they survive restarts.
 
+use code_assistant_core::session::default_model::DefaultModelConfig;
 use gpui_kit::{Bounds, Pixels, Point, Size, px};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::{debug, warn};
 
 /// Serializable representation of window bounds.
@@ -68,10 +69,11 @@ pub struct UiSettings {
     #[serde(default)]
     pub window_bounds: Option<WindowBoundsSettings>,
 
-    /// Preferred default model for new sessions.
-    /// Used when no `--model` CLI argument is given.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_model: Option<String>,
+    /// The default model as older versions stored it here; moved to
+    /// `default-model.json` by [`migrate_default_model`] and dropped on the
+    /// next save.
+    #[serde(rename = "default_model", default, skip_serializing)]
+    legacy_default_model: Option<String>,
 
     /// Persisted width (px) of the right Review sidebar.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -129,7 +131,7 @@ impl Default for UiSettings {
             theme_mode: default_theme_mode(),
             ui_scale: default_ui_scale(),
             window_bounds: None,
-            default_model: None,
+            legacy_default_model: None,
             right_sidebar_width: None,
             review_default_base: None,
             review_expanded_repos: Vec::new(),
@@ -146,8 +148,11 @@ impl UiSettings {
 
     /// Load settings from disk, returning defaults if the file is missing or invalid.
     pub fn load() -> Self {
-        let path = Self::settings_path();
-        match std::fs::read_to_string(&path) {
+        Self::load_from(&Self::settings_path())
+    }
+
+    fn load_from(path: &Path) -> Self {
+        match std::fs::read_to_string(path) {
             Ok(contents) => match serde_json::from_str(&contents) {
                 Ok(settings) => {
                     debug!("Loaded UI settings from {}", path.display());
@@ -180,5 +185,60 @@ impl UiSettings {
                 warn!("Failed to save UI settings to {}: {}", path.display(), e);
             }
         }
+    }
+}
+
+/// Move the default model from older `ui-settings.json` files to the
+/// frontend-neutral `default-model.json`, unless that already names one.
+pub fn migrate_default_model() {
+    migrate_default_model_in(&UiSettings::settings_path(), &DefaultModelConfig::path());
+}
+
+fn migrate_default_model_in(ui_settings_path: &Path, default_model_path: &Path) {
+    let Some(model) = UiSettings::load_from(ui_settings_path).legacy_default_model else {
+        return;
+    };
+    let mut config = DefaultModelConfig::load_from(default_model_path);
+    if config.model.is_some() {
+        return;
+    }
+    config.model = Some(model);
+    if let Err(e) = config.save_to(default_model_path) {
+        warn!("Failed to migrate the default model: {e:#}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_model_moves_out_of_ui_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let ui_settings = dir.path().join("ui-settings.json");
+        let default_model = dir.path().join("default-model.json");
+        std::fs::write(&ui_settings, r#"{ "default_model": "Model A" }"#).unwrap();
+
+        migrate_default_model_in(&ui_settings, &default_model);
+
+        let migrated = DefaultModelConfig::load_from(&default_model);
+        assert_eq!(migrated.model.as_deref(), Some("Model A"));
+        // Saving the UI settings drops the old field.
+        let json = serde_json::to_string(&UiSettings::load_from(&ui_settings)).unwrap();
+        assert!(!json.contains("default_model"));
+    }
+
+    #[test]
+    fn migration_keeps_an_existing_default_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let ui_settings = dir.path().join("ui-settings.json");
+        let default_model = dir.path().join("default-model.json");
+        std::fs::write(&ui_settings, r#"{ "default_model": "Model A" }"#).unwrap();
+        std::fs::write(&default_model, r#"{ "model": "Model B" }"#).unwrap();
+
+        migrate_default_model_in(&ui_settings, &default_model);
+
+        let config = DefaultModelConfig::load_from(&default_model);
+        assert_eq!(config.model.as_deref(), Some("Model B"));
     }
 }

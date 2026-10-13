@@ -13,6 +13,9 @@ pub struct AgentRunConfig {
     pub task: Option<String>,
     pub continue_task: bool,
     pub model: String,
+    /// `--model` was given: sessions start with `model` instead of following
+    /// the configured default model.
+    pub model_pinned: bool,
     pub tool_syntax: crate::types::ToolSyntax,
     pub use_diff_format: bool,
     pub record: Option<PathBuf>,

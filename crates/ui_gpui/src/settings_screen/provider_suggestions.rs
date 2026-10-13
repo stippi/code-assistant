@@ -6,6 +6,7 @@
 
 #![allow(dead_code)] // Fields are part of the public API, used by UI code
 
+use code_assistant_core::session::default_model::DefaultModelConfig;
 use serde_json::{Map, Value, json};
 use std::process::Command;
 
@@ -416,12 +417,12 @@ pub fn apply_suggestion(
     std::fs::write(&models_path, models_json)?;
 
     // Set the first model as default if no default is configured yet
-    let mut settings = crate::shared::settings::UiSettings::load();
-    if settings.default_model.is_none()
+    let mut default_model = DefaultModelConfig::load();
+    if default_model.model.is_none()
         && let Some(first_model) = suggestion.models.first()
     {
-        settings.default_model = Some(first_model.display_name.to_string());
-        settings.save();
+        default_model.model = Some(first_model.display_name.to_string());
+        default_model.save()?;
     }
 
     Ok(())

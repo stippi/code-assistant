@@ -144,7 +144,6 @@ struct PendingSession {
 /// handler closure registered on the connection builder.
 pub struct AgentState {
     session_manager: Arc<Mutex<SessionManager>>,
-    model_name: String,
     tool_registry: Arc<tools_core::ToolRegistry>,
     playback_path: Option<std::path::PathBuf>,
     fast_playback: bool,
@@ -174,7 +173,6 @@ impl AgentState {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         session_manager: Arc<Mutex<SessionManager>>,
-        model_name: String,
         tool_registry: Arc<tools_core::ToolRegistry>,
         playback_path: Option<std::path::PathBuf>,
         fast_playback: bool,
@@ -183,7 +181,6 @@ impl AgentState {
     ) -> Self {
         Self {
             session_manager,
-            model_name,
             tool_registry,
             playback_path,
             fast_playback,
@@ -410,26 +407,24 @@ impl AgentState {
 
         // The ID is handed out now but the session is only created on the
         // first prompt; allocating reserves its folder in the meantime.
-        let session_id = self
-            .session_manager
-            .lock()
-            .await
-            .allocate_session_id(Some(&arguments.cwd))
-            .map_err(|e| to_acp_error(&e))?;
-
-        let session_config = self
-            .session_manager
-            .lock()
-            .await
-            .new_session_config(Some(arguments.cwd.clone()));
+        let (session_id, session_config, default_model) = {
+            let manager = self.session_manager.lock().await;
+            let session_id = manager
+                .allocate_session_id(Some(&arguments.cwd))
+                .map_err(|e| to_acp_error(&e))?;
+            (
+                session_id,
+                manager.new_session_config(Some(arguments.cwd.clone())),
+                manager.default_model_name(),
+            )
+        };
         let permission_tier = session_config.permission_tier;
 
-        let model_info =
-            Self::compute_model_config(&self.model_name, Some(self.model_name.as_str()));
+        let model_info = Self::compute_model_config(&default_model, Some(default_model.as_str()));
         let selected_model_name = model_info
             .as_ref()
             .map(|info| info.selected_model_name.clone())
-            .unwrap_or_else(|| self.model_name.clone());
+            .unwrap_or(default_model);
 
         let session_model_config = SessionModelConfig::new(selected_model_name);
 
@@ -647,8 +642,9 @@ impl AgentState {
         }
 
         let mut config_options = None;
+        let default_model = self.session_manager.lock().await.default_model_name();
         if let Some(model_info) = Self::compute_model_config(
-            &self.model_name,
+            &default_model,
             stored_model_config
                 .as_ref()
                 .map(|config| config.model_name.as_str()),
@@ -744,7 +740,8 @@ impl AgentState {
     /// Build a `SetSessionConfigOptionResponse` carrying the updated model
     /// selector (with `selected` marked current).
     fn model_config_response(&self, selected: &str) -> acp::SetSessionConfigOptionResponse {
-        let options = Self::compute_model_config(&self.model_name, Some(selected))
+        // `selected` always names a configured model, so no default is needed.
+        let options = Self::compute_model_config(selected, Some(selected))
             .map(|info| info.options)
             .unwrap_or_default();
         acp::SetSessionConfigOptionResponse::new(options)
@@ -935,7 +932,7 @@ impl AgentState {
             let manager = self.session_manager.lock().await;
             match manager.get_session_model_config(&arguments.session_id.0) {
                 Ok(Some(config)) => config,
-                Ok(None) => SessionModelConfig::new(self.model_name.clone()),
+                Ok(None) => SessionModelConfig::new(manager.default_model_name()),
                 Err(e) => {
                     let error_msg = format!(
                         "Failed to load session model configuration for session {}: {e}",

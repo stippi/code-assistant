@@ -53,6 +53,9 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
         events.clone(),
     );
     session_manager.set_tool_registry_provider(registry_provider.as_provider());
+    if !config.model_pinned {
+        session_manager.follow_configured_default_model();
+    }
     let multi_session_manager = Arc::new(Mutex::new(session_manager));
     // Connecting configured MCP servers is async; it happens in the
     // background on the backend runtime below, so neither the GUI nor the

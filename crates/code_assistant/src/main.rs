@@ -46,6 +46,10 @@ fn main() -> Result<()> {
         tracing::warn!("Failed to install bundled system skills: {e:#}");
     }
 
+    // Older versions kept the default model in the GPUI settings.
+    #[cfg(feature = "gpui-frontend")]
+    ui_gpui::shared::settings::migrate_default_model();
+
     match args.mode {
         Some(Mode::CodexLogin) => {
             setup_logging(1, true);
@@ -88,6 +92,7 @@ fn main() -> Result<()> {
                     anyhow::bail!("Path '{}' is not a directory", path.display());
                 }
 
+                let model_pinned = model.is_some();
                 let model_name = Args::resolve_model_name(model)?;
 
                 let config = app::AgentRunConfig {
@@ -95,6 +100,7 @@ fn main() -> Result<()> {
                     task: None,
                     continue_task: false,
                     model: model_name.clone(),
+                    model_pinned,
                     tool_syntax,
                     use_diff_format,
                     record: None,
@@ -160,6 +166,7 @@ fn main() -> Result<()> {
                 task: args.task,
                 continue_task: args.continue_task,
                 model: model_name,
+                model_pinned: args.model.is_some(),
                 tool_syntax: args.tool_syntax,
                 use_diff_format: args.use_diff_format,
                 record: args.record,

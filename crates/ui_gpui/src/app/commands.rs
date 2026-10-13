@@ -407,17 +407,6 @@ impl Gpui {
         });
     }
 
-    pub(crate) fn cmd_update_default_model(&self, model_name: String) {
-        let Some(service) = self.session_service() else {
-            return;
-        };
-        self.dispatch(async move {
-            if let Err(e) = service.update_default_model(model_name).await {
-                debug!("Failed to update default model: {e:#}");
-            }
-        });
-    }
-
     pub(crate) fn cmd_change_sandbox_policy(
         &self,
         session_id: String,

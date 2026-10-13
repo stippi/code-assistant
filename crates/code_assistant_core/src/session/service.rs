@@ -453,8 +453,7 @@ impl SessionService {
                 config.initial_project = project.clone();
                 // Like a session without a project, it starts on the
                 // default model: without one, no agent can run in it.
-                let model_config =
-                    SessionModelConfig::new(manager.default_model_name().to_string());
+                let model_config = SessionModelConfig::new(manager.default_model_name());
                 manager.create_session_with_config(name, Some(config), Some(model_config))
             } else {
                 manager.create_session(name)
@@ -484,7 +483,7 @@ impl SessionService {
     ) -> Result<String> {
         self.call(move |ctx| async move {
             let mut manager = ctx.manager.lock().await;
-            let model_name = model.unwrap_or_else(|| manager.default_model_name().to_string());
+            let model_name = model.unwrap_or_else(|| manager.default_model_name());
             let model_config = Some(SessionModelConfig::new(model_name));
             manager.create_session_with_config(name, Some(config), model_config)
         })
@@ -703,16 +702,6 @@ impl SessionService {
                 )
             };
             manager.create_session_with_config(None, Some(config), model)
-        })
-        .await
-    }
-
-    /// Update the default model name used for newly created sessions.
-    pub async fn update_default_model(&self, model_name: String) -> Result<()> {
-        self.call(move |ctx| async move {
-            let mut manager = ctx.manager.lock().await;
-            manager.set_default_model_name(model_name);
-            Ok(())
         })
         .await
     }
@@ -2120,7 +2109,7 @@ fn schedule_agent_impl(
     // Caller owns the reservation and handles synchronous setup failures.
     let loader = manager.registry_loader();
     let session_config = manager.get_session_model_config(session_id)?;
-    let default_model_name = manager.default_model_name().to_string();
+    let default_model_name = manager.default_model_name();
     let instance = manager.get_session(session_id).unwrap();
     let run_session_config = instance.session.config.clone();
     let project_dir = run_session_config.effective_project_path().cloned();

@@ -107,6 +107,9 @@ pub struct ModelSwitchOutcome {
     pub warning: Option<String>,
 }
 
+/// Yields the user's current default model, if one is configured.
+pub type DefaultModelLookup = Arc<dyn Fn() -> Option<String> + Send + Sync>;
+
 /// The main SessionManager that manages multiple active sessions with on-demand agents
 pub struct SessionManager {
     /// Persistence layer for saving/loading sessions
@@ -122,8 +125,13 @@ pub struct SessionManager {
     /// Template configuration applied to each new session
     session_config_template: SessionConfig,
 
-    /// Default model name to use when creating sessions
+    /// Model new sessions start with when `default_model_lookup` yields none
+    /// (or is not set, e.g. because `--model` pinned the model).
     default_model_name: String,
+
+    /// Looks up the user's current default model each time one is needed,
+    /// so a changed setting applies to the next new session.
+    default_model_lookup: Option<DefaultModelLookup>,
 
     /// CLI-level override that forces every new session into the diff-format
     /// editing tool, regardless of the model's `edit_format` preference.
@@ -191,6 +199,7 @@ impl SessionManager {
             active_session_id: None,
             session_config_template,
             default_model_name,
+            default_model_lookup: None,
             force_diff_format,
             sleep_inhibitor: Arc::new(SleepInhibitor::default()),
             tool_registry,
@@ -537,17 +546,30 @@ impl SessionManager {
 
     /// Get the default model configuration
     fn default_model_config(&self) -> SessionModelConfig {
-        SessionModelConfig::new(self.default_model_name.clone())
+        SessionModelConfig::new(self.default_model_name())
     }
 
-    /// Update the default model name used for newly created sessions.
-    /// The model used for sessions without an own model configuration.
-    pub fn default_model_name(&self) -> &str {
-        &self.default_model_name
+    /// The model new sessions start with and sessions without an own model
+    /// configuration use: the looked-up default, else the startup model.
+    pub fn default_model_name(&self) -> String {
+        self.default_model_lookup
+            .as_ref()
+            .and_then(|lookup| lookup())
+            .unwrap_or_else(|| self.default_model_name.clone())
     }
 
-    pub fn set_default_model_name(&mut self, model_name: String) {
-        self.default_model_name = model_name;
+    /// Install the lookup of the current default model (see
+    /// [`Self::follow_configured_default_model`]).
+    pub fn set_default_model_lookup(&mut self, lookup: DefaultModelLookup) {
+        self.default_model_lookup = Some(lookup);
+    }
+
+    /// Follow the default model configured in `default-model.json`. Frontends
+    /// call this unless `--model` pinned their model.
+    pub fn follow_configured_default_model(&mut self) {
+        self.set_default_model_lookup(Arc::new(
+            crate::session::default_model::configured_default_model,
+        ));
     }
 
     /// Resolve whether a new session should use the diff-format edit tool.
@@ -561,9 +583,9 @@ impl SessionManager {
             return true;
         }
         let model_name = model_config
-            .map(|c| c.model_name.as_str())
-            .unwrap_or(self.default_model_name.as_str());
-        llm::provider_config::edit_format_for_model(model_name).is_diff()
+            .map(|c| c.model_name.clone())
+            .unwrap_or_else(|| self.default_model_name());
+        llm::provider_config::edit_format_for_model(&model_name).is_diff()
     }
 
     /// Create a new session with optional model config and return its ID
@@ -1277,7 +1299,7 @@ impl SessionManager {
             .model_config
             .as_ref()
             .map(|c| c.model_name.clone())
-            .unwrap_or_else(|| self.default_model_name.clone());
+            .unwrap_or_else(|| self.default_model_name());
         // Permission tier and session-scoped grants, shared between the
         // agent and its sub-agents. The grants live on the session instance
         // so "always allow" answers survive across agent runs; the tier
@@ -2574,6 +2596,30 @@ mod tests {
             crate::session::event_stream::EventStream::new(),
         );
         (manager, dir)
+    }
+
+    #[test]
+    fn new_sessions_follow_the_looked_up_default_model() {
+        let (mut manager, _dir) = build_manager(false);
+        let current = Arc::new(std::sync::Mutex::new(None::<String>));
+        let lookup_value = current.clone();
+        manager.set_default_model_lookup(Arc::new(move || lookup_value.lock().unwrap().clone()));
+
+        // Nothing configured: the startup model.
+        let first = manager.create_session(None).unwrap();
+        // Changed while running: the next session starts with it.
+        *current.lock().unwrap() = Some("other-model".to_string());
+        let second = manager.create_session(None).unwrap();
+
+        let model = |id: &str| {
+            manager
+                .get_session_model_config(id)
+                .unwrap()
+                .unwrap()
+                .model_name
+        };
+        assert_eq!(model(&first), "test-model");
+        assert_eq!(model(&second), "other-model");
     }
 
     /// A run commits through its own manager, which never loads the session
