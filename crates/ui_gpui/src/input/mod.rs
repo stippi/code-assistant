@@ -4,10 +4,11 @@ pub mod mcp_selector;
 pub mod model_selector;
 pub mod permission_selector;
 pub mod sandbox_selector;
+mod selector_row;
 pub mod skill_completion;
 pub mod worktree_selector;
 
-use super::shared::context_breakdown::{ContextBreakdown, ContextUsage};
+use super::shared::context_breakdown::ContextUsage;
 use super::shared::file_icons;
 use attachment::{AttachmentEvent, AttachmentView};
 use base64::Engine;
@@ -20,15 +21,18 @@ use gpui_kit::component::list::ListItem;
 use gpui_kit::component::{ActiveTheme, Icon, ThemeStyled};
 use gpui_kit::{
     Anchor, AnyElement, ClickEvent, ClipboardEntry, Context, CursorStyle, Edges, Entity,
-    EventEmitter, FocusHandle, Focusable, Render, SharedString, Subscription, Window, anchored,
-    deferred, div, prelude::*, px,
+    EventEmitter, FocusHandle, Focusable, Pixels, Render, SharedString, Subscription, Window,
+    anchored, deferred, div, prelude::*, px,
 };
 use mcp_selector::{McpSelector, McpSelectorEvent};
 use model_selector::{ModelSelector, ModelSelectorEvent};
 use permission_selector::{PermissionSelector, PermissionSelectorEvent};
 use sandbox::SandboxPolicy;
 use sandbox_selector::{SandboxSelector, SandboxSelectorEvent};
+use selector_row::DEFAULT_SECONDARY_SELECTORS_WIDTH;
 use skill_completion::SlashMenuItem;
+use std::cell::Cell;
+use std::rc::Rc;
 use tools_core::permissions::PermissionTier;
 use worktree_selector::{WorktreeSelector, WorktreeSelectorEvent};
 
@@ -111,6 +115,12 @@ pub struct InputArea {
     attachment_views: Vec<Entity<AttachmentView>>,
     /// The line comments chip shows its list.
     comments_popover_open: bool,
+    /// Natural width of the secondary selectors, measured while they are inline.
+    secondary_selectors_width: Rc<Cell<Pixels>>,
+    /// The secondary selectors don't fit and live behind the "⋯" button.
+    selectors_collapsed: bool,
+    /// The "⋯" button shows the collapsed selectors.
+    selectors_menu_open: bool,
     focus_handle: FocusHandle,
 
     // Agent state for button rendering
@@ -185,6 +195,9 @@ impl InputArea {
             attachments: Vec::new(),
             attachment_views: Vec::new(),
             comments_popover_open: false,
+            secondary_selectors_width: Rc::new(Cell::new(DEFAULT_SECONDARY_SELECTORS_WIDTH)),
+            selectors_collapsed: false,
+            selectors_menu_open: false,
             focus_handle: cx.focus_handle(),
 
             agent_is_running: false,
@@ -728,6 +741,7 @@ impl InputArea {
         match event {
             SandboxSelectorEvent::PolicyChanged { policy } => {
                 self.current_sandbox_policy = policy.clone();
+                self.selectors_menu_open = false;
                 cx.emit(InputAreaEvent::SandboxChanged {
                     policy: policy.clone(),
                 });
@@ -745,6 +759,7 @@ impl InputArea {
         match event {
             PermissionSelectorEvent::TierChanged { tier } => {
                 self.current_permission_tier = *tier;
+                self.selectors_menu_open = false;
                 cx.emit(InputAreaEvent::PermissionTierChanged { tier: *tier });
             }
         }
@@ -780,6 +795,9 @@ impl InputArea {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !matches!(event, WorktreeSelectorEvent::RefreshRequested) {
+            self.selectors_menu_open = false;
+        }
         match event {
             WorktreeSelectorEvent::SwitchedToLocal => {
                 cx.emit(InputAreaEvent::WorktreeSwitchedToLocal);
@@ -956,10 +974,13 @@ impl InputArea {
                     .p_2()
                     .gap_2()
                     .when(self.externally_locked, |el| el.opacity(0.45))
-                    // Left column: text field + selector row (share same width)
+                    // Left column: text field + selector row (share same width).
+                    // `min_w_0` lets it shrink below its content so the buttons
+                    // on the right always stay visible.
                     .child(
                         div()
                             .flex_1()
+                            .min_w_0()
                             .flex()
                             .flex_col()
                             .gap_1()
@@ -978,78 +999,7 @@ impl InputArea {
                                     .children(slash_menu)
                                     .child(Textarea::new(&self.text_input).appearance(false))
                             })
-                            // Selector row: model | worktree | sandbox | permissions | context ring
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .child(div().flex_1().flex().child(self.model_selector.clone()))
-                                    .child(
-                                        div()
-                                            .flex_none()
-                                            .flex()
-                                            .child(self.worktree_selector.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_none()
-                                            .flex()
-                                            .child(self.sandbox_selector.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_none()
-                                            .flex()
-                                            .child(self.permission_selector.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_none()
-                                            .flex()
-                                            .child(self.mcp_selector.clone()),
-                                    )
-                                    .child({
-                                        let usage = self.context_usage;
-                                        let total_usage = self.context_total_usage;
-                                        let ratio = usage
-                                            .and_then(|u| u.context_ratio())
-                                            .unwrap_or(0.0);
-                                        let progress_color = if ratio >= 0.8 {
-                                            cx.theme().warning
-                                        } else {
-                                            cx.theme().muted_foreground
-                                        };
-                                        div()
-                                            .id("context-indicator")
-                                            .flex_none()
-                                            .flex()
-                                            .items_center()
-                                            .ml_1()
-                                            .when_some(usage, |el, usage| {
-                                                el.tooltip(move |window, cx| {
-                                                    gpui_kit::component::tooltip::Tooltip::element(
-                                                        move |_window, _cx| {
-                                                            ContextBreakdown::new(usage)
-                                                                .session_total(total_usage)
-                                                        },
-                                                    )
-                                                    .build(window, cx)
-                                                })
-                                            })
-                                            .child({
-                                                let scale = cx.theme().font_size / px(16.0);
-
-                                                super::shared::context_indicator::ContextIndicator::new(
-                                                    ratio,
-                                                )
-                                                .size(px(16.0 * scale))
-                                                .stroke_width(px(2.5 * scale))
-                                                .bg_color(cx.theme().muted_foreground.opacity(0.25))
-                                                .progress_color(progress_color)
-                                            })
-                                    }),
-                            ),
+                            .child(self.render_selector_row(cx)),
                     )
                     // Right column: buttons (vertically centered next to text field)
                     .child(
@@ -1351,5 +1301,22 @@ mod tests {
         assert!(menu(&area, cx).is_some());
         area.update_in(cx, |area, window, cx| area.clear(window, cx));
         assert_eq!(menu(&area, cx), None);
+    }
+
+    fn resize(area: &Entity<InputArea>, cx: &mut VisualTestContext, width: f32) -> bool {
+        cx.simulate_resize(gpui_kit::size(px(width), px(400.)));
+        cx.run_until_parked();
+        // A changed fit takes effect on the frame after it was measured.
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        area.read_with(cx, |area, _| area.selectors_collapsed)
+    }
+
+    #[gpui_kit::test]
+    fn secondary_selectors_collapse_when_the_row_is_narrow(cx: &mut TestAppContext) {
+        let (area, cx) = input_area(cx);
+        assert!(!resize(&area, cx, 1400.), "wide row keeps them inline");
+        assert!(resize(&area, cx, 500.), "narrow row collapses them");
+        assert!(!resize(&area, cx, 1400.), "widening brings them back");
     }
 }

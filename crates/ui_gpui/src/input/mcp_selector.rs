@@ -63,6 +63,8 @@ impl Render for McpSelector {
             .id("mcp-selector-trigger")
             .flex()
             .items_center()
+            .justify_between()
+            .w_full()
             .gap_1()
             .px_2()
             .py_0p5()
@@ -83,7 +85,7 @@ impl Render for McpSelector {
                 cx.notify();
             }));
 
-        let mut root = div().relative().flex().child(trigger);
+        let mut root = div().relative().w_full().flex().child(trigger);
 
         if is_open {
             // Owned copy so the per-row closures don't borrow `self`.
