@@ -14,7 +14,7 @@ use base64::Engine;
 use code_assistant_core::persistence::{DraftAttachment, NodeId};
 use code_assistant_core::ui::ui_events::McpServerToggle;
 use gpui_kit::component::input::{
-    Enter, Escape, InputEvent, MoveDown, MoveUp, Paste, Textarea, TextareaState,
+    Enter, Escape, IndentInline, InputEvent, MoveDown, MoveUp, Paste, Textarea, TextareaState,
 };
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::{ActiveTheme, Icon, ThemeStyled};
@@ -579,7 +579,7 @@ impl InputArea {
         });
     }
 
-    /// Up/Down/Escape move through or hide the slash menu while it is open;
+    /// Up/Down/Tab/Escape move through, accept or hide the slash menu while it is open;
     /// otherwise they reach the textarea as usual. Registered in the capture
     /// phase, see [`Self::on_enter`].
     fn on_slash_menu_up(&mut self, _: &MoveUp, _: &mut Window, cx: &mut Context<Self>) {
@@ -595,6 +595,14 @@ impl InputArea {
             menu.selected = (menu.selected + 1).min(menu.items.len().saturating_sub(1));
             cx.stop_propagation();
             cx.notify();
+        }
+    }
+
+    /// Tab accepts the highlighted entry like Enter does, but never submits:
+    /// on a complete name (`/review`) it still completes to `/review `.
+    fn on_slash_menu_tab(&mut self, _: &IndentInline, window: &mut Window, cx: &mut Context<Self>) {
+        if self.accept_slash_item(window, cx) {
+            cx.stop_propagation();
         }
     }
 
@@ -1149,6 +1157,7 @@ impl Render for InputArea {
             .capture_action(cx.listener(Self::on_slash_menu_up))
             .capture_action(cx.listener(Self::on_slash_menu_down))
             .capture_action(cx.listener(Self::on_slash_menu_escape))
+            .capture_action(cx.listener(Self::on_slash_menu_tab))
             .on_action({
                 let text_input_handle = self.text_input.clone();
                 move |_: &crate::InsertLineBreak, window, cx| {
@@ -1312,6 +1321,34 @@ mod tests {
         assert!(menu(&area, cx).is_some());
         enter(&area, cx);
         assert_eq!(*submitted.borrow(), ["/review"]);
+    }
+
+    fn tab(area: &Entity<InputArea>, cx: &mut VisualTestContext) {
+        area.update_in(cx, |area, window, cx| {
+            area.on_slash_menu_tab(&IndentInline, window, cx)
+        });
+    }
+
+    #[gpui_kit::test]
+    fn tab_completes_the_highlighted_command(cx: &mut TestAppContext) {
+        let (area, cx) = input_area(cx);
+        let submitted = submissions(&area, cx);
+        type_text(&area, cx, "/hand");
+        let (labels, selected) = menu(&area, cx).expect("menu open");
+        assert_eq!(labels[selected], "handoff");
+        tab(&area, cx);
+        assert_eq!(text(&area, cx), "/handoff ");
+        assert_eq!(menu(&area, cx), None);
+
+        // A complete skill name is completed too, not submitted.
+        area.update_in(cx, |area, window, cx| {
+            area.text_input
+                .update(cx, |state, cx| state.set_value("", window, cx))
+        });
+        type_text(&area, cx, "/review");
+        tab(&area, cx);
+        assert_eq!(text(&area, cx), "/review ");
+        assert!(submitted.borrow().is_empty());
     }
 
     #[gpui_kit::test]
