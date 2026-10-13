@@ -74,6 +74,8 @@ pub struct SessionSnapshot {
     pub pending_new_context_target: Option<new_context::NewContextTargetRequest>,
     /// `ask_question` requests still awaiting answers.
     pub pending_questions: Vec<questions::UserQuestionRequest>,
+    /// Wakeups still to fire, soonest first.
+    pub armed_wakeups: Vec<wakeup::ArmedWakeupInfo>,
 }
 
 impl SessionSnapshot {
@@ -96,6 +98,10 @@ impl SessionSnapshot {
             UiEvent::UpdateSessionActivityState {
                 session_id: self.session_id.clone(),
                 activity_state: self.activity_state.clone(),
+            },
+            UiEvent::UpdateArmedWakeups {
+                session_id: self.session_id.clone(),
+                wakeups: self.armed_wakeups.clone(),
             },
         ];
         // Show the error banner when connecting to an errored session.
@@ -170,12 +176,16 @@ pub struct SessionConfig {
     /// The git branch name associated with this session (e.g. `feature/login`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
-    /// MCP servers deactivated for this session (by config name). Their tools
+    /// MCP servers switched on for this session (by config name): the state
+    /// at creation plus later switches, see [`crate::tools::mcp_selection`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub enabled_mcp_servers: Vec<String>,
+    /// MCP servers switched off for this session (by config name). Their tools
     /// are not offered to or callable by this session's agent, without
     /// affecting other sessions. This filters the *tool set* only — the server
     /// is still launched when the shared registry is built (registries span
     /// sessions), so disabling here hides a server's tools rather than
-    /// preventing its process from starting. Empty by default.
+    /// preventing its process from starting.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disabled_mcp_servers: Vec<String>,
 }
@@ -200,6 +210,7 @@ impl Default for SessionConfig {
             permission_tier: PermissionTier::default(),
             worktree_path: None,
             branch: None,
+            enabled_mcp_servers: Vec::new(),
             disabled_mcp_servers: Vec::new(),
         }
     }

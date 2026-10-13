@@ -144,7 +144,6 @@ struct PendingSession {
 /// handler closure registered on the connection builder.
 pub struct AgentState {
     session_manager: Arc<Mutex<SessionManager>>,
-    session_config_template: SessionConfig,
     tool_registry: Arc<tools_core::ToolRegistry>,
     playback_path: Option<std::path::PathBuf>,
     fast_playback: bool,
@@ -174,7 +173,6 @@ impl AgentState {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         session_manager: Arc<Mutex<SessionManager>>,
-        session_config_template: SessionConfig,
         tool_registry: Arc<tools_core::ToolRegistry>,
         playback_path: Option<std::path::PathBuf>,
         fast_playback: bool,
@@ -183,7 +181,6 @@ impl AgentState {
     ) -> Self {
         Self {
             session_manager,
-            session_config_template,
             tool_registry,
             playback_path,
             fast_playback,
@@ -410,16 +407,17 @@ impl AgentState {
 
         // The ID is handed out now but the session is only created on the
         // first prompt; allocating reserves its folder in the meantime.
-        let (session_id, default_model) = {
+        let (session_id, session_config, default_model) = {
             let manager = self.session_manager.lock().await;
             let session_id = manager
                 .allocate_session_id(Some(&arguments.cwd))
                 .map_err(|e| to_acp_error(&e))?;
-            (session_id, manager.default_model_name())
+            (
+                session_id,
+                manager.new_session_config(Some(arguments.cwd.clone())),
+                manager.default_model_name(),
+            )
         };
-
-        let mut session_config = self.session_config_template.clone();
-        session_config.init_path = Some(arguments.cwd.clone());
         let permission_tier = session_config.permission_tier;
 
         let model_info = Self::compute_model_config(&default_model, Some(default_model.as_str()));

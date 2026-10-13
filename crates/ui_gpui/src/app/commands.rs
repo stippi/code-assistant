@@ -441,28 +441,18 @@ impl Gpui {
         });
     }
 
-    /// Toggle an MCP server on/off for a session. Computes the new disabled
-    /// set from the currently-known server list and persists it; the refreshed
-    /// list arrives back via the `UpdateMcpServers` notification.
+    /// Toggle an MCP server on/off for a session; the refreshed list arrives
+    /// back via the `UpdateMcpServers` notification.
     pub(crate) fn cmd_toggle_mcp_server(&self, session_id: String, name: String, enabled: bool) {
         let Some(service) = self.session_service() else {
             return;
         };
-        // Recompute the disabled set: current disabled servers, plus/minus the
-        // one just toggled.
-        let mut disabled: Vec<String> = self
-            .get_current_mcp_servers()
-            .into_iter()
-            .filter(|s| !s.enabled)
-            .map(|s| s.name)
-            .collect();
-        disabled.retain(|n| n != &name);
-        if !enabled {
-            disabled.push(name);
-        }
         let gpui = self.clone();
         self.dispatch(async move {
-            if let Err(e) = service.set_disabled_mcp_servers(session_id, disabled).await {
+            if let Err(e) = service
+                .set_mcp_server_enabled(session_id, name, enabled)
+                .await
+            {
                 gpui.display_error(format!("{e:#}"));
             }
         });

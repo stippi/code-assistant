@@ -448,11 +448,9 @@ impl SessionService {
                 // Resolve the project path so the new session gets the correct
                 // CWD — either from projects.json or from a sibling session
                 // that already ran in that (temporary) project.
-                let mut config = manager.session_config_template().clone();
+                let path = manager.resolve_project_path(&project);
+                let mut config = manager.new_session_config(path);
                 config.initial_project = project.clone();
-                if let Some(path) = manager.resolve_project_path(&project) {
-                    config.init_path = Some(path);
-                }
                 // Like a session without a project, it starts on the
                 // default model: without one, no agent can run in it.
                 let model_config = SessionModelConfig::new(manager.default_model_name());
@@ -895,14 +893,35 @@ impl SessionService {
         .await
     }
 
+    /// Tell frontends which wakeups are still to fire in `session_id`.
+    pub(crate) fn publish_armed_wakeups(
+        &self,
+        session_id: &str,
+        wakeups: Vec<crate::session::wakeup::ArmedWakeupInfo>,
+    ) {
+        self.events.publish_ui(
+            session_id,
+            UiEvent::UpdateArmedWakeups {
+                session_id: session_id.to_string(),
+                wakeups,
+            },
+        );
+    }
+
     /// Deliver a fired wakeup (see [`crate::session::wakeup`]): inject
     /// `message` into the session and make sure a turn runs for it — started
     /// immediately when the session is idle, queued as the pending message
     /// when an agent is currently running. A session that no longer exists
-    /// swallows the wakeup silently.
-    pub async fn inject_wakeup(&self, session_id: String, message: String) -> Result<()> {
+    /// swallows the wakeup silently. Before the message, the stored result
+    /// of the `schedule_wakeup` call records that it fired.
+    pub async fn inject_wakeup(
+        &self,
+        session_id: String,
+        wakeup_id: u64,
+        message: String,
+    ) -> Result<()> {
         self.call_session(session_id.clone(), move |ctx| async move {
-            inject_wakeup_impl(&ctx, &session_id, &message).await
+            inject_wakeup_impl(&ctx, &session_id, wakeup_id, &message).await
         })
         .await
     }
@@ -1036,19 +1055,21 @@ impl SessionService {
         .await
     }
 
-    /// Set the MCP servers deactivated for a session (by config name) and fan
-    /// out the refreshed list. Mirrors [`change_permission_tier`].
+    /// Switch an MCP server (by config name) on or off for a session, which
+    /// its project's next sessions follow, and fan out the refreshed list.
+    /// Mirrors [`change_permission_tier`].
     ///
     /// [`change_permission_tier`]: Self::change_permission_tier
-    pub async fn set_disabled_mcp_servers(
+    pub async fn set_mcp_server_enabled(
         &self,
         session_id: String,
-        disabled: Vec<String>,
+        name: String,
+        enabled: bool,
     ) -> Result<()> {
         self.call_session(session_id.clone(), move |ctx| async move {
             let servers = {
                 let mut manager = ctx.manager.lock().await;
-                manager.set_session_disabled_mcp_servers(&session_id, disabled)?
+                manager.set_session_mcp_server_enabled(&session_id, &name, enabled)?
             };
             ctx.notify_session(&session_id, UiEvent::UpdateMcpServers { servers });
             Ok(())
@@ -1468,9 +1489,8 @@ impl SessionService {
             .context("Failed to save project")?;
 
             let mut manager = ctx.manager.lock().await;
-            let mut config = manager.session_config_template().clone();
+            let mut config = manager.new_session_config(Some(path));
             config.initial_project = name.clone();
-            config.init_path = Some(path);
             let session_id = manager
                 .create_session_with_config(None, Some(config), None)
                 .context("Project saved but failed to create session")?;
@@ -1957,11 +1977,37 @@ async fn start_turn_if_idle_impl(
     )))
 }
 
-async fn inject_wakeup_impl(ctx: &ServiceCtx, session_id: &str, message: &str) -> Result<()> {
-    // Session deleted since the wakeup was armed — drop silently.
-    if ctx.manager.lock().await.get_session(session_id).is_none() {
-        debug!("Wakeup for unknown session {session_id} dropped");
-        return Ok(());
+async fn inject_wakeup_impl(
+    ctx: &ServiceCtx,
+    session_id: &str,
+    wakeup_id: u64,
+    message: &str,
+) -> Result<()> {
+    let fired = {
+        let mut manager = ctx.manager.lock().await;
+        // Session deleted since the wakeup was armed — drop silently.
+        if manager.get_session(session_id).is_none() {
+            debug!("Wakeup for unknown session {session_id} dropped");
+            return Ok(());
+        }
+        manager.mark_wakeup_fired(session_id, wakeup_id)
+    };
+    match fired {
+        Ok(Some(result)) => ctx.notify_session(
+            session_id,
+            UiEvent::UpdateToolStatus {
+                tool_id: result.tool_id,
+                status: result.status,
+                message: result.message,
+                output: result.output,
+                styled_output: None,
+                duration_seconds: None,
+                images: Vec::new(),
+            },
+        ),
+        Ok(None) => debug!("Wakeup {wakeup_id} has no result in session {session_id}"),
+        // The wakeup is still delivered.
+        Err(e) => warn!("Failed to record that wakeup {wakeup_id} fired: {e}"),
     }
     send_or_queue_user_message_impl(ctx, session_id, message, &[]).await
 }
@@ -2067,7 +2113,6 @@ fn schedule_agent_impl(
     let instance = manager.get_session(session_id).unwrap();
     let run_session_config = instance.session.config.clone();
     let project_dir = run_session_config.effective_project_path().cloned();
-    let disabled = run_session_config.disabled_mcp_servers.clone();
     let permission_handler = manager.permission_mediator(session_id)?;
     // The manager owns setup_task; the task must not own the manager back.
     let owner = Arc::downgrade(&ctx.manager);
@@ -2160,9 +2205,8 @@ fn schedule_agent_impl(
                 events.publish_ui(
                     &task_session,
                     UiEvent::UpdateMcpServers {
-                        servers: crate::tools::mcp::session_mcp_servers(
-                            project_dir.as_deref(),
-                            &disabled,
+                        servers: crate::tools::mcp_selection::session_mcp_servers(
+                            &run_session_config,
                         ),
                     },
                 );
@@ -2252,6 +2296,7 @@ mod tests {
     use crate::mocks::{MockLLMProvider, PendingLLMProvider, create_test_response_text};
     use crate::persistence::FileSessionPersistence;
     use crate::session::SessionConfig;
+    use crate::session::wakeup::wakeup_message;
 
     pub(super) fn test_service_with_manager(
         root: &std::path::Path,
@@ -2708,7 +2753,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let service = test_service(tmp.path());
         service
-            .inject_wakeup("gone".to_string(), "[scheduled wakeup] x".to_string())
+            .inject_wakeup("gone".to_string(), 1, wakeup_message(1, "x"))
             .await
             .unwrap();
     }
@@ -2728,12 +2773,134 @@ mod tests {
         }
 
         service
-            .inject_wakeup(id.clone(), "[scheduled wakeup] check".to_string())
+            .inject_wakeup(id.clone(), 1, wakeup_message(1, "check"))
             .await
             .unwrap();
 
         let pending = service.take_pending_message(id).await.unwrap();
-        assert_eq!(pending.as_deref(), Some("[scheduled wakeup] check"));
+        assert_eq!(
+            pending.as_deref(),
+            Some(wakeup_message(1, "check").as_str())
+        );
+    }
+
+    /// A stored `schedule_wakeup` result for wakeup `wakeup_id`, armed by
+    /// `armed_by`.
+    fn store_wakeup_result(
+        root: &std::path::Path,
+        session_id: &str,
+        wakeup_id: u64,
+        armed_by: &str,
+    ) {
+        let output = crate::tools::impls::wakeup::ScheduleWakeupOutput {
+            wakeup_id,
+            delay_seconds: 60,
+            fires_at: Some(chrono::Utc::now()),
+            armed_by: Some(armed_by.to_string()),
+            fired_at: None,
+        };
+        FileSessionPersistence::new_with_root_dir(root.to_path_buf())
+            .update_entry(session_id, |session| {
+                session
+                    .tool_executions
+                    .push(agent_core::SerializedToolExecution {
+                        tool_request: agent_core::ToolRequest {
+                            id: format!("wake-{wakeup_id}"),
+                            name: "schedule_wakeup".into(),
+                            input: serde_json::json!({}),
+                            start_offset: None,
+                            end_offset: None,
+                        },
+                        tool_name: "schedule_wakeup".into(),
+                        result_json: serde_json::to_value(&output)?,
+                    });
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    fn stored_fired_at(root: &std::path::Path, session_id: &str, tool_id: &str) -> Option<String> {
+        let session = FileSessionPersistence::new_with_root_dir(root.to_path_buf())
+            .load_chat_session(session_id)
+            .unwrap()
+            .unwrap();
+        let exec = session
+            .tool_executions
+            .iter()
+            .find(|exec| exec.tool_request.id == tool_id)
+            .unwrap();
+        exec.result_json
+            .get("fired_at")
+            .map(|fired_at| fired_at.to_string())
+    }
+
+    #[tokio::test]
+    async fn snapshot_lists_the_wakeups_still_to_fire() {
+        struct NullSink;
+        #[async_trait::async_trait]
+        impl crate::session::wakeup::WakeupSink for NullSink {
+            async fn fire(&self, _session_id: &str, _wakeup_id: u64, _message: &str) {}
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let (service, manager) = test_service_with_manager(tmp.path());
+        let handle = crate::session::wakeup::spawn_wakeup_scheduler(NullSink, None);
+        manager.lock().await.set_wakeup_handle(handle.clone());
+        let id = service.create_session(None, None).await.unwrap();
+
+        handle.arm(
+            id.clone(),
+            0,
+            std::time::Duration::from_secs(600),
+            "check".into(),
+        );
+        tokio::task::yield_now().await;
+        let snapshot = service.load_session(id.clone(), None).await.unwrap();
+
+        assert_eq!(snapshot.armed_wakeups.len(), 1);
+        assert_eq!(snapshot.armed_wakeups[0].prompt, "check");
+        assert!(snapshot.connect_events().iter().any(|event| matches!(
+            event,
+            UiEvent::UpdateArmedWakeups { wakeups, .. } if wakeups.len() == 1
+        )));
+    }
+
+    #[tokio::test]
+    async fn fired_wakeup_is_recorded_in_its_result_and_shown() {
+        let tmp = tempfile::tempdir().unwrap();
+        let service = test_service(tmp.path());
+        let id = service.create_session(None, None).await.unwrap();
+        let here = crate::session::wakeup::process_instance();
+        store_wakeup_result(tmp.path(), &id, 1, here);
+        // The same id, armed by a process before a restart.
+        store_wakeup_result(tmp.path(), &id, 2, "earlier-process");
+
+        let mut subscription = service.subscribe();
+        let _ = service
+            .inject_wakeup(id.clone(), 1, wakeup_message(1, "check"))
+            .await;
+        let _ = service
+            .inject_wakeup(id.clone(), 2, wakeup_message(2, "check"))
+            .await;
+
+        assert!(stored_fired_at(tmp.path(), &id, "wake-1").is_some());
+        assert_eq!(stored_fired_at(tmp.path(), &id, "wake-2"), None);
+        loop {
+            let event = subscription.recv().await.unwrap();
+            if let crate::session::event_stream::EventPayload::Ui(UiEvent::UpdateToolStatus {
+                tool_id,
+                output,
+                ..
+            }) = event.payload
+            {
+                assert_eq!(tool_id, "wake-1");
+                let output = crate::tools::impls::wakeup::ScheduleWakeupOutput::from_ui_output(
+                    &output.unwrap(),
+                )
+                .unwrap();
+                assert!(output.fired_at.is_some());
+                break;
+            }
+        }
     }
 
     #[tokio::test]
@@ -2746,7 +2913,7 @@ mod tests {
         // the injected message must land in the history either way — exactly
         // like a user message sent to an idle session.
         let _ = service
-            .inject_wakeup(id.clone(), "[scheduled wakeup] check".to_string())
+            .inject_wakeup(id.clone(), 1, wakeup_message(1, "check"))
             .await;
 
         let snapshot = service.load_session(id, None).await.unwrap();

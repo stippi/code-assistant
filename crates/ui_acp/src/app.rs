@@ -78,7 +78,7 @@ pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
     let events = code_assistant_core::session::event_stream::EventStream::new();
     let mut manager = SessionManager::new(
         persistence,
-        session_config_template.clone(),
+        session_config_template,
         model_name.clone(),
         tool_registry.clone(),
         events.clone(),
@@ -98,7 +98,6 @@ pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
 
     let state = Arc::new(AgentState::new(
         session_manager.clone(),
-        session_config_template,
         tool_registry.clone(),
         config.playback.clone(),
         config.fast_playback,

@@ -523,6 +523,20 @@ impl SessionManager {
         &self.session_config_template
     }
 
+    /// The config a brand-new session starts from: the template, in
+    /// `init_path` when given, with the state of every MCP server its project
+    /// starts with (see [`crate::tools::mcp_selection`]). Sessions derived
+    /// from another one (e.g. a fresh start) copy that session's config
+    /// instead.
+    pub fn new_session_config(&self, init_path: Option<PathBuf>) -> SessionConfig {
+        let mut config = self.session_config_template.clone();
+        if init_path.is_some() {
+            config.init_path = init_path;
+        }
+        crate::tools::mcp_selection::seed_new_session(&mut config);
+        config
+    }
+
     /// Create a new session and return its ID
     pub fn create_session(&mut self, name: Option<String>) -> Result<String> {
         // Always create sessions with a default model config
@@ -606,8 +620,7 @@ impl SessionManager {
     ) -> Result<String> {
         let session_name = name.unwrap_or_default(); // Empty string if no name provided
 
-        let mut config =
-            session_config_override.unwrap_or_else(|| self.session_config_template.clone());
+        let mut config = session_config_override.unwrap_or_else(|| self.new_session_config(None));
 
         // Resolve `use_diff_blocks` from the chosen model's `edit_format`,
         // unless the CLI override (`--use-diff-format`) forces it on.
@@ -725,6 +738,11 @@ impl SessionManager {
         };
 
         snapshot.current_model = model_name_for_event;
+        snapshot.armed_wakeups = self
+            .wakeup_handle
+            .as_ref()
+            .map(|handle| handle.armed(&session_id))
+            .unwrap_or_default();
         snapshot.allowed_models = self
             .allowed_models_for_session(&session_id)
             .unwrap_or_default();
@@ -1331,6 +1349,15 @@ impl SessionManager {
                 crate::session::wakeup::SessionWakeups {
                     handle,
                     session_id: session_id.to_string(),
+                    used_ids: self
+                        .active_sessions
+                        .get(session_id)
+                        .map(|instance| {
+                            crate::session::wakeup::highest_wakeup_id(
+                                &instance.session.tool_executions,
+                            )
+                        })
+                        .unwrap_or(0),
                 }
             }),
             pty_sessions: self
@@ -1612,6 +1639,60 @@ impl SessionManager {
     }
 
     /// Get a session instance by ID
+    /// Record in the stored result of `schedule_wakeup` that wakeup
+    /// `wakeup_id` fired, and return the result's new UI data. `None` when
+    /// this process armed no such wakeup in the session.
+    pub fn mark_wakeup_fired(
+        &mut self,
+        session_id: &str,
+        wakeup_id: u64,
+    ) -> Result<Option<crate::ui::ui_events::ToolResultData>> {
+        use crate::tools::core::{Render, ResourcesTracker};
+        use crate::tools::impls::wakeup::ScheduleWakeupOutput;
+
+        let mut fired = None;
+        let session = self.persistence.update_entry(session_id, |session| {
+            let armed_here = |output: &ScheduleWakeupOutput| {
+                output.wakeup_id == wakeup_id
+                    && output.armed_by.as_deref()
+                        == Some(crate::session::wakeup::process_instance())
+            };
+            for exec in &mut session.tool_executions {
+                if exec.tool_name != "schedule_wakeup" {
+                    continue;
+                }
+                let Ok(mut output) =
+                    serde_json::from_value::<ScheduleWakeupOutput>(exec.result_json.clone())
+                else {
+                    continue;
+                };
+                if armed_here(&output) {
+                    output.fired_at = Some(chrono::Utc::now());
+                    exec.result_json = serde_json::to_value(&output)?;
+                    fired = Some((exec.tool_request.id.clone(), output));
+                    break;
+                }
+            }
+            Ok(())
+        })?;
+        if let Some(instance) = self.active_sessions.get_mut(session_id) {
+            instance.session = session;
+        }
+        Ok(fired.map(|(tool_id, output)| {
+            let mut tracker = ResourcesTracker::new();
+            crate::ui::ui_events::ToolResultData {
+                tool_id,
+                status: crate::ui::ToolStatus::Success,
+                message: Some(output.status()),
+                output: Some(output.render_for_ui(&mut tracker)),
+                styled_output: None,
+                duration_seconds: None,
+                images: Vec::new(),
+                output_deferred: false,
+            }
+        }))
+    }
+
     pub fn get_session(&self, session_id: &str) -> Option<&SessionInstance> {
         self.active_sessions.get(session_id)
     }
@@ -1898,35 +1979,35 @@ impl SessionManager {
         Ok(())
     }
 
-    /// Set the MCP servers deactivated for a session (by config name), persist
-    /// it, and update the live instance. Returns the recomputed server list
+    /// Switch an MCP server (by config name) on or off for a session, persist
+    /// it, update the live instance and remember it for the session's project,
+    /// whose next sessions start that way. Returns the recomputed server list
     /// (available servers with their per-session enabled state) for the UI.
     /// Mirrors [`set_session_permission_tier`]; takes effect on the next run
     /// (tools are bound at run start).
     ///
     /// [`set_session_permission_tier`]: Self::set_session_permission_tier
-    pub fn set_session_disabled_mcp_servers(
+    pub fn set_session_mcp_server_enabled(
         &mut self,
         session_id: &str,
-        disabled: Vec<String>,
+        name: &str,
+        enabled: bool,
     ) -> Result<Vec<crate::ui::ui_events::McpServerToggle>> {
+        use crate::tools::mcp_selection;
+
         let session = self.persistence.update_entry(session_id, |session| {
-            session.config.disabled_mcp_servers = disabled.clone();
+            mcp_selection::switch_server(&mut session.config, name, enabled);
             Ok(())
         })?;
 
         if let Some(instance) = self.active_sessions.get_mut(session_id) {
-            instance.session.config.disabled_mcp_servers = disabled.clone();
+            mcp_selection::switch_server(&mut instance.session.config, name, enabled);
         }
 
-        let project_dir = session
-            .config
-            .effective_project_path()
-            .map(|p| p.to_path_buf());
-        Ok(crate::tools::mcp::session_mcp_servers(
-            project_dir.as_deref(),
-            &disabled,
-        ))
+        if let Err(e) = mcp_selection::remember_for_project(&session.config, name, enabled) {
+            warn!("Failed to remember the MCP server choice for the project: {e:#}");
+        }
+        Ok(mcp_selection::session_mcp_servers(&session.config))
     }
 
     /// Build the event-stream permission mediator for a session, used by the
@@ -2151,7 +2232,13 @@ impl SessionManager {
                 .active_sessions
                 .get(&metadata.id)
                 .is_some_and(|instance| !instance.get_activity_state().is_terminal());
-            let busy = running_here || self.is_agent_locked_externally(&metadata.id);
+            // A wakeup still to fire continues the session.
+            let wakeup_armed = self
+                .wakeup_handle
+                .as_ref()
+                .is_some_and(|handle| !handle.armed(&metadata.id).is_empty());
+            let busy =
+                running_here || wakeup_armed || self.is_agent_locked_externally(&metadata.id);
             let repo_root = metadata
                 .branch
                 .as_ref()
@@ -2649,6 +2736,63 @@ mod tests {
     }
 
     #[test]
+    fn new_sessions_record_the_state_of_every_mcp_server() {
+        let config_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            config_dir.path().join("mcp-servers.json"),
+            r#"{ "servers": {
+                "on": { "command": "a" },
+                "quiet": { "command": "b", "off_in_new_sessions": true }
+            } }"#,
+        )
+        .unwrap();
+        temp_env::with_var("CODE_ASSISTANT_CONFIG_DIR", Some(config_dir.path()), || {
+            let (mut manager, _dir) = build_manager(false);
+            let id = manager.create_session(None).unwrap();
+            let config = &manager.get_session(&id).unwrap().session.config;
+            assert_eq!(config.enabled_mcp_servers, vec!["on".to_string()]);
+            assert_eq!(config.disabled_mcp_servers, vec!["quiet".to_string()]);
+        });
+    }
+
+    #[test]
+    fn a_switched_mcp_server_carries_over_to_the_projects_next_session() {
+        let config_dir = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(
+            config_dir.path().join("mcp-servers.json"),
+            r#"{ "servers": { "jira": { "command": "a" } } }"#,
+        )
+        .unwrap();
+        temp_env::with_var("CODE_ASSISTANT_CONFIG_DIR", Some(config_dir.path()), || {
+            let (persistence, _dir) = temp_persistence();
+            let mut manager = SessionManager::new(
+                persistence,
+                SessionConfig::default(),
+                "test-model".to_string(),
+                crate::tools::test_registry(),
+                crate::session::event_stream::EventStream::new(),
+            );
+            let in_project = |manager: &mut SessionManager| {
+                let config = manager.new_session_config(Some(project.path().to_path_buf()));
+                manager
+                    .create_session_with_config(None, Some(config), None)
+                    .unwrap()
+            };
+
+            let first = in_project(&mut manager);
+            let servers = manager
+                .set_session_mcp_server_enabled(&first, "jira", false)
+                .unwrap();
+            assert!(!servers[0].enabled);
+            let second = in_project(&mut manager);
+
+            let config = &manager.get_session(&second).unwrap().session.config;
+            assert_eq!(config.disabled_mcp_servers, vec!["jira".to_string()]);
+        });
+    }
+
+    #[test]
     fn checkpoint_preserves_all_session_settings_after_external_changes() {
         let (mut manager, dir) = build_manager(false);
         let id = manager.create_session(None).unwrap();
@@ -2675,7 +2819,7 @@ mod tests {
             )
             .unwrap();
         settings
-            .set_session_disabled_mcp_servers(&id, vec!["disabled-server".into()])
+            .set_session_mcp_server_enabled(&id, "disabled-server", false)
             .unwrap();
         let mut expected = settings
             .persistence

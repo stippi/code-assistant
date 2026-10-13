@@ -26,6 +26,7 @@ pub mod mcp_tool;
 pub mod session_card;
 pub mod sub_agent_card;
 pub mod terminal_card;
+pub mod wakeup_renderer;
 
 use crate::blocks::{BlockView, ToolUseBlock};
 use gpui_kit::component::text::TextViewState;
@@ -116,6 +117,18 @@ pub trait ToolBlockRenderer: Send + Sync {
     /// header (before the chevron). Used by MCP tools to surface the server
     /// name; defaults to `None` (no pill).
     fn header_tag(&self, _tool: &ToolUseBlock) -> Option<String> {
+        None
+    }
+
+    /// Icon of an inline block's header, when it depends on the block's
+    /// state; `None` uses the tool's fixed icon.
+    fn icon(&self, _tool: &ToolUseBlock) -> Option<gpui_kit::SharedString> {
+        None
+    }
+
+    /// For an inline block whose description changes with time (a
+    /// countdown): render it again after this long.
+    fn refresh_after(&self, _tool: &ToolUseBlock) -> Option<std::time::Duration> {
         None
     }
 
@@ -234,6 +247,7 @@ mod tests {
             duration_seconds: None,
             images: Vec::new(),
             revision: 0,
+            wakeup_fired: false,
         }
     }
 

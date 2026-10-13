@@ -1223,12 +1223,13 @@ impl ToolTestFixture {
         struct NullSink;
         #[async_trait::async_trait]
         impl crate::session::wakeup::WakeupSink for NullSink {
-            async fn fire(&self, _session_id: &str, _message: &str) {}
+            async fn fire(&self, _session_id: &str, _wakeup_id: u64, _message: &str) {}
         }
         let handle = crate::session::wakeup::spawn_wakeup_scheduler(NullSink, None);
         self.services.wakeups = Some(crate::session::wakeup::SessionWakeups {
             handle,
             session_id: "test-session".to_string(),
+            used_ids: 0,
         });
         self
     }

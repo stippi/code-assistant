@@ -252,48 +252,6 @@ pub fn load_local_mcp_json(dir: &Path) -> Option<McpServersConfig> {
     }
 }
 
-/// The MCP servers available to a session and whether each is enabled for it.
-/// The list is the global `mcp-servers.json` enabled servers plus, when the
-/// project declares a `.mcp.json`, that file's servers; a name present in
-/// `disabled` is reported as disabled. Read raw (no env substitution) so a
-/// missing secret does not drop a server from the menu.
-///
-/// Listing a project-local server does not depend on trust — the menu shows
-/// what the project offers so the user can manage it. Trust separately gates
-/// whether those servers actually launch (see [`mcp_trust`]).
-///
-/// [`mcp_trust`]: crate::tools::mcp_trust
-pub fn session_mcp_servers(
-    project_dir: Option<&Path>,
-    disabled: &[String],
-) -> Vec<crate::ui::ui_events::McpServerToggle> {
-    use crate::ui::ui_events::McpServerToggle;
-
-    let mut names: Vec<String> = Vec::new();
-    if let Ok(config) = load_mcp_servers_config_raw() {
-        for (name, _) in config.enabled_servers() {
-            names.push(name.clone());
-        }
-    }
-    if let Some(dir) = project_dir
-        && let Ok(content) = std::fs::read_to_string(dir.join(".mcp.json"))
-        && let Ok(local) = parse_local_mcp_json(&content)
-    {
-        for name in local.servers.keys() {
-            names.push(name.clone());
-        }
-    }
-    names.sort();
-    names.dedup();
-    names
-        .into_iter()
-        .map(|name| {
-            let enabled = !disabled.iter().any(|d| d == &name);
-            McpServerToggle { name, enabled }
-        })
-        .collect()
-}
-
 /// Connect to all enabled servers from `mcp-servers.json` (plus, when
 /// `local_mcp_dir` is set, the project-local `.mcp.json` in that directory)
 /// and register their enabled tools with code-assistant's scope tags.
@@ -396,64 +354,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = load_mcp_servers_config_from(&dir.path().join("mcp-servers.json")).unwrap();
         assert!(config.servers.is_empty());
-    }
-
-    #[test]
-    fn session_mcp_servers_lists_enabled_global_and_marks_disabled() {
-        let config_dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            config_dir.path().join("mcp-servers.json"),
-            r#"{ "servers": {
-                "alpha": { "command": "a" },
-                "beta": { "command": "b" },
-                "off": { "command": "c", "enabled": false }
-            } }"#,
-        )
-        .unwrap();
-        temp_env::with_var("CODE_ASSISTANT_CONFIG_DIR", Some(config_dir.path()), || {
-            let servers = session_mcp_servers(None, &["beta".to_string()]);
-            let by_name: std::collections::HashMap<_, _> = servers
-                .iter()
-                .map(|s| (s.name.as_str(), s.enabled))
-                .collect();
-            assert_eq!(by_name.get("alpha"), Some(&true));
-            assert_eq!(
-                by_name.get("beta"),
-                Some(&false),
-                "session-disabled server is marked off"
-            );
-            assert!(
-                !by_name.contains_key("off"),
-                "globally-disabled server is not listed"
-            );
-        });
-    }
-
-    #[test]
-    fn session_mcp_servers_includes_project_local_declared() {
-        let config_dir = tempfile::tempdir().unwrap();
-        let project = tempfile::tempdir().unwrap();
-        std::fs::write(
-            project.path().join(".mcp.json"),
-            r#"{ "mcpServers": { "local": { "type": "stdio", "command": "uv" } } }"#,
-        )
-        .unwrap();
-        temp_env::with_var("CODE_ASSISTANT_CONFIG_DIR", Some(config_dir.path()), || {
-            // A declared project-local server is listed regardless of trust
-            // (trust separately gates whether it launches).
-            let servers = session_mcp_servers(Some(project.path()), &[]);
-            assert!(
-                servers.iter().any(|s| s.name == "local" && s.enabled),
-                "project-declared server is listed and enabled"
-            );
-            // And a project without a .mcp.json contributes nothing local.
-            let empty = tempfile::tempdir().unwrap();
-            assert!(
-                !session_mcp_servers(Some(empty.path()), &[])
-                    .iter()
-                    .any(|s| s.name == "local")
-            );
-        });
     }
 
     #[test]

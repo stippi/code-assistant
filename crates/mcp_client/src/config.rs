@@ -109,6 +109,11 @@ pub struct McpServerConfig {
     /// launched/connected and contribute no tools.
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Whether new sessions start with this server switched off, unless their
+    /// project remembers otherwise. Its tools are then hidden until the user
+    /// turns the server on for a session; existing sessions are unaffected.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub off_in_new_sessions: bool,
     /// Optional allowlist: when set, only the named tools are registered.
     /// `None` offers every discovered tool (subject to `disabled_tools`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -267,6 +272,7 @@ pub fn parse_local_mcp_json(content: &str) -> Result<McpServersConfig> {
             McpServerConfig {
                 transport,
                 enabled: true,
+                off_in_new_sessions: false,
                 enabled_tools: None,
                 disabled_tools: Vec::new(),
             },

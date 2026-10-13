@@ -118,6 +118,13 @@ impl McpSection {
         }
     }
 
+    fn set_server_off_in_new_sessions(&mut self, name: &str, value: bool, cx: &mut Context<Self>) {
+        if let Some(server) = self.config.servers.get_mut(name) {
+            server.off_in_new_sessions = value;
+            self.persist(cx);
+        }
+    }
+
     fn toggle_tool(&mut self, server_name: &str, tool: &str, cx: &mut Context<Self>) {
         let Some(server) = self.config.servers.get_mut(server_name) else {
             return;
@@ -325,6 +332,7 @@ impl McpSection {
         let mut server = previous.unwrap_or_else(|| McpServerConfig {
             transport: McpTransport::stdio(String::new()),
             enabled: true,
+            off_in_new_sessions: false,
             enabled_tools: None,
             disabled_tools: Vec::new(),
         });
@@ -456,6 +464,8 @@ impl McpSection {
         let name_for_delete = name.to_string();
         let name_for_retry = name.to_string();
         let name_for_auth = name.to_string();
+        let name_for_new_sessions = name.to_string();
+        let view = cx.entity();
 
         div()
             .flex()
@@ -466,6 +476,43 @@ impl McpSection {
             .pt_2()
             .border_t_1()
             .border_color(cx.theme().border)
+            // New sessions: on (default) or off until switched on per session
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .pb_1()
+                    .child(
+                        Switch::new(SharedString::from(format!(
+                            "mcp-server-new-sessions-{name}"
+                        )))
+                        .checked(!server.off_in_new_sessions)
+                        .with_size(Size::Small)
+                        .on_click(move |on, _window, app| {
+                            let name = name_for_new_sessions.clone();
+                            let off = !*on;
+                            view.update(app, |this, cx| {
+                                this.set_server_off_in_new_sessions(&name, off, cx);
+                            });
+                        }),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().foreground)
+                            .child("On in new sessions"),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(
+                                "— unless the project remembers otherwise; switch it per \
+                                 session in the input row",
+                            ),
+                    ),
+            )
             // Action row
             .child(
                 div()

@@ -3,7 +3,9 @@
 use super::MessagesView;
 use super::branch_switcher::BranchSwitcherElement;
 use gpui_kit::component::{ActiveTheme, Icon};
-use gpui_kit::{Context, CursorStyle, Entity, SharedString, Window, div, prelude::*, rems, rgb};
+use gpui_kit::{
+    Context, CursorStyle, Entity, SharedString, Window, div, prelude::*, px, rems, rgb,
+};
 
 /// Render a single message at the given index.
 /// Called by the list's render callback — only for visible items.
@@ -27,6 +29,18 @@ pub fn render_message(
 
     // Update the message container with current project
     msg.read(cx).set_current_project(current_project);
+
+    // A wakeup message is not the user's: its `schedule_wakeup` block shows
+    // it fired, or, without one in the turn, it reads like a tool line.
+    if let Some(wakeup) = msg.read(cx).wakeup() {
+        let row = div().id(("message-item", msg.entity_id())).w_full();
+        if wakeup.linked {
+            return row.into_any_element();
+        }
+        return row
+            .child(render_wakeup_message(&wakeup.prompt, cx))
+            .into_any_element();
+    }
 
     let is_user_message = msg.read(cx).is_user_message();
     let node_id = msg.read(cx).node_id();
@@ -167,6 +181,50 @@ pub fn render_message(
             .id(("message-item", msg.entity_id()))
             .into_any_element()
     }
+}
+
+/// A wakeup message without its `schedule_wakeup` block in the turn before:
+/// laid out like an expanded inline tool block.
+fn render_wakeup_message(prompt: &str, cx: &Context<MessagesView>) -> gpui_kit::AnyElement {
+    use super::super::shared::file_icons;
+    let theme = cx.theme();
+    div()
+        .px_3()
+        .pb_1()
+        .mt_0p5()
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1p5()
+                .py_1p5()
+                .px_3()
+                .child(file_icons::render_icon_container(
+                    &file_icons::get().get_type_icon(file_icons::TOOL_WAKEUP_FIRED),
+                    14.0,
+                    theme.muted_foreground,
+                    "⏰",
+                ))
+                .child(
+                    div()
+                        .text_size(rems(0.8125))
+                        .text_color(theme.muted_foreground)
+                        .child("Woke up"),
+                ),
+        )
+        .child(
+            div()
+                .pl(px(8.))
+                .ml(px(8.))
+                .border_l_2()
+                .border_color(theme.border)
+                .py(px(4.))
+                .text_size(rems(0.8125))
+                .text_color(theme.muted_foreground)
+                .child(prompt.to_string()),
+        )
+        .into_any_element()
 }
 
 /// Group consecutive image blocks into horizontal galleries for user messages

@@ -262,6 +262,12 @@ pub enum UiEvent {
         session_id: String,
         activity_state: SessionActivityState,
     },
+    /// The wakeups still to fire in a session changed (soonest first).
+    /// Relevant for every view's sidebar, not only the session's own.
+    UpdateArmedWakeups {
+        session_id: String,
+        wakeups: Vec<crate::session::wakeup::ArmedWakeupInfo>,
+    },
     /// Update pending message display
     UpdatePendingMessage { message: Option<String> },
     /// Display an error message to the user

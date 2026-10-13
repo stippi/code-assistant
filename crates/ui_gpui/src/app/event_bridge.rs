@@ -101,6 +101,7 @@ impl Gpui {
                 let forward = match &ui_event {
                     // Sidebar state: relevant for every session, always.
                     UiEvent::UpdateSessionActivityState { .. }
+                    | UiEvent::UpdateArmedWakeups { .. }
                     | UiEvent::UpdateSessionMetadata { .. }
                     | UiEvent::UpdateSessionLifecycle { .. }
                     | UiEvent::UpdateChatList { .. }
@@ -464,6 +465,7 @@ mod tests {
             pending_permission_requests,
             pending_new_context_target: None,
             pending_questions: Vec::new(),
+            armed_wakeups: Vec::new(),
         }
     }
 
