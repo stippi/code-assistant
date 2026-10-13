@@ -29,7 +29,10 @@ impl BrowserNavigateTool {
             "browser_navigate",
             "Navigate a browser tab to a URL, or go \"back\"/\"forward\" in its history. Opens the \
              browser if none is running. Returns the resulting URL and title; look at the page \
-             with browser_read_page, browser_computer (screenshot) or browser_get_page_text.",
+             with browser_read_page, browser_computer (screenshot) or browser_get_page_text.\n\
+             Prefer an MCP tool or a CLI (e.g. `gh` for GitHub) when one covers the service, and \
+             web_fetch for plain pages; use the browser for visual checks, interactive UIs or \
+             sites without an API.",
             json!({
                 "type": "object",
                 "properties": {
