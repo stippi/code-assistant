@@ -169,12 +169,16 @@ pub struct SessionConfig {
     /// The git branch name associated with this session (e.g. `feature/login`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
-    /// MCP servers deactivated for this session (by config name). Their tools
+    /// MCP servers switched on for this session (by config name): the state
+    /// at creation plus later switches, see [`crate::tools::mcp_selection`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub enabled_mcp_servers: Vec<String>,
+    /// MCP servers switched off for this session (by config name). Their tools
     /// are not offered to or callable by this session's agent, without
     /// affecting other sessions. This filters the *tool set* only — the server
     /// is still launched when the shared registry is built (registries span
     /// sessions), so disabling here hides a server's tools rather than
-    /// preventing its process from starting. Empty by default.
+    /// preventing its process from starting.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disabled_mcp_servers: Vec<String>,
 }
@@ -199,6 +203,7 @@ impl Default for SessionConfig {
             permission_tier: PermissionTier::default(),
             worktree_path: None,
             branch: None,
+            enabled_mcp_servers: Vec::new(),
             disabled_mcp_servers: Vec::new(),
         }
     }

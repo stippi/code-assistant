@@ -507,7 +507,10 @@ impl McpSection {
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child("— when off, switch it on per session in the input row"),
+                            .child(
+                                "— unless the project remembers otherwise; switch it per \
+                                 session in the input row",
+                            ),
                     ),
             )
             // Action row

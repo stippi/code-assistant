@@ -24,15 +24,6 @@ impl McpServersConfig {
         self.servers.iter().filter(|(_, server)| server.enabled)
     }
 
-    /// Names of the enabled servers that new sessions start with switched
-    /// off (see [`McpServerConfig::off_in_new_sessions`]), sorted.
-    pub fn servers_off_in_new_sessions(&self) -> Vec<String> {
-        self.enabled_servers()
-            .filter(|(_, server)| server.off_in_new_sessions)
-            .map(|(name, _)| name.clone())
-            .collect()
-    }
-
     /// Substitute `${VAR}` patterns in every server's secret-carrying values
     /// — stdio env values and HTTP header values — so config files can
     /// reference secrets instead of baking them in. `lookup` resolves a
@@ -118,9 +109,9 @@ pub struct McpServerConfig {
     /// launched/connected and contribute no tools.
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Whether new sessions start with this server switched off. Its tools
-    /// are then hidden until the user turns the server on for a session;
-    /// sessions that already exist are unaffected.
+    /// Whether new sessions start with this server switched off, unless their
+    /// project remembers otherwise. Its tools are then hidden until the user
+    /// turns the server on for a session; existing sessions are unaffected.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub off_in_new_sessions: bool,
     /// Optional allowlist: when set, only the named tools are registered.
@@ -325,19 +316,6 @@ mod tests {
             json,
             serde_json::json!({ "servers": { "jira": { "command": "npx", "enabled": true } } })
         );
-    }
-
-    #[test]
-    fn servers_off_in_new_sessions_lists_enabled_flagged_servers() {
-        let config: McpServersConfig = serde_json::from_str(
-            r#"{ "servers": {
-                "a": { "command": "npx", "off_in_new_sessions": true },
-                "b": { "command": "npx" },
-                "c": { "command": "npx", "off_in_new_sessions": true, "enabled": false }
-            } }"#,
-        )
-        .unwrap();
-        assert_eq!(config.servers_off_in_new_sessions(), vec!["a".to_string()]);
     }
 
     #[test]

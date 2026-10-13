@@ -144,7 +144,6 @@ struct PendingSession {
 /// handler closure registered on the connection builder.
 pub struct AgentState {
     session_manager: Arc<Mutex<SessionManager>>,
-    session_config_template: SessionConfig,
     model_name: String,
     tool_registry: Arc<tools_core::ToolRegistry>,
     playback_path: Option<std::path::PathBuf>,
@@ -175,7 +174,6 @@ impl AgentState {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         session_manager: Arc<Mutex<SessionManager>>,
-        session_config_template: SessionConfig,
         model_name: String,
         tool_registry: Arc<tools_core::ToolRegistry>,
         playback_path: Option<std::path::PathBuf>,
@@ -185,7 +183,6 @@ impl AgentState {
     ) -> Self {
         Self {
             session_manager,
-            session_config_template,
             model_name,
             tool_registry,
             playback_path,
@@ -420,8 +417,11 @@ impl AgentState {
             .allocate_session_id(Some(&arguments.cwd))
             .map_err(|e| to_acp_error(&e))?;
 
-        let mut session_config = self.session_config_template.clone();
-        session_config.init_path = Some(arguments.cwd.clone());
+        let session_config = self
+            .session_manager
+            .lock()
+            .await
+            .new_session_config(Some(arguments.cwd.clone()));
         let permission_tier = session_config.permission_tier;
 
         let model_info =

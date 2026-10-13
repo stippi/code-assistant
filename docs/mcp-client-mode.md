@@ -162,12 +162,23 @@ shows and preserves.
   enable switch, add/edit/delete (including a transport selector for
   stdio command/args/env vs HTTP url/headers), live tool discovery and
   per-tool toggles persisted to `disabled_tools`.
-- **Off in new sessions**: a server with `"off_in_new_sessions": true`
-  stays enabled globally, but new sessions start with it in their
-  `disabled_mcp_servers` (`SessionManager::new_session_config`), so its
-  tools stay hidden until switched on per session. Sessions derived from
-  another one copy that session's list. Set from the settings card's
-  "On in new sessions" switch.
+- **Which servers a session has on** (`tools::mcp_selection`), in three
+  layers:
+  - *Global*: a server with `"off_in_new_sessions": true` stays enabled,
+    but new sessions start with it off (the settings card's "On in new
+    sessions" switch). Servers of a project's `.mcp.json` start on.
+  - *Project*: `<config_dir>/project-mcp-servers.json` keeps, per
+    canonical project root, only the servers whose state differs from
+    their global default. Switching a server in any session of the
+    project records it there; a switch back to the default removes the
+    entry.
+  - *Session*: a new session (`SessionManager::new_session_config`)
+    records every available server in `enabled_mcp_servers` /
+    `disabled_mcp_servers` — the project's choice, else the global
+    default — and keeps its own switches. Later changes to the project or
+    global defaults leave it alone; only a server it has no state for
+    (added since) is set as in a new session. Sessions derived from
+    another one copy that session's lists.
 
 Still open from this note: additive scope selection (step 1),
 read-only/outward classification and the outward-confirmation
