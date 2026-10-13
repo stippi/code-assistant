@@ -5,7 +5,7 @@
 //! commands (`/goal`, `/new`, `/handoff`, `/compact`) plus the session's
 //! skills (read from the [`crate::Gpui`] global, populated via
 //! `BackendEvent::ListSkills`); a skill named like a built-in is shadowed.
-//! Accepting an entry replaces the input with `/<name> `, ready for the
+//! Accepting an entry (Enter or Tab) replaces the input with `/<name> `, ready for the
 //! request that goes with it. A message starting with
 //! `/<skill-name>` is submitted like any other; the core recognizes the skill
 //! and adds its instructions to the message.
