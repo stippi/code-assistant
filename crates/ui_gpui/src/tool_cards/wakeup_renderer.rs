@@ -1,8 +1,10 @@
 //! Inline renderer for `schedule_wakeup` / `cancel_wakeup`.
 //!
-//! A scheduled wakeup shows when it fires and counts down to it; once the
-//! wakeup message arrived in the same turn (`ToolUseBlock::wakeup_fired`),
-//! the line says it fired, and expanding it shows the prompt.
+//! A scheduled wakeup counts down to when it fires. From the call on, the
+//! line starts the same ("Wakeup in 20 min"); the fire time is appended once
+//! known. Once the wakeup message arrived in the same turn
+//! (`ToolUseBlock::wakeup_fired`), the line says it fired, and expanding it
+//! shows the prompt.
 
 use super::inline_renderer::{render_inline_output, render_inline_output_text};
 use super::{CardRenderContext, ToolBlockRenderer, ToolBlockStyle};
@@ -85,8 +87,8 @@ fn describe_schedule(tool: &ToolUseBlock, now: DateTime<Local>) -> String {
     let Some(output) = output(tool) else {
         // Not executed yet (or failed): what was asked for.
         return match param(tool, "delay_seconds").and_then(|d| d.parse().ok()) {
-            Some(delay) => format!("Schedule wakeup in {}", format_duration(delay)),
-            None => "Schedule wakeup".to_string(),
+            Some(delay) => format!("Wakeup in {}", format_remaining(Duration::from_secs(delay))),
+            None => "Wakeup".to_string(),
         };
     };
     let Some(fires_at) = output.fires_at.map(|t| t.with_timezone(&Local)) else {
@@ -94,7 +96,8 @@ fn describe_schedule(tool: &ToolUseBlock, now: DateTime<Local>) -> String {
         return if tool.wakeup_fired {
             "Woke up".to_string()
         } else {
-            format!("Wakeup in {}", format_duration(output.delay_seconds))
+            let delay = Duration::from_secs(output.delay_seconds);
+            format!("Wakeup in {}", format_remaining(delay))
         };
     };
     let when = format_when(fires_at, now);
@@ -103,7 +106,7 @@ fn describe_schedule(tool: &ToolUseBlock, now: DateTime<Local>) -> String {
     }
     match (fires_at - now).to_std() {
         Ok(remaining) if !remaining.is_zero() => {
-            format!("Wakeup {when} · in {}", format_remaining(remaining))
+            format!("Wakeup in {} · {when}", format_remaining(remaining))
         }
         // Due, but no wakeup message (yet): it may still be on its way, or
         // was cancelled or lost with a restart.
@@ -117,17 +120,6 @@ fn format_when(time: DateTime<Local>, now: DateTime<Local>) -> String {
         format!("at {}", time.format("%H:%M"))
     } else {
         format!("on {}", time.format("%b %-d at %H:%M"))
-    }
-}
-
-/// A delay as asked for: "45 s", "20 min", "2 h 5 min".
-fn format_duration(seconds: u64) -> String {
-    if seconds < 60 {
-        format!("{seconds} s")
-    } else if seconds < 3600 && !seconds.is_multiple_of(60) {
-        format!("{} min {} s", seconds / 60, seconds % 60)
-    } else {
-        format_minutes(seconds / 60)
     }
 }
 
@@ -200,9 +192,9 @@ mod tests {
     #[test]
     fn before_execution_shows_the_requested_delay() {
         let tool = make_tool("schedule_wakeup", &[("delay_seconds", "1200")]);
-        assert_eq!(describe_schedule(&tool, now()), "Schedule wakeup in 20 min");
+        assert_eq!(describe_schedule(&tool, now()), "Wakeup in 20 min");
         let bare = make_tool("schedule_wakeup", &[]);
-        assert_eq!(describe_schedule(&bare, now()), "Schedule wakeup");
+        assert_eq!(describe_schedule(&bare, now()), "Wakeup");
     }
 
     #[test]
@@ -210,10 +202,10 @@ mod tests {
         let tool = scheduled(1200, now() + chrono::Duration::seconds(1190));
         assert_eq!(
             describe_schedule(&tool, now()),
-            "Wakeup at 14:31 · in 20 min"
+            "Wakeup in 20 min · at 14:31"
         );
         let tool = scheduled(30, now() + chrono::Duration::seconds(30));
-        assert_eq!(describe_schedule(&tool, now()), "Wakeup at 14:12 · in 30 s");
+        assert_eq!(describe_schedule(&tool, now()), "Wakeup in 30 s · at 14:12");
     }
 
     #[test]
@@ -221,8 +213,20 @@ mod tests {
         let tool = scheduled(86_400, now() + chrono::Duration::days(1));
         assert_eq!(
             describe_schedule(&tool, now()),
-            "Wakeup on Oct 13 at 14:12 · in 24 h"
+            "Wakeup in 24 h · on Oct 13 at 14:12"
         );
+    }
+
+    #[test]
+    fn executing_keeps_the_start_of_the_line() {
+        for delay in [30, 90, 1200, 5400] {
+            let requested = make_tool("schedule_wakeup", &[("delay_seconds", &delay.to_string())]);
+            // Executed a moment after the call.
+            let armed = scheduled(delay, now() + chrono::Duration::seconds(delay as i64));
+            let before = describe_schedule(&requested, now());
+            let after = describe_schedule(&armed, now() + chrono::Duration::milliseconds(200));
+            assert!(after.starts_with(&before), "{before:?} → {after:?}");
+        }
     }
 
     #[test]
