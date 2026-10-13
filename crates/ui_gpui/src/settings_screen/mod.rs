@@ -89,7 +89,7 @@ impl SettingsScreen {
     fn on_section_clicked(
         &mut self,
         section: SettingsSection,
-        _window: &mut gpui_kit::Window,
+        window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) {
         self.active_section = section;
@@ -112,7 +112,10 @@ impl SettingsScreen {
             SettingsSection::Voice => {
                 self.voice_section.update(cx, |s, _cx| s.reload());
             }
-            SettingsSection::General => {}
+            SettingsSection::General => {
+                self.general_section
+                    .update(cx, |s, cx| s.reload(window, cx));
+            }
         }
 
         cx.notify();

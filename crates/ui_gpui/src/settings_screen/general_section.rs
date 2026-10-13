@@ -3,8 +3,9 @@
 use code_assistant_core::session::idle_handoff::HandoffConfig;
 use code_assistant_core::session::lifecycle::LifecycleConfig;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::switch::Switch;
-use gpui_kit::component::{ActiveTheme, Sizable, Size};
+use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size};
 use gpui_kit::{
     App, Context, Entity, FocusHandle, Focusable, SharedString, Subscription, div, prelude::*, px,
 };
@@ -12,6 +13,9 @@ use tracing::warn;
 
 pub struct GeneralSection {
     focus_handle: FocusHandle,
+    /// The model new sessions start with; stored in `ui-settings.json`.
+    default_model_select: Entity<SelectState<Vec<String>>>,
+    _default_model_subscription: Subscription,
     /// Input tokens of a session's last request from which an idle session
     /// gets a prepared handoff; stored in `handoff.json`.
     handoff_threshold_input: Entity<InputState>,
@@ -25,6 +29,13 @@ pub struct GeneralSection {
 
 impl GeneralSection {
     pub fn new(window: &mut gpui_kit::Window, cx: &mut Context<Self>) -> Self {
+        let default_model_select =
+            cx.new(|cx| SelectState::new(Vec::<String>::new(), None, window, cx));
+        let default_model_subscription = cx.subscribe_in(
+            &default_model_select,
+            window,
+            Self::on_default_model_selected,
+        );
         let threshold = HandoffConfig::load().idle_threshold_tokens;
         let handoff_threshold_input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -44,13 +55,55 @@ impl GeneralSection {
         });
         let settle_days_subscription =
             cx.subscribe_in(&settle_days_input, window, Self::on_settle_days_input);
-        Self {
+        let mut this = Self {
             focus_handle: cx.focus_handle(),
+            default_model_select,
+            _default_model_subscription: default_model_subscription,
             handoff_threshold_input,
             _handoff_threshold_subscription: subscription,
             settle_days_input,
             _settle_days_subscription: settle_days_subscription,
             settle_on_merge: lifecycle.auto_settle_on_merge,
+        };
+        this.reload(window, cx);
+        this
+    }
+
+    /// Re-read the configured models and the stored default, e.g. after the
+    /// Models section changed `models.json`.
+    pub fn reload(&mut self, window: &mut gpui_kit::Window, cx: &mut Context<Self>) {
+        let mut models = llm::provider_config::ConfigurationSystem::load()
+            .map(|config| config.list_models())
+            .unwrap_or_default();
+        models.sort();
+        let default_model = cx
+            .try_global::<crate::UiSettingsGlobal>()
+            .map(|settings| settings.0.default_model.clone())
+            .unwrap_or_else(|| crate::shared::settings::UiSettings::load().default_model)
+            .filter(|model| models.contains(model));
+        self.default_model_select.update(cx, |state, cx| {
+            state.set_items(models, window, cx);
+            if let Some(model) = &default_model {
+                state.set_selected_value(model, window, cx);
+            }
+        });
+    }
+
+    fn on_default_model_selected(
+        &mut self,
+        _: &Entity<SelectState<Vec<String>>>,
+        event: &SelectEvent<Vec<String>>,
+        _window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) {
+        let SelectEvent::Confirm(Some(model)) = event else {
+            return;
+        };
+        let model = model.clone();
+        crate::update_ui_settings(cx, |settings| settings.default_model = Some(model.clone()));
+        // Running app: sessions created from now on start with this model.
+        if let Some(gpui) = cx.try_global::<crate::Gpui>() {
+            gpui.cmd_update_default_model(model);
         }
     }
 
@@ -193,6 +246,42 @@ impl Render for GeneralSection {
                             .to_string(),
                         cx,
                     )),
+            )
+            // Default model
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(gpui_kit::FontWeight::MEDIUM)
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Default model"),
+                    )
+                    .child(
+                        div().w(px(280.)).child(
+                            Select::new(&self.default_model_select)
+                                .placeholder("Select model")
+                                .with_size(Size::Small)
+                                .icon(
+                                    Icon::default()
+                                        .path("icons/chevron_up_down.svg")
+                                        .with_size(Size::XSmall)
+                                        .text_color(cx.theme().muted_foreground),
+                                ),
+                        ),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(
+                                "New sessions start with this model unless --model is \
+                                 given. Existing sessions keep their model.",
+                            ),
+                    ),
             )
             // Prepared handoff
             .child(
