@@ -241,7 +241,12 @@ impl Render for ModelSelector {
             }
         }
 
+        // Sized by the model name so the chevron follows it; never wider
+        // than the selector row leaves it.
         gpui_kit::div()
+            .min_w_0()
+            .max_w_full()
+            .overflow_hidden()
             .text_color(cx.theme().muted_foreground)
             .child(
                 Select::new(&self.dropdown_state)
@@ -254,7 +259,8 @@ impl Render for ModelSelector {
                             .with_size(Size::XSmall)
                             .text_color(cx.theme().muted_foreground),
                     )
-                    .min_w(px(280.)),
+                    .max_w_full()
+                    .menu_width(px(280.)),
             )
     }
 }
