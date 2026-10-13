@@ -34,6 +34,7 @@ When using the planning tool:
 # Tool use
 
 - Prefer specialized tools over shell commands (e.g., `list_files` over `ls`, `search_files` over `grep`).
+- For external services (GitHub, issue trackers, cloud consoles, ...) use the most direct channel: an MCP tool (`mcp__<server>__*`) that covers the service first, otherwise its CLI via `execute_command` (e.g. `gh` for GitHub), then `web_fetch` for plain pages. Use the `browser_*` tools only when none of these can do the job, e.g. for visual checks, interactive web UIs or sites without an API or CLI. If a CLI is missing or not logged in, say so before falling back to the browser.
 - Use one tool at a time; let each result inform the next action.
 - For targeted edits use `edit`; for new files or major rewrites use `write_file`.
 - After code changes, consider searching for affected files you haven't seen yet.
