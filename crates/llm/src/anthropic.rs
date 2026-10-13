@@ -88,7 +88,7 @@ impl DefaultMessageConverter {
         messages
             .into_iter()
             .enumerate()
-            .map(|(msg_index, msg)| {
+            .filter_map(|(msg_index, msg)| {
                 let should_cache = cache_positions.contains(&msg_index);
 
                 let content_blocks = match msg.content {
@@ -109,6 +109,7 @@ impl DefaultMessageConverter {
                         let mut cache_applied = false;
                         blocks
                             .into_iter()
+                            .filter(|block| !is_empty_reasoning(block))
                             .map(|block| {
                                 let (block_type, content, cache_eligible) = match block {
                                     ContentBlock::Text { text, .. } => (
@@ -189,15 +190,32 @@ impl DefaultMessageConverter {
                     }
                 };
 
-                AnthropicMessage {
+                // A message that held nothing but empty reasoning has no content
+                // left, and the API rejects empty messages.
+                if content_blocks.is_empty() {
+                    return None;
+                }
+
+                Some(AnthropicMessage {
                     role: match msg.role {
                         MessageRole::User => "user".to_string(),
                         MessageRole::Assistant => "assistant".to_string(),
                     },
                     content: content_blocks,
-                }
+                })
             })
             .collect()
+    }
+}
+
+/// Reasoning blocks without content cannot be replayed: the API rejects them
+/// ("each thinking block must contain thinking"). They come from interrupted
+/// streams or from other providers whose reasoning was stored without text.
+fn is_empty_reasoning(block: &ContentBlock) -> bool {
+    match block {
+        ContentBlock::Thinking { thinking, .. } => thinking.is_empty(),
+        ContentBlock::RedactedThinking { data, .. } => data.is_empty(),
+        _ => false,
     }
 }
 
@@ -1568,6 +1586,36 @@ mod tests {
             "Tool result should have 1 block"
         );
         assert_eq!(result[2].content[0].block_type, "tool_result");
+    }
+
+    #[test]
+    fn test_empty_thinking_blocks_are_dropped() {
+        let converter = DefaultMessageConverter::new();
+
+        let messages = vec![
+            Message::new_user("Hello"),
+            Message::new_assistant_content(vec![
+                ContentBlock::new_thinking("", "sig"),
+                ContentBlock::new_thinking("kept reasoning", "sig"),
+                ContentBlock::new_text("Hi"),
+            ]),
+            Message::new_user("Again"),
+            Message::new_assistant_content(vec![ContentBlock::new_thinking("", "")]),
+            Message::new_user("Still there?"),
+        ];
+
+        let result = converter.convert_messages_with_cache(messages);
+
+        assert_eq!(
+            result.len(),
+            4,
+            "message with only empty thinking is dropped"
+        );
+        assert_eq!(result[1].content.len(), 2);
+        assert_eq!(result[1].content[0].block_type, "thinking");
+        assert_eq!(result[1].content[1].block_type, "text");
+        assert_eq!(result[2].role, "user");
+        assert_eq!(result[3].role, "user");
     }
 
     #[test]
