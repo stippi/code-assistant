@@ -168,7 +168,7 @@ impl Args {
     ///
     /// Resolution order:
     /// 1. Explicit `--model` CLI argument
-    /// 2. Persisted `default_model` from ui-settings.json
+    /// 2. The configured default model (`default-model.json`)
     /// 3. First model alphabetically from models.json
     pub fn resolve_model_name(model: Option<String>) -> anyhow::Result<String> {
         let config = ConfigurationSystem::load()?;
@@ -202,16 +202,11 @@ impl Args {
             );
         }
 
-        // Check the persisted default model. It is written by the GPUI
-        // settings screen, so builds without that frontend skip the lookup.
-        #[cfg(feature = "gpui-frontend")]
+        // The configured default model (`default-model.json`).
+        if let Some(default_model) =
+            code_assistant_core::session::default_model::configured_default_model()
         {
-            let settings = ui_gpui::shared::settings::UiSettings::load();
-            if let Some(ref default_model) = settings.default_model
-                && config.get_model(default_model).is_some()
-            {
-                return Ok(default_model.clone());
-            }
+            return Ok(default_model);
         }
 
         // Fallback: first model alphabetically

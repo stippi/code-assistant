@@ -1132,23 +1132,14 @@ impl Gpui {
                 // If no model is selected yet, try to resolve one from the
                 // updated config (e.g. after onboarding sets a default).
                 let current = self.current_model.lock().unwrap().clone();
-                if current.is_none() || current.as_deref() == Some("") {
-                    let settings = crate::shared::settings::UiSettings::load();
-                    if let Some(ref default_model) = settings.default_model {
-                        // Verify the model actually exists in config
-                        if let Ok(config) = llm::provider_config::ConfigurationSystem::load()
-                            && config.get_model(default_model).is_some()
-                        {
-                            *self.current_model.lock().unwrap() = Some(default_model.clone());
-                            // Tell the backend to switch the active session's model
-                            // and update the default for future sessions
-                            self.cmd_update_default_model(default_model.clone());
-                            if let Some(session_id) =
-                                self.current_session_id.lock().unwrap().clone()
-                            {
-                                self.cmd_switch_model(session_id, default_model.clone());
-                            }
-                        }
+                // New sessions pick the default up by themselves.
+                if (current.is_none() || current.as_deref() == Some(""))
+                    && let Some(default_model) =
+                        code_assistant_core::session::default_model::configured_default_model()
+                {
+                    *self.current_model.lock().unwrap() = Some(default_model.clone());
+                    if let Some(session_id) = self.current_session_id.lock().unwrap().clone() {
+                        self.cmd_switch_model(session_id, default_model);
                     }
                 }
 

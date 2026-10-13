@@ -1,5 +1,6 @@
 //! General settings section — theme, scale, and other global preferences.
 
+use code_assistant_core::session::default_model::DefaultModelConfig;
 use code_assistant_core::session::idle_handoff::HandoffConfig;
 use code_assistant_core::session::lifecycle::LifecycleConfig;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -76,10 +77,8 @@ impl GeneralSection {
             .map(|config| config.list_models())
             .unwrap_or_default();
         models.sort();
-        let default_model = cx
-            .try_global::<crate::UiSettingsGlobal>()
-            .map(|settings| settings.0.default_model.clone())
-            .unwrap_or_else(|| crate::shared::settings::UiSettings::load().default_model)
+        let default_model = DefaultModelConfig::load()
+            .model
             .filter(|model| models.contains(model));
         self.default_model_select.update(cx, |state, cx| {
             state.set_items(models, window, cx);
@@ -94,16 +93,17 @@ impl GeneralSection {
         _: &Entity<SelectState<Vec<String>>>,
         event: &SelectEvent<Vec<String>>,
         _window: &mut gpui_kit::Window,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) {
         let SelectEvent::Confirm(Some(model)) = event else {
             return;
         };
-        let model = model.clone();
-        crate::update_ui_settings(cx, |settings| settings.default_model = Some(model.clone()));
-        // Running app: sessions created from now on start with this model.
-        if let Some(gpui) = cx.try_global::<crate::Gpui>() {
-            gpui.cmd_update_default_model(model);
+        // Every running frontend starts its next new session with it.
+        let config = DefaultModelConfig {
+            model: Some(model.clone()),
+        };
+        if let Err(e) = config.save() {
+            warn!("Failed to save the default model: {e:#}");
         }
     }
 
@@ -278,8 +278,9 @@ impl Render for GeneralSection {
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
                             .child(
-                                "New sessions start with this model unless --model is \
-                                 given. Existing sessions keep their model.",
+                                "New sessions start with this model, also in the terminal \
+                                 and over ACP, unless --model is given. Existing sessions \
+                                 keep their model.",
                             ),
                     ),
             )

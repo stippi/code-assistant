@@ -84,6 +84,9 @@ pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
         events.clone(),
     );
     manager.set_tool_registry_provider(registry_provider.as_provider());
+    if !config.model_pinned {
+        manager.follow_configured_default_model();
+    }
     let session_manager = Arc::new(Mutex::new(manager));
 
     // Channel for session notifications: `ACPUserUI` instances push into the
@@ -96,7 +99,6 @@ pub async fn run(verbose: bool, config: AgentRunConfig) -> Result<()> {
     let state = Arc::new(AgentState::new(
         session_manager.clone(),
         session_config_template,
-        model_name.clone(),
         tool_registry.clone(),
         config.playback.clone(),
         config.fast_playback,
