@@ -967,6 +967,7 @@ impl UserInterface for ACPUserUI {
             | UiEvent::UpdateSessionLifecycle { .. }
             | UiEvent::ClearMessages
             | UiEvent::UpdateSessionActivityState { .. }
+            | UiEvent::UpdateArmedWakeups { .. }
             | UiEvent::UpdatePendingMessage { .. }
             | UiEvent::ClearError
             | UiEvent::UpdateCurrentModel { .. }

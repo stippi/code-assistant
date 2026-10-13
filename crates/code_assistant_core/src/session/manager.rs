@@ -703,6 +703,11 @@ impl SessionManager {
         };
 
         snapshot.current_model = model_name_for_event;
+        snapshot.armed_wakeups = self
+            .wakeup_handle
+            .as_ref()
+            .map(|handle| handle.armed(&session_id))
+            .unwrap_or_default();
         snapshot.allowed_models = self
             .allowed_models_for_session(&session_id)
             .unwrap_or_default();
@@ -2192,7 +2197,13 @@ impl SessionManager {
                 .active_sessions
                 .get(&metadata.id)
                 .is_some_and(|instance| !instance.get_activity_state().is_terminal());
-            let busy = running_here || self.is_agent_locked_externally(&metadata.id);
+            // A wakeup still to fire continues the session.
+            let wakeup_armed = self
+                .wakeup_handle
+                .as_ref()
+                .is_some_and(|handle| !handle.armed(&metadata.id).is_empty());
+            let busy =
+                running_here || wakeup_armed || self.is_agent_locked_externally(&metadata.id);
             let repo_root = metadata
                 .branch
                 .as_ref()

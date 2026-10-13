@@ -65,6 +65,8 @@ pub struct SessionListItem {
     is_hovered: bool,
     activity_state: SessionActivityState,
     awaiting_user: Option<AwaitingUser>,
+    /// When the session's next wakeup fires, if one is still to fire.
+    next_wakeup: Option<chrono::DateTime<chrono::Utc>>,
     /// Whether the subtitle names the project; not inside a project folder.
     show_project: bool,
     focus_handle: FocusHandle,
@@ -84,6 +86,7 @@ impl SessionListItem {
             is_hovered: false,
             activity_state: SessionActivityState::Idle,
             awaiting_user: None,
+            next_wakeup: None,
             show_project: true,
             focus_handle: cx.focus_handle(),
         }
@@ -128,6 +131,17 @@ impl SessionListItem {
         }
     }
 
+    pub fn set_next_wakeup(
+        &mut self,
+        next_wakeup: Option<chrono::DateTime<chrono::Utc>>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.next_wakeup != next_wakeup {
+            self.next_wakeup = next_wakeup;
+            cx.notify();
+        }
+    }
+
     pub fn set_show_project(&mut self, show_project: bool, cx: &mut Context<Self>) {
         if self.show_project != show_project {
             self.show_project = show_project;
@@ -136,7 +150,11 @@ impl SessionListItem {
     }
 
     pub(super) fn status(&self) -> SessionStatus {
-        SessionStatus::resolve(&self.activity_state, self.awaiting_user)
+        SessionStatus::resolve(
+            &self.activity_state,
+            self.awaiting_user,
+            self.next_wakeup.is_some(),
+        )
     }
 
     /// A settled session is never unread: the user put it away.
@@ -184,6 +202,15 @@ impl SessionListItem {
             tooltip: format!("#{} {} ({label})", pr.number, pr.title),
             url: Some(pr.url.clone()),
         })
+    }
+
+    /// "at 14:31" today, "on Oct 13 at 09:00" on another day.
+    fn format_wakeup_time(at: chrono::DateTime<chrono::Local>) -> String {
+        if at.date_naive() == chrono::Local::now().date_naive() {
+            format!("at {}", at.format("%H:%M"))
+        } else {
+            format!("on {}", at.format("%b %-d at %H:%M"))
+        }
     }
 
     pub(super) fn format_relative_date(timestamp: SystemTime) -> String {
@@ -292,15 +319,25 @@ impl Render for SessionListItem {
             None => self.metadata.updated_at,
         });
 
-        let (status_label, status_color): (Option<&'static str>, Hsla) = match status {
-            SessionStatus::NeedsApproval => (Some("Needs approval"), cx.theme().warning),
-            SessionStatus::NeedsAnswer => (Some("Needs answer"), cx.theme().warning),
-            SessionStatus::Working => (Some("Working"), cx.theme().muted_foreground),
-            SessionStatus::RateLimited => (Some("Rate limited"), cx.theme().warning),
-            SessionStatus::Failed => (Some("Failed"), cx.theme().danger),
-            SessionStatus::RunningElsewhere => {
-                (Some("Running elsewhere"), cx.theme().muted_foreground)
-            }
+        let (status_label, status_color): (Option<String>, Hsla) = match status {
+            SessionStatus::NeedsApproval => (Some("Needs approval".into()), cx.theme().warning),
+            SessionStatus::NeedsAnswer => (Some("Needs answer".into()), cx.theme().warning),
+            SessionStatus::Working => (Some("Working".into()), cx.theme().muted_foreground),
+            SessionStatus::RateLimited => (Some("Rate limited".into()), cx.theme().warning),
+            SessionStatus::Scheduled => (
+                self.next_wakeup.map(|at| {
+                    format!(
+                        "Wakeup {}",
+                        Self::format_wakeup_time(at.with_timezone(&chrono::Local))
+                    )
+                }),
+                cx.theme().muted_foreground,
+            ),
+            SessionStatus::Failed => (Some("Failed".into()), cx.theme().danger),
+            SessionStatus::RunningElsewhere => (
+                Some("Running elsewhere".into()),
+                cx.theme().muted_foreground,
+            ),
             SessionStatus::Ready => (None, cx.theme().muted_foreground),
         };
         let git = self.git_glyph(cx);
@@ -316,7 +353,7 @@ impl Render for SessionListItem {
             parts.push(self.metadata.initial_project.clone());
         }
         if let Some(label) = status_label {
-            parts.push(label.to_string());
+            parts.push(label);
             subtitle_color = status_color;
         } else if let Some(branch) = &self.metadata.branch {
             match &self.lifecycle.pull_request {
@@ -414,6 +451,12 @@ impl Render for SessionListItem {
                             gpui_kit::svg()
                                 .size(px(12.))
                                 .path("icons/lock.svg")
+                                .text_color(status_color),
+                        ),
+                        SessionStatus::Scheduled => el.child(
+                            gpui_kit::svg()
+                                .size(px(13.))
+                                .path("icons/alarm_clock.svg")
                                 .text_color(status_color),
                         ),
                         SessionStatus::Working | SessionStatus::RateLimited => el.child(

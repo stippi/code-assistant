@@ -17,6 +17,7 @@ Two questions are kept apart on purpose.
 | `NeedsApproval`    | an open `RequestToolPermission`                | warning icon and label   |
 | `Working`          | `AgentRunning`, `WaitingForResponse`           | spinner, recedes         |
 | `RateLimited`      | `RateLimited { .. }`                           | spinner, recedes         |
+| `Scheduled`        | `Idle` with a wakeup still to fire             | alarm clock and fire time, recedes |
 | `Failed`           | `Errored { .. }`                               | danger icon and label    |
 | `RunningElsewhere` | `RunningExternally` (foreign agent lock)       | lock icon, recedes       |
 | `Ready`            | `Idle`                                         | no label                 |

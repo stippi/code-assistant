@@ -906,6 +906,21 @@ impl SessionService {
         .await
     }
 
+    /// Tell frontends which wakeups are still to fire in `session_id`.
+    pub(crate) fn publish_armed_wakeups(
+        &self,
+        session_id: &str,
+        wakeups: Vec<crate::session::wakeup::ArmedWakeupInfo>,
+    ) {
+        self.events.publish_ui(
+            session_id,
+            UiEvent::UpdateArmedWakeups {
+                session_id: session_id.to_string(),
+                wakeups,
+            },
+        );
+    }
+
     /// Deliver a fired wakeup (see [`crate::session::wakeup`]): inject
     /// `message` into the session and make sure a turn runs for it — started
     /// immediately when the session is idle, queued as the pending message
@@ -2831,6 +2846,36 @@ mod tests {
         exec.result_json
             .get("fired_at")
             .map(|fired_at| fired_at.to_string())
+    }
+
+    #[tokio::test]
+    async fn snapshot_lists_the_wakeups_still_to_fire() {
+        struct NullSink;
+        #[async_trait::async_trait]
+        impl crate::session::wakeup::WakeupSink for NullSink {
+            async fn fire(&self, _session_id: &str, _wakeup_id: u64, _message: &str) {}
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let (service, manager) = test_service_with_manager(tmp.path());
+        let handle = crate::session::wakeup::spawn_wakeup_scheduler(NullSink, None);
+        manager.lock().await.set_wakeup_handle(handle.clone());
+        let id = service.create_session(None, None).await.unwrap();
+
+        handle.arm(
+            id.clone(),
+            0,
+            std::time::Duration::from_secs(600),
+            "check".into(),
+        );
+        tokio::task::yield_now().await;
+        let snapshot = service.load_session(id.clone(), None).await.unwrap();
+
+        assert_eq!(snapshot.armed_wakeups.len(), 1);
+        assert_eq!(snapshot.armed_wakeups[0].prompt, "check");
+        assert!(snapshot.connect_events().iter().any(|event| matches!(
+            event,
+            UiEvent::UpdateArmedWakeups { wakeups, .. } if wakeups.len() == 1
+        )));
     }
 
     #[tokio::test]

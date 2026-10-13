@@ -80,11 +80,22 @@ pub fn highest_wakeup_id(executions: &[SerializedToolExecution]) -> u64 {
         .unwrap_or(0)
 }
 
+/// A wakeup still to fire, as frontends show it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArmedWakeupInfo {
+    pub id: u64,
+    pub fires_at: chrono::DateTime<chrono::Utc>,
+    pub prompt: String,
+}
+
 /// Delivers a fired wakeup into a session. The production implementation is
 /// [`SessionService`]; tests substitute a recorder.
 #[async_trait::async_trait]
 pub trait WakeupSink: Send + Sync + 'static {
     async fn fire(&self, session_id: &str, wakeup_id: u64, message: &str);
+
+    /// The wakeups still to fire in `session_id` changed (soonest first).
+    fn armed_changed(&self, _session_id: &str, _armed: Vec<ArmedWakeupInfo>) {}
 }
 
 #[async_trait::async_trait]
@@ -97,14 +108,33 @@ impl WakeupSink for SessionService {
             warn!("Failed to deliver wakeup to session {session_id}: {e}");
         }
     }
+
+    fn armed_changed(&self, session_id: &str, armed: Vec<ArmedWakeupInfo>) {
+        self.publish_armed_wakeups(session_id, armed);
+    }
 }
 
 struct ArmedWakeup {
     session_id: String,
     id: u64,
     fire_at: Instant,
+    /// `fire_at` on the wall clock, for frontends.
+    fires_at: chrono::DateTime<chrono::Utc>,
     prompt: String,
 }
+
+impl ArmedWakeup {
+    fn info(&self) -> ArmedWakeupInfo {
+        ArmedWakeupInfo {
+            id: self.id,
+            fires_at: self.fires_at,
+            prompt: self.prompt.clone(),
+        }
+    }
+}
+
+/// The wakeups still to fire per session, kept by the scheduler task.
+type ArmedBySession = Arc<Mutex<HashMap<String, Vec<ArmedWakeupInfo>>>>;
 
 enum Command {
     Arm(ArmedWakeup),
@@ -118,6 +148,7 @@ pub struct WakeupHandle {
     tx: mpsc::UnboundedSender<Command>,
     /// The last id issued per session.
     issued: Arc<Mutex<HashMap<String, u64>>>,
+    armed: ArmedBySession,
 }
 
 impl WakeupHandle {
@@ -135,9 +166,21 @@ impl WakeupHandle {
             session_id,
             id,
             fire_at: Instant::now() + delay,
+            fires_at: chrono::Utc::now()
+                + chrono::TimeDelta::from_std(delay).unwrap_or(chrono::TimeDelta::MAX),
             prompt,
         }));
         id
+    }
+
+    /// The wakeups still to fire in `session_id`, soonest first.
+    pub fn armed(&self, session_id: &str) -> Vec<ArmedWakeupInfo> {
+        self.armed
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Cancel a single wakeup of a session — a session cannot cancel another
@@ -183,16 +226,44 @@ pub fn spawn_wakeup_scheduler(
     sleep_inhibitor: Option<Arc<SleepInhibitor>>,
 ) -> WakeupHandle {
     let (tx, rx) = mpsc::unbounded_channel();
-    tokio::spawn(run_scheduler(rx, sink, sleep_inhibitor));
+    let armed = ArmedBySession::default();
+    tokio::spawn(run_scheduler(rx, sink, armed.clone(), sleep_inhibitor));
     WakeupHandle {
         tx,
         issued: Arc::default(),
+        armed,
     }
+}
+
+/// Bring the shared view of `session_id`'s wakeups in line with `armed` and
+/// tell the sink.
+fn publish_session(
+    session_id: &str,
+    armed: &BTreeMap<u64, ArmedWakeup>,
+    shared: &ArmedBySession,
+    sink: &impl WakeupSink,
+) {
+    let mut wakeups: Vec<ArmedWakeupInfo> = armed
+        .values()
+        .filter(|w| w.session_id == session_id)
+        .map(ArmedWakeup::info)
+        .collect();
+    wakeups.sort_by_key(|w| w.fires_at);
+    {
+        let mut shared = shared.lock().unwrap();
+        if wakeups.is_empty() {
+            shared.remove(session_id);
+        } else {
+            shared.insert(session_id.to_string(), wakeups.clone());
+        }
+    }
+    sink.armed_changed(session_id, wakeups);
 }
 
 async fn run_scheduler(
     mut rx: mpsc::UnboundedReceiver<Command>,
     sink: impl WakeupSink,
+    shared: ArmedBySession,
     sleep_inhibitor: Option<Arc<SleepInhibitor>>,
 ) {
     // Keyed by arm order, which breaks fire-time ties deterministically.
@@ -209,7 +280,7 @@ async fn run_scheduler(
                     // All handles dropped; nothing can arm or fire anymore.
                     break;
                 };
-                match command {
+                let session_id = match command {
                     Command::Arm(wakeup) => {
                         debug!(
                             "Wakeup {} armed for session {} in {:?}",
@@ -217,16 +288,21 @@ async fn run_scheduler(
                             wakeup.session_id,
                             wakeup.fire_at.saturating_duration_since(Instant::now())
                         );
+                        let session_id = wakeup.session_id.clone();
                         armed.insert(next_key.fetch_add(1, Ordering::Relaxed), wakeup);
+                        session_id
                     }
                     Command::Cancel { session_id, id } => {
                         armed.retain(|_, w| !(w.session_id == session_id && w.id == id));
                         debug!("Wakeup {id} of session {session_id} cancelled");
+                        session_id
                     }
                     Command::CancelSession { session_id } => {
                         armed.retain(|_, w| w.session_id != session_id);
+                        session_id
                     }
-                }
+                };
+                publish_session(&session_id, &armed, &shared, &sink);
             }
             _ = sleep_until_or_never(next_deadline) => {
                 let now = Instant::now();
@@ -238,6 +314,7 @@ async fn run_scheduler(
                 for key in due {
                     let wakeup = armed.remove(&key).expect("due key was just collected");
                     debug!("Wakeup {} fires for session {}", wakeup.id, wakeup.session_id);
+                    publish_session(&wakeup.session_id, &armed, &shared, &sink);
                     sink.fire(
                         &wakeup.session_id,
                         wakeup.id,
@@ -300,10 +377,18 @@ mod tests {
     #[derive(Default)]
     struct RecordingSink {
         fired: Mutex<Vec<(String, String)>>,
+        armed: Mutex<Vec<(String, Vec<u64>)>>,
     }
 
     #[async_trait::async_trait]
     impl WakeupSink for Arc<RecordingSink> {
+        fn armed_changed(&self, session_id: &str, armed: Vec<ArmedWakeupInfo>) {
+            self.armed
+                .lock()
+                .unwrap()
+                .push((session_id.to_string(), armed.iter().map(|w| w.id).collect()));
+        }
+
         async fn fire(&self, session_id: &str, _wakeup_id: u64, message: &str) {
             self.fired
                 .lock()
@@ -338,6 +423,7 @@ mod tests {
         let handle = WakeupHandle {
             tx,
             issued: Arc::default(),
+            armed: Arc::default(),
         };
         let arm = |session: &str, used| {
             handle.arm(session.into(), used, Duration::from_secs(1), "x".into())
@@ -383,6 +469,38 @@ mod tests {
         assert_eq!(
             fired,
             vec![("s1".to_string(), wakeup_message(1, "check build"))]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn armed_wakeups_are_reported_per_session() {
+        let (handle, sink) = recording_scheduler();
+        handle.arm("s1".into(), 0, Duration::from_secs(20), "later".into());
+        handle.arm("s1".into(), 0, Duration::from_secs(10), "sooner".into());
+        handle.arm("s2".into(), 0, Duration::from_secs(30), "other".into());
+        settle().await;
+        let ids = |session| -> Vec<u64> { handle.armed(session).iter().map(|w| w.id).collect() };
+        // Soonest first.
+        assert_eq!(ids("s1"), vec![2, 1]);
+        assert_eq!(ids("s2"), vec![1]);
+
+        tokio::time::advance(Duration::from_secs(11)).await;
+        settle().await;
+        assert_eq!(ids("s1"), vec![1]);
+        handle.cancel("s1".into(), 1);
+        settle().await;
+        assert!(handle.armed("s1").is_empty());
+
+        let reported = sink.armed.lock().unwrap().clone();
+        assert_eq!(
+            reported,
+            vec![
+                ("s1".to_string(), vec![1]),
+                ("s1".to_string(), vec![2, 1]),
+                ("s2".to_string(), vec![1]),
+                ("s1".to_string(), vec![1]),
+                ("s1".to_string(), vec![]),
+            ]
         );
     }
 

@@ -56,8 +56,7 @@ impl ToolBlockRenderer for WakeupToolRenderer {
         else {
             return None;
         };
-        let remaining = (fires_at - Local::now()).to_std().ok()?;
-        Some(until_display_changes(remaining))
+        countdown_changes_after(fires_at)
     }
 
     fn render(
@@ -148,16 +147,7 @@ fn describe_schedule(tool: &ToolUseBlock, now: DateTime<Local>, this_process: &s
         WakeupState::Armed {
             fires_at: Some(fires_at),
             ..
-        } => {
-            let when = format_when(fires_at, now);
-            match (fires_at - now).to_std() {
-                Ok(remaining) if !remaining.is_zero() => {
-                    format!("Wakeup in {} · {when}", format_remaining(remaining))
-                }
-                // Due, but not fired (yet): it is on its way, or was cancelled.
-                _ => format!("Wakeup {when}"),
-            }
-        }
+        } => format!("Wakeup {}", countdown(fires_at, now)),
         WakeupState::Fired { at: Some(at) } => format!("Woke up {}", format_when(at, now)),
         WakeupState::Fired { at: None } => "Woke up".to_string(),
         WakeupState::Lost {
@@ -170,6 +160,25 @@ fn describe_schedule(tool: &ToolUseBlock, now: DateTime<Local>, this_process: &s
     }
 }
 
+/// "in 20 min · at 14:31" until `fires_at`, "at 14:31" once it is due (but
+/// not fired yet: it is on its way, or was cancelled).
+pub(crate) fn countdown(fires_at: DateTime<Local>, now: DateTime<Local>) -> String {
+    let when = format_when(fires_at, now);
+    match (fires_at - now).to_std() {
+        Ok(remaining) if !remaining.is_zero() => {
+            format!("in {} · {when}", format_remaining(remaining))
+        }
+        _ => when,
+    }
+}
+
+/// How long until [`countdown`] for `fires_at` shows a different text;
+/// `None` once it no longer changes.
+pub(crate) fn countdown_changes_after(fires_at: DateTime<Local>) -> Option<Duration> {
+    let remaining = (fires_at - Local::now()).to_std().ok()?;
+    Some(until_display_changes(remaining))
+}
+
 /// "at 14:32" today, "on Oct 13 at 09:00" on any other day.
 fn format_when(time: DateTime<Local>, now: DateTime<Local>) -> String {
     if time.date_naive() == now.date_naive() {
@@ -179,14 +188,14 @@ fn format_when(time: DateTime<Local>, now: DateTime<Local>) -> String {
     }
 }
 
-/// A countdown: seconds in the last minute, the nearest whole minute before
-/// that.
+/// A countdown: seconds in the last minute, whole minutes rounded up before
+/// that — "2 min" until one minute is left, then "60 s".
 fn format_remaining(remaining: Duration) -> String {
     let seconds = remaining.as_secs_f64().ceil() as u64;
     if seconds <= 60 {
         format!("{seconds} s")
     } else {
-        format_minutes((seconds + 30) / 60)
+        format_minutes(seconds.div_ceil(60))
     }
 }
 
@@ -206,8 +215,8 @@ fn until_display_changes(remaining: Duration) -> Duration {
     if millis <= 60_000 {
         return Duration::from_millis(millis % 1000) + MARGIN;
     }
-    // Minutes round to the nearest: the value drops at every half minute.
-    let into_minute = (millis + 30_000) % 60_000;
+    // Minutes round up: the value drops when crossing a full minute.
+    let into_minute = millis % 60_000;
     let next = if into_minute == 0 {
         60_000
     } else {
@@ -365,11 +374,23 @@ mod tests {
     }
 
     #[test]
+    fn minutes_round_up_until_the_seconds_take_over() {
+        let s = Duration::from_secs;
+        assert_eq!(format_remaining(s(120)), "2 min");
+        assert_eq!(format_remaining(s(61)), "2 min");
+        assert_eq!(format_remaining(s(60)), "60 s");
+        assert_eq!(format_remaining(s(1190)), "20 min");
+        assert_eq!(format_remaining(s(1210)), "21 min");
+    }
+
+    #[test]
     fn refresh_follows_the_displayed_unit() {
         let ms = Duration::from_millis;
         assert_eq!(until_display_changes(ms(30_400)), ms(420));
-        // 20 min 10 s shows "20 min" until 19 min 30 s remain.
-        assert_eq!(until_display_changes(ms(1_210_000)), ms(40_020));
-        assert_eq!(until_display_changes(ms(1_200_000)), ms(30_020));
+        // 20 min 10 s shows "21 min" until 20 min remain.
+        assert_eq!(until_display_changes(ms(1_210_000)), ms(10_020));
+        assert_eq!(until_display_changes(ms(1_200_000)), ms(60_020));
+        // 1 min 10 s shows "2 min" until the seconds take over.
+        assert_eq!(until_display_changes(ms(70_000)), ms(10_020));
     }
 }

@@ -85,6 +85,8 @@ pub struct SessionSidebar {
     selected_session_id: Option<String>,
     focus_handle: FocusHandle,
     activity_states: HashMap<String, SessionActivityState>,
+    /// When each session's next wakeup fires, for sessions with one to fire.
+    next_wakeups: HashMap<String, chrono::DateTime<chrono::Utc>>,
     awaiting_user: HashMap<String, AwaitingUser>,
     _item_subscriptions: Vec<Subscription>,
     _picker_subscription: Subscription,
@@ -116,6 +118,7 @@ impl SessionSidebar {
             selected_session_id: None,
             focus_handle: cx.focus_handle(),
             activity_states: HashMap::new(),
+            next_wakeups: HashMap::new(),
             awaiting_user: HashMap::new(),
             _item_subscriptions: Vec::new(),
             _picker_subscription: picker_subscription,
@@ -175,6 +178,7 @@ impl SessionSidebar {
                 .unwrap_or_default();
             let activity = self.activity_states.get(&session.id).cloned();
             let awaiting = self.awaiting_user.get(&session.id).copied();
+            let next_wakeup = self.next_wakeups.get(&session.id).copied();
             let entity = match existing.remove(&session.id) {
                 Some(entity) => {
                     entity.update(cx, |item, cx| {
@@ -193,6 +197,7 @@ impl SessionSidebar {
                     item.update_activity_state(state, cx);
                 }
                 item.set_awaiting_user(awaiting, cx);
+                item.set_next_wakeup(next_wakeup, cx);
                 item.set_show_project(show_project, cx);
             });
             self._item_subscriptions
@@ -288,6 +293,33 @@ impl SessionSidebar {
         }
         self.activity_states.insert(session_id, activity_state);
         // A collapsed folder's attention mark may change.
+        cx.notify();
+    }
+
+    /// The status the row of `session_id` shows.
+    #[cfg(test)]
+    pub(crate) fn session_status(
+        &self,
+        session_id: &str,
+        cx: &App,
+    ) -> Option<code_assistant_core::session::lifecycle::SessionStatus> {
+        Some(self.items.get(session_id)?.read(cx).status())
+    }
+
+    /// When the session's next wakeup fires; `None` when none is to fire.
+    pub fn update_session_wakeup(
+        &mut self,
+        session_id: String,
+        next_wakeup: Option<chrono::DateTime<chrono::Utc>>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(item) = self.items.get(&session_id) {
+            item.update(cx, |item, cx| item.set_next_wakeup(next_wakeup, cx));
+        }
+        match next_wakeup {
+            Some(at) => self.next_wakeups.insert(session_id, at),
+            None => self.next_wakeups.remove(&session_id),
+        };
         cx.notify();
     }
 

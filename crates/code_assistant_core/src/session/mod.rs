@@ -73,6 +73,8 @@ pub struct SessionSnapshot {
     pub pending_new_context_target: Option<new_context::NewContextTargetRequest>,
     /// `ask_question` requests still awaiting answers.
     pub pending_questions: Vec<questions::UserQuestionRequest>,
+    /// Wakeups still to fire, soonest first.
+    pub armed_wakeups: Vec<wakeup::ArmedWakeupInfo>,
 }
 
 impl SessionSnapshot {
@@ -95,6 +97,10 @@ impl SessionSnapshot {
             UiEvent::UpdateSessionActivityState {
                 session_id: self.session_id.clone(),
                 activity_state: self.activity_state.clone(),
+            },
+            UiEvent::UpdateArmedWakeups {
+                session_id: self.session_id.clone(),
+                wakeups: self.armed_wakeups.clone(),
             },
         ];
         // Show the error banner when connecting to an errored session.

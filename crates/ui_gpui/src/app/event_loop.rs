@@ -684,6 +684,20 @@ impl Gpui {
                     sidebar.update_session_lifecycle(session_id, lifecycle, cx);
                 });
             }
+            UiEvent::UpdateArmedWakeups {
+                session_id,
+                wakeups,
+            } => {
+                let next = wakeups.first().map(|wakeup| wakeup.fires_at);
+                self.update_project_sidebar(cx, |sidebar, cx| {
+                    sidebar.update_session_wakeup(session_id.clone(), next, cx);
+                });
+                if self.is_current_session(&session_id) {
+                    self.update_messages_view(cx, |view, cx| {
+                        view.set_armed_wakeups(wakeups, cx);
+                    });
+                }
+            }
             UiEvent::UpdateSessionActivityState {
                 session_id,
                 activity_state,

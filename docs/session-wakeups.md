@@ -115,6 +115,16 @@ wake the parent — if that turns out useful it needs its own semantics.
 The tool reaches the scheduler handle via the `ToolContext` extensions
 (same access pattern as `update_plan` reaching app services).
 
+### Frontends
+
+The scheduler keeps, per session, the wakeups still to fire
+(`WakeupHandle::armed`) and reports every change
+(`WakeupSink::armed_changed` → `UiEvent::UpdateArmedWakeups`, also part of
+the session snapshot). The GPUI frontend shows an idle session with one as
+`SessionStatus::Scheduled` in the sidebar and a countdown line below the
+transcript, so a session that goes on later does not look finished. Such a
+session never settles automatically.
+
 ### Interactions
 
 - **SleepInhibitor**: an armed wakeup holds the wake-lock refcount (armed →

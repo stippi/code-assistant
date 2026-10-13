@@ -668,6 +668,8 @@ impl SessionInstance {
             pending_permission_requests: self.pending_permission_requests.snapshot(),
             pending_new_context_target: self.pending_new_context_target.snapshot(),
             pending_questions: self.pending_questions.snapshot(),
+            // Filled in by the SessionManager, which holds the scheduler.
+            armed_wakeups: Vec::new(),
         })
     }
 

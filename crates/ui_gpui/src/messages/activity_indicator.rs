@@ -141,3 +141,48 @@ pub fn render_activity_indicator(
         }
     }
 }
+
+/// Render the wakeups still to fire in the viewed session, like an inline
+/// tool line: without it, an idle session that goes on later would look
+/// finished once its `schedule_wakeup` block scrolled out of view.
+pub fn render_armed_wakeups(
+    view: &MessagesView,
+    cx: &mut Context<MessagesView>,
+) -> gpui_kit::AnyElement {
+    use crate::shared::file_icons;
+    use crate::tool_cards::wakeup_renderer::countdown;
+
+    let wakeups = view.armed_wakeups();
+    let Some(next) = wakeups.first() else {
+        return div().into_any_element();
+    };
+    let now = chrono::Local::now();
+    let countdown = countdown(next.fires_at.with_timezone(&chrono::Local), now);
+    let text = match wakeups.len() {
+        1 => format!("Wakeup {countdown}"),
+        n => format!("{n} wakeups · next {countdown}"),
+    };
+    let color = cx.theme().muted_foreground;
+    div()
+        .id("armed-wakeups")
+        .w_full()
+        .px_3()
+        .pb_1()
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1p5()
+                .py_1p5()
+                .px_3()
+                .child(file_icons::render_icon_container(
+                    &file_icons::get().get_type_icon(file_icons::TOOL_SCHEDULE_WAKEUP),
+                    14.0,
+                    color,
+                    "⏰",
+                ))
+                .child(div().text_size(rems(0.8125)).text_color(color).child(text)),
+        )
+        .into_any_element()
+}
