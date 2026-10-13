@@ -104,7 +104,7 @@ so it never starts with consecutive user messages.
 ## Prepared handoff (idle)
 
 - **Arming**: when a run ends in which the agent answered in the session,
-  the core arms a per-session deadline of 2 minutes. A `/new` that only
+  the core arms a per-session deadline of 4 minutes. A `/new` that only
   opened an empty context or moved to a new session does not arm it.
 - **User activity**: frontends report typing in the viewed session via
   `SessionService::note_user_activity(session_id)`, throttled per session

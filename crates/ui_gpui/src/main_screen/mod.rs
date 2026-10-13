@@ -1265,7 +1265,7 @@ impl MainScreen {
     }
 
     /// Tell the core the user is typing in the session (throttled); it
-    /// postpones preparing a handoff (two minutes idle).
+    /// postpones preparing a handoff (four minutes idle).
     fn report_user_activity(&mut self, session_id: String, cx: &mut Context<Self>) {
         if !self
             .activity_reports
