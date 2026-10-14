@@ -11,3 +11,10 @@ resolver = "2"
 transmutation = { git = "https://github.com/stippi/transmutation", rev = "87f48d18ce3ff61659d7182c1b733eae8ec6f2c9" }
 crossterm = { git = "https://github.com/nornagon/crossterm", branch = "nornagon/color-query" }
 ratatui = { git = "https://github.com/nornagon/ratatui", branch = "nornagon-v0.29.0-patch" }
+# gpui-kit 0.7.3 with SelectionFormat::SourceAcrossStyles (copy a selection
+# within one style as plain text, see crates/ui_gpui/src/blocks/mod.rs). The
+# fork branch `text/plain-copy-within-style-0.7.3` is the v0.7.3 tag plus the
+# commit proposed upstream from `text/plain-copy-within-style`, so its
+# gpui-base is version 0.7.3 and satisfies gpui-kit's requirement. Drop this
+# entry once a gpui-kit release carries the change.
+gpui-base = { git = "https://github.com/stippi/gpui-component", rev = "91f6ced13219ed88e9a98c650e3b793891f27571" }
