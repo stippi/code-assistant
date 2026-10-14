@@ -93,6 +93,24 @@ pub(crate) fn launch_config_for(profile: &str, headful: bool) -> BrowserLaunchCo
     }
 }
 
+/// Open a browser for `profile`, explaining a profile held elsewhere in terms
+/// the model can act on.
+pub(crate) async fn open_browser(profile: &str, headful: bool) -> Result<BrowserSession> {
+    BrowserSession::open(launch_config_for(profile, headful), profile)
+        .await
+        .map_err(|e| match e.downcast_ref::<web::ProfileInUse>() {
+            Some(web::ProfileInUse::ThisApp) => anyhow::anyhow!(
+                "Browser profile '{profile}' is already open in another session or sub-agent. \
+                 Close it there with browser_close, or use a different profile."
+            ),
+            Some(web::ProfileInUse::OtherApp { owner }) => anyhow::anyhow!(
+                "Browser profile '{profile}' is in use by another running process (pid {owner}), \
+                 likely another Code Assistant instance. Close it there, or use a different profile."
+            ),
+            None => e,
+        })
+}
+
 /// Get the live browser for `profile`, opening one if none exists yet.
 pub(crate) async fn get_or_open(
     manager: &BrowserSessionManager,
@@ -101,7 +119,7 @@ pub(crate) async fn get_or_open(
     if let Some(session) = manager.get_by_label(profile) {
         return Ok(session);
     }
-    let session = Arc::new(BrowserSession::open(launch_config_for(profile, false), profile).await?);
+    let session = Arc::new(open_browser(profile, false).await?);
     manager.register(session.clone(), profile);
     Ok(session)
 }

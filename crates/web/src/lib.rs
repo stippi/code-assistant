@@ -4,6 +4,7 @@ mod browser_session;
 mod client;
 mod page_log;
 mod perplexity;
+mod profile_lock;
 mod recording;
 mod screencast;
 mod tab;
@@ -18,6 +19,7 @@ pub use browser_session::{
 pub use chromiumoxide::layout::Point;
 pub use client::{PageMetadata, WebClient, WebPage, WebSearchResult};
 pub use perplexity::{PerplexityCitation, PerplexityClient, PerplexityMessage, PerplexityResponse};
+pub use profile_lock::ProfileInUse;
 pub use recording::{Recording, SheetFrame};
 pub use screencast::{FrameMetadata, LiveFrames, ScreencastFrame};
 pub use tab::{

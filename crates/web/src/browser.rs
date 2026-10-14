@@ -12,6 +12,7 @@
 //! Both live behind one [`BrowserLaunchConfig`]; the ephemeral + headless
 //! default preserves the old behavior.
 
+use crate::profile_lock::ProfileClaim;
 use anyhow::Result;
 use chromiumoxide::handler::viewport::Viewport;
 use chromiumoxide::{Browser, BrowserConfig};
@@ -91,18 +92,28 @@ pub const DEFAULT_VIEWPORT: (u32, u32) = (1280, 800);
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A launched browser plus the resources that must outlive it: the temp-dir
-/// guard for an ephemeral profile, and the background CDP handler task that
-/// drives the connection (aborted on drop).
+/// guard for an ephemeral profile, the claim on its profile and process, and
+/// the background CDP handler task that drives the connection (aborted on
+/// drop).
 pub struct LaunchedBrowser {
     pub browser: Browser,
     _user_data_dir: Option<TempDir>,
+    /// Released once the process is gone (or on drop), so the profile can be
+    /// opened again.
+    claim: Option<ProfileClaim>,
     handler: JoinHandle<()>,
 }
 
 impl LaunchedBrowser {
-    /// Launch a Chromium instance for the given config.
+    /// Launch a Chromium instance for the given config. A persistent profile
+    /// already open elsewhere fails with a
+    /// [`ProfileInUse`](crate::ProfileInUse) error.
     pub async fn launch(config: BrowserLaunchConfig) -> Result<Self> {
         let (data_dir, temp_guard) = resolve_user_data_dir(&config.profile)?;
+        let mut claim = match &config.profile {
+            BrowserProfile::Persistent(_) => ProfileClaim::persistent(&data_dir).await?,
+            BrowserProfile::Ephemeral => ProfileClaim::default(),
+        };
 
         let mut builder = BrowserConfig::builder().user_data_dir(&data_dir);
         if config.headful {
@@ -122,7 +133,10 @@ impl LaunchedBrowser {
         }
         let browser_config = builder.build().map_err(|e| anyhow::anyhow!("{e}"))?;
 
-        let (browser, mut handler) = Browser::launch(browser_config).await?;
+        let (mut browser, mut handler) = Browser::launch(browser_config).await?;
+        if let Some(pid) = browser.get_mut_child().and_then(|child| child.inner.id()) {
+            claim.launched(pid);
+        }
         // Drain the handler stream to drive the CDP connection. We do not log
         // per-event errors: chromiumoxide already emits them via `tracing`
         // (unparseable frames are `debug` on `chromiumoxide::conn` plus one
@@ -135,6 +149,7 @@ impl LaunchedBrowser {
         Ok(Self {
             browser,
             _user_data_dir: temp_guard,
+            claim: Some(claim),
             handler,
         })
     }
@@ -153,6 +168,7 @@ impl LaunchedBrowser {
         if tokio::time::timeout(CLOSE_TIMEOUT, graceful).await.is_err() {
             let _ = self.browser.kill().await;
         }
+        self.claim = None;
     }
 }
 
