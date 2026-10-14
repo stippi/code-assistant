@@ -1,7 +1,7 @@
 //! Profiles: closing a profile's browser, the human-in-the-loop login, and
 //! listing the persistent profiles on disk.
 
-use super::{BrowserOutput, DEFAULT_PROFILE, Target, browser_tool, launch_config_for, spec};
+use super::{BrowserOutput, DEFAULT_PROFILE, Target, browser_tool, open_browser, spec};
 use crate::tools::core::{
     Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec, capabilities,
 };
@@ -101,7 +101,7 @@ async fn login_handoff(
     if let Some(existing) = manager.remove_by_label(profile) {
         existing.close().await;
     }
-    let session = match BrowserSession::open(launch_config_for(profile, headful), profile).await {
+    let session = match open_browser(profile, headful).await {
         Ok(s) => Arc::new(s),
         Err(e) => {
             return Ok(BrowserOutput::failure(
@@ -213,8 +213,7 @@ async fn finalize_login_headless(
     headful.close().await;
 
     // Relaunch the same profile headless and restore the login.
-    let headless =
-        Arc::new(BrowserSession::open(launch_config_for(profile, false), profile).await?);
+    let headless = Arc::new(open_browser(profile, false).await?);
     let tab = headless.active_tab()?;
     if url.starts_with("http") {
         // Land on an http origin so cookies can be set, inject the jar, then

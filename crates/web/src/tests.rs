@@ -1685,3 +1685,65 @@ async fn a_person_at_the_panel_clicks_types_and_scrolls() {
 
     session.close().await;
 }
+
+/// A browser left running by a dead app (reparented, still holding its
+/// profile) is reaped by the next launch; a second launch on a profile this
+/// process has open is refused instead of aborting in Chromium.
+#[cfg(all(test, unix))]
+#[tokio::test]
+async fn persistent_profile_reaps_an_orphan_and_refuses_a_second_opener() {
+    use chromiumoxide::detection::{DetectionOptions, default_executable};
+
+    let base = tempfile::tempdir().unwrap();
+    let dir = base.path().join("profile");
+    std::fs::create_dir_all(&dir).unwrap();
+    // As written by an app that has since died.
+    std::fs::write(base.path().join("profile.owner"), "0").unwrap();
+
+    // Launch through a shell that exits at once, so the browser is orphaned.
+    let exe = default_executable(DetectionOptions::default()).unwrap();
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(
+            "\"$0\" --headless --no-first-run --remote-debugging-port=0 \
+             --user-data-dir=\"$1\" about:blank >/dev/null 2>&1 &",
+        )
+        .arg(&exe)
+        .arg(&dir)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let lock = dir.join("SingletonLock");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let orphan: i32 = loop {
+        if let Some(pid) = std::fs::read_link(&lock)
+            .ok()
+            .and_then(|t| t.to_str()?.rsplit_once('-')?.1.parse().ok())
+        {
+            break pid;
+        }
+        assert!(std::time::Instant::now() < deadline, "orphan never locked");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+
+    let mut browser = LaunchedBrowser::launch(BrowserLaunchConfig::persistent(&dir))
+        .await
+        .expect("launch should reap the orphan");
+    // SAFETY: probing a pid.
+    let orphan_alive = unsafe { libc::kill(orphan, 0) } == 0;
+    assert!(!orphan_alive, "the orphan was terminated");
+
+    let second = LaunchedBrowser::launch(BrowserLaunchConfig::persistent(&dir)).await;
+    let err = second.err().expect("a second opener is refused");
+    assert_eq!(
+        err.downcast_ref::<crate::ProfileInUse>(),
+        Some(&crate::ProfileInUse::ThisApp)
+    );
+
+    // Closing releases the profile for the next launch.
+    browser.close().await;
+    let mut again = LaunchedBrowser::launch(BrowserLaunchConfig::persistent(&dir))
+        .await
+        .expect("reopen after close");
+    again.close().await;
+}
