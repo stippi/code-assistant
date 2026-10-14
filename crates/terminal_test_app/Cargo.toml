@@ -11,4 +11,4 @@ path = "src/main.rs"
 [dependencies]
 terminal = { path = "../terminal" }
 terminal_view = { path = "../terminal_view" }
-gpui-kit = "0.6.6"
+gpui-kit = "0.7.3"
