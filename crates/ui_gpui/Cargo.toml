@@ -22,7 +22,7 @@ web = { path = "../web", optional = true }
 # GPUI related. gpui-kit pins the matching gpui-pre snapshot and enables the
 # platform backends (font-kit, x11, wayland) itself. `profiler` is what
 # shared::frame_profile reads gpui's frame timings through.
-gpui-kit = { version = "0.6.6", features = ["tree-sitter-languages", "profiler"] }
+gpui-kit = { version = "0.7.3", features = ["tree-sitter-languages", "profiler"] }
 rust-embed = { version = "8.9", features = ["include-exclude"] }
 
 tokio = { version = "1.48", features = ["full"] }
@@ -50,5 +50,5 @@ base64 = "0.22"
 
 [dev-dependencies]
 code_assistant_core = { path = "../code_assistant_core", default-features = false, features = ["test-utils"] }
-gpui-kit = { version = "0.6.6", features = ["test-support"] }
+gpui-kit = { version = "0.7.3", features = ["test-support"] }
 tempfile = "3.23"
