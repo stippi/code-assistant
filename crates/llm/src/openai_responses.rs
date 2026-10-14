@@ -60,7 +60,9 @@ use tracing::{debug, warn};
 /// State tracking for reasoning during streaming
 #[derive(Debug, Default)]
 struct ReasoningState {
-    current_item_id: Option<String>,
+    /// The summary part being streamed: reasoning item id plus summary index
+    /// (one reasoning item can carry several summary parts)
+    current_part: Option<(String, Option<u32>)>,
     current_item_content: String,
     completed_items: Vec<ReasoningSummaryItem>,
     reasoning_block_id: Option<String>, // Track the actual reasoning item ID from OpenAI
@@ -610,6 +612,8 @@ struct StreamEvent {
     response_id: Option<String>,
     #[serde(default)]
     item_id: Option<String>,
+    #[serde(default)]
+    summary_index: Option<u32>,
     #[serde(default)]
     error: Option<StreamErrorPayload>,
 }
@@ -1353,7 +1357,7 @@ impl<'a> StreamProcessor<'a> {
                 "response.reasoning_summary_text.delta" => {
                     if let Some(delta) = event.delta {
                         let id = event.item_id.unwrap_or_else(|| "default".to_string());
-                        self.on_reasoning_summary_delta(id, delta)?;
+                        self.on_reasoning_summary_delta((id, event.summary_index), delta)?;
                     }
                 }
                 "response.function_call_arguments.delta" => {
@@ -1419,11 +1423,15 @@ impl<'a> StreamProcessor<'a> {
         (self.callback)(&StreamingChunk::Thinking(delta))
     }
 
-    fn on_reasoning_summary_delta(&mut self, item_id: String, delta: String) -> Result<()> {
+    fn on_reasoning_summary_delta(
+        &mut self,
+        part: (String, Option<u32>),
+        delta: String,
+    ) -> Result<()> {
         // Check if this is a new item
-        if self.reasoning_state.current_item_id.as_ref() != Some(&item_id) {
+        if self.reasoning_state.current_part.as_ref() != Some(&part) {
             // If we had a previous item, finalize it
-            if let Some(_prev_id) = &self.reasoning_state.current_item_id {
+            if self.reasoning_state.current_part.is_some() {
                 self.reasoning_state
                     .completed_items
                     .push(ReasoningSummaryItem::SummaryText {
@@ -1432,7 +1440,7 @@ impl<'a> StreamProcessor<'a> {
             }
 
             // Start tracking the new item and notify downstream consumers
-            self.reasoning_state.current_item_id = Some(item_id.clone());
+            self.reasoning_state.current_part = Some(part);
             self.reasoning_state.current_item_content.clear();
             (self.callback)(&StreamingChunk::ReasoningSummaryStart)?;
         }
@@ -1500,14 +1508,14 @@ impl<'a> StreamProcessor<'a> {
 
     fn on_response_completed(&mut self, response: Option<&serde_json::Value>) -> Result<()> {
         // Finalize any remaining reasoning item
-        if self.reasoning_state.current_item_id.is_some() {
+        if self.reasoning_state.current_part.is_some() {
             self.reasoning_state
                 .completed_items
                 .push(ReasoningSummaryItem::SummaryText {
                     text: self.reasoning_state.current_item_content.clone(),
                 });
 
-            self.reasoning_state.current_item_id = None;
+            self.reasoning_state.current_part = None;
             self.reasoning_state.current_item_content.clear();
         }
 
@@ -2799,6 +2807,54 @@ mod tests {
         }
 
         assert_eq!(seen.lock().unwrap().as_str(), "hi");
+    }
+
+    #[test]
+    fn test_summary_parts_of_one_reasoning_item_start_separate_items() {
+        // One reasoning item can stream several summary parts. They share the
+        // item_id and differ only in summary_index; each must start a new
+        // summary item, otherwise the parts run together in the UI.
+        let client = OpenAIResponsesClient::new(
+            "test_key".to_string(),
+            "gpt-5".to_string(),
+            "https://api.openai.com/v1".to_string(),
+        );
+        let mut content_blocks = Vec::new();
+        let mut usage = Usage::zero();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_cb = seen.clone();
+        let callback: StreamingCallback = Box::new(move |chunk| {
+            match chunk {
+                StreamingChunk::ReasoningSummaryStart => {
+                    seen_cb.lock().unwrap().push("<start>".to_string())
+                }
+                StreamingChunk::ReasoningSummaryDelta(delta) => {
+                    seen_cb.lock().unwrap().push(delta.clone())
+                }
+                _ => {}
+            }
+            Ok(())
+        });
+
+        {
+            let mut processor =
+                StreamProcessor::new(&client, &mut content_blocks, &mut usage, &callback);
+            for line in [
+                r#"data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_1","summary_index":0,"delta":"**A**"}"#,
+                r#"data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_1","summary_index":0,"delta":" one"}"#,
+                r#"data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_1","summary_index":1,"delta":"**B**"}"#,
+                r#"data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_2","summary_index":0,"delta":"**C**"}"#,
+            ] {
+                processor.process_line(line).unwrap();
+            }
+        }
+
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [
+                "<start>", "**A**", " one", "<start>", "**B**", "<start>", "**C**"
+            ]
+        );
     }
 
     #[test]

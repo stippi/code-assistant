@@ -285,6 +285,8 @@ struct WsStreamEvent {
     delta: Option<String>,
     #[serde(default)]
     item_id: Option<String>,
+    #[serde(default)]
+    summary_index: Option<u32>,
 
     // WebSocket-specific fields for wrapped errors
     #[serde(default)]
@@ -1257,9 +1259,10 @@ impl OpenAIResponsesWsClient {
                             if let Some(delta) = event.delta {
                                 let item_id =
                                     event.item_id.unwrap_or_else(|| "default".to_string());
+                                let part = (item_id, event.summary_index);
                                 if let Some(cb) = streaming_callback {
-                                    if reasoning_state.current_item_id.as_ref() != Some(&item_id) {
-                                        if reasoning_state.current_item_id.is_some() {
+                                    if reasoning_state.current_part.as_ref() != Some(&part) {
+                                        if reasoning_state.current_part.is_some() {
                                             reasoning_state.completed_items.push(
                                                 ReasoningSummaryItem::SummaryText {
                                                     text: reasoning_state
@@ -1268,7 +1271,7 @@ impl OpenAIResponsesWsClient {
                                                 },
                                             );
                                         }
-                                        reasoning_state.current_item_id = Some(item_id.clone());
+                                        reasoning_state.current_part = Some(part);
                                         reasoning_state.current_item_content.clear();
                                         cb(&StreamingChunk::ReasoningSummaryStart)?;
                                     }
@@ -1336,13 +1339,13 @@ impl OpenAIResponsesWsClient {
                         }
                         "response.completed" => {
                             // Finalize reasoning state
-                            if reasoning_state.current_item_id.is_some() {
+                            if reasoning_state.current_part.is_some() {
                                 reasoning_state.completed_items.push(
                                     ReasoningSummaryItem::SummaryText {
                                         text: reasoning_state.current_item_content.clone(),
                                     },
                                 );
-                                reasoning_state.current_item_id = None;
+                                reasoning_state.current_part = None;
                                 reasoning_state.current_item_content.clear();
                             }
 
@@ -1847,7 +1850,9 @@ struct FunctionCallInfo {
 
 #[derive(Debug, Default)]
 struct ReasoningState {
-    current_item_id: Option<String>,
+    /// The summary part being streamed: reasoning item id plus summary index
+    /// (one reasoning item can carry several summary parts)
+    current_part: Option<(String, Option<u32>)>,
     current_item_content: String,
     completed_items: Vec<ReasoningSummaryItem>,
     reasoning_block_id: Option<String>,
