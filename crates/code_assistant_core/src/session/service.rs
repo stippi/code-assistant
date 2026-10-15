@@ -2740,11 +2740,11 @@ mod tests {
             .queue_user_message(id.clone(), "world".to_string(), Vec::new())
             .await
             .unwrap();
-        assert_eq!(pending.as_deref(), Some("hello\nworld"));
+        assert_eq!(pending.as_deref(), Some("hello\n\nworld"));
 
         // Taking it for edit clears the queue.
         let taken = service.take_pending_message(id.clone()).await.unwrap();
-        assert_eq!(taken.as_deref(), Some("hello\nworld"));
+        assert_eq!(taken.as_deref(), Some("hello\n\nworld"));
         assert_eq!(service.take_pending_message(id).await.unwrap(), None);
     }
 

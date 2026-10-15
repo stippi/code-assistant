@@ -152,21 +152,20 @@ impl StreamProcessorTrait for CaretStreamProcessor {
                     }
                 }
                 MessageContent::Structured(blocks) => {
-                    // For structured user messages, combine all text into a single fragment
-                    let mut combined_text = String::new();
-                    for block in blocks {
-                        match block {
-                            llm::ContentBlock::Text { text, .. } => {
-                                combined_text.push_str(text);
-                            }
-
+                    // For structured user messages, combine all text into a single
+                    // fragment; blocks (e.g. queued messages) stay separate paragraphs
+                    let combined_text = blocks
+                        .iter()
+                        .filter_map(|block| match block {
+                            llm::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                            // Include tool result content for user messages
                             llm::ContentBlock::ToolResult { content, .. } => {
-                                // Include tool result content for user messages
-                                combined_text.push_str(content.text_content());
+                                Some(content.text_content())
                             }
-                            _ => {} // Skip other block types for user messages
-                        }
-                    }
+                            _ => None, // Skip other block types for user messages
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
                     if !combined_text.trim().is_empty() {
                         fragments.push(DisplayFragment::PlainText(combined_text));
                     }

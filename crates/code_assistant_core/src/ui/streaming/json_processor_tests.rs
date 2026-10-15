@@ -1385,3 +1385,25 @@ fn test_redacted_thinking_streaming_consistency() {
     // stored timestamps so a restored block does not count up again
     assert_eq!(reasoning_complete, Some(Some(4.0)));
 }
+
+#[test]
+fn test_queued_user_messages_stay_separate_paragraphs() {
+    use llm::{ContentBlock, Message};
+
+    let ui = Arc::new(TestUI::new());
+    let mut processor = JsonStreamProcessor::new(ui, 1, hidden_tools());
+
+    // Messages queued while the agent runs end up as separate text blocks
+    let message = Message::new_user_content(vec![
+        ContentBlock::new_text("first"),
+        ContentBlock::new_text("second"),
+    ]);
+
+    let fragments = processor.extract_fragments_from_message(&message).unwrap();
+
+    assert_eq!(fragments.len(), 1);
+    match &fragments[0] {
+        DisplayFragment::PlainText(text) => assert_eq!(text, "first\n\nsecond"),
+        other => panic!("expected plain text, got {other:?}"),
+    }
+}
