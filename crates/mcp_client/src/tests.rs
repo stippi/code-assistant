@@ -408,3 +408,141 @@ async fn authenticate_rejects_stdio_servers() {
         "unexpected error: {error:#}"
     );
 }
+
+/// An HTTP MCP server whose "login" can be expired: while `expired` is set,
+/// every request gets a `401` challenge. Returns its URL, the flag and the
+/// server task.
+async fn spawn_expiring_http_server() -> (
+    String,
+    Arc<std::sync::atomic::AtomicBool>,
+    tokio::task::JoinHandle<()>,
+) {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
+    use rmcp::transport::streamable_http_server::tower::{
+        StreamableHttpServerConfig, StreamableHttpService,
+    };
+    use std::sync::atomic::Ordering;
+
+    let expired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let service = StreamableHttpService::new(
+        || Ok(TestServer),
+        Arc::new(LocalSessionManager::default()),
+        StreamableHttpServerConfig::default(),
+    );
+    let flag = expired.clone();
+    let router =
+        axum::Router::new()
+            .nest_service("/mcp", service)
+            .layer(axum::middleware::from_fn(
+                move |request: axum::extract::Request, next: axum::middleware::Next| {
+                    let flag = flag.clone();
+                    async move {
+                        if flag.load(Ordering::SeqCst) {
+                            return (
+                                StatusCode::UNAUTHORIZED,
+                                [("WWW-Authenticate", "Bearer error=\"invalid_token\"")],
+                                "token expired",
+                            )
+                                .into_response();
+                        }
+                        next.run(request).await
+                    }
+                },
+            ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+    (format!("http://{addr}/mcp"), expired, server)
+}
+
+/// "Logs in again" by lifting the expiry, counting how often it was asked.
+struct FakeReauthorizer {
+    expired: Arc<std::sync::atomic::AtomicBool>,
+    calls: std::sync::atomic::AtomicUsize,
+    /// Decline instead, as with automatic re-authorization switched off.
+    decline: bool,
+}
+
+#[async_trait::async_trait]
+impl crate::auth::Reauthorizer for FakeReauthorizer {
+    async fn reauthorize(&self, _server: &str) -> anyhow::Result<()> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.decline {
+            anyhow::bail!("automatic re-authorization is off");
+        }
+        self.expired
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+async fn echo(connection: &McpServerConnection, message: &str) -> anyhow::Result<String> {
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("message".into(), json!(message));
+    let result = connection.call_tool("echo", Some(arguments)).await?;
+    Ok(format!("{:?}", result.content))
+}
+
+/// A login that expires while the connection is in use is renewed through the
+/// reauthorizer, and the rejected call is retried on the new session.
+#[tokio::test]
+async fn expired_login_mid_session_reauthorizes_and_retries() {
+    use std::sync::atomic::Ordering;
+    let (url, expired, _server) = spawn_expiring_http_server().await;
+    let config = server_config(json!({ "url": url }));
+    let reauthorizer = Arc::new(FakeReauthorizer {
+        expired: expired.clone(),
+        calls: Default::default(),
+        decline: false,
+    });
+    let connection = McpServerConnection::connect("expiring", &config, None)
+        .await
+        .unwrap()
+        .with_reauthorizer(reauthorizer.clone());
+    assert!(
+        echo(&connection, "before")
+            .await
+            .unwrap()
+            .contains("before")
+    );
+
+    expired.store(true, Ordering::SeqCst);
+    let after = echo(&connection, "after")
+        .await
+        .expect("the call recovers after re-authorization");
+    assert!(after.contains("after"), "{after}");
+    assert_eq!(reauthorizer.calls.load(Ordering::SeqCst), 1);
+
+    // The new session keeps working without asking again.
+    assert!(echo(&connection, "again").await.unwrap().contains("again"));
+    assert_eq!(reauthorizer.calls.load(Ordering::SeqCst), 1);
+}
+
+/// A declined re-authorization fails the call with the reauthorizer's reason.
+#[tokio::test]
+async fn declined_reauthorization_fails_the_call_with_its_reason() {
+    use std::sync::atomic::Ordering;
+    let (url, expired, _server) = spawn_expiring_http_server().await;
+    let config = server_config(json!({ "url": url }));
+    let reauthorizer = Arc::new(FakeReauthorizer {
+        expired: expired.clone(),
+        calls: Default::default(),
+        decline: true,
+    });
+    let connection = McpServerConnection::connect("expiring", &config, None)
+        .await
+        .unwrap()
+        .with_reauthorizer(reauthorizer.clone());
+    expired.store(true, Ordering::SeqCst);
+
+    let error = echo(&connection, "x").await.unwrap_err();
+    assert!(
+        format!("{error:#}").contains("automatic re-authorization is off"),
+        "{error:#}"
+    );
+    assert_eq!(reauthorizer.calls.load(Ordering::SeqCst), 1);
+}

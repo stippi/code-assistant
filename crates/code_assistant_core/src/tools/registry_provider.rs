@@ -195,7 +195,24 @@ impl ConnectionProvider for ConfigToolRegistry {
             .transport
             .is_http()
             .then(|| crate::tools::mcp::mcp_oauth_credential_store(name));
-        let connection = Arc::new(McpServerConnection::connect(name, config, credentials).await?);
+        let connection = match McpServerConnection::connect(name, config, credentials).await {
+            // A login that expired while the app was closed: renew it in the
+            // background, the tools appear on the next run.
+            Err(error)
+                if error
+                    .downcast_ref::<mcp_client::AuthorizationRequired>()
+                    .is_some() =>
+            {
+                crate::tools::mcp_auth::reauthorize_in_background(name);
+                return Err(error);
+            }
+            result => result?,
+        };
+        // A login that expires while the connection is in use is renewed when
+        // a tool call hits it.
+        let connection = Arc::new(
+            connection.with_reauthorizer(Arc::new(crate::tools::mcp_auth::AutoReauthorizer)),
+        );
         // Re-check under the lock: if another caller connected the same server
         // meanwhile, keep theirs and drop ours (shut down on drop).
         let mut connections = self.connections.lock().await;

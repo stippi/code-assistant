@@ -59,6 +59,9 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
   `.mcp.json` at the project root
 - The registry is rebuilt from the current config at the start of every
   agent run (`ToolRegistryProvider` seam)
+- An expired OAuth login is renewed by a browser login when a call or
+  connect hits it (`mcp_client::Reauthorizer`, `tools::mcp_auth`), unless
+  `auto_reauthorize` is off in `mcp-servers.json`
 - Details: `docs/mcp-client-mode.md`, `docs/project-scoped-mcp-servers.md`
 
 ### Permission Tiers

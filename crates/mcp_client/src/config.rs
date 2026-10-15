@@ -9,13 +9,27 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 
 /// The full MCP client configuration: a named set of servers.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct McpServersConfig {
     /// Servers keyed by their (short, human-chosen) name. The name becomes
     /// part of every registered tool's name (`mcp__<server>__<tool>`), so it
     /// should be short and stable.
     #[serde(default)]
     pub servers: BTreeMap<String, McpServerConfig>,
+    /// Whether an HTTP server whose OAuth login expired is logged in again
+    /// automatically (the embedder's [`crate::Reauthorizer`], typically a
+    /// browser login) instead of failing its tools until a manual login.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub auto_reauthorize: bool,
+}
+
+impl Default for McpServersConfig {
+    fn default() -> Self {
+        Self {
+            servers: BTreeMap::new(),
+            auto_reauthorize: true,
+        }
+    }
 }
 
 impl McpServersConfig {
@@ -182,6 +196,10 @@ fn default_true() -> bool {
     true
 }
 
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
 impl McpServerConfig {
     /// Whether a discovered tool (by its raw MCP name) should be registered.
     pub fn is_tool_enabled(&self, tool: &str) -> bool {
@@ -278,13 +296,17 @@ pub fn parse_local_mcp_json(content: &str) -> Result<McpServersConfig> {
             },
         );
     }
-    Ok(McpServersConfig { servers })
+    Ok(McpServersConfig {
+        servers,
+        ..McpServersConfig::default()
+    })
 }
 
 impl McpServersConfig {
     /// Merge `other` into `self`, with entries from `other` taking precedence
     /// on name collision. Used to layer a project-local `.mcp.json` on top of
-    /// the global `mcp-servers.json`.
+    /// the global `mcp-servers.json`. App-wide settings such as
+    /// [`Self::auto_reauthorize`] stay the global file's.
     pub fn merge(&mut self, other: McpServersConfig) {
         for (name, server) in other.servers {
             self.servers.insert(name, server);
@@ -295,6 +317,27 @@ impl McpServersConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auto_reauthorize_defaults_on_and_round_trips_when_off() {
+        let config: McpServersConfig = serde_json::from_str(r#"{ "servers": {} }"#).unwrap();
+        assert!(config.auto_reauthorize);
+        assert!(McpServersConfig::default().auto_reauthorize);
+        assert_eq!(
+            serde_json::to_value(&config).unwrap(),
+            serde_json::json!({ "servers": {} }),
+            "the default is not written out"
+        );
+
+        let off: McpServersConfig =
+            serde_json::from_str(r#"{ "servers": {}, "auto_reauthorize": false }"#).unwrap();
+        assert!(!off.auto_reauthorize);
+        let json = serde_json::to_string(&off).unwrap();
+        assert_eq!(
+            serde_json::from_str::<McpServersConfig>(&json).unwrap(),
+            off
+        );
+    }
 
     #[test]
     fn minimal_json_gets_defaults() {

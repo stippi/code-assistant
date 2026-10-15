@@ -8,10 +8,16 @@
 //!
 //! Shared by the CLI (`mcp-login`) and the settings UI so both drive the same
 //! flow.
+//!
+//! [`AutoReauthorizer`] runs that same login on its own when a server's login
+//! expired, if `auto_reauthorize` is on in `mcp-servers.json`.
 
 use super::mcp::{self, AuthorizationOutcome, OAuthAuthorizer};
 use anyhow::{Context, Result};
-use std::sync::Mutex;
+use futures::FutureExt as _;
+use futures::future::{BoxFuture, Shared};
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 use tokio::net::TcpListener;
 
@@ -110,6 +116,79 @@ pub async fn login_mcp_server(name: &str) -> Result<()> {
     mcp::authenticate_mcp_server(name, &authorizer).await
 }
 
+/// Logs an HTTP MCP server in again when its OAuth login expired, if
+/// `auto_reauthorize` is on in `mcp-servers.json`. The setting is read on
+/// every use, so switching it in the settings applies at once.
+pub struct AutoReauthorizer;
+
+#[async_trait::async_trait]
+impl mcp_client::Reauthorizer for AutoReauthorizer {
+    async fn reauthorize(&self, server: &str) -> Result<()> {
+        if !mcp::has_mcp_oauth_tokens(server) {
+            anyhow::bail!("MCP server '{server}' requires authorization");
+        }
+        if !auto_reauthorize_enabled() {
+            anyhow::bail!(
+                "the login of MCP server '{server}' expired and automatic re-authorization \
+                 is off; log in again in the MCP server settings (or run \
+                 `code-assistant mcp-login {server}`)"
+            );
+        }
+        relogin(server).await.map_err(anyhow::Error::msg)
+    }
+}
+
+/// Whether expired logins are renewed automatically (on unless switched off).
+pub fn auto_reauthorize_enabled() -> bool {
+    mcp::load_mcp_servers_config_raw()
+        .map(|config| config.auto_reauthorize)
+        .unwrap_or(true)
+}
+
+/// Start re-authorizing `server` in the background when its login expired and
+/// automatic re-authorization is on, without waiting for it. For a connect
+/// that found the login expired: the server's tools appear on the next run,
+/// once the new token is stored.
+pub fn reauthorize_in_background(server: &str) {
+    if mcp::has_mcp_oauth_tokens(server) && auto_reauthorize_enabled() {
+        tracing::info!("MCP server '{server}' login expired; re-authorizing");
+        drop(relogin(server));
+    }
+}
+
+type Login = Shared<BoxFuture<'static, Result<(), String>>>;
+
+/// Logins in progress per server, so concurrent requests share one browser
+/// round trip.
+static LOGINS: LazyLock<Mutex<HashMap<String, Login>>> = LazyLock::new(Default::default);
+
+/// Join or start the browser login for `server`. It runs as its own task: a
+/// caller that gives up (a cancelled tool call) does not abandon a login the
+/// user may be completing in the browser.
+fn relogin(server: &str) -> Login {
+    let mut logins = LOGINS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(login) = logins.get(server) {
+        return login.clone();
+    }
+    let name = server.to_string();
+    let task = tokio::spawn(async move {
+        let result = login_mcp_server(&name).await.map_err(|e| format!("{e:#}"));
+        LOGINS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&name);
+        result
+    });
+    let login = async move {
+        task.await
+            .unwrap_or_else(|e| Err(format!("the login task failed: {e}")))
+    }
+    .boxed()
+    .shared();
+    logins.insert(server.to_string(), login.clone());
+    login
+}
+
 /// Read the redirect request off `stream` and return its decoded query
 /// parameters.
 async fn read_callback_query(
@@ -164,6 +243,36 @@ async fn respond(stream: &mut tokio::net::TcpStream, status: &str, title: &str, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// With the setting off, or without a previous login, nothing opens a
+    /// browser: the call fails with a reason the user can act on.
+    #[tokio::test]
+    async fn reauthorization_declines_when_off_or_never_logged_in() {
+        use mcp_client::Reauthorizer;
+        let config = tempfile::tempdir().unwrap();
+        temp_env::async_with_vars(
+            [("CODE_ASSISTANT_CONFIG_DIR", Some(config.path()))],
+            async {
+                let error = AutoReauthorizer.reauthorize("remote").await.unwrap_err();
+                assert!(
+                    error.to_string().contains("requires authorization"),
+                    "{error}"
+                );
+
+                std::fs::create_dir_all(mcp::mcp_oauth_dir()).unwrap();
+                std::fs::write(mcp::mcp_oauth_token_path("remote"), "{}").unwrap();
+                let servers = mcp::McpServersConfig {
+                    auto_reauthorize: false,
+                    ..Default::default()
+                };
+                mcp::save_mcp_servers_config(&servers).unwrap();
+                assert!(!auto_reauthorize_enabled());
+                let error = AutoReauthorizer.reauthorize("remote").await.unwrap_err();
+                assert!(error.to_string().contains("is off"), "{error}");
+            },
+        )
+        .await;
+    }
 
     #[tokio::test]
     async fn bind_yields_a_loopback_redirect_uri() {

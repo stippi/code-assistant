@@ -180,6 +180,30 @@ shows and preserves.
     (added since) is set as in a new session. Sessions derived from
     another one copy that session's lists.
 
+### Expired OAuth logins
+
+An HTTP server that uses OAuth keeps its tokens in
+`<config_dir>/mcp-oauth/<server>.json`; rmcp refreshes the access token
+silently. When that fails too (the refresh token expired or was revoked),
+the login is renewed automatically, unless `"auto_reauthorize": false` is set
+at the top level of `mcp-servers.json` (the settings page's "Log in again
+when a login expires" switch):
+
+- **During a tool call**: a call that fails at the transport reopens the
+  session (`McpServerConnection` swaps it under its tools). When the server
+  demands authorization again, the connection asks its
+  `mcp_client::Reauthorizer` — code-assistant's `AutoReauthorizer` runs the
+  browser login — reconnects and retries the call. A call that failed for
+  another transport reason is not retried, since it may have run.
+- **At connect** (e.g. the login expired while the app was closed): the
+  server contributes no tools to that run; the login starts in the
+  background, and the new token file rebuilds the registry for the next run.
+
+Only servers with a previous login are renewed. Concurrent requests for one
+server share one browser login, which runs to completion even if the tool
+call that started it is cancelled. With the switch off, the tool call fails
+with a hint to log in from the settings or with `code-assistant mcp-login`.
+
 Still open from this note: additive scope selection (step 1),
 read-only/outward classification and the outward-confirmation
 `ToolInterceptor` (step 3). Until step 3 lands, outward-facing MCP tools

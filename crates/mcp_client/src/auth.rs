@@ -161,6 +161,20 @@ impl CredentialStore for SharedCredentialStore {
     }
 }
 
+/// The embedder's hook for a login that expired while a connection was in use:
+/// the server rejected the stored token and refreshing it failed. The
+/// connection asks once, then reconnects with whatever the credential store
+/// holds afterwards and retries the call.
+///
+/// An implementation typically runs the interactive login again (see
+/// [`crate::client::authenticate_http_server`]), or declines with an error
+/// that explains how to log in by hand; that error becomes the tool error.
+#[async_trait]
+pub trait Reauthorizer: Send + Sync {
+    /// Obtain fresh tokens for `server`; resolve once they are stored.
+    async fn reauthorize(&self, server: &str) -> anyhow::Result<()>;
+}
+
 /// The parameters an authorization server returns to the OAuth redirect URI
 /// after the user consents.
 #[derive(Debug, Clone)]
