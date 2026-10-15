@@ -230,6 +230,10 @@ impl StreamProcessorTrait for JsonStreamProcessor {
 
             StreamingChunk::Text(text) => self.process_text_with_thinking_tags(text),
 
+            StreamingChunk::ReasoningStarted => {
+                self.ui.display_fragment(&DisplayFragment::ReasoningStarted)
+            }
+
             StreamingChunk::ReasoningSummaryStart => self
                 .ui
                 .display_fragment(&DisplayFragment::ReasoningSummaryStart),

@@ -178,6 +178,7 @@ pub fn print_fragments(fragments: &[DisplayFragment]) {
                 tool_id,
             } => println!("  [{i}] ToolParameter: {name}={value} (tool_id: {tool_id})"),
             DisplayFragment::ToolEnd { id } => println!("  [{i}] ToolEnd: (id: {id})"),
+            DisplayFragment::ReasoningStarted => println!("  [{i}] ReasoningStarted"),
             DisplayFragment::ReasoningSummaryStart => {
                 println!("  [{i}] ReasoningSummaryStart",);
             }

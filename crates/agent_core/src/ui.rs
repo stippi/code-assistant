@@ -67,6 +67,8 @@ pub enum DisplayFragment {
         tool_id: String,
         terminal_id: String,
     },
+    /// The model started reasoning, before any summary text arrives
+    ReasoningStarted,
     /// OpenAI reasoning summary started a new item
     ReasoningSummaryStart,
     /// OpenAI reasoning summary delta for the current item

@@ -159,6 +159,7 @@ impl TerminalUI {
                         | DisplayFragment::ToolTerminal { .. }
                         | DisplayFragment::ToolTerminalOutput { .. }
                         | DisplayFragment::ToolTerminalExited { .. }
+                        | DisplayFragment::ReasoningStarted
                         | DisplayFragment::ReasoningSummaryStart
                         | DisplayFragment::ReasoningComplete { .. } => {}
                     }
@@ -742,7 +743,7 @@ impl UserInterface for TerminalUI {
                     data: data.clone(),
                 });
             }
-            DisplayFragment::ReasoningSummaryStart => {
+            DisplayFragment::ReasoningStarted | DisplayFragment::ReasoningSummaryStart => {
                 // Terminal UI currently treats reasoning summaries as text; no separate handling needed
             }
             DisplayFragment::ReasoningSummaryDelta(delta) => {

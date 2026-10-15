@@ -68,9 +68,11 @@ pub fn render_pending_message(
     div().w_full().p_3().child(pending_card).into_any_element()
 }
 
-/// Render the inline activity indicator (braille spinner or rate-limit text).
+/// Render the inline activity indicator: a braille spinner, labelled while
+/// the model thinks or the session is rate limited.
 ///
-/// Only shown for `WaitingForResponse` (pre-stream) and `RateLimited`.
+/// Only shown for `WaitingForResponse` (pre-stream), `Thinking` and
+/// `RateLimited`.
 /// During `AgentRunning` the streaming content itself signals activity.
 pub fn render_activity_indicator(
     view: &MessagesView,
@@ -91,55 +93,35 @@ pub fn render_activity_indicator(
         % BRAILLE_FRAMES.len();
     let braille_char = BRAILLE_FRAMES[frame_index];
 
-    match activity {
-        SessionActivityState::RateLimited { seconds_remaining } => {
-            // Orange rate-limit message with spinner
-            let color = cx.theme().warning;
+    let (color, label) = match activity {
+        SessionActivityState::RateLimited { seconds_remaining } => (
+            cx.theme().warning,
+            Some(format!("Rate limited — retrying in {seconds_remaining}s…")),
+        ),
+        SessionActivityState::Thinking => (cx.theme().primary, Some("Thinking…".to_string())),
+        SessionActivityState::WaitingForResponse => (cx.theme().primary, None),
+        // AgentRunning / Idle — no indicator
+        _ => return div().into_any_element(),
+    };
+
+    div()
+        .w_full()
+        .px_3()
+        .py_2()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .child(
             div()
-                .w_full()
-                .px_3()
-                .py_2()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap_2()
-                .child(
-                    div()
-                        .text_size(rems(0.875))
-                        .text_color(color)
-                        .child(braille_char.to_string()),
-                )
-                .child(
-                    div()
-                        .text_size(rems(0.8125))
-                        .text_color(color)
-                        .child(format!(
-                            "Rate limited — retrying in {}s…",
-                            seconds_remaining
-                        )),
-                )
-                .into_any_element()
-        }
-        SessionActivityState::WaitingForResponse => {
-            // Blue braille spinner, no text
-            let color = cx.theme().primary;
-            div()
-                .w_full()
-                .px_3()
-                .py_2()
-                .child(
-                    div()
-                        .text_size(rems(0.875))
-                        .text_color(color)
-                        .child(braille_char.to_string()),
-                )
-                .into_any_element()
-        }
-        _ => {
-            // AgentRunning / Idle — no indicator
-            div().into_any_element()
-        }
-    }
+                .text_size(rems(0.875))
+                .text_color(color)
+                .child(braille_char.to_string()),
+        )
+        .when_some(label, |d, label| {
+            d.child(div().text_size(rems(0.8125)).text_color(color).child(label))
+        })
+        .into_any_element()
 }
 
 /// Render the wakeups still to fire in the viewed session, with a slow

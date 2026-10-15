@@ -28,6 +28,7 @@ pub fn fragment_to_content_block(fragment: &DisplayFragment) -> acp::ContentBloc
         | DisplayFragment::ToolTerminalOutput { .. }
         | DisplayFragment::ToolTerminalExited { .. }
         | DisplayFragment::ToolTerminal { .. }
+        | DisplayFragment::ReasoningStarted
         | DisplayFragment::ReasoningSummaryStart
         | DisplayFragment::ReasoningSummaryDelta(_)
         | DisplayFragment::ReasoningComplete { .. }

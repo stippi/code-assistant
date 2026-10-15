@@ -1237,6 +1237,9 @@ impl OpenAIResponsesWsClient {
                                             .insert(item_id, FunctionCallInfo { name, call_id });
                                     } else if item_type == "reasoning" {
                                         reasoning_state.reasoning_block_id = Some(item_id);
+                                        if let Some(cb) = streaming_callback {
+                                            cb(&StreamingChunk::ReasoningStarted)?;
+                                        }
                                     }
                                 }
                             }

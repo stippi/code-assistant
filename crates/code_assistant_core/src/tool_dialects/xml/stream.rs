@@ -143,6 +143,10 @@ impl StreamProcessorTrait for XmlStreamProcessor {
             // For text chunks, we need to parse for tags
             StreamingChunk::Text(text) => self.process_text_with_tags(text),
 
+            StreamingChunk::ReasoningStarted => {
+                self.emit_fragment(DisplayFragment::ReasoningStarted)
+            }
+
             StreamingChunk::ReasoningSummaryStart => {
                 self.emit_fragment(DisplayFragment::ReasoningSummaryStart)
             }
@@ -777,7 +781,8 @@ impl XmlStreamProcessor {
                             buffered_fragments.push(fragment);
                         }
                     }
-                    DisplayFragment::ReasoningSummaryStart
+                    DisplayFragment::ReasoningStarted
+                    | DisplayFragment::ReasoningSummaryStart
                     | DisplayFragment::ReasoningSummaryDelta(_) => {
                         // Reasoning summary - buffer it
                         if let StreamingState::BufferingAfterTool {

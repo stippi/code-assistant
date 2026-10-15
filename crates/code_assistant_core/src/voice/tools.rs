@@ -319,6 +319,7 @@ impl VoiceTools {
             Some(
                 SessionActivityState::AgentRunning
                 | SessionActivityState::WaitingForResponse
+                | SessionActivityState::Thinking
                 | SessionActivityState::RateLimited { .. },
             ) => "running".into(),
         }

@@ -1410,6 +1410,7 @@ impl<'a> StreamProcessor<'a> {
             } else if item_type_str == "reasoning" {
                 // Track the reasoning item ID for proper round-trip preservation
                 self.reasoning_state.reasoning_block_id = Some(item_id);
+                (self.callback)(&StreamingChunk::ReasoningStarted)?;
             }
         }
         Ok(())
@@ -2855,6 +2856,41 @@ mod tests {
                 "<start>", "**A**", " one", "<start>", "**B**", "<start>", "**C**"
             ]
         );
+    }
+
+    #[test]
+    fn test_reasoning_item_added_signals_reasoning_started() {
+        // The reasoning item arrives long before any summary text (often
+        // there is none); announcing it lets the UI tell a thinking model
+        // from a request that hangs.
+        let client = OpenAIResponsesClient::new(
+            "test_key".to_string(),
+            "gpt-5".to_string(),
+            "https://api.openai.com/v1".to_string(),
+        );
+        let mut content_blocks = Vec::new();
+        let mut usage = Usage::zero();
+        let started = std::sync::Arc::new(std::sync::Mutex::new(0));
+        let started_cb = started.clone();
+        let callback: StreamingCallback = Box::new(move |chunk| {
+            if matches!(chunk, StreamingChunk::ReasoningStarted) {
+                *started_cb.lock().unwrap() += 1;
+            }
+            Ok(())
+        });
+
+        {
+            let mut processor =
+                StreamProcessor::new(&client, &mut content_blocks, &mut usage, &callback);
+            processor
+                .process_line(r#"data: {"type":"response.output_item.added","item":{"type":"reasoning","id":"rs_1","summary":[]}}"#)
+                .unwrap();
+            processor
+                .process_line(r#"data: {"type":"response.output_item.added","item":{"type":"message","id":"msg_1"}}"#)
+                .unwrap();
+        }
+
+        assert_eq!(*started.lock().unwrap(), 1);
     }
 
     #[test]

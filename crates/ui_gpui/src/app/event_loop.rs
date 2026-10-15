@@ -1257,6 +1257,8 @@ impl Gpui {
                         container.add_context_divider(boundary, summary.clone(), cx);
                     });
                 }
+                // Shown through the session's activity state
+                DisplayFragment::ReasoningStarted => {}
                 DisplayFragment::ReasoningSummaryStart => {
                     self.update_container(container, cx, |container, cx| {
                         container.start_reasoning_summary_item(cx);

@@ -111,6 +111,10 @@ impl StreamProcessorTrait for CaretStreamProcessor {
                 // Emit any remaining buffered fragments since no more content is coming
                 self.flush_buffered_content()?;
             }
+            StreamingChunk::ReasoningStarted => {
+                self.ui
+                    .display_fragment(&DisplayFragment::ReasoningStarted)?;
+            }
             StreamingChunk::ReasoningSummaryStart => {
                 self.ui
                     .display_fragment(&DisplayFragment::ReasoningSummaryStart)?;
@@ -940,7 +944,8 @@ impl CaretStreamProcessor {
                             buffered_fragments.push(fragment);
                         }
                     }
-                    DisplayFragment::ReasoningSummaryStart
+                    DisplayFragment::ReasoningStarted
+                    | DisplayFragment::ReasoningSummaryStart
                     | DisplayFragment::ReasoningSummaryDelta(_) => {
                         // Reasoning summary - buffer it until we know if next tool is allowed
                         if let StreamingState::BufferingAfterTool {

@@ -318,6 +318,8 @@ impl Gpui {
                     data: data.clone(),
                 });
             }
+            // Shown through the session's activity state
+            DisplayFragment::ReasoningStarted => {}
             DisplayFragment::ReasoningSummaryStart => {
                 self.push_event(UiEvent::StartReasoningSummaryItem);
             }
