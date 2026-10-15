@@ -385,6 +385,12 @@ impl InputArea {
             && self.branch_parent_id.is_none()
     }
 
+    /// Whether there is something to send: text, or attachments such as
+    /// images or review comments.
+    fn has_sendable_content(&self, cx: &gpui_kit::App) -> bool {
+        !self.text_input.read(cx).value().trim().is_empty() || !self.attachments.is_empty()
+    }
+
     /// Update agent state for button rendering
     pub fn set_agent_state(
         &mut self,
@@ -434,7 +440,7 @@ impl InputArea {
             }
 
             // Don't submit empty messages
-            if current_text.trim().is_empty() && self.attachments.is_empty() {
+            if !self.has_sendable_content(cx) {
                 // Stop propagation so InputState::enter() doesn't insert a newline
                 cx.stop_propagation();
                 return;
@@ -837,7 +843,7 @@ impl InputArea {
     fn on_submit_click(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
         let content = self.text_input.read(cx).value().to_string();
 
-        if !content.trim().is_empty() || !self.attachments.is_empty() {
+        if self.has_sendable_content(cx) {
             // Capture branch_parent_id before clearing
             let branch_parent_id = self.branch_parent_id;
 
@@ -869,7 +875,7 @@ impl InputArea {
     ) -> impl IntoElement {
         let text_input_handle = self.text_input.read(cx).focus_handle(cx);
         let is_focused = text_input_handle.is_focused(window);
-        let has_input_content = !self.text_input.read(cx).value().trim().is_empty();
+        let has_sendable_content = self.has_sendable_content(cx);
         let slash_menu = self.render_slash_menu(cx);
 
         div()
@@ -1020,8 +1026,9 @@ impl InputArea {
                             .children({
                                 let mut buttons = Vec::new();
 
-                                // Send button - enabled when input has content and not externally locked
-                                let send_enabled = has_input_content && !self.externally_locked;
+                                // Send button - enabled when there is text or an attachment
+                                // (e.g. review comments) and not externally locked
+                                let send_enabled = has_sendable_content && !self.externally_locked;
 
                                 let mut send_button = div()
                                     .id("send-btn")
@@ -1251,6 +1258,38 @@ mod tests {
             .detach();
         });
         log
+    }
+
+    #[gpui_kit::test]
+    fn comments_alone_can_be_sent(cx: &mut TestAppContext) {
+        let (area, cx) = input_area(cx);
+        let submitted = submissions(&area, cx);
+        let sendable = |area: &Entity<InputArea>, cx: &mut VisualTestContext| {
+            area.read_with(cx, |area, cx| area.has_sendable_content(cx))
+        };
+        assert!(!sendable(&area, cx));
+
+        area.update_in(cx, |area, _, cx| {
+            area.upsert_comment(
+                code_assistant_core::line_comments::LineComment {
+                    id: 0,
+                    file: "src/main.rs".into(),
+                    start_line: 1,
+                    end_line: 1,
+                    old_side: false,
+                    in_diff: false,
+                    on_message: false,
+                    excerpt: "fn main() {}".into(),
+                    text: "rename this".into(),
+                },
+                cx,
+            )
+        });
+        assert!(sendable(&area, cx), "a comment is enough to send");
+
+        enter(&area, cx);
+        assert_eq!(*submitted.borrow(), [""]);
+        assert!(!sendable(&area, cx), "the composer is cleared");
     }
 
     #[gpui_kit::test]
