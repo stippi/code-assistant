@@ -9,8 +9,9 @@
 //! then managing individual deployment mappings.
 
 use super::ProviderForm;
-use gpui_kit::component::ActiveTheme;
 use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::select::{Select, SelectEvent, SelectItem, SelectState};
+use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size};
 use gpui_kit::{App, Context, Entity, SharedString, Window, div, prelude::*, px};
 use serde_json::Value;
 use tracing::warn;
@@ -24,6 +25,43 @@ pub struct DeploymentEntry {
     pub deployment_id: String,
     /// Which API type this deployment uses
     pub api_type: String,
+}
+
+/// The API types an AI Core deployment can speak: config value and label.
+const API_TYPES: &[(&str, &str)] = &[
+    ("anthropic", "Anthropic"),
+    ("openai", "OpenAI"),
+    ("openai-responses", "OpenAI Responses"),
+    ("vertex", "Google Vertex"),
+];
+
+const DEFAULT_API_TYPE: &str = "anthropic";
+
+/// The label of an API type, or the raw value for one this form doesn't know.
+fn api_type_label(api_type: &str) -> &str {
+    API_TYPES
+        .iter()
+        .find(|(id, _)| *id == api_type)
+        .map_or(api_type, |(_, label)| label)
+}
+
+/// Item for the API type dropdown.
+#[derive(Clone, Debug)]
+struct ApiTypeItem {
+    id: String,
+    label: String,
+}
+
+impl SelectItem for ApiTypeItem {
+    type Value = String;
+
+    fn title(&self) -> SharedString {
+        SharedString::from(self.label.clone())
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.id
+    }
 }
 
 pub struct AiCoreProviderForm {
@@ -45,6 +83,8 @@ pub struct AiCoreProviderForm {
     new_deployment_model_input: Entity<InputState>,
     new_deployment_id_input: Entity<InputState>,
     new_deployment_api_type: String,
+    new_deployment_api_type_select: Entity<SelectState<Vec<ApiTypeItem>>>,
+    _api_type_subscription: gpui_kit::Subscription,
 }
 
 impl AiCoreProviderForm {
@@ -67,6 +107,23 @@ impl AiCoreProviderForm {
         let new_deployment_id_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("deployment UUID"));
 
+        let items = API_TYPES
+            .iter()
+            .map(|(id, label)| ApiTypeItem {
+                id: id.to_string(),
+                label: label.to_string(),
+            })
+            .collect::<Vec<_>>();
+        let new_deployment_api_type_select = cx.new(|cx| SelectState::new(items, None, window, cx));
+        new_deployment_api_type_select.update(cx, |state, cx| {
+            state.set_selected_value(&DEFAULT_API_TYPE.to_string(), window, cx);
+        });
+        let api_type_subscription = cx.subscribe_in(
+            &new_deployment_api_type_select,
+            window,
+            Self::on_api_type_changed,
+        );
+
         Self {
             client_id_input,
             client_secret_input,
@@ -77,8 +134,31 @@ impl AiCoreProviderForm {
             deployments: Vec::new(),
             new_deployment_model_input,
             new_deployment_id_input,
-            new_deployment_api_type: "anthropic".to_string(),
+            new_deployment_api_type: DEFAULT_API_TYPE.to_string(),
+            new_deployment_api_type_select,
+            _api_type_subscription: api_type_subscription,
         }
+    }
+
+    fn on_api_type_changed(
+        &mut self,
+        _: &Entity<SelectState<Vec<ApiTypeItem>>>,
+        event: &SelectEvent<Vec<ApiTypeItem>>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let SelectEvent::Confirm(Some(api_type)) = event {
+            self.new_deployment_api_type = api_type.clone();
+            cx.notify();
+        }
+    }
+
+    /// Put the add row's API type back to the default.
+    fn reset_api_type(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.new_deployment_api_type = DEFAULT_API_TYPE.to_string();
+        self.new_deployment_api_type_select.update(cx, |state, cx| {
+            state.set_selected_value(&DEFAULT_API_TYPE.to_string(), window, cx);
+        });
     }
 
     /// Render a form row with label on left, widget on right.
@@ -222,7 +302,7 @@ impl AiCoreProviderForm {
         self.new_deployment_id_input.update(cx, |state, cx| {
             state.set_value(SharedString::from(""), window, cx);
         });
-        self.new_deployment_api_type = "anthropic".to_string();
+        self.reset_api_type(window, cx);
         cx.notify();
     }
 
@@ -388,7 +468,7 @@ impl ProviderForm for AiCoreProviderForm {
         });
         self.deployments.clear();
         self.service_key_status = None;
-        self.new_deployment_api_type = "anthropic".to_string();
+        self.reset_api_type(window, cx);
         cx.notify();
     }
 }
@@ -554,7 +634,9 @@ impl Render for AiCoreProviderForm {
                                     .text_xs()
                                     .bg(cx.theme().muted)
                                     .text_color(cx.theme().muted_foreground)
-                                    .child(SharedString::from(entry_clone.api_type)),
+                                    .child(SharedString::from(
+                                        api_type_label(&entry_clone.api_type).to_string(),
+                                    )),
                             )
                             .child(
                                 div()
@@ -590,42 +672,18 @@ impl Render for AiCoreProviderForm {
                                     .flex_1()
                                     .child(Input::new(&self.new_deployment_id_input)),
                             )
-                            // API type mini-selector
-                            .child(div().flex().gap_1().children(
-                                ["anthropic", "openai", "vertex"].iter().map(|&api_type| {
-                                    let is_selected = self.new_deployment_api_type == api_type;
-                                    let api_type_owned = api_type.to_string();
-                                    let short_label = match api_type {
-                                        "anthropic" => "A",
-                                        "openai" => "O",
-                                        "vertex" => "V",
-                                        _ => "?",
-                                    };
-                                    div()
-                                        .id(SharedString::from(format!("api-type-{}", api_type)))
-                                        .size(px(20.))
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .rounded(px(3.))
-                                        .cursor_pointer()
-                                        .text_xs()
-                                        .when(is_selected, |s| {
-                                            s.bg(cx.theme().primary.opacity(0.2))
-                                                .text_color(cx.theme().primary)
-                                        })
-                                        .when(!is_selected, |s| {
-                                            s.text_color(cx.theme().muted_foreground)
-                                                .hover(|s| s.bg(cx.theme().muted))
-                                        })
-                                        .child(short_label)
-                                        .on_click(cx.listener(move |this, _, _window, cx| {
-                                            this.new_deployment_api_type = api_type_owned.clone();
-                                            cx.notify();
-                                        }))
-                                        .into_any_element()
-                                }),
-                            ))
+                            .child(
+                                div().flex_none().w(px(150.)).child(
+                                    Select::new(&self.new_deployment_api_type_select)
+                                        .with_size(Size::Small)
+                                        .icon(
+                                            Icon::default()
+                                                .path("icons/chevron_up_down.svg")
+                                                .with_size(Size::XSmall)
+                                                .text_color(cx.theme().muted_foreground),
+                                        ),
+                                ),
+                            )
                             // Add button
                             .child(
                                 div()
@@ -688,6 +746,27 @@ mod tests {
             config["models"]["model-a"],
             serde_json::json!({"deployment": "dep-1", "api_type": "openai"})
         );
+    }
+
+    #[gpui_kit::test]
+    fn a_responses_deployment_keeps_its_api_type(cx: &mut TestAppContext) {
+        let (form, cx) = form(cx);
+        type_into(&form, cx, |f| f.new_deployment_model_input.clone(), "gpt");
+        type_into(&form, cx, |f| f.new_deployment_id_input.clone(), "dep-1");
+        form.update(cx, |form, _| {
+            form.new_deployment_api_type = "openai-responses".into()
+        });
+        form.update_in(cx, |form, window, cx| form.add_deployment(window, cx));
+
+        let config = form.read_with(cx, |form, cx| form.to_config_json(cx));
+        assert_eq!(
+            config["models"]["gpt"],
+            serde_json::json!({"deployment": "dep-1", "api_type": "openai-responses"})
+        );
+        // The add row starts over with the default type.
+        form.read_with(cx, |form, _| {
+            assert_eq!(form.new_deployment_api_type, DEFAULT_API_TYPE)
+        });
     }
 
     #[gpui_kit::test]
