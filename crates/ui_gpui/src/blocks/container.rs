@@ -1059,14 +1059,22 @@ impl MessageContainer {
         cx.notify();
     }
 
-    /// Complete reasoning for the most recent thinking block
-    pub fn complete_reasoning(&self, cx: &mut Context<Self>) {
+    /// Complete reasoning for the most recent thinking block, with the
+    /// duration from persisted timestamps when restoring a session
+    pub fn complete_reasoning(&self, duration_seconds: Option<f64>, cx: &mut Context<Self>) {
         let elements = self.elements.lock().unwrap();
 
         if let Some(last) = elements.last() {
             last.update(cx, |view, cx| {
                 if let Some(thinking_block) = view.block_mut().as_thinking_mut() {
                     thinking_block.complete_reasoning();
+                    if duration_seconds.is_some() {
+                        thinking_block.duration_seconds = duration_seconds;
+                    }
+                    if !thinking_block.is_completed {
+                        thinking_block.is_completed = true;
+                        thinking_block.end_time = std::time::Instant::now();
+                    }
                     view.set_generating(false);
                     cx.notify();
                 }

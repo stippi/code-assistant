@@ -152,7 +152,9 @@ impl StreamProcessorTrait for XmlStreamProcessor {
             }
 
             StreamingChunk::ReasoningComplete => {
-                self.emit_fragment(DisplayFragment::ReasoningComplete)
+                self.emit_fragment(DisplayFragment::ReasoningComplete {
+                    duration_seconds: None,
+                })
             }
         }
     }
@@ -271,7 +273,9 @@ impl StreamProcessorTrait for XmlStreamProcessor {
                                 }
                                 // End with reasoning complete if we had items
                                 if !summary.is_empty() {
-                                    fragments.push(DisplayFragment::ReasoningComplete);
+                                    fragments.push(DisplayFragment::ReasoningComplete {
+                                        duration_seconds: block.duration().map(|d| d.as_secs_f64()),
+                                    });
                                 }
                             }
                             ContentBlock::Image {
@@ -791,7 +795,7 @@ impl XmlStreamProcessor {
                         self.ui.display_fragment(&fragment)?;
                     }
 
-                    DisplayFragment::ReasoningComplete => {
+                    DisplayFragment::ReasoningComplete { .. } => {
                         // Reasoning complete - buffer it
                         if let StreamingState::BufferingAfterTool {
                             buffered_fragments, ..

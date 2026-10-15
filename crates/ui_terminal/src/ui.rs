@@ -160,7 +160,7 @@ impl TerminalUI {
                         | DisplayFragment::ToolTerminalOutput { .. }
                         | DisplayFragment::ToolTerminalExited { .. }
                         | DisplayFragment::ReasoningSummaryStart
-                        | DisplayFragment::ReasoningComplete => {}
+                        | DisplayFragment::ReasoningComplete { .. } => {}
                     }
                 }
             }
@@ -791,7 +791,7 @@ impl UserInterface for TerminalUI {
                 });
             }
 
-            DisplayFragment::ReasoningComplete => {
+            DisplayFragment::ReasoningComplete { .. } => {
                 // For terminal UI, no specific action needed for reasoning completion
             }
             DisplayFragment::HiddenToolCompleted => {

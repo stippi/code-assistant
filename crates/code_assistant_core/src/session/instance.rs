@@ -1229,7 +1229,7 @@ impl UserInterface for SessionEventPublisher {
             DisplayFragment::ToolEnd { .. }
             | DisplayFragment::ToolTerminal { .. }
             | DisplayFragment::ToolTerminalExited { .. }
-            | DisplayFragment::ReasoningComplete
+            | DisplayFragment::ReasoningComplete { .. }
             | DisplayFragment::HiddenToolCompleted => false,
         };
 

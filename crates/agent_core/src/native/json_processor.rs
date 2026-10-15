@@ -238,9 +238,12 @@ impl StreamProcessorTrait for JsonStreamProcessor {
                 .ui
                 .display_fragment(&DisplayFragment::ReasoningSummaryDelta(delta.clone())),
 
-            StreamingChunk::ReasoningComplete => self
-                .ui
-                .display_fragment(&DisplayFragment::ReasoningComplete),
+            StreamingChunk::ReasoningComplete => {
+                self.ui
+                    .display_fragment(&DisplayFragment::ReasoningComplete {
+                        duration_seconds: None,
+                    })
+            }
         }
     }
 
@@ -331,7 +334,9 @@ impl StreamProcessorTrait for JsonStreamProcessor {
                             }
                             // End with reasoning complete if we had items
                             if !summary.is_empty() {
-                                fragments.push(DisplayFragment::ReasoningComplete);
+                                fragments.push(DisplayFragment::ReasoningComplete {
+                                    duration_seconds: block.duration().map(|d| d.as_secs_f64()),
+                                });
                             }
                         }
                         ContentBlock::Image {

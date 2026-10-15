@@ -326,7 +326,7 @@ impl Gpui {
                     delta: delta.clone(),
                 });
             }
-            DisplayFragment::ReasoningComplete => {
+            DisplayFragment::ReasoningComplete { .. } => {
                 self.push_event(UiEvent::CompleteReasoning);
             }
             DisplayFragment::ToolOutput { tool_id, chunk } => {

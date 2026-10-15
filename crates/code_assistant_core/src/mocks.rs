@@ -341,7 +341,7 @@ impl UserInterface for MockUI {
             crate::ui::DisplayFragment::ReasoningSummaryDelta(delta) => {
                 self.streaming.lock().unwrap().push(delta.clone());
             }
-            crate::ui::DisplayFragment::ReasoningComplete => {
+            crate::ui::DisplayFragment::ReasoningComplete { .. } => {
                 self.streaming
                     .lock()
                     .unwrap()

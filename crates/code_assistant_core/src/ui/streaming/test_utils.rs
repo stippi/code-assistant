@@ -203,7 +203,7 @@ pub fn print_fragments(fragments: &[DisplayFragment]) {
                 tool_id,
                 terminal_id,
             } => println!("  [{i}] ToolTerminal(tool_id: {tool_id}, terminal_id: {terminal_id})"),
-            DisplayFragment::ReasoningComplete => println!("  [{i}] ReasoningComplete"),
+            DisplayFragment::ReasoningComplete { .. } => println!("  [{i}] ReasoningComplete"),
 
             DisplayFragment::ContextDivider { boundary, summary } => {
                 println!("  [{i}] ContextDivider({boundary:?}): {summary}");

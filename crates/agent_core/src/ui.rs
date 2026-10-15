@@ -71,8 +71,9 @@ pub enum DisplayFragment {
     ReasoningSummaryStart,
     /// OpenAI reasoning summary delta for the current item
     ReasoningSummaryDelta(String),
-    /// Mark reasoning as completed
-    ReasoningComplete,
+    /// Mark reasoning as completed, with the duration from persisted
+    /// timestamps when replaying a stored message
+    ReasoningComplete { duration_seconds: Option<f64> },
     /// Divider where a fresh model context starts, with expandable text:
     /// the compaction summary, or the prompt the new context opens with
     ContextDivider {

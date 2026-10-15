@@ -122,7 +122,9 @@ impl StreamProcessorTrait for CaretStreamProcessor {
             StreamingChunk::ReasoningComplete => {
                 // Pass through reasoning complete
                 self.ui
-                    .display_fragment(&DisplayFragment::ReasoningComplete)?;
+                    .display_fragment(&DisplayFragment::ReasoningComplete {
+                        duration_seconds: None,
+                    })?;
             }
             _ => {
                 // Other chunk types are not handled by caret processor
@@ -244,7 +246,9 @@ impl StreamProcessorTrait for CaretStreamProcessor {
                                 }
                                 // End with reasoning complete if we had items
                                 if !summary.is_empty() {
-                                    fragments.push(DisplayFragment::ReasoningComplete);
+                                    fragments.push(DisplayFragment::ReasoningComplete {
+                                        duration_seconds: block.duration().map(|d| d.as_secs_f64()),
+                                    });
                                 }
                             }
                             llm::ContentBlock::Image {
@@ -954,7 +958,7 @@ impl CaretStreamProcessor {
                         self.ui.display_fragment(&fragment)?;
                     }
 
-                    DisplayFragment::ReasoningComplete => {
+                    DisplayFragment::ReasoningComplete { .. } => {
                         // Reasoning complete - buffer it until we know if next tool is allowed
                         if let StreamingState::BufferingAfterTool {
                             buffered_fragments, ..
