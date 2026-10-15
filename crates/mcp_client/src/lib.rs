@@ -19,7 +19,7 @@ mod tests;
 
 pub use auth::{
     AuthorizationOutcome, AuthorizationRequired, FileCredentialStore, OAuthAuthorizer,
-    SharedCredentialStore,
+    Reauthorizer, SharedCredentialStore,
 };
 pub use client::{McpServerConnection, authenticate_http_server};
 pub use config::{

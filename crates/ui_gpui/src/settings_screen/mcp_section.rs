@@ -118,6 +118,11 @@ impl McpSection {
         }
     }
 
+    fn set_auto_reauthorize(&mut self, value: bool, cx: &mut Context<Self>) {
+        self.config.auto_reauthorize = value;
+        self.persist(cx);
+    }
+
     fn set_server_off_in_new_sessions(&mut self, name: &str, value: bool, cx: &mut Context<Self>) {
         if let Some(server) = self.config.servers.get_mut(name) {
             server.off_in_new_sessions = value;
@@ -1059,6 +1064,33 @@ impl Render for McpSection {
                     .child(
                         "Tools of enabled servers are offered to the agent. Servers are \
                          connected when the app starts — changes apply after a restart.",
+                    ),
+            )
+            // Renewing expired OAuth logins of HTTP servers
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        Switch::new("mcp-auto-reauthorize")
+                            .checked(self.config.auto_reauthorize)
+                            .with_size(Size::Small)
+                            .on_click(cx.listener(|this, on: &bool, _window, cx| {
+                                this.set_auto_reauthorize(*on, cx);
+                            })),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().foreground)
+                            .child("Log in again when a login expires"),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("— opens the browser for HTTP servers that use OAuth"),
                     ),
             )
             // Server cards / empty state

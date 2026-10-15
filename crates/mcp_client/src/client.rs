@@ -12,13 +12,19 @@
 //! login. That login is [`authenticate_http_server`], driven by an
 //! [`OAuthAuthorizer`]; it persists tokens into the given [`CredentialStore`]
 //! so later connects reuse them silently.
+//!
+//! A login can also expire while a connection is in use (the server rejects
+//! the token and refreshing it fails). A call that fails at the transport then
+//! reconnects; when the server demands authorization again, the connection
+//! asks the embedder's [`Reauthorizer`] for fresh tokens, reconnects once more
+//! and retries the call.
 
-use crate::auth::{AuthorizationRequired, OAuthAuthorizer, SharedCredentialStore};
+use crate::auth::{AuthorizationRequired, OAuthAuthorizer, Reauthorizer, SharedCredentialStore};
 use crate::config::{McpServerConfig, McpTransport};
 use anyhow::{Context, Result, anyhow};
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, CallToolResult, JsonObject, Tool as McpToolDescriptor};
-use rmcp::service::{RoleClient, RunningService};
+use rmcp::service::{RoleClient, RunningService, ServiceError};
 use rmcp::transport::IntoTransport;
 use rmcp::transport::auth::{
     AuthClient, AuthorizationManager, AuthorizationRequest, AuthorizationSession, CredentialStore,
@@ -27,7 +33,7 @@ use rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
 };
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 /// Timeout for the initialize handshake and for tool discovery.
@@ -41,10 +47,41 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(300);
 /// SSE streams short.
 const OAUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
+type Service = RunningService<RoleClient, ()>;
+
 /// A live connection to one MCP server.
 pub struct McpServerConnection {
     name: String,
-    service: RunningService<RoleClient, ()>,
+    /// The live session; replaced when an HTTP server is reconnected. Calls
+    /// in flight keep the session they started on.
+    service: RwLock<Arc<Service>>,
+    /// How to open the session again: HTTP servers only.
+    reconnect: Option<Reconnect>,
+    /// Held while recovering, so concurrent failing calls reconnect once.
+    recovering: tokio::sync::Mutex<()>,
+}
+
+/// What reopening an HTTP session needs.
+struct Reconnect {
+    url: String,
+    headers: HashMap<String, String>,
+    credentials: Option<Arc<dyn CredentialStore>>,
+    reauthorizer: Option<Arc<dyn Reauthorizer>>,
+}
+
+/// How a failed call's connection was recovered.
+enum Recovery {
+    /// A new session with the credentials the store already held, or one
+    /// another call opened meanwhile.
+    Reconnected,
+    /// A new session after the [`Reauthorizer`] obtained fresh tokens.
+    Reauthorized,
+}
+
+/// Why a single call attempt failed.
+enum CallError {
+    Timeout,
+    Service(ServiceError),
 }
 
 impl McpServerConnection {
@@ -70,9 +107,43 @@ impl McpServerConnection {
                 Self::connect_stdio(name, command, args, env).await
             }
             McpTransport::Http { url, headers } => {
-                Self::connect_http(name, url, headers, credentials).await
+                let service = Self::open_http(name, url, headers, credentials.clone()).await?;
+                let mut connection = Self::from_service(name, service);
+                connection.reconnect = Some(Reconnect {
+                    url: url.clone(),
+                    headers: headers.clone(),
+                    credentials,
+                    reauthorizer: None,
+                });
+                Ok(connection)
             }
         }
+    }
+
+    /// Re-authorize through `reauthorizer` when the server's OAuth login
+    /// expires while this connection is in use. Only HTTP servers can expire;
+    /// for others this is a no-op.
+    pub fn with_reauthorizer(mut self, reauthorizer: Arc<dyn Reauthorizer>) -> Self {
+        if let Some(reconnect) = &mut self.reconnect {
+            reconnect.reauthorizer = Some(reauthorizer);
+        }
+        self
+    }
+
+    fn from_service(name: &str, service: Service) -> Self {
+        Self {
+            name: name.to_string(),
+            service: RwLock::new(Arc::new(service)),
+            reconnect: None,
+            recovering: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    fn current(&self) -> Arc<Service> {
+        self.service
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Launch `command` as a child process and run the MCP initialize
@@ -90,25 +161,22 @@ impl McpServerConnection {
         Self::connect_transport(name, transport).await
     }
 
-    /// Connect to an HTTP (streamable) MCP server at `url`, sending the given
-    /// custom headers (e.g. a static `Authorization`) with every request, and
-    /// reusing OAuth tokens from `credentials` when available.
-    async fn connect_http(
+    /// Open a session with an HTTP (streamable) MCP server at `url`, sending
+    /// the given custom headers (e.g. a static `Authorization`) with every
+    /// request, and reusing OAuth tokens from `credentials` when available.
+    async fn open_http(
         name: &str,
         url: &str,
         headers: &HashMap<String, String>,
         credentials: Option<Arc<dyn CredentialStore>>,
-    ) -> Result<Self> {
+    ) -> Result<Service> {
         // 1. If we hold a stored OAuth token, connect authorized without any
         //    user interaction (rmcp refreshes it transparently when needed).
         if let Some(store) = &credentials
             && let Some(service) =
                 Self::connect_http_with_stored_token(name, url, headers, store.clone()).await?
         {
-            return Ok(Self {
-                name: name.to_string(),
-                service,
-            });
+            return Ok(service);
         }
 
         // 2. Try unauthenticated (also the path for a static `Authorization`
@@ -117,10 +185,6 @@ impl McpServerConnection {
             StreamableHttpClientTransport::from_config(http_transport_config(url, headers)?);
         Self::serve_http(name, transport)
             .await
-            .map(|service| Self {
-                name: name.to_string(),
-                service,
-            })
             .with_context(|| format!("failed to connect to HTTP MCP server '{name}' ({url})"))
     }
 
@@ -198,10 +262,7 @@ impl McpServerConnection {
             .await
             .with_context(|| format!("timeout initializing MCP server '{name}'"))?
             .with_context(|| format!("failed to initialize MCP server '{name}'"))?;
-        Ok(Self {
-            name: name.to_string(),
-            service,
-        })
+        Ok(Self::from_service(name, service))
     }
 
     pub fn name(&self) -> &str {
@@ -210,40 +271,168 @@ impl McpServerConnection {
 
     /// All tools the server offers (follows pagination).
     pub async fn list_tools(&self) -> Result<Vec<McpToolDescriptor>> {
-        tokio::time::timeout(CONNECT_TIMEOUT, self.service.list_all_tools())
+        tokio::time::timeout(CONNECT_TIMEOUT, self.current().list_all_tools())
             .await
             .with_context(|| format!("timeout listing tools of MCP server '{}'", self.name))?
             .with_context(|| format!("failed to list tools of MCP server '{}'", self.name))
     }
 
-    /// Round-trip a `tools/call` request.
+    /// Round-trip a `tools/call` request. When an HTTP server's session fails
+    /// at the transport, the connection is reopened (re-authorizing if the
+    /// login expired); the call is retried when the server had rejected it
+    /// for authorization, so it cannot have run.
     pub async fn call_tool(
         &self,
         tool: &str,
         arguments: Option<JsonObject>,
     ) -> Result<CallToolResult> {
+        let service = self.current();
+        let error = match Self::call_on(&service, tool, arguments.clone()).await {
+            Ok(result) => return Ok(result),
+            Err(CallError::Service(error)) if self.reconnect.is_some() && is_transport(&error) => {
+                error
+            }
+            Err(error) => return Err(self.call_error(tool, error)),
+        };
+        let rejected = rejected_for_authorization(&error);
+        match self.recover(&service).await {
+            Ok(Recovery::Reauthorized) => {}
+            Ok(Recovery::Reconnected) if rejected => {}
+            Ok(Recovery::Reconnected) => {
+                return Err(self
+                    .call_error(tool, CallError::Service(error))
+                    .context("reconnected to the server; the call can be retried"));
+            }
+            Err(recovery) => {
+                return Err(recovery.context(format!(
+                    "tool '{tool}' failed on MCP server '{}' ({error})",
+                    self.name
+                )));
+            }
+        }
+        Self::call_on(&self.current(), tool, arguments)
+            .await
+            .map_err(|error| self.call_error(tool, error))
+    }
+
+    async fn call_on(
+        service: &Service,
+        tool: &str,
+        arguments: Option<JsonObject>,
+    ) -> Result<CallToolResult, CallError> {
         let mut params = CallToolRequestParams::new(tool.to_string());
         params.arguments = arguments;
-        tokio::time::timeout(CALL_TIMEOUT, self.service.call_tool(params))
-            .await
-            .with_context(|| {
-                format!(
-                    "timeout calling tool '{tool}' on MCP server '{}'",
-                    self.name
-                )
-            })?
-            .with_context(|| format!("tool '{tool}' failed on MCP server '{}'", self.name))
+        match tokio::time::timeout(CALL_TIMEOUT, service.call_tool(params)).await {
+            Err(_elapsed) => Err(CallError::Timeout),
+            Ok(result) => result.map_err(CallError::Service),
+        }
+    }
+
+    fn call_error(&self, tool: &str, error: CallError) -> anyhow::Error {
+        match error {
+            CallError::Timeout => anyhow!(
+                "timeout calling tool '{tool}' on MCP server '{}'",
+                self.name
+            ),
+            CallError::Service(error) => anyhow::Error::new(error).context(format!(
+                "tool '{tool}' failed on MCP server '{}'",
+                self.name
+            )),
+        }
+    }
+
+    /// Reopen the session `failed` ran on, re-authorizing when the server
+    /// demands it. Only for HTTP servers (`reconnect` is set).
+    async fn recover(&self, failed: &Arc<Service>) -> Result<Recovery> {
+        let reconnect = self
+            .reconnect
+            .as_ref()
+            .context("this MCP server cannot reconnect")?;
+        let _recovering = self.recovering.lock().await;
+        if !Arc::ptr_eq(&self.current(), failed) {
+            // Another call recovered while this one waited.
+            return Ok(Recovery::Reconnected);
+        }
+        let open = || {
+            Self::open_http(
+                &self.name,
+                &reconnect.url,
+                &reconnect.headers,
+                reconnect.credentials.clone(),
+            )
+        };
+        let recovery = match open().await {
+            Ok(service) => {
+                self.replace(service);
+                Recovery::Reconnected
+            }
+            Err(error) if error.downcast_ref::<AuthorizationRequired>().is_some() => {
+                let Some(reauthorizer) = &reconnect.reauthorizer else {
+                    return Err(error);
+                };
+                tracing::info!(
+                    server = self.name,
+                    "MCP server login expired; re-authorizing"
+                );
+                reauthorizer.reauthorize(&self.name).await?;
+                self.replace(open().await?);
+                Recovery::Reauthorized
+            }
+            Err(error) => return Err(error),
+        };
+        Ok(recovery)
+    }
+
+    fn replace(&self, service: Service) {
+        *self.service.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(service);
     }
 
     /// Close the connection, terminating the server child process. Dropping
     /// the connection has the same effect; this form allows awaiting it.
     pub async fn shutdown(self) -> Result<()> {
-        self.service
-            .cancel()
-            .await
-            .map(|_| ())
-            .map_err(|e| anyhow::anyhow!("failed to shut down MCP server '{}': {e}", self.name))
+        let service = self.service.into_inner().unwrap_or_else(|e| e.into_inner());
+        match Arc::try_unwrap(service) {
+            Ok(service) => service.cancel().await.map(|_| ()).map_err(|e| {
+                anyhow::anyhow!("failed to shut down MCP server '{}': {e}", self.name)
+            }),
+            // A call still runs on it: stop the session under it.
+            Err(shared) => {
+                shared.cancellation_token().cancel();
+                Ok(())
+            }
+        }
     }
+}
+
+/// The session itself failed (sending, or the transport closed), as opposed
+/// to the server answering with an error or the call timing out.
+fn is_transport(error: &ServiceError) -> bool {
+    matches!(
+        error,
+        ServiceError::TransportSend(_) | ServiceError::TransportClosed
+    )
+}
+
+/// The server rejected the request for missing or expired authorization
+/// (`401`/`403` with a challenge, or no token could be obtained).
+fn rejected_for_authorization(error: &ServiceError) -> bool {
+    use rmcp::transport::auth::AuthError;
+    use rmcp::transport::streamable_http_client::{AuthRequiredError, InsufficientScopeError};
+
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(current) = source {
+        if current.is::<AuthRequiredError>()
+            || current.is::<InsufficientScopeError>()
+            || matches!(
+                current.downcast_ref::<AuthError>(),
+                Some(AuthError::AuthorizationRequired)
+            )
+        {
+            return true;
+        }
+        source = current.source();
+    }
+    false
 }
 
 /// Build the streamable HTTP transport config for `url`, attaching any custom
