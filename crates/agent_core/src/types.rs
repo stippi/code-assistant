@@ -274,7 +274,8 @@ impl SerializedToolExecution {
 }
 
 /// Generate a text summary from content blocks for UI display.
-/// Images are shown as `[image/png]` etc., text blocks are joined with newlines.
+/// Images are shown as `[image/png]` etc. Blocks are separated by a blank
+/// line, so messages queued one after another stay separate paragraphs.
 pub fn text_summary_from_blocks(blocks: &[llm::ContentBlock]) -> String {
     blocks
         .iter()
@@ -284,5 +285,5 @@ pub fn text_summary_from_blocks(blocks: &[llm::ContentBlock]) -> String {
             _ => None,
         })
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n\n")
 }

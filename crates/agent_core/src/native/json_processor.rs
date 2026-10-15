@@ -257,6 +257,26 @@ impl StreamProcessorTrait for JsonStreamProcessor {
     ) -> Result<Vec<DisplayFragment>, UIError> {
         let mut fragments = Vec::new();
 
+        // User messages show their text as typed; blocks (e.g. queued messages)
+        // stay separate paragraphs instead of being glued together
+        if message.role == llm::MessageRole::User {
+            let text = match &message.content {
+                MessageContent::Text(text) => text.clone(),
+                MessageContent::Structured(blocks) => blocks
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::Text { text, .. } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n\n"),
+            };
+            if !text.trim().is_empty() {
+                fragments.push(DisplayFragment::PlainText(text));
+            }
+            return Ok(fragments);
+        }
+
         match &message.content {
             MessageContent::Text(text) => {
                 // Process text for thinking tags, similar to process_text_with_thinking_tags
