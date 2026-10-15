@@ -28,9 +28,10 @@ pub fn fragment_to_content_block(fragment: &DisplayFragment) -> acp::ContentBloc
         | DisplayFragment::ToolTerminalOutput { .. }
         | DisplayFragment::ToolTerminalExited { .. }
         | DisplayFragment::ToolTerminal { .. }
+        | DisplayFragment::ReasoningStarted
         | DisplayFragment::ReasoningSummaryStart
         | DisplayFragment::ReasoningSummaryDelta(_)
-        | DisplayFragment::ReasoningComplete
+        | DisplayFragment::ReasoningComplete { .. }
         | DisplayFragment::HiddenToolCompleted => {
             // These should not be converted to content blocks
             // Return empty text as placeholder

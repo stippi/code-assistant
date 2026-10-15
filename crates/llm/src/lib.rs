@@ -80,6 +80,9 @@ pub enum StreamingChunk {
     RateLimitClear,
     /// Indicates that streaming from the LLM has completed
     StreamingComplete,
+    /// The model started reasoning; summary text may follow much later or
+    /// not at all
+    ReasoningStarted,
     /// OpenAI reasoning summary started a new item
     ReasoningSummaryStart,
     /// OpenAI reasoning summary delta for the current item

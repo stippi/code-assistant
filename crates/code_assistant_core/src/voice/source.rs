@@ -214,6 +214,7 @@ fn ended(previous: &SessionActivityState, now: &SessionActivityState) -> Option<
         previous,
         SessionActivityState::AgentRunning
             | SessionActivityState::WaitingForResponse
+            | SessionActivityState::Thinking
             | SessionActivityState::RateLimited { .. }
     );
     if !was_running {

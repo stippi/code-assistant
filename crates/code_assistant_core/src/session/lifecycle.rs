@@ -217,9 +217,9 @@ impl SessionStatus {
         match activity {
             SessionActivityState::Idle if wakeup_armed => Self::Scheduled,
             SessionActivityState::Idle => Self::Ready,
-            SessionActivityState::AgentRunning | SessionActivityState::WaitingForResponse => {
-                Self::Working
-            }
+            SessionActivityState::AgentRunning
+            | SessionActivityState::WaitingForResponse
+            | SessionActivityState::Thinking => Self::Working,
             SessionActivityState::RateLimited { .. } => Self::RateLimited,
             SessionActivityState::Errored { .. } => Self::Failed,
             SessionActivityState::RunningExternally => Self::RunningElsewhere,

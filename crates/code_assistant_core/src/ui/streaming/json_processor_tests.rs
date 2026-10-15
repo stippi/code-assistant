@@ -1338,8 +1338,8 @@ fn test_redacted_thinking_streaming_consistency() {
             },
         ],
         data: "encrypted_data".to_string(),
-        start_time: None,
-        end_time: None,
+        start_time: Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(100)),
+        end_time: Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(104)),
     };
 
     let message = Message::new_assistant_content(vec![redacted_thinking]).with_request_id(1);
@@ -1350,7 +1350,7 @@ fn test_redacted_thinking_streaming_consistency() {
     // Verify we get the expected fragments
     let mut reasoning_fragments = Vec::new();
     let mut start_events = 0;
-    let mut has_reasoning_complete = false;
+    let mut reasoning_complete = None;
 
     for fragment in &fragments {
         match fragment {
@@ -1360,8 +1360,8 @@ fn test_redacted_thinking_streaming_consistency() {
             DisplayFragment::ReasoningSummaryDelta(delta) => {
                 reasoning_fragments.push(delta.clone());
             }
-            DisplayFragment::ReasoningComplete => {
-                has_reasoning_complete = true;
+            DisplayFragment::ReasoningComplete { duration_seconds } => {
+                reasoning_complete = Some(*duration_seconds);
             }
             _ => {}
         }
@@ -1381,6 +1381,7 @@ fn test_redacted_thinking_streaming_consistency() {
         "**Considering next steps**\n\nI need to respond by outlining what I plan to do first."
     );
 
-    // Should end with ReasoningComplete
-    assert!(has_reasoning_complete);
+    // Should end with ReasoningComplete, carrying the duration from the
+    // stored timestamps so a restored block does not count up again
+    assert_eq!(reasoning_complete, Some(Some(4.0)));
 }

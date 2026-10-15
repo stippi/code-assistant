@@ -12,11 +12,11 @@ use code_assistant_core::ui::ToolStatus;
 const MAX_IMAGE_HEIGHT: f32 = 80.0;
 
 use gpui_kit::component::ActiveTheme;
+use gpui_kit::prelude::*;
 use gpui_kit::{
     Animation, AnimationExt, ClickEvent, Context, ImageSource, IntoElement, ObjectFit,
     SharedString, Styled, Transformation, div, img, percentage, px, rems, svg,
 };
-use gpui_kit::{FontWeight, prelude::*};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -485,160 +485,141 @@ impl BlockView {
                     .into_any_element()
             }
             BlockData::ThinkingBlock(block) => {
-                // Get the appropriate icon based on completed state
-                let (icon, icon_text) = if block.is_completed {
-                    (
-                        file_icons::get().get_type_icon(file_icons::WORKING_MEMORY),
+                // Same compact style as inline tools (see `render_inline_tool`),
+                // set apart by italics
+                let theme = cx.theme();
+                let muted = theme.muted_foreground;
+                let border = theme.border;
+                let header_text = block.get_display_title(self.is_generating);
+                let content = block.get_expanded_content(self.is_generating);
+                let can_expand = !content.trim().is_empty();
+                let chevron_icon = if block.is_collapsed {
+                    file_icons::get().get_type_icon(file_icons::CHEVRON_DOWN)
+                } else {
+                    file_icons::get().get_type_icon(file_icons::CHEVRON_UP)
+                };
+
+                let icon = if block.is_completed {
+                    file_icons::render_icon_container(
+                        &file_icons::get().get_type_icon(file_icons::WORKING_MEMORY),
+                        14.0,
+                        muted,
                         "🧠",
                     )
+                    .into_any_element()
                 } else {
-                    (Some(SharedString::from("icons/arrow_circle.svg")), "🔄")
+                    div()
+                        .w(px(14.))
+                        .h(px(14.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            svg()
+                                .size(px(14.))
+                                .path(SharedString::from("icons/arrow_circle.svg"))
+                                .text_color(muted)
+                                .with_animation(
+                                    "thinking_spinner",
+                                    Animation::new(Duration::from_secs(2)).repeat(),
+                                    |svg, delta| {
+                                        svg.with_transformation(Transformation::rotate(percentage(
+                                            delta,
+                                        )))
+                                    },
+                                ),
+                        )
+                        .into_any_element()
                 };
 
-                // Get the chevron icon based on collapsed state
-                let (chevron_icon, chevron_text) = if block.is_collapsed {
-                    (
-                        file_icons::get().get_type_icon(file_icons::CHEVRON_DOWN),
-                        "▼",
-                    )
-                } else {
-                    (file_icons::get().get_type_icon(file_icons::CHEVRON_UP), "▲")
-                };
-
-                // Define header text based on state using reasoning-aware method
-                let header_text = block.get_display_title(self.is_generating);
-
-                // Use theme utilities for colors
-                let blue_base = cx.theme().info; // Theme color for thinking block
-
-                let thinking_bg = crate::shared::theme::colors::thinking_block_bg(cx.theme());
-                let chevron_color =
-                    crate::shared::theme::colors::thinking_block_chevron(cx.theme());
-                let text_color = cx.theme().info_foreground;
-
-                div()
-                    .mt_2()
-                    .rounded_md()
-                    .bg(thinking_bg)
+                let header = div()
+                    .id("thinking-header")
+                    .group("thinking-header")
                     .flex()
-                    .flex_col()
-                    .children(vec![
-                        // Header row — entire row is clickable
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap_1()
+                    .py_1p5()
+                    .px_3()
+                    .cursor_pointer()
+                    .when(!can_expand, |d| d.cursor_default())
+                    .on_click(cx.listener(move |view, _event: &ClickEvent, _window, cx| {
+                        view.toggle_thinking_collapsed(cx);
+                    }))
+                    .child(
                         div()
-                            .id("thinking-header")
-                            .group("thinking-header")
                             .flex()
                             .flex_row()
                             .items_center()
-                            .justify_between()
-                            .w_full()
-                            .px_3()
-                            .py_1p5()
-                            .cursor_pointer()
-                            .on_click(cx.listener(move |view, _event: &ClickEvent, _window, cx| {
-                                view.toggle_thinking_collapsed(cx);
-                            }))
-                            .children(vec![
-                                // Left side with icon and text
+                            .gap_1p5()
+                            .flex_grow(1.0)
+                            .min_w_0()
+                            .child(icon)
+                            .child(
                                 div()
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .gap_2()
-                                    .children(vec![
-                                        // Rotating arrow or brain icon
-                                        if block.is_completed {
-                                            file_icons::render_icon_container(
-                                                &icon, 18.0, blue_base, icon_text,
-                                            )
-                                            .into_any()
-                                        } else {
-                                            svg()
-                                                .size(px(18.))
-                                                .path(SharedString::from("icons/arrow_circle.svg"))
-                                                .text_color(blue_base)
-                                                .with_animation(
-                                                    "image_circle",
-                                                    Animation::new(Duration::from_secs(2)).repeat(),
-                                                    |svg, delta| {
-                                                        svg.with_transformation(
-                                                            Transformation::rotate(percentage(
-                                                                delta,
-                                                            )),
-                                                        )
-                                                    },
-                                                )
-                                                .into_any()
-                                        },
-                                        // Header text
-                                        div()
-                                            .font_weight(FontWeight(500.0))
-                                            .text_color(blue_base)
-                                            .child(header_text)
-                                            .into_any(),
-                                    ])
-                                    .into_any(),
-                                // Chevron — highlights on header hover via group
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .size(px(24.))
-                                    .rounded(px(6.))
-                                    .group_hover("thinking-header", |s| {
-                                        s.bg(blue_base.opacity(0.1))
-                                    })
+                                    .text_size(rems(0.8125))
+                                    .italic()
+                                    .text_color(muted)
+                                    .overflow_hidden()
+                                    .text_overflow(gpui_kit::TextOverflow::Truncate(
+                                        SharedString::from("…"),
+                                    ))
+                                    .child(header_text),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .size(px(24.))
+                            .rounded(px(6.))
+                            .when(can_expand, |d| {
+                                d.group_hover("thinking-header", |s| s.bg(muted.opacity(0.1)))
                                     .child(file_icons::render_icon(
                                         &chevron_icon,
-                                        16.0,
-                                        chevron_color,
-                                        chevron_text,
+                                        14.0,
+                                        muted.opacity(0.4),
+                                        "▾",
                                     ))
-                                    .into_any(),
-                            ])
-                            .into_any(),
-                        // Animated content container (uses shared helper)
-                        {
-                            let scale = match &self.animation_state {
-                                AnimationState::Animating { height_scale, .. } => *height_scale,
-                                AnimationState::Idle => {
-                                    if block.is_collapsed {
-                                        0.0
-                                    } else {
-                                        1.0
-                                    }
-                                }
-                            };
+                            }),
+                    );
 
-                            let body_content = if !block.is_collapsed || scale > 0.0 {
-                                let content = block.get_expanded_content(self.is_generating);
-                                let group_name = SharedString::from(format!(
-                                    "thinking-block-{}",
-                                    cx.entity_id()
-                                ));
-                                let inner = div()
-                                    .px_3()
-                                    .pt_1()
-                                    .pb_2()
-                                    .text_size(rems(0.875))
-                                    .italic()
-                                    .text_color(text_color)
-                                    .child(self.markdown_view(&content, false, cx))
-                                    .into_any_element();
-                                self.with_copy_button(group_name, inner, cx)
-                            } else {
-                                div().into_any()
-                            };
+                let scale = match &self.animation_state {
+                    AnimationState::Animating { height_scale, .. } => *height_scale,
+                    AnimationState::Idle => {
+                        if block.is_collapsed {
+                            0.0
+                        } else {
+                            1.0
+                        }
+                    }
+                };
 
-                            crate::tool_cards::animated_card_body(
-                                body_content,
-                                scale,
-                                self.content_height.clone(),
-                            )
-                            .into_any()
-                        },
-                    ])
-                    .into_any_element()
+                let mut container = div().w_full().mt_0p5().child(header);
+                if can_expand && (!block.is_collapsed || scale > 0.0) {
+                    let group_name =
+                        SharedString::from(format!("thinking-block-{}", cx.entity_id()));
+                    let inner = div()
+                        .pl(px(8.))
+                        .ml(px(8.))
+                        .border_l_2()
+                        .border_color(border)
+                        .py(px(4.))
+                        .text_size(rems(0.8125))
+                        .italic()
+                        .text_color(muted)
+                        .child(self.markdown_view(&content, false, cx))
+                        .into_any_element();
+                    container = container.child(crate::tool_cards::animated_card_body(
+                        self.with_copy_button(group_name, inner, cx),
+                        scale,
+                        self.content_height.clone(),
+                    ));
+                }
+                container.into_any_element()
             }
             BlockData::ToolUse(block) => {
                 // Unified tool block rendering via ToolBlockRendererRegistry

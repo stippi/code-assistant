@@ -67,12 +67,15 @@ pub enum DisplayFragment {
         tool_id: String,
         terminal_id: String,
     },
+    /// The model started reasoning, before any summary text arrives
+    ReasoningStarted,
     /// OpenAI reasoning summary started a new item
     ReasoningSummaryStart,
     /// OpenAI reasoning summary delta for the current item
     ReasoningSummaryDelta(String),
-    /// Mark reasoning as completed
-    ReasoningComplete,
+    /// Mark reasoning as completed, with the duration from persisted
+    /// timestamps when replaying a stored message
+    ReasoningComplete { duration_seconds: Option<f64> },
     /// Divider where a fresh model context starts, with expandable text:
     /// the compaction summary, or the prompt the new context opens with
     ContextDivider {

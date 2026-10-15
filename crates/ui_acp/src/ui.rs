@@ -1173,7 +1173,9 @@ impl UserInterface for ACPUserUI {
                 self.queue_session_update(acp::SessionUpdate::ToolCallUpdate(tool_call_update));
             }
 
-            DisplayFragment::ReasoningSummaryStart | DisplayFragment::ReasoningComplete => {
+            DisplayFragment::ReasoningStarted
+            | DisplayFragment::ReasoningSummaryStart
+            | DisplayFragment::ReasoningComplete { .. } => {
                 // No ACP representation needed
             }
             DisplayFragment::HiddenToolCompleted => {

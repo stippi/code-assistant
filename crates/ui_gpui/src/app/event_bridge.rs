@@ -318,6 +318,8 @@ impl Gpui {
                     data: data.clone(),
                 });
             }
+            // Shown through the session's activity state
+            DisplayFragment::ReasoningStarted => {}
             DisplayFragment::ReasoningSummaryStart => {
                 self.push_event(UiEvent::StartReasoningSummaryItem);
             }
@@ -326,7 +328,7 @@ impl Gpui {
                     delta: delta.clone(),
                 });
             }
-            DisplayFragment::ReasoningComplete => {
+            DisplayFragment::ReasoningComplete { .. } => {
                 self.push_event(UiEvent::CompleteReasoning);
             }
             DisplayFragment::ToolOutput { tool_id, chunk } => {

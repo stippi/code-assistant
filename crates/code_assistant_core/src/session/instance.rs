@@ -27,6 +27,8 @@ pub enum SessionActivityState {
     AgentRunning,
     /// Agent sent LLM request, waiting for first streaming chunk
     WaitingForResponse,
+    /// The model is reasoning; nothing visible has arrived yet
+    Thinking,
     /// Agent is rate limited with countdown
     RateLimited { seconds_remaining: u64 },
     /// Agent terminated with an error
@@ -109,8 +111,20 @@ impl SessionActivity {
             return None;
         }
         match self.get() {
-            SessionActivityState::WaitingForResponse | SessionActivityState::RateLimited { .. } => {
+            SessionActivityState::WaitingForResponse
+            | SessionActivityState::Thinking
+            | SessionActivityState::RateLimited { .. } => {
                 self.try_transition(SessionActivityState::AgentRunning)
+            }
+            _ => None,
+        }
+    }
+
+    /// The model started reasoning before the response showed anything.
+    pub fn on_reasoning_started(&self) -> Option<SessionActivityState> {
+        match self.get() {
+            SessionActivityState::WaitingForResponse => {
+                self.try_transition(SessionActivityState::Thinking)
             }
             _ => None,
         }
@@ -119,7 +133,7 @@ impl SessionActivity {
     /// The stream produced its first visible output.
     pub fn on_visible_output(&self) -> Option<SessionActivityState> {
         match self.get() {
-            SessionActivityState::WaitingForResponse => {
+            SessionActivityState::WaitingForResponse | SessionActivityState::Thinking => {
                 self.try_transition(SessionActivityState::AgentRunning)
             }
             _ => None,
@@ -1227,14 +1241,17 @@ impl UserInterface for SessionEventPublisher {
             | DisplayFragment::ReasoningSummaryStart
             | DisplayFragment::ContextDivider { .. } => true,
             DisplayFragment::ToolEnd { .. }
+            | DisplayFragment::ReasoningStarted
             | DisplayFragment::ToolTerminal { .. }
             | DisplayFragment::ToolTerminalExited { .. }
-            | DisplayFragment::ReasoningComplete
+            | DisplayFragment::ReasoningComplete { .. }
             | DisplayFragment::HiddenToolCompleted => false,
         };
 
         if has_visible_content {
             self.publish_activity_change(self.activity.on_visible_output());
+        } else if matches!(fragment, DisplayFragment::ReasoningStarted) {
+            self.publish_activity_change(self.activity.on_reasoning_started());
         }
 
         Ok(())
@@ -1422,6 +1439,32 @@ mod tests {
         // No transition when the agent already finished.
         let activity = activity_with(SessionActivityState::Idle);
         assert_eq!(activity.on_visible_output(), None);
+    }
+
+    #[test]
+    fn reasoning_shows_thinking_until_visible_output() {
+        let activity = activity_with(SessionActivityState::WaitingForResponse);
+        assert_eq!(
+            activity.on_reasoning_started(),
+            Some(SessionActivityState::Thinking)
+        );
+        assert_eq!(
+            activity.on_visible_output(),
+            Some(SessionActivityState::AgentRunning)
+        );
+
+        // A response that ends while still thinking resumes running.
+        let activity = activity_with(SessionActivityState::Thinking);
+        assert_eq!(
+            activity.on_streaming_stopped(false, false),
+            Some(SessionActivityState::AgentRunning)
+        );
+
+        // Reasoning only matters before the response shows anything.
+        let activity = activity_with(SessionActivityState::AgentRunning);
+        assert_eq!(activity.on_reasoning_started(), None);
+        let activity = activity_with(SessionActivityState::Idle);
+        assert_eq!(activity.on_reasoning_started(), None);
     }
 
     #[test]

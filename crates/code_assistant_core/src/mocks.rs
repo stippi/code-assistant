@@ -335,13 +335,14 @@ impl UserInterface for MockUI {
                     .unwrap()
                     .push(format!("[terminal:{terminal_id}]"));
             }
-            crate::ui::DisplayFragment::ReasoningSummaryStart => {
+            crate::ui::DisplayFragment::ReasoningStarted
+            | crate::ui::DisplayFragment::ReasoningSummaryStart => {
                 // Ignore start markers in mock output
             }
             crate::ui::DisplayFragment::ReasoningSummaryDelta(delta) => {
                 self.streaming.lock().unwrap().push(delta.clone());
             }
-            crate::ui::DisplayFragment::ReasoningComplete => {
+            crate::ui::DisplayFragment::ReasoningComplete { .. } => {
                 self.streaming
                     .lock()
                     .unwrap()

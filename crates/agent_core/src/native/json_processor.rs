@@ -230,6 +230,10 @@ impl StreamProcessorTrait for JsonStreamProcessor {
 
             StreamingChunk::Text(text) => self.process_text_with_thinking_tags(text),
 
+            StreamingChunk::ReasoningStarted => {
+                self.ui.display_fragment(&DisplayFragment::ReasoningStarted)
+            }
+
             StreamingChunk::ReasoningSummaryStart => self
                 .ui
                 .display_fragment(&DisplayFragment::ReasoningSummaryStart),
@@ -238,9 +242,12 @@ impl StreamProcessorTrait for JsonStreamProcessor {
                 .ui
                 .display_fragment(&DisplayFragment::ReasoningSummaryDelta(delta.clone())),
 
-            StreamingChunk::ReasoningComplete => self
-                .ui
-                .display_fragment(&DisplayFragment::ReasoningComplete),
+            StreamingChunk::ReasoningComplete => {
+                self.ui
+                    .display_fragment(&DisplayFragment::ReasoningComplete {
+                        duration_seconds: None,
+                    })
+            }
         }
     }
 
@@ -331,7 +338,9 @@ impl StreamProcessorTrait for JsonStreamProcessor {
                             }
                             // End with reasoning complete if we had items
                             if !summary.is_empty() {
-                                fragments.push(DisplayFragment::ReasoningComplete);
+                                fragments.push(DisplayFragment::ReasoningComplete {
+                                    duration_seconds: block.duration().map(|d| d.as_secs_f64()),
+                                });
                             }
                         }
                         ContentBlock::Image {

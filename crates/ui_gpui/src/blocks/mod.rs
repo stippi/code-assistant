@@ -1146,6 +1146,31 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn restored_reasoning_block_keeps_its_stored_duration(cx: &mut TestAppContext) {
+        // A restored reasoning block that ends its message is not followed
+        // by anything that would finish it; completing it must still stop
+        // its timer and show the stored duration.
+        let container = make_container(MessageRole::Assistant, cx);
+
+        cx.update(|cx| {
+            container.update(cx, |container, cx| {
+                container.start_reasoning_summary_item(cx);
+                container.append_reasoning_summary_delta("**Plan**\n\nDo it".to_string(), cx);
+                container.complete_reasoning(Some(4.0), cx);
+
+                let elements = container.elements();
+                let view = elements.last().unwrap().read(cx);
+                let BlockData::ThinkingBlock(thinking) = &*view.block else {
+                    panic!("expected a thinking block");
+                };
+                assert!(thinking.is_completed);
+                assert_eq!(thinking.formatted_duration(), "4s");
+                assert!(!view.is_generating);
+            });
+        });
+    }
+
+    #[gpui_kit::test]
     fn test_thinking_block_reasoning_summary(cx: &mut TestAppContext) {
         cx.update(|_cx| {
             let mut thinking = ThinkingBlock::new(String::new());

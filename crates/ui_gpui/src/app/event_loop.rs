@@ -878,7 +878,7 @@ impl Gpui {
             }
             UiEvent::CompleteReasoning => {
                 self.update_last_message(cx, |message, cx| {
-                    message.complete_reasoning(cx);
+                    message.complete_reasoning(None, cx);
                 });
             }
 
@@ -1257,6 +1257,8 @@ impl Gpui {
                         container.add_context_divider(boundary, summary.clone(), cx);
                     });
                 }
+                // Shown through the session's activity state
+                DisplayFragment::ReasoningStarted => {}
                 DisplayFragment::ReasoningSummaryStart => {
                     self.update_container(container, cx, |container, cx| {
                         container.start_reasoning_summary_item(cx);
@@ -1305,9 +1307,9 @@ impl Gpui {
                     crate::terminal::pool::ensure_display_terminal(&session_id, &tool_id, cx);
                 }
 
-                DisplayFragment::ReasoningComplete => {
+                DisplayFragment::ReasoningComplete { duration_seconds } => {
                     self.update_container(container, cx, |container, cx| {
-                        container.complete_reasoning(cx);
+                        container.complete_reasoning(duration_seconds, cx);
                     });
                 }
                 DisplayFragment::HiddenToolCompleted => {
