@@ -6,6 +6,7 @@
 //! stable (non-volatile) history prefix.
 
 use crate::types::{Message, MessageRole};
+use sha2::{Digest, Sha256};
 
 /// Length of the stable history prefix.
 ///
@@ -86,9 +87,48 @@ pub fn cache_marker_positions(messages: &[Message]) -> Vec<usize> {
     }
 }
 
+/// Maximum length OpenAI accepts for `prompt_cache_key`.
+const MAX_PROMPT_CACHE_KEY_LEN: usize = 64;
+
+/// Derive the `prompt_cache_key` for OpenAI-style requests from a session ID.
+///
+/// Session IDs are paths (`<project-slug>/<date>-<NNN>`) that can exceed the
+/// API's length limit. Short IDs are sent as-is; longer ones are replaced by
+/// their SHA-256 hex digest (exactly 64 chars), which is still stable per
+/// session so cache routing keeps working.
+pub fn prompt_cache_key(session_id: &str) -> String {
+    if session_id.len() <= MAX_PROMPT_CACHE_KEY_LEN {
+        return session_id.to_string();
+    }
+    Sha256::digest(session_id.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prompt_cache_key_keeps_short_ids() {
+        assert_eq!(
+            prompt_cache_key("proj/2026-10-15-001"),
+            "proj/2026-10-15-001"
+        );
+    }
+
+    #[test]
+    fn prompt_cache_key_hashes_long_ids_within_limit() {
+        let long_id = format!("{}/2026-10-15-001", "a".repeat(60));
+        let key = prompt_cache_key(&long_id);
+        assert_eq!(key.len(), MAX_PROMPT_CACHE_KEY_LEN);
+        assert_eq!(key, prompt_cache_key(&long_id));
+        assert_ne!(
+            key,
+            prompt_cache_key(&format!("{}/2026-10-15-002", "a".repeat(60)))
+        );
+    }
 
     /// The trailing marker of each request must land on the leading marker
     /// position of the previous request, so that cache lookups always hit.

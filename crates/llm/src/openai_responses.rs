@@ -1638,7 +1638,7 @@ impl LLMProvider for OpenAIResponsesClient {
             store,
             stream: streaming_callback.is_some(),
             include,
-            prompt_cache_key: Some(request.session_id),
+            prompt_cache_key: Some(crate::prompt_caching::prompt_cache_key(&request.session_id)),
             text,
         };
 

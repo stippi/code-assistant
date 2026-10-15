@@ -1037,7 +1037,7 @@ impl OpenAIResponsesWsClient {
             store: false,
             stream: true, // Always stream over WebSocket
             include,
-            prompt_cache_key: Some(request.session_id),
+            prompt_cache_key: Some(crate::prompt_caching::prompt_cache_key(&request.session_id)),
             text,
         };
 
