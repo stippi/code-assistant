@@ -1181,7 +1181,7 @@ impl LLMProvider for OpenAIClient {
             top_p: self.get_top_p(),
             stream: None,
             stream_options: None,
-            prompt_cache_key: Some(request.session_id.clone()),
+            prompt_cache_key: Some(crate::prompt_caching::prompt_cache_key(&request.session_id)),
             reasoning_effort: self.get_reasoning_effort(),
             tool_choice: Some(serde_json::json!("auto")),
             tools: request.tools.map(|tools| {
