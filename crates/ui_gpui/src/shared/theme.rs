@@ -22,9 +22,9 @@ pub fn custom_dark_theme() -> gpui_kit::component::theme::ThemeColor {
     colors.foreground = rgba(0xFAFAFAFF).into(); // Main text
     colors.muted_foreground = rgb(0xAAAAAA).into(); // Secondary text
 
-    // Thinking blocks - blue theme
-    colors.info = rgba(0x5BC1FEFF).into(); // Thinking block accent
-    colors.info_foreground = rgba(0x93B8CEFF).into(); // Thinking block text
+    // Info - blue accent
+    colors.info = rgba(0x5BC1FEFF).into();
+    colors.info_foreground = rgba(0x93B8CEFF).into();
 
     // Buttons
     colors.primary = rgb(0x0099EE).into(); // Primary button (submit)
@@ -61,9 +61,9 @@ pub fn custom_light_theme() -> gpui_kit::component::theme::ThemeColor {
     colors.foreground = rgb(0x333333).into(); // Dark text for contrast
     colors.muted_foreground = rgb(0x777777).into(); // Medium gray text
 
-    // Thinking blocks - blue theme (adjusted for light mode)
-    colors.info = rgb(0x0085D1).into(); // Thinking block accent
-    colors.info_foreground = rgb(0x0060A0).into(); // Thinking block text
+    // Info - blue accent (adjusted for light mode)
+    colors.info = rgb(0x0085D1).into();
+    colors.info_foreground = rgb(0x0060A0).into();
 
     // Buttons
     colors.primary = rgb(0x53AEFF).into(); // Primary button (submit)
@@ -150,29 +150,6 @@ pub fn toggle_theme(window: Option<&mut gpui_kit::Window>, cx: &mut App) -> Them
     cx.global_mut::<Theme>().font_size = current_font_size;
 
     new_mode
-}
-
-/// Color utility functions for specific components
-pub mod colors {
-    use gpui_kit::component::theme::Theme;
-    use gpui_kit::{Hsla, rgba};
-
-    // Thinking block colors
-    pub fn thinking_block_bg(theme: &Theme) -> Hsla {
-        if theme.is_dark() {
-            rgba(0x00142060).into() // Dark mode blue background
-        } else {
-            rgba(0x00142010).into() // Light mode blue background
-        }
-    }
-
-    pub fn thinking_block_chevron(theme: &Theme) -> Hsla {
-        if theme.is_dark() {
-            rgba(0x0099EEFF).into() // Dark mode blue chevron
-        } else {
-            rgba(0x0077CCFF).into() // Light mode blue chevron
-        }
-    }
 }
 
 #[cfg(test)]
