@@ -1322,14 +1322,14 @@ impl TerminalRenderer {
         f.render_widget(paragraph, area);
     }
 
-    /// Render error message with red styling and dismiss instructions
-    fn render_error_message(f: &mut custom_terminal::Frame, area: Rect, message: &str) {
+    /// Render the error in red. `error_text` is already formatted (see
+    /// [`Self::format_error_message`]): the layout measured that very text.
+    fn render_error_message(f: &mut custom_terminal::Frame, area: Rect, error_text: &str) {
         if area.height == 0 {
             return;
         }
 
-        let error_text = Self::format_error_message(message);
-        let text = md::from_str(&error_text);
+        let text = md::from_str(error_text);
         let paragraph = Paragraph::new(text)
             .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
             .wrap(Wrap { trim: false });
@@ -2602,6 +2602,14 @@ mod tests {
             }
 
             assert!(found_error_prefix, "Should render 'Error:' prefix");
+            // Formatted once: "Error: Error: … (Press Esc to dismiss) (Press
+            // Esc to dismiss)" came from formatting the text twice.
+            let screen: String = (0..18)
+                .flat_map(|y| (0..80).map(move |x| (x, y)))
+                .map(|pos| buffer.cell(pos).unwrap().symbol().to_string())
+                .collect();
+            assert_eq!(screen.matches("Error:").count(), 1, "{screen}");
+            assert_eq!(screen.matches("dismiss").count(), 1, "{screen}");
             assert!(found_error_content, "Should render error message content");
             assert!(
                 found_dismiss_instruction,
