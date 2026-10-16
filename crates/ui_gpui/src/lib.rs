@@ -265,6 +265,14 @@ pub struct Gpui {
     // enabled state, shown in the input-bar MCP toggle menu.
     current_mcp_servers: Arc<Mutex<Vec<code_assistant_core::ui::ui_events::McpServerToggle>>>,
 
+    // Connection state of every MCP server (app-wide, not per session),
+    // shown next to the servers in the MCP toggle menu.
+    mcp_server_statuses: Arc<
+        Mutex<
+            std::collections::BTreeMap<String, code_assistant_core::ui::ui_events::McpServerHealth>,
+        >,
+    >,
+
     // `ask_question` requests awaiting the user's answers, each with the
     // session asking it, in arrival order.
     pending_user_questions: Arc<
@@ -626,6 +634,7 @@ impl Gpui {
             // Current permission tier selection + open permission prompts
             current_permission_tier: Arc::new(Mutex::new(None)),
             current_mcp_servers: Arc::new(Mutex::new(Vec::new())),
+            mcp_server_statuses: Arc::new(Mutex::new(Default::default())),
             pending_permission_requests: Arc::new(Mutex::new(Vec::new())),
             pending_user_questions: Arc::new(Mutex::new(Vec::new())),
             pending_new_context_target: Arc::new(Mutex::new(None)),
@@ -996,6 +1005,13 @@ impl Gpui {
         &self,
     ) -> Vec<code_assistant_core::ui::ui_events::McpServerToggle> {
         self.current_mcp_servers.lock().unwrap().clone()
+    }
+
+    pub fn get_mcp_server_statuses(
+        &self,
+    ) -> std::collections::BTreeMap<String, code_assistant_core::ui::ui_events::McpServerHealth>
+    {
+        self.mcp_server_statuses.lock().unwrap().clone()
     }
 
     /// The open permission requests of `session_id`, in arrival order.

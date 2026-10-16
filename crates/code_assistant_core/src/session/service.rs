@@ -1077,6 +1077,67 @@ impl SessionService {
         .await
     }
 
+    /// Restart an MCP server (by config name) from a session's MCP menu:
+    /// close its connection and connect again within the session's registry,
+    /// which the session then holds. Works whatever state the server is in.
+    /// Progress arrives as [`UiEvent::McpServerStatusChanged`]. Runs on its
+    /// own, as connecting (or the trust prompt of a project's `.mcp.json`)
+    /// may take a while; the next agent run of every session picks up the
+    /// new connection.
+    pub async fn restart_mcp_server(&self, session_id: String, name: String) -> Result<()> {
+        self.call_io(move |ctx| async move {
+            let (control, project_dir, mediator) = {
+                let mut manager = ctx.manager.lock().await;
+                let control = manager
+                    .mcp_server_control()
+                    .ok_or_else(|| anyhow!("MCP servers cannot be restarted here"))?;
+                manager.ensure_session_loaded(&session_id)?;
+                let project_dir = manager
+                    .get_session(&session_id)
+                    .and_then(|instance| instance.session.config.effective_project_path().cloned());
+                let mediator = manager.permission_mediator(&session_id)?;
+                (control, project_dir, mediator)
+            };
+            // Connecting is network or process work: not under the manager lock.
+            let include_local_mcp = SessionManager::resolve_local_mcp_trust(
+                project_dir.as_deref(),
+                Some(mediator.as_ref()),
+            )
+            .await;
+            let registry = control
+                .restart(
+                    &name,
+                    crate::session::manager::RegistryRequest {
+                        project_dir,
+                        include_local_mcp,
+                    },
+                )
+                .await;
+            ctx.manager
+                .lock()
+                .await
+                .adopt_tool_registry(&session_id, registry);
+            Ok(())
+        })
+        .await
+    }
+
+    /// Publish the current state of every MCP server as an app-scoped
+    /// [`UiEvent::McpServerStatusChanged`], e.g. when a frontend opens its
+    /// MCP menu (a server's process may have exited meanwhile).
+    pub async fn refresh_mcp_server_statuses(&self) -> Result<()> {
+        self.call_io(move |ctx| async move {
+            let control = ctx.manager.lock().await.mcp_server_control();
+            if let Some(control) = control {
+                ctx.events.publish_app(UiEvent::McpServerStatusChanged {
+                    statuses: control.statuses(),
+                });
+            }
+            Ok(())
+        })
+        .await
+    }
+
     /// Answer a pending tool permission request
     /// ([`UiEvent::RequestToolPermission`]). Unknown request ids are ignored
     /// (the request may have been settled by another view or a stop).

@@ -179,6 +179,21 @@ shows and preserves.
     global defaults leave it alone; only a server it has no state for
     (added since) is set as in a new session. Sessions derived from
     another one copy that session's lists.
+- **Server status and restart** (GPUI input-bar MCP menu): every server row
+  shows a dot — green connected, amber connecting, red failed (the error on
+  hover), grey not connected yet — and a restart button that works in any
+  state. `ConfigToolRegistry` records each server's `McpServerHealth` from
+  its connects and registry builds and publishes changes as the app-scoped
+  `UiEvent::McpServerStatusChanged`; asking for the statuses
+  (`SessionService::refresh_mcp_server_statuses`, sent when the menu opens)
+  also reports a server whose process exited as failed
+  (`McpServerConnection::is_closed`). A restart
+  (`SessionService::restart_mcp_server`, through the
+  `session::manager::McpServerControl` seam) closes the server's pooled
+  connections — calls in flight on them fail — drops all cached
+  registries, and rebuilds the session's registry, which the session then
+  holds so the new connection stays alive. Other sessions pick it up on
+  their next run.
 
 ### Expired OAuth logins
 

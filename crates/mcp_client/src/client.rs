@@ -387,6 +387,21 @@ impl McpServerConnection {
         *self.service.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(service);
     }
 
+    /// Whether the session has ended: cancelled through [`Self::close`], or
+    /// the transport went away (a stdio server's process exited, an HTTP
+    /// session dropped). An HTTP connection still reopens on its next call.
+    pub fn is_closed(&self) -> bool {
+        let service = self.current();
+        service.is_closed() || service.peer().is_transport_closed()
+    }
+
+    /// Stop the session without owning the connection, terminating a stdio
+    /// server's child process. Calls still running on it fail; registries
+    /// holding the connection keep a dead one until they are rebuilt.
+    pub fn close(&self) {
+        self.current().cancellation_token().cancel();
+    }
+
     /// Close the connection, terminating the server child process. Dropping
     /// the connection has the same effect; this form allows awaiting it.
     pub async fn shutdown(self) -> Result<()> {

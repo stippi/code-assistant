@@ -914,6 +914,10 @@ impl Gpui {
                 *self.current_mcp_servers.lock().unwrap() = servers;
                 cx.refresh();
             }
+            UiEvent::McpServerStatusChanged { statuses } => {
+                *self.mcp_server_statuses.lock().unwrap() = statuses;
+                cx.refresh();
+            }
             // The browser panel subscribes to these itself.
             UiEvent::BrowsersChanged { .. } => {}
             // State tracked by the event bridge; the main screen renders the

@@ -225,6 +225,30 @@ async fn dead_server_degrades_to_tool_error() {
     assert!(!output.is_success());
 }
 
+#[tokio::test]
+async fn closing_ends_the_session() {
+    let (connection, _server) = connect_test_server().await;
+    assert!(!connection.is_closed());
+    connection.close();
+    assert!(connection.is_closed());
+    assert!(echo(&connection, "still there?").await.is_err());
+}
+
+#[tokio::test]
+async fn a_vanished_server_reads_as_closed() {
+    let (connection, server) = connect_test_server().await;
+    server.abort();
+    let _ = server.await;
+    // The client notices the closed pipe on its own, without a call.
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !connection.is_closed() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the connection should notice its server is gone");
+}
+
 /// Smoke test against a real child process: code-assistant's own MCP server
 /// mode. Ignored by default because it needs the workspace binary built
 /// first (`cargo build -p code-assistant --no-default-features`).

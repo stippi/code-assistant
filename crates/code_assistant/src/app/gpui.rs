@@ -53,6 +53,8 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
         events.clone(),
     );
     session_manager.set_tool_registry_provider(registry_provider.as_provider());
+    registry_provider.set_event_stream(events.clone());
+    session_manager.set_mcp_server_control(registry_provider.as_mcp_server_control());
     if !config.model_pinned {
         session_manager.follow_configured_default_model();
     }

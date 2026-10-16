@@ -898,6 +898,21 @@ impl MainScreen {
                     gpui.cmd_toggle_mcp_server(session_id.clone(), name.clone(), *enabled);
                 }
             }
+            InputAreaEvent::McpServerRestartRequested { name } => {
+                if let Some(session_id) = &self.current_session_id {
+                    let gpui = cx
+                        .try_global::<Gpui>()
+                        .expect("Failed to obtain Gpui global");
+                    gpui.cmd_restart_mcp_server(session_id.clone(), name.clone());
+                    cx.notify();
+                }
+            }
+            InputAreaEvent::McpStatusesRequested => {
+                let gpui = cx
+                    .try_global::<Gpui>()
+                    .expect("Failed to obtain Gpui global");
+                gpui.cmd_refresh_mcp_server_statuses();
+            }
             InputAreaEvent::WorktreeSwitchedToLocal => {
                 if let Some(session_id) = &self.current_session_id {
                     let gpui = cx
@@ -1665,6 +1680,7 @@ impl Render for MainScreen {
             current_last_usage,
             current_total_usage,
             current_mcp_servers,
+            mcp_server_statuses,
         ) = if let Some(gpui) = cx.try_global::<Gpui>() {
             (
                 gpui.get_chat_sessions(),
@@ -1679,6 +1695,7 @@ impl Render for MainScreen {
                 gpui.get_current_session_last_usage(),
                 gpui.get_current_session_total_usage(),
                 gpui.get_current_mcp_servers(),
+                gpui.get_mcp_server_statuses(),
             )
         } else {
             (
@@ -1694,6 +1711,7 @@ impl Render for MainScreen {
                 None,
                 None,
                 Vec::new(),
+                Default::default(),
             )
         };
 
@@ -1806,7 +1824,7 @@ impl Render for MainScreen {
         // Sync the MCP server list to the input-bar toggle menu (set_servers
         // no-ops when unchanged).
         self.input_area.update(cx, |input_area, cx| {
-            input_area.set_mcp_servers(current_mcp_servers, cx);
+            input_area.set_mcp_servers(current_mcp_servers, mcp_server_statuses, cx);
         });
 
         // Sync worktree data to the WorktreeSelector (only when changed)

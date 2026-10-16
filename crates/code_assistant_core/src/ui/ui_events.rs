@@ -137,6 +137,19 @@ pub struct McpServerToggle {
     pub enabled: bool,
 }
 
+/// How an MCP server's connection is doing, process-wide (servers are shared
+/// between sessions). Carried by [`UiEvent::McpServerStatusChanged`]; a
+/// server without an entry is not connected (not used by any run yet).
+#[derive(Debug, Clone, PartialEq)]
+pub enum McpServerHealth {
+    /// Launching or (re)connecting.
+    Connecting,
+    /// Connected, contributing this many tools.
+    Connected { tools: usize },
+    /// Could not connect, could not list its tools, or the connection died.
+    Failed { error: String },
+}
+
 /// Events for UI updates from the agent thread
 #[derive(Debug, Clone)]
 pub enum UiEvent {
@@ -297,6 +310,11 @@ pub enum UiEvent {
     /// Update the MCP servers available to the active session and whether each
     /// is currently enabled for it (see [`McpServerToggle`]).
     UpdateMcpServers { servers: Vec<McpServerToggle> },
+    /// App-scoped: the connection state of every MCP server, by config name
+    /// (see [`McpServerHealth`]).
+    McpServerStatusChanged {
+        statuses: std::collections::BTreeMap<String, McpServerHealth>,
+    },
     /// The agent asks the user for permission to run a tool. Answered via
     /// `SessionService::respond_permission`; a
     /// [`UiEvent::ToolPermissionRequestResolved`] follows once settled.

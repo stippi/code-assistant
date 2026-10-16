@@ -80,14 +80,25 @@ pub async fn default_registry_with_mcp(
     pool: &dyn mcp_client::ConnectionProvider,
     interactive: bool,
 ) -> Arc<ToolRegistry> {
+    registry_with_mcp_statuses(local_mcp_dir, pool, interactive)
+        .await
+        .0
+}
+
+/// [`default_registry_with_mcp`], also returning how each MCP server fared.
+pub async fn registry_with_mcp_statuses(
+    local_mcp_dir: Option<&std::path::Path>,
+    pool: &dyn mcp_client::ConnectionProvider,
+    interactive: bool,
+) -> (Arc<ToolRegistry>, Vec<mcp::McpServerStatus>) {
     let config = ToolsConfig::load().unwrap_or_default();
     let mut registry = ToolRegistry::new();
     register_default_tools(&mut registry, &config);
     if interactive {
         register_interactive_tools(&mut registry);
     }
-    mcp::register_configured_mcp_tools_in(&mut registry, local_mcp_dir, pool).await;
-    Arc::new(registry)
+    let statuses = mcp::register_configured_mcp_tools_in(&mut registry, local_mcp_dir, pool).await;
+    (Arc::new(registry), statuses)
 }
 
 /// Registry with code-assistant's default tools and an empty tools
