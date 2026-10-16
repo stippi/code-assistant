@@ -696,6 +696,9 @@ impl SessionInstance {
             sandbox_policy: self.session.config.sandbox_policy.clone(),
             permission_tier: self.session.config.permission_tier,
             mcp_servers: crate::tools::mcp_selection::session_mcp_servers(&self.session.config),
+            builtin_tools: crate::tools::builtin_selection::session_builtin_tools(
+                &self.session.config,
+            ),
             pending_permission_requests: self.pending_permission_requests.snapshot(),
             pending_new_context_target: self.pending_new_context_target.snapshot(),
             pending_questions: self.pending_questions.snapshot(),

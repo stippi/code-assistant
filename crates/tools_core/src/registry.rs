@@ -1,7 +1,9 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 
-use crate::dyn_tool::DynTool;
-use crate::spec::AnnotatedToolDefinition;
+use crate::dyn_tool::{AnyOutput, DynTool};
+use crate::spec::{AnnotatedToolDefinition, ToolSpec};
+use crate::tool::ToolContext;
 
 /// Registry holding a set of tools, keyed by name.
 ///
@@ -23,6 +25,24 @@ impl ToolRegistry {
     /// Register a tool in the registry
     pub fn register(&mut self, tool: Box<dyn DynTool>) {
         self.tools.insert(tool.spec().name.to_string(), tool);
+    }
+
+    /// Add a capability tag to the named tool, e.g. to mark it as part of a
+    /// group a consumer switches on and off as a whole. Unknown names are
+    /// ignored.
+    pub fn add_capability(&mut self, tool_name: &str, capability: impl Into<Cow<'static, str>>) {
+        if let Some(inner) = self.tools.remove(tool_name) {
+            let tagged = Tagged {
+                inner,
+                capability: capability.into(),
+            };
+            self.tools.insert(tool_name.to_string(), Box::new(tagged));
+        }
+    }
+
+    /// The names of all registered tools, in no particular order.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.tools.keys().map(String::as_str)
     }
 
     /// Get a tool by name
@@ -107,6 +127,34 @@ impl ToolRegistry {
     }
 }
 
+/// A registered tool with one more capability tag (see
+/// [`ToolRegistry::add_capability`]).
+struct Tagged {
+    inner: Box<dyn DynTool>,
+    capability: Cow<'static, str>,
+}
+
+#[async_trait::async_trait]
+impl DynTool for Tagged {
+    fn spec(&self) -> ToolSpec {
+        let mut spec = self.inner.spec();
+        spec.capabilities.push(self.capability.clone());
+        spec
+    }
+
+    async fn invoke<'a>(
+        &self,
+        context: &mut ToolContext<'a>,
+        params: &mut serde_json::Value,
+    ) -> anyhow::Result<Box<dyn AnyOutput>> {
+        self.inner.invoke(context, params).await
+    }
+
+    fn deserialize_output(&self, json: serde_json::Value) -> anyhow::Result<Box<dyn AnyOutput>> {
+        self.inner.deserialize_output(json)
+    }
+}
+
 impl Default for ToolRegistry {
     fn default() -> Self {
         Self::new()
@@ -116,9 +164,6 @@ impl Default for ToolRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dyn_tool::{AnyOutput, DynTool};
-    use crate::spec::ToolSpec;
-    use crate::tool::ToolContext;
     use async_trait::async_trait;
     use serde_json::Value;
 
@@ -189,6 +234,24 @@ mod tests {
         registry.register(tool("peek", &["scope:subagent"]));
 
         let filtered = registry.get_tool_definitions_with_capability_excluding("scope:agent", &[]);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name, "edit");
+    }
+
+    #[test]
+    fn an_added_capability_selects_the_tool() {
+        let mut registry = ToolRegistry::new();
+        registry.register(tool("browser_navigate", &["scope:agent"]));
+        registry.register(tool("edit", &["scope:agent"]));
+        registry.add_capability("browser_navigate", "toolset:browser");
+        registry.add_capability("missing", "toolset:browser");
+
+        assert!(registry.tool_has_capability("browser_navigate", "toolset:browser"));
+        assert!(registry.tool_has_capability("browser_navigate", "scope:agent"));
+        let filtered = registry.get_tool_definitions_with_capability_excluding(
+            "scope:agent",
+            &["toolset:browser".into()],
+        );
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].name, "edit");
     }

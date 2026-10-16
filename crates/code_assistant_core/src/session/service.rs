@@ -1138,6 +1138,28 @@ impl SessionService {
         .await
     }
 
+    /// Switch a built-in tool group (by id) on or off for a session, which its
+    /// project's next sessions follow, and fan out the refreshed list.
+    /// Mirrors [`set_mcp_server_enabled`].
+    ///
+    /// [`set_mcp_server_enabled`]: Self::set_mcp_server_enabled
+    pub async fn set_builtin_tool_enabled(
+        &self,
+        session_id: String,
+        id: String,
+        enabled: bool,
+    ) -> Result<()> {
+        self.call_session(session_id.clone(), move |ctx| async move {
+            let groups = {
+                let mut manager = ctx.manager.lock().await;
+                manager.set_session_builtin_tool_enabled(&session_id, &id, enabled)?
+            };
+            ctx.notify_session(&session_id, UiEvent::UpdateBuiltinTools { groups });
+            Ok(())
+        })
+        .await
+    }
+
     /// Answer a pending tool permission request
     /// ([`UiEvent::RequestToolPermission`]). Unknown request ids are ignored
     /// (the request may have been settled by another view or a stop).
@@ -2267,6 +2289,14 @@ fn schedule_agent_impl(
                     &task_session,
                     UiEvent::UpdateMcpServers {
                         servers: crate::tools::mcp_selection::session_mcp_servers(
+                            &run_session_config,
+                        ),
+                    },
+                );
+                events.publish_ui(
+                    &task_session,
+                    UiEvent::UpdateBuiltinTools {
+                        groups: crate::tools::builtin_selection::session_builtin_tools(
                             &run_session_config,
                         ),
                     },

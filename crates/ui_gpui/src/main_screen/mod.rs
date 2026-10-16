@@ -913,6 +913,14 @@ impl MainScreen {
                     .expect("Failed to obtain Gpui global");
                 gpui.cmd_refresh_mcp_server_statuses();
             }
+            InputAreaEvent::BuiltinToolToggled { id, enabled } => {
+                if let Some(session_id) = &self.current_session_id {
+                    let gpui = cx
+                        .try_global::<Gpui>()
+                        .expect("Failed to obtain Gpui global");
+                    gpui.cmd_toggle_builtin_tool(session_id.clone(), id.clone(), *enabled);
+                }
+            }
             InputAreaEvent::WorktreeSwitchedToLocal => {
                 if let Some(session_id) = &self.current_session_id {
                     let gpui = cx
@@ -1681,6 +1689,7 @@ impl Render for MainScreen {
             current_total_usage,
             current_mcp_servers,
             mcp_server_statuses,
+            current_builtin_tools,
         ) = if let Some(gpui) = cx.try_global::<Gpui>() {
             (
                 gpui.get_chat_sessions(),
@@ -1696,6 +1705,7 @@ impl Render for MainScreen {
                 gpui.get_current_session_total_usage(),
                 gpui.get_current_mcp_servers(),
                 gpui.get_mcp_server_statuses(),
+                gpui.get_current_builtin_tools(),
             )
         } else {
             (
@@ -1712,6 +1722,7 @@ impl Render for MainScreen {
                 None,
                 Vec::new(),
                 Default::default(),
+                Vec::new(),
             )
         };
 
@@ -1821,10 +1832,11 @@ impl Render for MainScreen {
             });
         }
 
-        // Sync the MCP server list to the input-bar toggle menu (set_servers
-        // no-ops when unchanged).
+        // Sync the MCP servers and built-in tool groups to the input-bar
+        // toggle menu (the setters no-op when unchanged).
         self.input_area.update(cx, |input_area, cx| {
             input_area.set_mcp_servers(current_mcp_servers, mcp_server_statuses, cx);
+            input_area.set_builtin_tools(current_builtin_tools, cx);
         });
 
         // Sync worktree data to the WorktreeSelector (only when changed)

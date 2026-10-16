@@ -67,6 +67,9 @@ pub struct SessionSnapshot {
     /// MCP servers available to this session and whether each is enabled for
     /// it (global `mcp-servers.json` plus the project's trusted `.mcp.json`).
     pub mcp_servers: Vec<crate::ui::ui_events::McpServerToggle>,
+    /// Built-in tool groups available to this session and whether each is on
+    /// for it (see [`crate::tools::builtin_selection`]).
+    pub builtin_tools: Vec<crate::ui::ui_events::BuiltinToolToggle>,
     /// Permission requests still awaiting an answer; a connecting frontend
     /// should render prompts for them.
     pub pending_permission_requests: Vec<permissions::ToolPermissionRequestData>,
@@ -128,6 +131,9 @@ impl SessionSnapshot {
         events.push(UiEvent::UpdateMcpServers {
             servers: self.mcp_servers.clone(),
         });
+        events.push(UiEvent::UpdateBuiltinTools {
+            groups: self.builtin_tools.clone(),
+        });
         events.push(UiEvent::UpdateAllowedModels {
             models: self.allowed_models.clone(),
         });
@@ -188,6 +194,15 @@ pub struct SessionConfig {
     /// preventing its process from starting.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disabled_mcp_servers: Vec<String>,
+    /// Built-in tool groups switched on for this session (by group id): the
+    /// state at creation plus later switches, see
+    /// [`crate::tools::builtin_selection`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub enabled_builtin_tools: Vec<String>,
+    /// Built-in tool groups switched off for this session (by group id); their
+    /// tools are not offered to or callable by this session's agent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled_builtin_tools: Vec<String>,
 }
 
 /// An unknown tier (e.g. one only another build offers) must not silently
@@ -212,6 +227,8 @@ impl Default for SessionConfig {
             branch: None,
             enabled_mcp_servers: Vec::new(),
             disabled_mcp_servers: Vec::new(),
+            enabled_builtin_tools: Vec::new(),
+            disabled_builtin_tools: Vec::new(),
         }
     }
 }

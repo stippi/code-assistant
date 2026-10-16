@@ -272,6 +272,9 @@ pub struct Gpui {
             std::collections::BTreeMap<String, code_assistant_core::ui::ui_events::McpServerHealth>,
         >,
     >,
+    // Built-in tool groups available to the active session and their
+    // per-session state, shown in the same input-bar menu.
+    current_builtin_tools: Arc<Mutex<Vec<code_assistant_core::ui::ui_events::BuiltinToolToggle>>>,
 
     // `ask_question` requests awaiting the user's answers, each with the
     // session asking it, in arrival order.
@@ -556,6 +559,7 @@ impl Gpui {
         *self.current_sandbox_policy.lock().unwrap() = None;
         *self.current_permission_tier.lock().unwrap() = None;
         self.current_mcp_servers.lock().unwrap().clear();
+        self.current_builtin_tools.lock().unwrap().clear();
         self.pending_permission_requests.lock().unwrap().clear();
         self.pending_user_questions.lock().unwrap().clear();
         *self.pending_new_context_target.lock().unwrap() = None;
@@ -638,6 +642,7 @@ impl Gpui {
             current_permission_tier: Arc::new(Mutex::new(None)),
             current_mcp_servers: Arc::new(Mutex::new(Vec::new())),
             mcp_server_statuses: Arc::new(Mutex::new(Default::default())),
+            current_builtin_tools: Arc::new(Mutex::new(Vec::new())),
             pending_permission_requests: Arc::new(Mutex::new(Vec::new())),
             pending_user_questions: Arc::new(Mutex::new(Vec::new())),
             pending_new_context_target: Arc::new(Mutex::new(None)),
@@ -1015,6 +1020,12 @@ impl Gpui {
     ) -> std::collections::BTreeMap<String, code_assistant_core::ui::ui_events::McpServerHealth>
     {
         self.mcp_server_statuses.lock().unwrap().clone()
+    }
+
+    pub fn get_current_builtin_tools(
+        &self,
+    ) -> Vec<code_assistant_core::ui::ui_events::BuiltinToolToggle> {
+        self.current_builtin_tools.lock().unwrap().clone()
     }
 
     /// The open permission requests of `session_id`, in arrival order.

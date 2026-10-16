@@ -13,7 +13,7 @@ use super::shared::file_icons;
 use attachment::{AttachmentEvent, AttachmentView};
 use base64::Engine;
 use code_assistant_core::persistence::{DraftAttachment, NodeId};
-use code_assistant_core::ui::ui_events::{McpServerHealth, McpServerToggle};
+use code_assistant_core::ui::ui_events::{BuiltinToolToggle, McpServerHealth, McpServerToggle};
 use gpui_kit::component::input::{
     Enter, Escape, IndentInline, InputEvent, MoveDown, MoveUp, Paste, Textarea, TextareaState,
 };
@@ -73,6 +73,8 @@ pub enum InputAreaEvent {
     McpServerRestartRequested { name: String },
     /// The MCP menu opened and wants fresh server states.
     McpStatusesRequested,
+    /// A built-in tool group was toggled on/off for the session.
+    BuiltinToolToggled { id: String, enabled: bool },
     /// User wants to switch to local (no worktree)
     WorktreeSwitchedToLocal,
     /// User selected an existing worktree
@@ -802,6 +804,12 @@ impl InputArea {
                 cx.emit(InputAreaEvent::McpServerRestartRequested { name: name.clone() });
             }
             McpSelectorEvent::Opened => cx.emit(InputAreaEvent::McpStatusesRequested),
+            McpSelectorEvent::BuiltinToolToggled { id, enabled } => {
+                cx.emit(InputAreaEvent::BuiltinToolToggled {
+                    id: id.clone(),
+                    enabled: *enabled,
+                });
+            }
         }
     }
 
@@ -817,6 +825,12 @@ impl InputArea {
             selector.set_servers(servers, cx);
             selector.set_statuses(statuses, cx);
         });
+    }
+
+    /// Set the built-in tool groups shown in the same menu.
+    pub fn set_builtin_tools(&mut self, groups: Vec<BuiltinToolToggle>, cx: &mut Context<Self>) {
+        self.mcp_selector
+            .update(cx, |selector, cx| selector.set_builtin_tools(groups, cx));
     }
 
     fn on_worktree_selector_event(

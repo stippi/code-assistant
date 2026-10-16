@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 /// Configuration for tools that require external services.
@@ -10,12 +11,49 @@ pub struct ToolsConfig {
     /// API key for Perplexity service (enables perplexity_ask tool)
     #[serde(default)]
     pub perplexity_api_key: Option<String>,
+    /// Global settings of the built-in tool groups, by group id (see
+    /// [`crate::tools::builtin_selection`]). A group without an entry is on,
+    /// and on in new sessions.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub builtin_tools: BTreeMap<String, BuiltinToolGroupSettings>,
+}
+
+/// Global settings of one built-in tool group.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuiltinToolGroupSettings {
+    /// Off hides the group's tools from every session.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// New sessions start with the group off (unless their project
+    /// remembers otherwise); a session can still switch it on.
+    #[serde(default)]
+    pub off_in_new_sessions: bool,
+}
+
+impl Default for BuiltinToolGroupSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            off_in_new_sessions: false,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl ToolsConfig {
     /// Load the tools configuration from disk.
     /// Returns Ok with default config if the file doesn't exist.
     pub fn load() -> Result<Self> {
+        // Substitute environment variables in API keys
+        Self::substitute_env_vars(Self::load_raw()?)
+    }
+
+    /// Load the tools configuration without substituting environment
+    /// variables, as the settings screen edits and saves it.
+    pub fn load_raw() -> Result<Self> {
         let config_path = Self::config_path()?;
 
         if !config_path.exists() {
@@ -25,11 +63,20 @@ impl ToolsConfig {
         let content = std::fs::read_to_string(&config_path)
             .with_context(|| format!("Failed to read tools config: {}", config_path.display()))?;
 
-        let config: ToolsConfig = serde_json::from_str(&content)
-            .with_context(|| format!("Failed to parse tools config: {}", config_path.display()))?;
+        serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse tools config: {}", config_path.display()))
+    }
 
-        // Substitute environment variables in API keys
-        Self::substitute_env_vars(config)
+    /// Persist a configuration loaded with [`Self::load_raw`].
+    pub fn save(&self) -> Result<()> {
+        let config_path = Self::config_path()?;
+        crate::utils::file_utils::atomic_write_json(&config_path, self)
+            .with_context(|| format!("Failed to write tools config: {}", config_path.display()))
+    }
+
+    /// The global settings of a built-in tool group.
+    pub fn builtin_group(&self, id: &str) -> BuiltinToolGroupSettings {
+        self.builtin_tools.get(id).cloned().unwrap_or_default()
     }
 
     /// Get the path to the tools configuration file.

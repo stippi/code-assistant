@@ -7,6 +7,7 @@ pub(crate) mod provider_forms;
 pub(crate) mod provider_suggestions;
 mod providers_section;
 mod skills_section;
+mod tools_section;
 mod voice_section;
 
 use gpui_kit::component::scroll::ScrollableElement;
@@ -23,6 +24,7 @@ pub enum SettingsSection {
     Providers,
     Models,
     Skills,
+    Tools,
     McpServers,
     Voice,
 }
@@ -44,6 +46,7 @@ pub struct SettingsScreen {
     models_section: Entity<models_section::ModelsSection>,
     general_section: Entity<general_section::GeneralSection>,
     skills_section: Entity<skills_section::SkillsSection>,
+    tools_section: Entity<tools_section::ToolsSection>,
     mcp_section: Entity<mcp_section::McpSection>,
     voice_section: Entity<voice_section::VoiceSection>,
 }
@@ -55,6 +58,7 @@ impl SettingsScreen {
 
         let general_section = cx.new(|cx| general_section::GeneralSection::new(window, cx));
         let skills_section = cx.new(|cx| skills_section::SkillsSection::new(window, cx));
+        let tools_section = cx.new(|cx| tools_section::ToolsSection::new(window, cx));
         let mcp_section = cx.new(|cx| mcp_section::McpSection::new(window, cx));
         let voice_section = cx.new(|cx| voice_section::VoiceSection::new(window, cx));
 
@@ -65,6 +69,7 @@ impl SettingsScreen {
             models_section,
             general_section,
             skills_section,
+            tools_section,
             mcp_section,
             voice_section,
         }
@@ -105,6 +110,9 @@ impl SettingsScreen {
             }
             SettingsSection::Skills => {
                 self.skills_section.update(cx, |s, _cx| s.reload());
+            }
+            SettingsSection::Tools => {
+                self.tools_section.update(cx, |s, _cx| s.reload());
             }
             SettingsSection::McpServers => {
                 self.mcp_section.update(cx, |s, _cx| s.reload());
@@ -289,6 +297,12 @@ impl Render for SettingsScreen {
                                         cx,
                                     ))
                                     .child(self.render_nav_item(
+                                        SettingsSection::Tools,
+                                        "Tools",
+                                        "icons/code.svg",
+                                        cx,
+                                    ))
+                                    .child(self.render_nav_item(
                                         SettingsSection::McpServers,
                                         "MCP Servers",
                                         "icons/braces.svg",
@@ -318,6 +332,7 @@ impl Render for SettingsScreen {
                             SettingsSection::Skills => {
                                 self.skills_section.clone().into_any_element()
                             }
+                            SettingsSection::Tools => self.tools_section.clone().into_any_element(),
                             SettingsSection::McpServers => {
                                 self.mcp_section.clone().into_any_element()
                             }

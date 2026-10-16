@@ -464,6 +464,7 @@ mod tests {
             sandbox_policy: Default::default(),
             permission_tier: Default::default(),
             mcp_servers: Vec::new(),
+            builtin_tools: Vec::new(),
             pending_permission_requests,
             pending_new_context_target: None,
             pending_questions: Vec::new(),

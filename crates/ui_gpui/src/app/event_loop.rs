@@ -918,6 +918,14 @@ impl Gpui {
                 *self.mcp_server_statuses.lock().unwrap() = statuses;
                 cx.refresh();
             }
+            UiEvent::UpdateBuiltinTools { groups } => {
+                debug!(
+                    "UI: UpdateBuiltinTools event with {} group(s)",
+                    groups.len()
+                );
+                *self.current_builtin_tools.lock().unwrap() = groups;
+                cx.refresh();
+            }
             // The browser panel subscribes to these itself.
             UiEvent::BrowsersChanged { .. } => {}
             // State tracked by the event bridge; the main screen renders the

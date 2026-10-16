@@ -491,6 +491,23 @@ impl Gpui {
         });
     }
 
+    /// Toggle a built-in tool group on/off for a session; the refreshed list
+    /// arrives back via the `UpdateBuiltinTools` notification.
+    pub(crate) fn cmd_toggle_builtin_tool(&self, session_id: String, id: String, enabled: bool) {
+        let Some(service) = self.session_service() else {
+            return;
+        };
+        let gpui = self.clone();
+        self.dispatch(async move {
+            if let Err(e) = service
+                .set_builtin_tool_enabled(session_id, id, enabled)
+                .await
+            {
+                gpui.display_error(format!("{e:#}"));
+            }
+        });
+    }
+
     /// Answer a pending tool permission request. The prompt dismisses when
     /// the ToolPermissionRequestResolved notification arrives via the stream.
     pub(crate) fn cmd_respond_permission(
