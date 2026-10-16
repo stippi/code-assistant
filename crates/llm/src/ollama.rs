@@ -322,8 +322,10 @@ impl OllamaClient {
 
         debug!("Sending request to Ollama: '{}'", request_json);
 
+        // Not bounded like hosted APIs: a local server may first load the model.
         let response =
-            utils::send_request(self.client.post(self.get_url()).json(&request_json), true).await?;
+            utils::send_request(self.client.post(self.get_url()).json(&request_json), false)
+                .await?;
 
         // Store status code before consuming response
         let status = response.status();
@@ -337,14 +339,18 @@ impl OllamaClient {
             ));
         }
 
-        let mut response = response;
         let mut line_buffer = String::new();
         let mut content_blocks: Vec<ContentBlock> = Vec::new();
         let mut tool_counter = 0;
         let mut final_eval_counts = (0u32, 0u32); // (prompt_eval_count, eval_count)
 
         let mut utf8 = crate::streaming::Utf8Decoder::default();
-        while let Some(chunk) = crate::streaming::next_http_chunk(&mut response).await? {
+        // A local server may load the model before it answers, so allow it
+        // the idle timeout for the first chunk.
+        use crate::streaming::ChunkStream;
+        let mut chunk_stream = crate::streaming::HttpChunkStream::new(response)
+            .with_first_chunk_timeout(utils::STREAM_IDLE_TIMEOUT);
+        while let Some(chunk) = chunk_stream.next_chunk().await? {
             let chunk_str = utf8.decode(&chunk)?;
 
             for ch in chunk_str.chars() {

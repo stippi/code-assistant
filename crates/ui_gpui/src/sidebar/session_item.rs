@@ -324,6 +324,7 @@ impl Render for SessionListItem {
             SessionStatus::NeedsAnswer => (Some("Needs answer".into()), cx.theme().warning),
             SessionStatus::Working => (Some("Working".into()), cx.theme().muted_foreground),
             SessionStatus::RateLimited => (Some("Rate limited".into()), cx.theme().warning),
+            SessionStatus::Retrying => (Some("Retrying".into()), cx.theme().warning),
             SessionStatus::Scheduled => (
                 self.next_wakeup.map(|at| {
                     format!(
@@ -459,7 +460,9 @@ impl Render for SessionListItem {
                                 .path("icons/alarm_clock.svg")
                                 .text_color(status_color),
                         ),
-                        SessionStatus::Working | SessionStatus::RateLimited => el.child(
+                        SessionStatus::Working
+                        | SessionStatus::RateLimited
+                        | SessionStatus::Retrying => el.child(
                             gpui_kit::svg()
                                 .size(px(12.))
                                 .path("icons/arrow_circle.svg")

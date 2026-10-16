@@ -69,10 +69,10 @@ pub fn render_pending_message(
 }
 
 /// Render the inline activity indicator: a braille spinner, labelled while
-/// the model thinks or the session is rate limited.
+/// the model thinks, the session is rate limited or the request is retried.
 ///
-/// Only shown for `WaitingForResponse` (pre-stream), `Thinking` and
-/// `RateLimited`.
+/// Only shown for `WaitingForResponse` (pre-stream), `Thinking`,
+/// `RateLimited` and `Retrying`.
 /// During `AgentRunning` the streaming content itself signals activity.
 pub fn render_activity_indicator(
     view: &MessagesView,
@@ -97,6 +97,14 @@ pub fn render_activity_indicator(
         SessionActivityState::RateLimited { seconds_remaining } => (
             cx.theme().warning,
             Some(format!("Rate limited — retrying in {seconds_remaining}s…")),
+        ),
+        SessionActivityState::Retrying {
+            reason,
+            attempt,
+            max_attempts,
+        } => (
+            cx.theme().warning,
+            Some(format!("{reason} — retrying ({attempt}/{max_attempts})…")),
         ),
         SessionActivityState::Thinking => (cx.theme().primary, Some("Thinking…".to_string())),
         SessionActivityState::WaitingForResponse => (cx.theme().primary, None),

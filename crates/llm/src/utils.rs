@@ -8,10 +8,15 @@ use tracing::warn;
 /// How long establishing a connection to an LLM endpoint may take.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// How long a streaming response may stay silent, both while waiting for the
-/// response headers and between two chunks of the body. Generous enough for
-/// reasoning models that think a while before emitting anything, but bounded
-/// so a connection that silently died (VPN, proxy, gateway) surfaces as an
+/// How long a streaming request may wait for its response to start: the
+/// response headers, and then the first chunk. Streaming servers answer right
+/// away, so a longer wait means the request is stuck somewhere (VPN, proxy,
+/// gateway). Nothing was shown yet at that point, so the request is retried.
+pub(crate) const RESPONSE_START_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How long a streaming response may stay silent between two chunks once it
+/// started. Generous, since a model may reason for minutes without emitting
+/// anything, but bounded so a connection that silently died surfaces as an
 /// error instead of leaving the agent waiting forever.
 pub(crate) const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -23,7 +28,7 @@ pub(crate) const SHORT_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 ///
 /// `reqwest::Client::new()` has no timeouts at all. A connect timeout catches
 /// unreachable endpoints; TCP keepalive lets the OS notice dead peers. Reads are
-/// bounded per request by [`send_request`] and [`crate::streaming::next_http_chunk`],
+/// bounded per request by [`send_request`] and [`crate::streaming::HttpChunkStream`],
 /// since a total timeout would cut off long but healthy streams.
 pub(crate) fn http_client() -> Client {
     Client::builder()
@@ -38,17 +43,17 @@ pub(crate) fn http_client() -> Client {
 
 /// Send a request, mapping transport failures to `ApiError::NetworkError` so
 /// the retry logic picks them up. For streaming requests the wait for the
-/// response headers is bounded by [`STREAM_IDLE_TIMEOUT`]; non-streaming
+/// response headers is bounded by [`RESPONSE_START_TIMEOUT`]; non-streaming
 /// requests only get their headers once the whole answer is generated, so they
 /// are not bounded here.
 pub(crate) async fn send_request(request: RequestBuilder, streaming: bool) -> Result<Response> {
     let response = if streaming {
-        tokio::time::timeout(STREAM_IDLE_TIMEOUT, request.send())
+        tokio::time::timeout(RESPONSE_START_TIMEOUT, request.send())
             .await
             .map_err(|_| {
                 ApiError::NetworkError(format!(
                     "no response from the LLM within {}s",
-                    STREAM_IDLE_TIMEOUT.as_secs()
+                    RESPONSE_START_TIMEOUT.as_secs()
                 ))
             })?
     } else {
@@ -153,49 +158,7 @@ pub async fn handle_retryable_error<
                         attempts, max_retries, delay_secs
                     );
 
-                    // Send rate limit notification if callback is available
-                    if let Some(callback) = streaming_callback {
-                        let _ = callback(&StreamingChunk::RateLimit {
-                            seconds_remaining: delay_secs,
-                        });
-
-                        // Start a countdown with precise timing
-                        let start_time = std::time::Instant::now();
-                        let mut next_update = start_time + Duration::from_secs(1);
-
-                        while start_time.elapsed() < delay {
-                            // Sleep until the next update time, accounting for callback execution time
-                            let now = std::time::Instant::now();
-                            if now < next_update {
-                                sleep(next_update - now).await;
-                            }
-
-                            // Calculate remaining time based on actual elapsed time
-                            let elapsed = start_time.elapsed();
-                            let remaining_secs = delay_secs.saturating_sub(elapsed.as_secs());
-
-                            if callback(&StreamingChunk::RateLimit {
-                                seconds_remaining: remaining_secs,
-                            })
-                            .is_err()
-                            {
-                                // User requested streaming to cancel, exit the wait loop
-                                let _ = callback(&StreamingChunk::RateLimitClear);
-                                return false;
-                            }
-
-                            // Schedule next update
-                            next_update += Duration::from_secs(1);
-                        }
-
-                        // Clear the rate limit notification
-                        let _ = callback(&StreamingChunk::RateLimitClear);
-                    } else {
-                        // No callback, just wait
-                        sleep(delay).await;
-                    }
-
-                    return true;
+                    return wait_rate_limit(delay, streaming_callback).await;
                 }
             } else {
                 // Fallback if no rate limit info available
@@ -210,8 +173,7 @@ pub async fn handle_retryable_error<
                         max_retries,
                         delay.as_secs()
                     );
-                    sleep(delay).await;
-                    return true;
+                    return wait_rate_limit(delay, streaming_callback).await;
                 }
             }
         }
@@ -225,8 +187,8 @@ pub async fn handle_retryable_error<
                     max_retries,
                     delay.as_secs()
                 );
-                sleep(delay).await;
-                return true;
+                return announce_retry(api_error, attempts, max_retries, delay, streaming_callback)
+                    .await;
             }
         }
         ApiError::ServiceError(_) | ApiError::NetworkError(_) | ApiError::Overloaded(_) => {
@@ -239,8 +201,8 @@ pub async fn handle_retryable_error<
                     max_retries,
                     delay.as_secs()
                 );
-                sleep(delay).await;
-                return true;
+                return announce_retry(api_error, attempts, max_retries, delay, streaming_callback)
+                    .await;
             }
         }
         _ => {
@@ -251,6 +213,68 @@ pub async fn handle_retryable_error<
         }
     }
     false
+}
+
+/// Wait out a rate limit, showing a countdown when there is a callback.
+/// Returns false if the user cancelled while waiting.
+async fn wait_rate_limit(delay: Duration, streaming_callback: Option<&StreamingCallback>) -> bool {
+    let Some(callback) = streaming_callback else {
+        sleep(delay).await;
+        return true;
+    };
+    let delay_secs = delay.as_secs();
+    let _ = callback(&StreamingChunk::RateLimit {
+        seconds_remaining: delay_secs,
+    });
+
+    // Count down with precise timing
+    let start_time = std::time::Instant::now();
+    let mut next_update = start_time + Duration::from_secs(1);
+    while start_time.elapsed() < delay {
+        // Sleep until the next update time, accounting for callback execution time
+        let now = std::time::Instant::now();
+        if now < next_update {
+            sleep(next_update - now).await;
+        }
+
+        let remaining_secs = delay_secs.saturating_sub(start_time.elapsed().as_secs());
+        if callback(&StreamingChunk::RateLimit {
+            seconds_remaining: remaining_secs,
+        })
+        .is_err()
+        {
+            // User requested streaming to cancel, exit the wait loop
+            let _ = callback(&StreamingChunk::RateLimitClear);
+            return false;
+        }
+        next_update += Duration::from_secs(1);
+    }
+
+    let _ = callback(&StreamingChunk::RateLimitClear);
+    true
+}
+
+/// Tell the UI that the request is sent again, then wait `delay`.
+/// Returns false if the user cancelled.
+async fn announce_retry(
+    error: &ApiError,
+    attempts: u32,
+    max_retries: u32,
+    delay: Duration,
+    streaming_callback: Option<&StreamingCallback>,
+) -> bool {
+    if let Some(callback) = streaming_callback {
+        let chunk = StreamingChunk::Retrying {
+            reason: error.to_string(),
+            attempt: attempts + 1,
+            max_attempts: max_retries,
+        };
+        if callback(&chunk).is_err() {
+            return false;
+        }
+    }
+    sleep(delay).await;
+    true
 }
 
 #[cfg(test)]
@@ -279,6 +303,40 @@ mod tests {
         // Context added on the way up must not hide the error.
         let error = error.context("LLM request failed");
         assert!(handle_retryable_error::<NoRateLimits>(&error, 1, 3, None).await);
+    }
+
+    #[tokio::test]
+    async fn retries_are_announced_and_can_be_cancelled() {
+        use std::sync::{Arc, Mutex};
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let callback: StreamingCallback = Box::new({
+            let seen = seen.clone();
+            move |chunk: &StreamingChunk| {
+                if let StreamingChunk::Retrying {
+                    reason,
+                    attempt,
+                    max_attempts,
+                } = chunk
+                {
+                    seen.lock()
+                        .unwrap()
+                        .push((reason.clone(), *attempt, *max_attempts));
+                }
+                Ok(())
+            }
+        });
+        let error: anyhow::Error = ApiError::NetworkError("connection reset".into()).into();
+        assert!(handle_retryable_error::<NoRateLimits>(&error, 0, 3, Some(&callback)).await);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![("Network error: connection reset".to_string(), 1, 3)]
+        );
+
+        // A stop request (callback error) ends the retry loop.
+        let cancelled: StreamingCallback =
+            Box::new(|_: &StreamingChunk| Err(anyhow::anyhow!("stopped")));
+        assert!(!handle_retryable_error::<NoRateLimits>(&error, 0, 3, Some(&cancelled)).await);
     }
 
     #[tokio::test]

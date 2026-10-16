@@ -112,6 +112,15 @@ impl StreamProcessorTrait for XmlStreamProcessor {
                 Ok(())
             }
 
+            StreamingChunk::Retrying {
+                reason,
+                attempt,
+                max_attempts,
+            } => {
+                self.ui.notify_retrying(reason, *attempt, *max_attempts);
+                Ok(())
+            }
+
             // For native JSON input, handle based on tool information
             StreamingChunk::InputJson {
                 content,

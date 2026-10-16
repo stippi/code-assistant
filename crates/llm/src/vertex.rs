@@ -1243,7 +1243,7 @@ impl VertexClient {
 
         let response = utils::send_request(request_builder.json(&request_json), true).await?;
 
-        let mut response = utils::check_response_error::<VertexRateLimitInfo>(response).await?;
+        let response = utils::check_response_error::<VertexRateLimitInfo>(response).await?;
         let rate_limits = VertexRateLimitInfo::from_response(&response);
 
         let mut state = VertexStreamingState::new();
@@ -1350,7 +1350,9 @@ impl VertexClient {
         };
 
         let mut utf8 = crate::streaming::Utf8Decoder::default();
-        while let Some(chunk) = crate::streaming::next_http_chunk(&mut response).await? {
+        use crate::streaming::ChunkStream;
+        let mut chunk_stream = crate::streaming::HttpChunkStream::new(response);
+        while let Some(chunk) = chunk_stream.next_chunk().await? {
             let chunk_str = utf8.decode(&chunk)?;
 
             for c in chunk_str.chars() {

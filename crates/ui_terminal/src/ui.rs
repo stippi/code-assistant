@@ -821,6 +821,19 @@ impl UserInterface for TerminalUI {
         });
     }
 
+    fn notify_retrying(&self, reason: &str, attempt: u32, max_attempts: u32) {
+        debug!("Retrying LLM request ({attempt}/{max_attempts}): {reason}");
+
+        let rt = tokio::runtime::Handle::current();
+        let renderer = self.renderer.clone();
+        rt.spawn(async move {
+            if let Some(renderer) = renderer.lock().await.as_ref() {
+                let mut renderer_guard = renderer.lock().await;
+                renderer_guard.show_retry_spinner(attempt, max_attempts);
+            }
+        });
+    }
+
     fn clear_rate_limit(&self) {
         debug!("Rate limit cleared");
 

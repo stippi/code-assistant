@@ -78,6 +78,15 @@ pub enum StreamingChunk {
     RateLimit { seconds_remaining: u64 },
     /// Clear rate limit notification
     RateLimitClear,
+    /// The request failed before anything was streamed (connection failure,
+    /// no response in time, overloaded server) and is sent again
+    Retrying {
+        /// Why the previous attempt failed
+        reason: String,
+        /// The retry about to happen, starting at 1
+        attempt: u32,
+        max_attempts: u32,
+    },
     /// Indicates that streaming from the LLM has completed
     StreamingComplete,
     /// The model started reasoning; summary text may follow much later or

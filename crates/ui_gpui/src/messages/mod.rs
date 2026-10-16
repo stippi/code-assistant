@@ -954,7 +954,7 @@ impl Render for MessagesView {
             .is_some_and(|m| !m.is_empty());
 
         // Activity indicator is rendered as the very last list item, but only
-        // for WaitingForResponse, Thinking and RateLimited. During AgentRunning
+        // for WaitingForResponse, Thinking, RateLimited and Retrying. During AgentRunning
         // the streaming content itself shows activity.
         let has_activity = self
             .activity_state
@@ -967,6 +967,7 @@ impl Render for MessagesView {
                     SessionActivityState::WaitingForResponse
                         | SessionActivityState::Thinking
                         | SessionActivityState::RateLimited { .. }
+                        | SessionActivityState::Retrying { .. }
                 )
             });
 

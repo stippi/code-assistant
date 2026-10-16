@@ -4,8 +4,9 @@
 //! from LLM providers, supporting both real HTTP responses and recorded
 //! playback with identical processing logic.
 
+use crate::ApiError;
 use crate::recording::RecordedChunk;
-use crate::utils::{STREAM_IDLE_TIMEOUT, error_chain};
+use crate::utils::{RESPONSE_START_TIMEOUT, STREAM_IDLE_TIMEOUT, error_chain};
 use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::Response;
@@ -20,47 +21,67 @@ pub trait ChunkStream: Send {
     async fn next_chunk(&mut self) -> Result<Option<Vec<u8>>>;
 }
 
-/// Real HTTP response chunk stream
+/// Real HTTP response chunk stream.
+///
+/// Bounds how long the stream may stay silent: up to the first chunk by
+/// [`RESPONSE_START_TIMEOUT`], between later chunks by [`STREAM_IDLE_TIMEOUT`].
+/// Providers send an event right away once a response starts (Anthropic's
+/// `message_start`, OpenAI's `response.created` and reasoning items, even
+/// those without summary), while a model may legitimately go quiet for minutes
+/// in the middle of a response, e.g. while reasoning.
 pub struct HttpChunkStream {
-    pub response: Response,
+    response: Response,
+    received_any: bool,
+    first_chunk_timeout: Duration,
+    idle_timeout: Duration,
 }
 
 impl HttpChunkStream {
     pub fn new(response: Response) -> Self {
-        Self { response }
+        Self {
+            response,
+            received_any: false,
+            first_chunk_timeout: RESPONSE_START_TIMEOUT,
+            idle_timeout: STREAM_IDLE_TIMEOUT,
+        }
+    }
+
+    /// Wait up to `timeout` for the first chunk instead of
+    /// [`RESPONSE_START_TIMEOUT`], for servers that may take long to start
+    /// (e.g. a local server loading the model).
+    pub fn with_first_chunk_timeout(mut self, timeout: Duration) -> Self {
+        self.first_chunk_timeout = timeout;
+        self
     }
 }
 
 #[async_trait]
 impl ChunkStream for HttpChunkStream {
     async fn next_chunk(&mut self) -> Result<Option<Vec<u8>>> {
-        next_http_chunk(&mut self.response).await
-    }
-}
-
-/// Read the next chunk of a streaming response, failing when the stream stays
-/// silent for longer than [`STREAM_IDLE_TIMEOUT`].
-///
-/// Errors here are plain (not `ApiErrorContext`) on purpose: part of the answer
-/// may already have been streamed to the UI, and a retry would repeat it.
-pub async fn next_http_chunk(response: &mut Response) -> Result<Option<Vec<u8>>> {
-    next_http_chunk_within(response, STREAM_IDLE_TIMEOUT).await
-}
-
-async fn next_http_chunk_within(
-    response: &mut Response,
-    idle_timeout: Duration,
-) -> Result<Option<Vec<u8>>> {
-    match tokio::time::timeout(idle_timeout, response.chunk()).await {
-        Ok(Ok(chunk)) => Ok(chunk.map(|chunk| chunk.to_vec())),
-        Ok(Err(e)) => Err(anyhow::anyhow!(
-            "LLM stream interrupted: {}",
-            error_chain(&e)
-        )),
-        Err(_) => Err(anyhow::anyhow!(
-            "LLM stream stalled: no data received for {}s",
-            idle_timeout.as_secs()
-        )),
+        let timeout = if self.received_any {
+            self.idle_timeout
+        } else {
+            self.first_chunk_timeout
+        };
+        let error = match tokio::time::timeout(timeout, self.response.chunk()).await {
+            Ok(Ok(chunk)) => {
+                self.received_any = true;
+                return Ok(chunk.map(|chunk| chunk.to_vec()));
+            }
+            Ok(Err(e)) => format!("LLM stream interrupted: {}", error_chain(&e)),
+            Err(_) => format!(
+                "LLM stream stalled: no data received for {}s",
+                timeout.as_secs()
+            ),
+        };
+        if self.received_any {
+            // Part of the answer may already be on screen; a retry would
+            // repeat it, so this is a plain (non-retryable) error.
+            Err(anyhow::anyhow!(error))
+        } else {
+            // Nothing was processed yet, so retrying is safe.
+            Err(ApiError::NetworkError(error).into())
+        }
     }
 }
 
@@ -166,37 +187,58 @@ mod tests {
         assert!(decoder.decode(&[b'a', 0xff, b'b']).is_err());
     }
 
-    /// Answers one request with the headers and a first chunk, then keeps the
-    /// connection open without sending anything more.
-    async fn stalling_server() -> String {
+    /// Answers one request with the headers (and a first chunk when
+    /// `first_chunk`), then keeps the connection open without sending more.
+    async fn stalling_server(first_chunk: bool) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             let mut buf = [0u8; 1024];
             let _ = socket.read(&mut buf).await;
-            socket
-                .write_all(b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhello\r\n")
-                .await
-                .unwrap();
+            let mut response = b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n".to_vec();
+            if first_chunk {
+                response.extend_from_slice(b"5\r\nhello\r\n");
+            }
+            socket.write_all(&response).await.unwrap();
             tokio::time::sleep(Duration::from_secs(60)).await;
             drop(socket);
         });
         format!("http://{addr}")
     }
 
-    #[tokio::test]
-    async fn stalled_stream_fails_instead_of_waiting_forever() {
-        let url = stalling_server().await;
-        let mut response = reqwest::get(url).await.unwrap();
-        let idle = Duration::from_millis(200);
+    fn stream(response: Response) -> HttpChunkStream {
+        HttpChunkStream {
+            idle_timeout: Duration::from_millis(200),
+            ..HttpChunkStream::new(response).with_first_chunk_timeout(Duration::from_millis(200))
+        }
+    }
 
-        let first = next_http_chunk_within(&mut response, idle).await.unwrap();
+    #[tokio::test]
+    async fn stall_after_first_chunk_is_not_retryable() {
+        let url = stalling_server(true).await;
+        let mut stream = stream(reqwest::get(url).await.unwrap());
+
+        let first = stream.next_chunk().await.unwrap();
         assert_eq!(first.as_deref(), Some(&b"hello"[..]));
 
-        let error = next_http_chunk_within(&mut response, idle)
-            .await
-            .unwrap_err();
+        let error = stream.next_chunk().await.unwrap_err();
         assert!(error.to_string().contains("stalled"), "{error}");
+        assert!(error.downcast_ref::<ApiError>().is_none());
+    }
+
+    #[tokio::test]
+    async fn stall_before_first_chunk_is_retryable() {
+        let url = stalling_server(false).await;
+        let mut stream = stream(reqwest::get(url).await.unwrap());
+
+        let error = stream.next_chunk().await.unwrap_err();
+        assert!(
+            matches!(
+                error.downcast_ref::<ApiError>(),
+                Some(ApiError::NetworkError(_))
+            ),
+            "{error}"
+        );
     }
 }

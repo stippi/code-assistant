@@ -821,7 +821,8 @@ impl OpenAIClient {
 
         let response = utils::send_request(request_builder.json(&request_json), true).await?;
 
-        let mut response = utils::check_response_error::<OpenAIRateLimitInfo>(response).await?;
+        let response = utils::check_response_error::<OpenAIRateLimitInfo>(response).await?;
+        let rate_limits = OpenAIRateLimitInfo::from_response(&response);
 
         let mut content_blocks: Vec<ContentBlock> = Vec::new();
         let mut current_tool: Option<OpenAIToolCallDelta> = None;
@@ -1094,7 +1095,9 @@ impl OpenAIClient {
         }
 
         let mut utf8 = crate::streaming::Utf8Decoder::default();
-        while let Some(chunk) = crate::streaming::next_http_chunk(&mut response).await? {
+        use crate::streaming::ChunkStream;
+        let mut chunk_stream = crate::streaming::HttpChunkStream::new(response);
+        while let Some(chunk) = chunk_stream.next_chunk().await? {
             process_chunk(
                 utf8.decode(&chunk)?.as_bytes(),
                 &mut line_buffer,
@@ -1140,7 +1143,7 @@ impl OpenAIClient {
                     }),
                 rate_limit_info: None,
             },
-            OpenAIRateLimitInfo::from_response(&response),
+            rate_limits,
         ))
     }
 }
