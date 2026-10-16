@@ -148,20 +148,46 @@ pub fn load_mcp_servers_config() -> Result<McpServersConfig> {
 
 /// [`load_mcp_servers_config`] from an explicit path (testable).
 pub fn load_mcp_servers_config_from(path: &Path) -> Result<McpServersConfig> {
+    load_mcp_servers_config_reporting(path).map(|(config, _)| config)
+}
+
+/// [`load_mcp_servers_config_from`], also returning the skipped servers.
+fn load_mcp_servers_config_reporting(
+    path: &Path,
+) -> Result<(McpServersConfig, Vec<McpServerStatus>)> {
     if !path.exists() {
-        return Ok(McpServersConfig::default());
+        return Ok((McpServersConfig::default(), Vec::new()));
     }
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read MCP config: {}", path.display()))?;
     let mut config: McpServersConfig = serde_json::from_str(&content)
         .with_context(|| format!("Failed to parse MCP config: {}", path.display()))?;
-    for (name, error) in config.substitute_env_values(|name| std::env::var(name).ok()) {
-        tracing::warn!(
-            "Skipping MCP server '{name}' from {}: {error:#}",
-            path.display()
-        );
-    }
-    Ok(config)
+    let skipped = substitute_env_values_reporting(&mut config, path);
+    Ok((config, skipped))
+}
+
+/// Resolve `${ENV_VAR}` patterns in `config` (loaded from `path`), dropping
+/// the servers whose variables cannot be resolved. They are logged and
+/// returned as failed statuses, so they show up as failing instead of
+/// silently missing.
+fn substitute_env_values_reporting(
+    config: &mut McpServersConfig,
+    path: &Path,
+) -> Vec<McpServerStatus> {
+    config
+        .substitute_env_values(|name| std::env::var(name).ok())
+        .into_iter()
+        .map(|(name, error)| {
+            tracing::warn!(
+                "Skipping MCP server '{name}' from {}: {error:#}",
+                path.display()
+            );
+            McpServerStatus {
+                server: name,
+                result: Err(format!("Not started: {error:#}")),
+            }
+        })
+        .collect()
 }
 
 /// Load the MCP servers configuration verbatim, without `${ENV_VAR}`
@@ -224,6 +250,11 @@ pub fn deserialize_tool_execution(
 /// whose `${VAR}` references cannot be resolved is skipped with a log
 /// warning — the other servers still load.
 pub fn load_local_mcp_json(dir: &Path) -> Option<McpServersConfig> {
+    load_local_mcp_json_reporting(dir).map(|(config, _)| config)
+}
+
+/// [`load_local_mcp_json`], also returning the skipped servers.
+fn load_local_mcp_json_reporting(dir: &Path) -> Option<(McpServersConfig, Vec<McpServerStatus>)> {
     let path = dir.join(".mcp.json");
     if !path.exists() {
         return None;
@@ -237,13 +268,8 @@ pub fn load_local_mcp_json(dir: &Path) -> Option<McpServersConfig> {
     };
     match parse_local_mcp_json(&content) {
         Ok(mut config) => {
-            for (name, error) in config.substitute_env_values(|name| std::env::var(name).ok()) {
-                tracing::warn!(
-                    "Skipping MCP server '{name}' from {}: {error:#}",
-                    path.display()
-                );
-            }
-            Some(config)
+            let skipped = substitute_env_values_reporting(&mut config, &path);
+            Some((config, skipped))
         }
         Err(e) => {
             tracing::warn!("Failed to parse {}: {e:#}", path.display());
@@ -264,24 +290,29 @@ pub async fn register_configured_mcp_tools_in(
     local_mcp_dir: Option<&Path>,
     pool: &dyn mcp_client::ConnectionProvider,
 ) -> Vec<McpServerStatus> {
-    let mut config = match load_mcp_servers_config() {
-        Ok(config) => config,
-        Err(error) => {
-            tracing::warn!("Not registering MCP tools: {error:#}");
-            return Vec::new();
-        }
-    };
+    let (mut config, mut skipped) =
+        match load_mcp_servers_config_reporting(&mcp_servers_config_path()) {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                tracing::warn!("Not registering MCP tools: {error:#}");
+                return Vec::new();
+            }
+        };
     if let Some(dir) = local_mcp_dir
-        && let Some(local) = load_local_mcp_json(dir)
+        && let Some((local, local_skipped)) = load_local_mcp_json_reporting(dir)
     {
         let count = local.servers.len();
         config.merge(local);
+        skipped.extend(local_skipped);
         tracing::info!(
             "Merged {count} server(s) from .mcp.json in {}",
             dir.display()
         );
     }
-    let statuses =
+    // A skipped server whose name another source still provides (a skipped
+    // local override of a global server) is not failing: that one connects.
+    skipped.retain(|status| !config.servers.contains_key(&status.server));
+    let mut statuses =
         mcp_client::register_mcp_tools_pooled(registry, &config, MCP_TOOL_SCOPES, pool).await;
     for status in &statuses {
         match &status.result {
@@ -295,6 +326,7 @@ pub async fn register_configured_mcp_tools_in(
             }
         }
     }
+    statuses.extend(skipped);
     statuses
 }
 

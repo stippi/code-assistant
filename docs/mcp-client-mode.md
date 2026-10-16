@@ -182,7 +182,8 @@ shows and preserves.
 - **Server status and restart** (GPUI input-bar MCP menu): every server row
   shows a dot — green connected, amber connecting, red failed (the error on
   hover), grey not connected yet — and a restart button that works in any
-  state. `ConfigToolRegistry` records each server's `McpServerHealth` from
+  state. A server skipped while loading the configuration (a `${VAR}` that
+  cannot be resolved) shows as failed with the reason. `ConfigToolRegistry` records each server's `McpServerHealth` from
   its connects and registry builds and publishes changes as the app-scoped
   `UiEvent::McpServerStatusChanged`; asking for the statuses
   (`SessionService::refresh_mcp_server_statuses`, sent when the menu opens)

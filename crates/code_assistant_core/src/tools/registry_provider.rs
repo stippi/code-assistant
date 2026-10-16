@@ -617,6 +617,35 @@ mod tests {
         .await;
     }
 
+    /// A server skipped while loading the configuration (an unresolvable
+    /// `${VAR}`) reads as failed with the reason, not as not connected.
+    #[tokio::test]
+    async fn skipped_server_reports_why() {
+        let config = tempfile::tempdir().unwrap();
+        std::fs::write(
+            config.path().join("mcp-servers.json"),
+            r#"{ "servers": { "needs-secret": {
+                "command": "/surely/not/an/mcp-server",
+                "env": { "TOKEN": "${MCP_TEST_SURELY_UNSET}" }
+            } } }"#,
+        )
+        .unwrap();
+        temp_env::async_with_vars(
+            [("CODE_ASSISTANT_CONFIG_DIR", Some(config.path()))],
+            async {
+                let provider = ConfigToolRegistry::new();
+                let _registry = provider.current().await;
+                let Some(McpServerHealth::Failed { error }) =
+                    provider.statuses().remove("needs-secret")
+                else {
+                    panic!("expected a failure, got {:?}", provider.statuses());
+                };
+                assert!(error.contains("MCP_TEST_SURELY_UNSET"), "{error}");
+            },
+        )
+        .await;
+    }
+
     /// Restarting a server the registry does not include (e.g. switched off
     /// in the configuration) does not leave it "connecting".
     #[tokio::test]
