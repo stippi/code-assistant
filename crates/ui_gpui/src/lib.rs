@@ -584,6 +584,9 @@ impl Gpui {
             tbr_registry.register(Arc::new(tool_cards::session_card::SessionCardRenderer));
             tbr_registry.register(Arc::new(tool_cards::browser_renderer::BrowserToolRenderer));
             tbr_registry.register(Arc::new(tool_cards::wakeup_renderer::WakeupToolRenderer));
+            tbr_registry.register(Arc::new(
+                tool_cards::ask_question_renderer::AskQuestionRenderer,
+            ));
             // MCP tools have dynamic `mcp__<server>__<tool>` names; one inline
             // fallback renderer handles all of them.
             tbr_registry.set_mcp_fallback(Arc::new(McpToolRenderer::new()));
