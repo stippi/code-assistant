@@ -1054,7 +1054,7 @@ impl OpenAIResponsesWsClient {
         info!(
             "WS request ({} bytes): {}",
             request_text.len(),
-            &request_text[..request_text.len().min(1000)]
+            log_excerpt(&request_text, 1000)
         );
 
         // Send the request via the shared sink
@@ -1866,9 +1866,25 @@ struct ReasoningState {
 // Tests
 // ============================================================================
 
+/// The start of `text`, at most `max_bytes` long, cut at a character
+/// boundary: a byte cut panics when it lands inside a multi-byte character
+/// (a prompt with an em dash at byte 1000 took the whole turn down).
+fn log_excerpt(text: &str, max_bytes: usize) -> &str {
+    &text[..text.floor_char_boundary(max_bytes)]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_request_log_excerpt_never_splits_a_character() {
+        // The 1000th byte falls inside the three bytes of '—'.
+        let text = format!("{}— and more", "a".repeat(999));
+        let excerpt = log_excerpt(&text, 1000);
+        assert_eq!(excerpt, "a".repeat(999));
+        assert_eq!(log_excerpt("short", 1000), "short");
+    }
 
     #[test]
     fn test_ws_url_conversion() {
