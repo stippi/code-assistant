@@ -327,7 +327,7 @@ impl OpenAIClient {
         let model_top_ps = Self::default_top_ps();
         let model_reasoning_efforts = Self::default_reasoning_efforts();
         Self {
-            client: Client::new(),
+            client: utils::http_client(),
             base_url,
             model,
             model_temperatures,
@@ -350,7 +350,7 @@ impl OpenAIClient {
         let model_top_ps = Self::default_top_ps();
         let model_reasoning_efforts = Self::default_reasoning_efforts();
         Self {
-            client: Client::new(),
+            client: utils::http_client(),
             base_url,
             model,
             model_temperatures,
@@ -714,11 +714,7 @@ impl OpenAIClient {
             request_builder = request_builder.header(key, value);
         }
 
-        let response = request_builder
-            .json(&request_json)
-            .send()
-            .await
-            .map_err(|e| ApiError::NetworkError(e.to_string()))?;
+        let response = utils::send_request(request_builder.json(&request_json), false).await?;
 
         let response = utils::check_response_error::<OpenAIRateLimitInfo>(response).await?;
         let rate_limits = OpenAIRateLimitInfo::from_response(&response);
@@ -823,11 +819,7 @@ impl OpenAIClient {
             request_builder = request_builder.header(key, value);
         }
 
-        let response = request_builder
-            .json(&request_json)
-            .send()
-            .await
-            .map_err(|e| ApiError::NetworkError(e.to_string()))?;
+        let response = utils::send_request(request_builder.json(&request_json), true).await?;
 
         let mut response = utils::check_response_error::<OpenAIRateLimitInfo>(response).await?;
 
@@ -1101,9 +1093,10 @@ impl OpenAIClient {
             Ok(())
         }
 
-        while let Some(chunk) = response.chunk().await? {
+        let mut utf8 = crate::streaming::Utf8Decoder::default();
+        while let Some(chunk) = crate::streaming::next_http_chunk(&mut response).await? {
             process_chunk(
-                &chunk,
+                utf8.decode(&chunk)?.as_bytes(),
                 &mut line_buffer,
                 &mut content_blocks,
                 &mut current_tool,

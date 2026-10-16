@@ -1,3 +1,4 @@
+use crate::ApiError;
 use anyhow::Result;
 use base64::engine::{Engine, general_purpose};
 use std::sync::Arc;
@@ -58,7 +59,7 @@ impl TokenManager {
     async fn refresh_token(&self) -> Result<String> {
         tracing::debug!("Requesting new access token...");
 
-        let client = reqwest::Client::new();
+        let client = crate::utils::http_client();
         let auth =
             general_purpose::STANDARD.encode(format!("{}:{}", self.client_id, self.client_secret));
 
@@ -67,19 +68,32 @@ impl TokenManager {
             .header("Authorization", format!("Basic {auth}"))
             .header("Content-Type", "application/x-www-form-urlencoded")
             .body("grant_type=client_credentials")
+            .timeout(crate::utils::SHORT_REQUEST_TIMEOUT)
             .send()
-            .await?;
+            .await
+            // As a network error the provider's retry loop tries again.
+            .map_err(|e| {
+                ApiError::NetworkError(format!(
+                    "token request failed: {}",
+                    crate::utils::error_chain(&e)
+                ))
+            })?;
 
         let status = res.status();
         if !status.is_success() {
-            let error_text = res.text().await?;
-            anyhow::bail!("Token request failed: {status} - {error_text}");
+            let error_text = res.text().await.unwrap_or_default();
+            let message = format!("Token request failed: {status} - {error_text}");
+            if status.is_server_error() {
+                return Err(ApiError::ServiceError(message).into());
+            }
+            anyhow::bail!(message);
         }
 
         let token_response = res.json::<TokenResponse>().await?;
 
         // Set expiry slightly before actual expiry to ensure we don't use expired tokens
-        let expires_at = SystemTime::now() + Duration::from_secs(token_response.expires_in - 60);
+        let expires_at =
+            SystemTime::now() + Duration::from_secs(token_response.expires_in.saturating_sub(60));
 
         let token_info = TokenInfo {
             token: token_response.access_token.clone(),

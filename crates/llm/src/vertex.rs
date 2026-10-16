@@ -816,7 +816,7 @@ impl VertexClient {
 
     pub fn new(api_key: String, model: String, base_url: String) -> Self {
         Self {
-            client: Client::new(),
+            client: utils::http_client(),
             model,
             base_url,
             recorder: None,
@@ -834,7 +834,7 @@ impl VertexClient {
         recording_path: P,
     ) -> Self {
         Self {
-            client: Client::new(),
+            client: utils::http_client(),
             model,
             base_url,
             recorder: Some(APIRecorder::new(recording_path)),
@@ -852,7 +852,7 @@ impl VertexClient {
         request_customizer: Box<dyn RequestCustomizer>,
     ) -> Self {
         Self {
-            client: Client::new(),
+            client: utils::http_client(),
             model,
             base_url,
             recorder: None,
@@ -1089,11 +1089,7 @@ impl VertexClient {
             request_builder = request_builder.header(key, value);
         }
 
-        let response = request_builder
-            .json(&request_json)
-            .send()
-            .await
-            .map_err(|e| ApiError::NetworkError(e.to_string()))?;
+        let response = utils::send_request(request_builder.json(&request_json), false).await?;
 
         let response = utils::check_response_error::<VertexRateLimitInfo>(response).await?;
         let rate_limits = VertexRateLimitInfo::from_response(&response);
@@ -1245,11 +1241,7 @@ impl VertexClient {
             request_builder = request_builder.header(key, value);
         }
 
-        let response = request_builder
-            .json(&request_json)
-            .send()
-            .await
-            .map_err(|e| ApiError::NetworkError(e.to_string()))?;
+        let response = utils::send_request(request_builder.json(&request_json), true).await?;
 
         let mut response = utils::check_response_error::<VertexRateLimitInfo>(response).await?;
         let rate_limits = VertexRateLimitInfo::from_response(&response);
@@ -1357,8 +1349,9 @@ impl VertexClient {
             Ok(())
         };
 
-        while let Some(chunk) = response.chunk().await? {
-            let chunk_str = std::str::from_utf8(&chunk)?;
+        let mut utf8 = crate::streaming::Utf8Decoder::default();
+        while let Some(chunk) = crate::streaming::next_http_chunk(&mut response).await? {
+            let chunk_str = utf8.decode(&chunk)?;
 
             for c in chunk_str.chars() {
                 if c == '\n' {

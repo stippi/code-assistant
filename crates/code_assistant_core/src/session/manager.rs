@@ -1520,14 +1520,16 @@ impl SessionManager {
                     .await;
                 }
                 Err(e) => {
-                    error!("Agent failed for session {}: {}", session_id_clone, e);
+                    error!("Agent failed for session {}: {:#}", session_id_clone, e);
                     // Also log the full error chain for debugging
                     debug!(
                         "Agent error chain for session {}: {:?}",
                         session_id_clone, e
                     );
 
-                    let error_message = format!("Agent error: {e}");
+                    // `{:#}` includes the causes: the top-level context alone
+                    // ("LLM request failed") rarely says what went wrong.
+                    let error_message = format!("Agent error: {e:#}");
 
                     // Set session state to Errored so the sidebar shows the error indicator
                     // and the error is displayed when the user connects to this session.

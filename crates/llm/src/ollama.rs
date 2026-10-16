@@ -1,4 +1,4 @@
-use crate::{LLMProvider, StreamingCallback, StreamingChunk, types::*};
+use crate::{LLMProvider, StreamingCallback, StreamingChunk, types::*, utils};
 use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::Client;
@@ -64,7 +64,7 @@ impl OllamaClient {
 
     pub fn new(model: String, base_url: String) -> Self {
         Self {
-            client: Client::new(),
+            client: utils::http_client(),
             base_url,
             model,
             custom_config: None,
@@ -248,13 +248,9 @@ impl OllamaClient {
 
         debug!("Sending request to Ollama: '{}'", request_json);
 
-        let response = self
-            .client
-            .post(self.get_url())
-            .json(&request_json)
-            .send()
-            .await
-            .map_err(|e| anyhow::anyhow!("Network error: {e}"))?;
+        let response =
+            utils::send_request(self.client.post(self.get_url()).json(&request_json), false)
+                .await?;
 
         // Store status code before consuming response
         let status = response.status();
@@ -326,13 +322,8 @@ impl OllamaClient {
 
         debug!("Sending request to Ollama: '{}'", request_json);
 
-        let response = self
-            .client
-            .post(self.get_url())
-            .json(&request_json)
-            .send()
-            .await
-            .map_err(|e| anyhow::anyhow!("Network error: {e}"))?;
+        let response =
+            utils::send_request(self.client.post(self.get_url()).json(&request_json), true).await?;
 
         // Store status code before consuming response
         let status = response.status();
@@ -352,8 +343,9 @@ impl OllamaClient {
         let mut tool_counter = 0;
         let mut final_eval_counts = (0u32, 0u32); // (prompt_eval_count, eval_count)
 
-        while let Some(chunk) = response.chunk().await? {
-            let chunk_str = std::str::from_utf8(&chunk)?;
+        let mut utf8 = crate::streaming::Utf8Decoder::default();
+        while let Some(chunk) = crate::streaming::next_http_chunk(&mut response).await? {
+            let chunk_str = utf8.decode(&chunk)?;
 
             for ch in chunk_str.chars() {
                 if ch == '\n' {

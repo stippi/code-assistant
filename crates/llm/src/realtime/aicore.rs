@@ -66,8 +66,9 @@ impl AiCoreConnector {
             lm_base_url(&self.api_base_url),
             self.deployment_id
         );
-        let response: serde_json::Value = reqwest::Client::new()
+        let response: serde_json::Value = crate::utils::http_client()
             .get(&url)
+            .timeout(crate::utils::SHORT_REQUEST_TIMEOUT)
             .bearer_auth(token)
             .header("AI-Resource-Group", RESOURCE_GROUP)
             .send()
