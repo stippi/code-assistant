@@ -28,6 +28,11 @@ pub enum SpinnerState {
         start_time: Instant,
         seconds_remaining: u64,
     },
+    Retrying {
+        start_time: Instant,
+        attempt: u32,
+        max_attempts: u32,
+    },
 }
 
 impl SpinnerState {
@@ -40,7 +45,8 @@ impl SpinnerState {
                 let index = (elapsed_ms / 100) % braille_chars.len() as u128;
                 Some((braille_chars[index as usize], Color::Blue))
             }
-            SpinnerState::RateLimit { start_time, .. } => {
+            SpinnerState::RateLimit { start_time, .. }
+            | SpinnerState::Retrying { start_time, .. } => {
                 let braille_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
                 let elapsed_ms = start_time.elapsed().as_millis();
                 let index = (elapsed_ms / 100) % braille_chars.len() as u128;
@@ -56,6 +62,11 @@ impl SpinnerState {
             SpinnerState::RateLimit {
                 seconds_remaining, ..
             } => Some(format!("Rate limited ({seconds_remaining}s)")),
+            SpinnerState::Retrying {
+                attempt,
+                max_attempts,
+                ..
+            } => Some(format!("Retrying ({attempt}/{max_attempts})")),
         }
     }
 }
@@ -581,6 +592,15 @@ impl TerminalRenderer {
         };
     }
 
+    /// Show that the LLM request is sent again
+    pub fn show_retry_spinner(&mut self, attempt: u32, max_attempts: u32) {
+        self.spinner_state = SpinnerState::Retrying {
+            start_time: Instant::now(),
+            attempt,
+            max_attempts,
+        };
+    }
+
     /// Hide spinner
     pub fn hide_spinner(&mut self) {
         self.spinner_state = SpinnerState::Hidden;
@@ -593,11 +613,14 @@ impl TerminalRenderer {
         }
     }
 
-    /// Hide the spinner only if it is showing a rate-limit countdown.
-    /// The loading spinner has its own lifecycle (request sent → first content)
-    /// and must survive an unrelated rate-limit clear.
+    /// Hide the spinner only if it is showing a rate-limit countdown or a
+    /// retry. The loading spinner has its own lifecycle (request sent → first
+    /// content) and must survive an unrelated rate-limit clear.
     pub fn hide_rate_limit_spinner_if_active(&mut self) {
-        if matches!(self.spinner_state, SpinnerState::RateLimit { .. }) {
+        if matches!(
+            self.spinner_state,
+            SpinnerState::RateLimit { .. } | SpinnerState::Retrying { .. }
+        ) {
             self.spinner_state = SpinnerState::Hidden;
         }
     }

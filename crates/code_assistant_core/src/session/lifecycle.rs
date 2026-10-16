@@ -190,6 +190,8 @@ pub enum SessionStatus {
     Working,
     /// The agent waits out a rate limit.
     RateLimited,
+    /// The LLM request failed and is sent again.
+    Retrying,
     /// The agent stopped, but a wakeup it scheduled will continue the
     /// session; nothing to do for the user.
     Scheduled,
@@ -221,6 +223,7 @@ impl SessionStatus {
             | SessionActivityState::WaitingForResponse
             | SessionActivityState::Thinking => Self::Working,
             SessionActivityState::RateLimited { .. } => Self::RateLimited,
+            SessionActivityState::Retrying { .. } => Self::Retrying,
             SessionActivityState::Errored { .. } => Self::Failed,
             SessionActivityState::RunningExternally => Self::RunningElsewhere,
         }
@@ -234,7 +237,11 @@ impl SessionStatus {
             return false;
         }
         match self {
-            Self::Working | Self::RateLimited | Self::Scheduled | Self::RunningElsewhere => true,
+            Self::Working
+            | Self::RateLimited
+            | Self::Retrying
+            | Self::Scheduled
+            | Self::RunningElsewhere => true,
             Self::Ready => !unread,
             Self::NeedsApproval | Self::NeedsAnswer | Self::Failed => false,
         }

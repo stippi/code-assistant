@@ -618,7 +618,7 @@ impl AnthropicClient {
 
     pub fn new(api_key: String, model: String, base_url: String) -> Self {
         Self {
-            client: Client::new(),
+            client: utils::http_client(),
             base_url,
             model,
             recorder: None,
@@ -638,7 +638,7 @@ impl AnthropicClient {
         recording_path: P,
     ) -> Self {
         Self {
-            client: Client::new(),
+            client: utils::http_client(),
             base_url,
             model,
             recorder: Some(APIRecorder::new(recording_path)),
@@ -659,7 +659,7 @@ impl AnthropicClient {
         message_converter: Box<dyn MessageConverter>,
     ) -> Self {
         Self {
-            client: Client::new(),
+            client: utils::http_client(),
             base_url,
             model,
             recorder: None,
@@ -821,11 +821,9 @@ impl AnthropicClient {
             );
         }
 
-        let response = request_builder
-            .json(request)
-            .send()
-            .await
-            .map_err(|e| ApiError::NetworkError(e.to_string()))?;
+        let response =
+            utils::send_request(request_builder.json(request), streaming_callback.is_some())
+                .await?;
 
         // Log raw headers for debugging
         debug!("Response headers: {:?}", response.headers());
@@ -1187,9 +1185,10 @@ impl AnthropicClient {
             Ok(())
         }
 
+        let mut utf8 = crate::streaming::Utf8Decoder::default();
         while let Some(chunk) = chunk_stream.next_chunk().await? {
             match process_chunk(
-                &chunk,
+                utf8.decode(&chunk)?.as_bytes(),
                 &mut line_buffer,
                 &mut blocks,
                 &mut usage,

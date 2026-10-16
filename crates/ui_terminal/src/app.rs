@@ -1346,6 +1346,15 @@ impl TerminalTuiApp {
                                             SessionActivityState::RateLimited {
                                                 seconds_remaining,
                                             } => terminal_ui.notify_rate_limit(*seconds_remaining),
+                                            SessionActivityState::Retrying {
+                                                reason,
+                                                attempt,
+                                                max_attempts,
+                                            } => terminal_ui.notify_retrying(
+                                                reason,
+                                                *attempt,
+                                                *max_attempts,
+                                            ),
                                             _ => terminal_ui.clear_rate_limit(),
                                         }
                                     }

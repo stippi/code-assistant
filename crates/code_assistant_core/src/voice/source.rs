@@ -216,6 +216,7 @@ fn ended(previous: &SessionActivityState, now: &SessionActivityState) -> Option<
             | SessionActivityState::WaitingForResponse
             | SessionActivityState::Thinking
             | SessionActivityState::RateLimited { .. }
+            | SessionActivityState::Retrying { .. }
     );
     if !was_running {
         return None;

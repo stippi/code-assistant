@@ -587,7 +587,7 @@ pub async fn exchange_code_for_tokens(
     verifier: &str,
     redirect_uri: &str,
 ) -> Result<CodexTokens> {
-    let client = reqwest::Client::new();
+    let client = crate::utils::http_client();
 
     let body = format!(
         "grant_type=authorization_code\
@@ -607,6 +607,7 @@ pub async fn exchange_code_for_tokens(
         .post(format!("{}/oauth/token", ISSUER))
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(body)
+        .timeout(crate::utils::SHORT_REQUEST_TIMEOUT)
         .send()
         .await
         .context("Failed to send token exchange request")?;
@@ -644,7 +645,7 @@ pub async fn exchange_code_for_tokens(
 
 /// Refresh the access token using the refresh token.
 pub async fn refresh_tokens(auth_state: &CodexAuthState) -> Result<CodexAuthState> {
-    let client = reqwest::Client::new();
+    let client = crate::utils::http_client();
 
     let body = serde_json::json!({
         "client_id": CLIENT_ID,
@@ -659,6 +660,7 @@ pub async fn refresh_tokens(auth_state: &CodexAuthState) -> Result<CodexAuthStat
         .post(REFRESH_TOKEN_URL)
         .header("Content-Type", "application/json")
         .json(&body)
+        .timeout(crate::utils::SHORT_REQUEST_TIMEOUT)
         .send()
         .await
         .context("Failed to send token refresh request")?;

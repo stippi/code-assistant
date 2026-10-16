@@ -750,7 +750,7 @@ impl OpenAIResponsesClient {
 
     pub fn new(api_key: String, model: String, base_url: String) -> Self {
         Self {
-            client: Client::new(),
+            client: utils::http_client(),
             base_url,
             model,
             auth_provider: Box::new(ApiKeyAuth::new(api_key)),
@@ -769,7 +769,7 @@ impl OpenAIResponsesClient {
         request_customizer: Box<dyn RequestCustomizer>,
     ) -> Self {
         Self {
-            client: Client::new(),
+            client: utils::http_client(),
             base_url,
             model,
             auth_provider,
@@ -1078,11 +1078,11 @@ impl OpenAIResponsesClient {
 
         debug!("Sending request: {request_json}");
 
-        let response = request_builder
-            .json(&request_json)
-            .send()
-            .await
-            .map_err(|e| ApiError::NetworkError(e.to_string()))?;
+        let response = utils::send_request(
+            request_builder.json(&request_json),
+            streaming_callback.is_some(),
+        )
+        .await?;
 
         let response = utils::check_response_error::<ResponsesRateLimitInfo>(response).await?;
         let rate_limits = ResponsesRateLimitInfo::from_response(&response);

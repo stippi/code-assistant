@@ -31,6 +31,13 @@ pub enum SessionActivityState {
     Thinking,
     /// Agent is rate limited with countdown
     RateLimited { seconds_remaining: u64 },
+    /// The LLM request failed before anything arrived and was sent again;
+    /// lasts until the new attempt shows output
+    Retrying {
+        reason: String,
+        attempt: u32,
+        max_attempts: u32,
+    },
     /// Agent terminated with an error
     Errored { message: String },
     /// Agent is running in another code-assistant process.
@@ -113,7 +120,8 @@ impl SessionActivity {
         match self.get() {
             SessionActivityState::WaitingForResponse
             | SessionActivityState::Thinking
-            | SessionActivityState::RateLimited { .. } => {
+            | SessionActivityState::RateLimited { .. }
+            | SessionActivityState::Retrying { .. } => {
                 self.try_transition(SessionActivityState::AgentRunning)
             }
             _ => None,
@@ -123,7 +131,7 @@ impl SessionActivity {
     /// The model started reasoning before the response showed anything.
     pub fn on_reasoning_started(&self) -> Option<SessionActivityState> {
         match self.get() {
-            SessionActivityState::WaitingForResponse => {
+            SessionActivityState::WaitingForResponse | SessionActivityState::Retrying { .. } => {
                 self.try_transition(SessionActivityState::Thinking)
             }
             _ => None,
@@ -133,7 +141,9 @@ impl SessionActivity {
     /// The stream produced its first visible output.
     pub fn on_visible_output(&self) -> Option<SessionActivityState> {
         match self.get() {
-            SessionActivityState::WaitingForResponse | SessionActivityState::Thinking => {
+            SessionActivityState::WaitingForResponse
+            | SessionActivityState::Thinking
+            | SessionActivityState::Retrying { .. } => {
                 self.try_transition(SessionActivityState::AgentRunning)
             }
             _ => None,
@@ -146,6 +156,19 @@ impl SessionActivity {
 
     pub fn on_rate_limit_cleared(&self) -> Option<SessionActivityState> {
         self.try_transition(SessionActivityState::WaitingForResponse)
+    }
+
+    pub fn on_retrying(
+        &self,
+        reason: &str,
+        attempt: u32,
+        max_attempts: u32,
+    ) -> Option<SessionActivityState> {
+        self.try_transition(SessionActivityState::Retrying {
+            reason: reason.to_string(),
+            attempt,
+            max_attempts,
+        })
     }
 }
 
@@ -1302,6 +1325,10 @@ impl UserInterface for SessionEventPublisher {
         self.publish_activity_change(self.activity.on_rate_limit_cleared());
     }
 
+    fn notify_retrying(&self, reason: &str, attempt: u32, max_attempts: u32) {
+        self.publish_activity_change(self.activity.on_retrying(reason, attempt, max_attempts));
+    }
+
     async fn ask_questions(
         &self,
         request: crate::session::questions::UserQuestionRequest,
@@ -1485,6 +1512,35 @@ mod tests {
         let activity = activity_with(SessionActivityState::Idle);
         assert_eq!(activity.on_rate_limited(30), None);
         assert_eq!(activity.on_rate_limit_cleared(), None);
+    }
+
+    #[test]
+    fn retrying_lasts_until_the_new_attempt_responds() {
+        let retrying = SessionActivityState::Retrying {
+            reason: "no response".into(),
+            attempt: 1,
+            max_attempts: 3,
+        };
+
+        let activity = activity_with(SessionActivityState::WaitingForResponse);
+        assert_eq!(
+            activity.on_retrying("no response", 1, 3),
+            Some(retrying.clone())
+        );
+        assert_eq!(
+            activity.on_reasoning_started(),
+            Some(SessionActivityState::Thinking)
+        );
+
+        let activity = activity_with(retrying.clone());
+        assert_eq!(
+            activity.on_visible_output(),
+            Some(SessionActivityState::AgentRunning)
+        );
+
+        // A retry notice after completion doesn't revive the session.
+        let activity = activity_with(SessionActivityState::Idle);
+        assert_eq!(activity.on_retrying("no response", 1, 3), None);
     }
 
     fn test_publisher(activity: SessionActivity, session_id: &str) -> SessionEventPublisher {

@@ -41,6 +41,10 @@ pub trait UserInterface: Send + Sync {
     /// Clear rate limit notification
     fn clear_rate_limit(&self);
 
+    /// The LLM request failed before anything was streamed and is sent
+    /// again (`attempt` of `max_attempts`). Cleared by the next response.
+    fn notify_retrying(&self, _reason: &str, _attempt: u32, _max_attempts: u32) {}
+
     /// Ask the user multiple-choice questions and wait for the answers
     /// (`ask_question` tool). Default: unsupported — only frontends with a
     /// human in the loop implement it.
@@ -100,6 +104,10 @@ impl agent_core::AgentUi for AgentUiAdapter {
 
     fn clear_rate_limit(&self) {
         self.inner.clear_rate_limit();
+    }
+
+    fn notify_retrying(&self, reason: &str, attempt: u32, max_attempts: u32) {
+        self.inner.notify_retrying(reason, attempt, max_attempts);
     }
 }
 

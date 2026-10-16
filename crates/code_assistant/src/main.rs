@@ -140,8 +140,8 @@ fn main() -> Result<()> {
             let use_gpui = false;
 
             if use_gpui {
-                // GPUI mode - use stderr to keep stdout clean
-                setup_logging(args.verbose, false);
+                // GPUI mode - stdout stays clean; logs go to stderr and a file
+                logging::setup_logging_for_gpui(args.verbose);
             } else {
                 // Terminal UI mode - log to file to prevent UI interference
                 logging::setup_logging_for_terminal_ui(args.verbose);

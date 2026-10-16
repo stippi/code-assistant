@@ -135,6 +135,15 @@ impl StreamProcessorTrait for JsonStreamProcessor {
                 Ok(())
             }
 
+            StreamingChunk::Retrying {
+                reason,
+                attempt,
+                max_attempts,
+            } => {
+                self.ui.notify_retrying(reason, *attempt, *max_attempts);
+                Ok(())
+            }
+
             StreamingChunk::InputJson {
                 content,
                 tool_name,
