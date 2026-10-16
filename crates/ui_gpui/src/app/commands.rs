@@ -458,6 +458,39 @@ impl Gpui {
         });
     }
 
+    /// Restart an MCP server from the session's MCP menu; its state arrives
+    /// via `McpServerStatusChanged` notifications.
+    pub(crate) fn cmd_restart_mcp_server(&self, session_id: String, name: String) {
+        let Some(service) = self.session_service() else {
+            return;
+        };
+        // Show the restart at once; the backend reports how it went.
+        self.mcp_server_statuses.lock().unwrap().insert(
+            name.clone(),
+            code_assistant_core::ui::ui_events::McpServerHealth::Connecting,
+        );
+        let gpui = self.clone();
+        self.dispatch(async move {
+            if let Err(e) = service.restart_mcp_server(session_id, name).await {
+                gpui.display_error(format!("{e:#}"));
+            }
+            // Settles the optimistic state also when the restart failed early.
+            let _ = service.refresh_mcp_server_statuses().await;
+        });
+    }
+
+    /// Ask for the current MCP server states (e.g. when the MCP menu opens).
+    pub(crate) fn cmd_refresh_mcp_server_statuses(&self) {
+        let Some(service) = self.session_service() else {
+            return;
+        };
+        self.dispatch(async move {
+            if let Err(e) = service.refresh_mcp_server_statuses().await {
+                tracing::warn!("Failed to refresh MCP server statuses: {e:#}");
+            }
+        });
+    }
+
     /// Answer a pending tool permission request. The prompt dismisses when
     /// the ToolPermissionRequestResolved notification arrives via the stream.
     pub(crate) fn cmd_respond_permission(

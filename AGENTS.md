@@ -62,6 +62,10 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
 - An expired OAuth login is renewed by a browser login when a call or
   connect hits it (`mcp_client::Reauthorizer`, `tools::mcp_auth`), unless
   `auto_reauthorize` is off in `mcp-servers.json`
+- `ConfigToolRegistry` tracks each server's connection state
+  (`McpServerHealth`, app-scoped `UiEvent::McpServerStatusChanged`) and
+  restarts a server on request (`McpServerControl`,
+  `SessionService::restart_mcp_server`) without restarting the app
 - Details: `docs/mcp-client-mode.md`, `docs/project-scoped-mcp-servers.md`
 
 ### Permission Tiers

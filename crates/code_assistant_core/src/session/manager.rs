@@ -66,6 +66,25 @@ pub type ToolRegistryProvider = Arc<
         + Sync,
 >;
 
+/// Status and restart of the MCP servers behind a [`ToolRegistryProvider`],
+/// for the frontends' MCP menu.
+#[async_trait::async_trait]
+pub trait McpServerControl: Send + Sync {
+    /// The connection state of every server that has been connected (or
+    /// tried to), by config name.
+    fn statuses(&self)
+    -> std::collections::BTreeMap<String, crate::ui::ui_events::McpServerHealth>;
+
+    /// Close `name`'s connection and connect it again, as part of the
+    /// registry for `req`, which is returned: whoever holds it keeps the new
+    /// connection alive. Also restarts a server that failed or never started.
+    async fn restart(
+        &self,
+        name: &str,
+        req: RegistryRequest,
+    ) -> Arc<crate::tools::core::ToolRegistry>;
+}
+
 /// Result of checking whether a session may switch to another model.
 #[derive(Debug, Clone)]
 pub struct ModelSwitchCheck {
@@ -151,6 +170,8 @@ pub struct SessionManager {
     /// (see [`ToolRegistryProvider`]); `None` keeps the construction-time
     /// registry for the manager's lifetime.
     tool_registry_provider: Option<ToolRegistryProvider>,
+    /// Restarts the provider's MCP servers; `None` without one.
+    mcp_server_control: Option<Arc<dyn McpServerControl>>,
 
     /// Builds the hook set for each agent this manager starts; `None` uses
     /// code-assistant's default hooks.
@@ -204,6 +225,7 @@ impl SessionManager {
             sleep_inhibitor: Arc::new(SleepInhibitor::default()),
             tool_registry,
             tool_registry_provider: None,
+            mcp_server_control: None,
             hooks_factory: None,
             wakeup_handle: None,
             idle_handoff: None,
@@ -353,6 +375,15 @@ impl SessionManager {
         self.tool_registry_provider = Some(provider);
     }
 
+    /// Install the MCP status/restart handle of the registry provider.
+    pub fn set_mcp_server_control(&mut self, control: Arc<dyn McpServerControl>) {
+        self.mcp_server_control = Some(control);
+    }
+
+    pub fn mcp_server_control(&self) -> Option<Arc<dyn McpServerControl>> {
+        self.mcp_server_control.clone()
+    }
+
     /// The tool registry the next agent run would currently use.
     pub fn tool_registry(&self) -> &Arc<crate::tools::core::ToolRegistry> {
         &self.tool_registry
@@ -440,6 +471,16 @@ impl SessionManager {
             return;
         };
         let fresh = provider(req).await;
+        self.adopt_tool_registry(session_id, fresh);
+    }
+
+    /// Make `fresh` the registry of `session_id`'s instance and the
+    /// manager's working registry (see [`Self::refresh_tool_registry`]).
+    pub fn adopt_tool_registry(
+        &mut self,
+        session_id: &str,
+        fresh: Arc<crate::tools::core::ToolRegistry>,
+    ) {
         if !Arc::ptr_eq(&fresh, &self.tool_registry) {
             info!("Tool registry refreshed for the next agent run");
             self.tool_registry = fresh.clone();

@@ -13,7 +13,7 @@ use super::shared::file_icons;
 use attachment::{AttachmentEvent, AttachmentView};
 use base64::Engine;
 use code_assistant_core::persistence::{DraftAttachment, NodeId};
-use code_assistant_core::ui::ui_events::McpServerToggle;
+use code_assistant_core::ui::ui_events::{McpServerHealth, McpServerToggle};
 use gpui_kit::component::input::{
     Enter, Escape, IndentInline, InputEvent, MoveDown, MoveUp, Paste, Textarea, TextareaState,
 };
@@ -32,6 +32,7 @@ use sandbox_selector::{SandboxSelector, SandboxSelectorEvent};
 use selector_row::DEFAULT_SECONDARY_SELECTORS_WIDTH;
 use skill_completion::SlashMenuItem;
 use std::cell::Cell;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use tools_core::permissions::PermissionTier;
 use worktree_selector::{WorktreeSelector, WorktreeSelectorEvent};
@@ -68,6 +69,10 @@ pub enum InputAreaEvent {
     PermissionTierChanged { tier: PermissionTier },
     /// An MCP server was toggled on/off for the session.
     McpServerToggled { name: String, enabled: bool },
+    /// The user asked to restart an MCP server.
+    McpServerRestartRequested { name: String },
+    /// The MCP menu opened and wants fresh server states.
+    McpStatusesRequested,
     /// User wants to switch to local (no worktree)
     WorktreeSwitchedToLocal,
     /// User selected an existing worktree
@@ -793,13 +798,25 @@ impl InputArea {
                     enabled: *enabled,
                 });
             }
+            McpSelectorEvent::RestartRequested { name } => {
+                cx.emit(InputAreaEvent::McpServerRestartRequested { name: name.clone() });
+            }
+            McpSelectorEvent::Opened => cx.emit(InputAreaEvent::McpStatusesRequested),
         }
     }
 
-    /// Set the MCP servers shown in the input-bar toggle menu.
-    pub fn set_mcp_servers(&mut self, servers: Vec<McpServerToggle>, cx: &mut Context<Self>) {
-        self.mcp_selector
-            .update(cx, |selector, cx| selector.set_servers(servers, cx));
+    /// Set the MCP servers shown in the input-bar toggle menu, with the
+    /// connection state of each.
+    pub fn set_mcp_servers(
+        &mut self,
+        servers: Vec<McpServerToggle>,
+        statuses: BTreeMap<String, McpServerHealth>,
+        cx: &mut Context<Self>,
+    ) {
+        self.mcp_selector.update(cx, |selector, cx| {
+            selector.set_servers(servers, cx);
+            selector.set_statuses(statuses, cx);
+        });
     }
 
     fn on_worktree_selector_event(

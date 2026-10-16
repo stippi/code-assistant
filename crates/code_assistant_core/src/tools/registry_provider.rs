@@ -19,19 +19,25 @@
 //! transport), so servers shared between builds — typically the global set —
 //! are reused while any registry references them, and a server's child
 //! process terminates (connection drop) once the last registry using it is
-//! gone. No connection a live run holds is ever shut down under it.
+//! gone. No connection a live run holds is ever shut down under it — except
+//! by an explicit [restart](McpServerControl::restart).
+//!
+//! It also tracks how each server fared ([`McpServerHealth`]) and publishes
+//! changes as app-scoped [`UiEvent::McpServerStatusChanged`] events.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, OnceLock, Weak};
 use tokio::sync::Mutex;
 
-use crate::session::manager::{RegistryRequest, ToolRegistryProvider};
+use crate::session::event_stream::EventStream;
+use crate::session::manager::{McpServerControl, RegistryRequest, ToolRegistryProvider};
 use crate::tools::config::ToolsConfig;
 use crate::tools::core::ToolRegistry;
+use crate::ui::ui_events::{McpServerHealth, UiEvent};
 use anyhow::Result;
 use async_trait::async_trait;
-use mcp_client::{ConnectionProvider, McpServerConfig, McpServerConnection};
+use mcp_client::{ConnectionProvider, McpServerConfig, McpServerConnection, McpServerStatus};
 
 /// Cache key: the directory whose `.mcp.json` the registry includes, `None`
 /// for the global-only registry. Requests without (trusted) local MCP
@@ -53,7 +59,12 @@ pub struct ConfigToolRegistry {
     cached: Mutex<HashMap<CacheKey, Cached>>,
     /// Live MCP connections keyed by [`connection_key`], reused across
     /// builds so servers shared between registries are not relaunched.
-    connections: Mutex<HashMap<String, Weak<McpServerConnection>>>,
+    /// Locked only briefly, never across an await.
+    connections: std::sync::Mutex<HashMap<String, Weak<McpServerConnection>>>,
+    /// The last known state of each server that was connected (or tried).
+    health: std::sync::Mutex<BTreeMap<String, McpServerHealth>>,
+    /// Where status changes are published, once wired.
+    events: OnceLock<EventStream>,
     /// Whether built registries include the
     /// [interactive tools](crate::tools::register_interactive_tools).
     interactive: bool,
@@ -74,9 +85,22 @@ impl ConfigToolRegistry {
     fn build(interactive: bool) -> Arc<Self> {
         Arc::new(Self {
             cached: Mutex::new(HashMap::new()),
-            connections: Mutex::new(HashMap::new()),
+            connections: std::sync::Mutex::new(HashMap::new()),
+            health: std::sync::Mutex::new(BTreeMap::new()),
+            events: OnceLock::new(),
             interactive,
         })
+    }
+
+    /// Publish server status changes to `events`.
+    pub fn set_event_stream(&self, events: EventStream) {
+        let _ = self.events.set(events);
+    }
+
+    /// The handle for
+    /// [`SessionManager::set_mcp_server_control`](crate::session::manager::SessionManager::set_mcp_server_control).
+    pub fn as_mcp_server_control(self: &Arc<Self>) -> Arc<dyn McpServerControl> {
+        self.clone()
     }
 
     /// The registry for the global configuration only (no project-local
@@ -116,12 +140,13 @@ impl ConfigToolRegistry {
                 .map(|dir| dir.display().to_string())
                 .unwrap_or_else(|| "the global configuration".to_string())
         );
-        let registry = crate::tools::default_registry_with_mcp(
+        let (registry, statuses) = crate::tools::registry_with_mcp_statuses(
             local_mcp_dir.as_deref(),
             self,
             self.interactive,
         )
         .await;
+        self.record(&statuses);
         cached.insert(
             local_mcp_dir,
             Cached {
@@ -140,6 +165,63 @@ impl ConfigToolRegistry {
             let this = this.clone();
             Box::pin(async move { this.current_for(req).await })
         })
+    }
+
+    fn locked_health(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, McpServerHealth>> {
+        self.health.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn locked_connections(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<String, Weak<McpServerConnection>>> {
+        self.connections.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn set_health(&self, name: &str, health: McpServerHealth) {
+        let changed = self
+            .locked_health()
+            .insert(name.to_string(), health.clone())
+            != Some(health);
+        if changed {
+            self.publish();
+        }
+    }
+
+    /// Take over the outcome of a registry build.
+    fn record(&self, statuses: &[McpServerStatus]) {
+        let mut changed = false;
+        {
+            let mut health = self.locked_health();
+            for status in statuses {
+                let new = match &status.result {
+                    Ok(tools) => McpServerHealth::Connected { tools: tools.len() },
+                    Err(error) => McpServerHealth::Failed {
+                        error: error.clone(),
+                    },
+                };
+                changed |= health.insert(status.server.clone(), new.clone()) != Some(new);
+            }
+        }
+        if changed {
+            self.publish();
+        }
+    }
+
+    fn publish(&self) {
+        if let Some(events) = self.events.get() {
+            events.publish_app(UiEvent::McpServerStatusChanged {
+                statuses: self.statuses(),
+            });
+        }
+    }
+
+    /// The live pooled connections of server `name`.
+    fn live_connections(&self, name: &str) -> Vec<Arc<McpServerConnection>> {
+        self.locked_connections()
+            .iter()
+            .filter(|(key, _)| server_of_key(key) == name)
+            .filter_map(|(_, weak)| weak.upgrade())
+            .collect()
     }
 
     /// Fingerprint of the registry inputs: the tool-relevant config files
@@ -171,6 +253,78 @@ fn connection_key(name: &str, config: &McpServerConfig) -> String {
     format!("{name}\u{0}{transport}")
 }
 
+/// The server name a [`connection_key`] belongs to.
+fn server_of_key(key: &str) -> &str {
+    key.split('\u{0}').next().unwrap_or(key)
+}
+
+#[async_trait]
+impl McpServerControl for ConfigToolRegistry {
+    /// The recorded states, checked against the pool: a server whose
+    /// connections all closed (its process exited) reads as failed, one that
+    /// no registry holds any more as not connected.
+    fn statuses(&self) -> BTreeMap<String, McpServerHealth> {
+        let recorded = self.locked_health().clone();
+        recorded
+            .into_iter()
+            .filter_map(|(name, health)| {
+                if !matches!(health, McpServerHealth::Connected { .. }) {
+                    return Some((name, health));
+                }
+                let live = self.live_connections(&name);
+                if live.is_empty() {
+                    None
+                } else if live.iter().all(|connection| connection.is_closed()) {
+                    Some((
+                        name,
+                        McpServerHealth::Failed {
+                            error: "The connection to the server closed".to_string(),
+                        },
+                    ))
+                } else {
+                    Some((name, health))
+                }
+            })
+            .collect()
+    }
+
+    async fn restart(&self, name: &str, req: RegistryRequest) -> Arc<ToolRegistry> {
+        tracing::info!(server = name, "Restarting MCP server");
+        let stale: Vec<_> = {
+            let mut connections = self.locked_connections();
+            let keys: Vec<String> = connections
+                .keys()
+                .filter(|key| server_of_key(key) == name)
+                .cloned()
+                .collect();
+            keys.into_iter()
+                .filter_map(|key| connections.remove(&key))
+                .filter_map(|weak| weak.upgrade())
+                .collect()
+        };
+        for connection in stale {
+            connection.close();
+        }
+        // Every cached registry may hold the closed connection (or lack the
+        // failed server); the next run of any project rebuilds, reusing the
+        // other servers from the pool.
+        self.cached.lock().await.clear();
+        self.set_health(name, McpServerHealth::Connecting);
+        let registry = self.current_for(req).await;
+        // Not part of this registry (e.g. switched off in the configuration,
+        // or a local server of an untrusted project): nothing is connecting.
+        let still_connecting = matches!(
+            self.locked_health().get(name),
+            Some(McpServerHealth::Connecting)
+        );
+        if still_connecting {
+            self.locked_health().remove(name);
+            self.publish();
+        }
+        registry
+    }
+}
+
 #[async_trait]
 impl ConnectionProvider for ConfigToolRegistry {
     async fn get_or_connect(
@@ -180,13 +334,14 @@ impl ConnectionProvider for ConfigToolRegistry {
     ) -> Result<Arc<McpServerConnection>> {
         let key = connection_key(name, config);
         {
-            let mut connections = self.connections.lock().await;
+            let mut connections = self.locked_connections();
             // Prune entries whose connection has died with its last registry.
             connections.retain(|_, weak| weak.strong_count() > 0);
             if let Some(existing) = connections.get(&key).and_then(Weak::upgrade) {
                 return Ok(existing);
             }
         }
+        self.set_health(name, McpServerHealth::Connecting);
         // Connect outside the lock (slow: process launch / HTTP handshake).
         // HTTP servers get a persistent OAuth credential store so a token
         // obtained via the interactive login is reused silently; stdio servers
@@ -204,9 +359,24 @@ impl ConnectionProvider for ConfigToolRegistry {
                     .is_some() =>
             {
                 crate::tools::mcp_auth::reauthorize_in_background(name);
+                self.set_health(
+                    name,
+                    McpServerHealth::Failed {
+                        error: format!("{error:#}"),
+                    },
+                );
                 return Err(error);
             }
-            result => result?,
+            Err(error) => {
+                self.set_health(
+                    name,
+                    McpServerHealth::Failed {
+                        error: format!("{error:#}"),
+                    },
+                );
+                return Err(error);
+            }
+            Ok(connection) => connection,
         };
         // A login that expires while the connection is in use is renewed when
         // a tool call hits it.
@@ -215,7 +385,7 @@ impl ConnectionProvider for ConfigToolRegistry {
         );
         // Re-check under the lock: if another caller connected the same server
         // meanwhile, keep theirs and drop ours (shut down on drop).
-        let mut connections = self.connections.lock().await;
+        let mut connections = self.locked_connections();
         if let Some(existing) = connections.get(&key).and_then(Weak::upgrade) {
             return Ok(existing);
         }
@@ -379,6 +549,114 @@ mod tests {
                     !Arc::ptr_eq(&before, &after),
                     "a new OAuth token must invalidate the cached registry"
                 );
+            },
+        )
+        .await;
+    }
+
+    fn health_events(
+        subscription: &mut crate::session::event_stream::Subscription,
+    ) -> Vec<BTreeMap<String, McpServerHealth>> {
+        use futures::FutureExt;
+        let mut seen = Vec::new();
+        while let Some(Ok(event)) = subscription.recv().now_or_never() {
+            if let crate::session::event_stream::EventPayload::Ui(
+                UiEvent::McpServerStatusChanged { statuses },
+            ) = event.payload
+            {
+                assert!(event.session_id.is_none(), "statuses are app-scoped");
+                seen.push(statuses);
+            }
+        }
+        seen
+    }
+
+    /// A server that cannot start reports its error, and a restart tries
+    /// again: `Connecting` first, then the outcome.
+    #[tokio::test]
+    async fn failing_server_reports_its_error_and_restart_retries() {
+        let config = tempfile::tempdir().unwrap();
+        std::fs::write(
+            config.path().join("mcp-servers.json"),
+            r#"{ "servers": { "broken": { "command": "/surely/not/an/mcp-server" } } }"#,
+        )
+        .unwrap();
+        temp_env::async_with_vars(
+            [("CODE_ASSISTANT_CONFIG_DIR", Some(config.path()))],
+            async {
+                let provider = ConfigToolRegistry::new();
+                let events = EventStream::new();
+                let mut subscription = events.subscribe();
+                provider.set_event_stream(events);
+
+                let _registry = provider.current().await;
+                let Some(McpServerHealth::Failed { error }) = provider.statuses().remove("broken")
+                else {
+                    panic!("expected a failure, got {:?}", provider.statuses());
+                };
+                assert!(error.contains("failed to launch"), "{error}");
+                health_events(&mut subscription);
+
+                let before = provider.current().await;
+                let after = provider.restart("broken", RegistryRequest::default()).await;
+                assert!(
+                    !Arc::ptr_eq(&before, &after),
+                    "a restart rebuilds the registry"
+                );
+                let states: Vec<_> = health_events(&mut subscription)
+                    .into_iter()
+                    .map(|statuses| statuses["broken"].clone())
+                    .collect();
+                assert_eq!(states.first(), Some(&McpServerHealth::Connecting));
+                assert!(matches!(
+                    states.last(),
+                    Some(McpServerHealth::Failed { .. })
+                ));
+            },
+        )
+        .await;
+    }
+
+    /// A server skipped while loading the configuration (an unresolvable
+    /// `${VAR}`) reads as failed with the reason, not as not connected.
+    #[tokio::test]
+    async fn skipped_server_reports_why() {
+        let config = tempfile::tempdir().unwrap();
+        std::fs::write(
+            config.path().join("mcp-servers.json"),
+            r#"{ "servers": { "needs-secret": {
+                "command": "/surely/not/an/mcp-server",
+                "env": { "TOKEN": "${MCP_TEST_SURELY_UNSET}" }
+            } } }"#,
+        )
+        .unwrap();
+        temp_env::async_with_vars(
+            [("CODE_ASSISTANT_CONFIG_DIR", Some(config.path()))],
+            async {
+                let provider = ConfigToolRegistry::new();
+                let _registry = provider.current().await;
+                let Some(McpServerHealth::Failed { error }) =
+                    provider.statuses().remove("needs-secret")
+                else {
+                    panic!("expected a failure, got {:?}", provider.statuses());
+                };
+                assert!(error.contains("MCP_TEST_SURELY_UNSET"), "{error}");
+            },
+        )
+        .await;
+    }
+
+    /// Restarting a server the registry does not include (e.g. switched off
+    /// in the configuration) does not leave it "connecting".
+    #[tokio::test]
+    async fn restarting_an_unknown_server_settles() {
+        let config = tempfile::tempdir().unwrap();
+        temp_env::async_with_vars(
+            [("CODE_ASSISTANT_CONFIG_DIR", Some(config.path()))],
+            async {
+                let provider = ConfigToolRegistry::new();
+                let _registry = provider.restart("gone", RegistryRequest::default()).await;
+                assert!(provider.statuses().is_empty());
             },
         )
         .await;
