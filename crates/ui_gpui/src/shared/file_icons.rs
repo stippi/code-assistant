@@ -253,7 +253,7 @@ impl FileIcons {
             name if name.starts_with("browser_") => TOOL_WEB_FETCH,
             "delete_files" => TOOL_DELETE_FILES,
             "open_project" => TOOL_OPEN_PROJECT,
-            "user_input" => TOOL_USER_INPUT,
+            "user_input" | "ask_question" => TOOL_USER_INPUT,
             "update_plan" => TOOL_UPDATE_PLAN,
             "spawn_agent" => TOOL_SPAWN_AGENT,
             "view_documents" => TOOL_VIEW_DOCUMENTS,
