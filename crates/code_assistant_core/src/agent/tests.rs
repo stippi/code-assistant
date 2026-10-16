@@ -2810,3 +2810,53 @@ async fn test_compaction_fails_when_the_model_never_answers_with_text() -> Resul
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn a_disabled_builtin_tool_group_is_not_offered() -> Result<()> {
+    let mock_llm = MockLLMProvider::new(vec![Ok(create_test_response_text("Done."))]);
+    let mock_llm_ref = mock_llm.clone();
+
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Arc::new(MockProjectManager::new()),
+        command_executor: Arc::new(create_command_executor_mock()),
+        ui: Arc::new(MockUI::default()),
+        state_persistence: Box::new(NoOpStatePersistence),
+        permission_handler: None,
+        permissions: Default::default(),
+        tool_registry: crate::tools::test_registry(),
+        sub_agent_runner: None,
+        wakeups: None,
+        pty_sessions: None,
+        browser_sessions: None,
+        terminal_interrupts: None,
+        session_source: None,
+        hooks_factory: None,
+    };
+
+    let session_config = SessionConfig {
+        init_path: Some(PathBuf::from("./test_path")),
+        tool_syntax: ToolSyntax::Native,
+        disabled_builtin_tools: vec!["browser".to_string()],
+        ..SessionConfig::default()
+    };
+
+    let mut agent = Agent::new(components, session_config);
+    agent.disable_naming_reminders();
+    agent.start_with_task("Test task".to_string()).await?;
+
+    let requests = mock_llm_ref.get_requests();
+    let offered: Vec<String> = requests[0]
+        .tools
+        .as_ref()
+        .expect("native tools are offered")
+        .iter()
+        .map(|tool| tool.name.clone())
+        .collect();
+    assert!(offered.iter().any(|name| name == "read_files"));
+    assert!(
+        !offered.iter().any(|name| name.starts_with("browser_")),
+        "browser tools must not be offered: {offered:?}"
+    );
+    Ok(())
+}

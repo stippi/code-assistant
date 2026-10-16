@@ -96,13 +96,17 @@ impl Agent {
 
         let app_state = AgentAppState::new(session_config.clone());
         let tool_capability = app_state.tool_scope.tag().to_string();
-        // MCP servers the session deactivated → their per-server scope tags,
-        // which the runtime excludes from the offered/dispatchable tool set.
-        let excluded_tool_capabilities: Vec<String> =
+        // MCP servers and built-in tool groups the session deactivated → their
+        // scope tags, which the runtime excludes from the offered/dispatchable
+        // tool set.
+        let mut excluded_tool_capabilities: Vec<String> =
             crate::tools::mcp_selection::session_disabled_mcp_servers(&session_config)
                 .iter()
                 .map(|server| mcp_client::server_scope_capability(server))
                 .collect();
+        excluded_tool_capabilities.extend(
+            crate::tools::builtin_selection::session_excluded_capabilities(&session_config),
+        );
 
         let ui_adapter = Arc::new(AgentUiAdapter::new(ui.clone()));
         // Cloned out before the handle moves into the services provider, so the

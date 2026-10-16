@@ -565,8 +565,9 @@ impl SessionManager {
     }
 
     /// The config a brand-new session starts from: the template, in
-    /// `init_path` when given, with the state of every MCP server its project
-    /// starts with (see [`crate::tools::mcp_selection`]). Sessions derived
+    /// `init_path` when given, with the state of every MCP server and built-in
+    /// tool group its project starts with (see [`crate::tools::mcp_selection`],
+    /// [`crate::tools::builtin_selection`]). Sessions derived
     /// from another one (e.g. a fresh start) copy that session's config
     /// instead.
     pub fn new_session_config(&self, init_path: Option<PathBuf>) -> SessionConfig {
@@ -575,6 +576,7 @@ impl SessionManager {
             config.init_path = init_path;
         }
         crate::tools::mcp_selection::seed_new_session(&mut config);
+        crate::tools::builtin_selection::seed_new_session(&mut config);
         config
     }
 
@@ -2053,6 +2055,35 @@ impl SessionManager {
         Ok(mcp_selection::session_mcp_servers(&session.config))
     }
 
+    /// Switch a built-in tool group on or off for a session, like
+    /// [`set_session_mcp_server_enabled`]: persisted, applied to the live
+    /// instance, remembered for the project, effective on the next run.
+    /// Returns the recomputed group list for the UI.
+    ///
+    /// [`set_session_mcp_server_enabled`]: Self::set_session_mcp_server_enabled
+    pub fn set_session_builtin_tool_enabled(
+        &mut self,
+        session_id: &str,
+        id: &str,
+        enabled: bool,
+    ) -> Result<Vec<crate::ui::ui_events::BuiltinToolToggle>> {
+        use crate::tools::builtin_selection;
+
+        let session = self.persistence.update_entry(session_id, |session| {
+            builtin_selection::switch_group(&mut session.config, id, enabled);
+            Ok(())
+        })?;
+
+        if let Some(instance) = self.active_sessions.get_mut(session_id) {
+            builtin_selection::switch_group(&mut instance.session.config, id, enabled);
+        }
+
+        if let Err(e) = builtin_selection::remember_for_project(&session.config, id, enabled) {
+            warn!("Failed to remember the built-in tool choice for the project: {e:#}");
+        }
+        Ok(builtin_selection::session_builtin_tools(&session.config))
+    }
+
     /// Build the event-stream permission mediator for a session, used by the
     /// `SessionService`-driven frontends (GPUI, terminal). ACP supplies its
     /// own protocol-level mediator instead.
@@ -2832,6 +2863,42 @@ mod tests {
 
             let config = &manager.get_session(&second).unwrap().session.config;
             assert_eq!(config.disabled_mcp_servers, vec!["jira".to_string()]);
+        });
+    }
+
+    #[test]
+    fn a_switched_builtin_tool_group_carries_over_to_the_projects_next_session() {
+        let config_dir = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        temp_env::with_var("CODE_ASSISTANT_CONFIG_DIR", Some(config_dir.path()), || {
+            let (persistence, _dir) = temp_persistence();
+            let mut manager = SessionManager::new(
+                persistence,
+                SessionConfig::default(),
+                "test-model".to_string(),
+                crate::tools::test_registry(),
+                crate::session::event_stream::EventStream::new(),
+            );
+            let in_project = |manager: &mut SessionManager| {
+                let config = manager.new_session_config(Some(project.path().to_path_buf()));
+                manager
+                    .create_session_with_config(None, Some(config), None)
+                    .unwrap()
+            };
+
+            let first = in_project(&mut manager);
+            let groups = manager
+                .set_session_builtin_tool_enabled(&first, "browser", false)
+                .unwrap();
+            assert!(groups.iter().any(|g| g.id == "browser" && !g.enabled));
+            let second = in_project(&mut manager);
+
+            let config = &manager.get_session(&second).unwrap().session.config;
+            assert_eq!(config.disabled_builtin_tools, vec!["browser".to_string()]);
+            assert_eq!(
+                crate::tools::builtin_selection::session_excluded_capabilities(config),
+                vec!["toolset:browser".to_string()]
+            );
         });
     }
 

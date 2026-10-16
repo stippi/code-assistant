@@ -68,6 +68,15 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
   `SessionService::restart_mcp_server`) without restarting the app
 - Details: `docs/mcp-client-mode.md`, `docs/project-scoped-mcp-servers.md`
 
+### Built-in Tool Toggles
+- Groups of built-in tools (browser, web, terminal, sub-agents, wakeups,
+  session history) switch on/off like MCP servers: globally in `tools.json`
+  (`builtin_tools`, *Settings → Tools*), remembered per project, and per
+  session from the input row's *Tools* menu
+  (`code_assistant_core::tools::builtin_selection`)
+- Grouped tools carry a `toolset:<id>` tag the agent excludes when the group
+  is off; see `docs/builtin-tool-toggles.md`
+
 ### Permission Tiers
 - Per-session setting deciding when the agent asks before running a tool:
   `bypass-all` (default), `write-tools` (ask for anything not tagged

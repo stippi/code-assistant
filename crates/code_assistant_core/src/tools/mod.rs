@@ -16,6 +16,9 @@ pub mod mcp_auth;
 // Which MCP servers a session has on, and what a project's next session gets
 pub mod mcp_selection;
 
+// The same for the built-in tool groups (browser, web, terminal, …)
+pub mod builtin_selection;
+
 // Persistent per-project trust for project-local `.mcp.json` files
 pub mod mcp_trust;
 
@@ -161,4 +164,5 @@ pub fn register_default_tools(registry: &mut ToolRegistry, config: &ToolsConfig)
     registry.register(Box::new(WebSearchTool));
     registry.register(Box::new(WriteFileTool));
     registry.register(Box::new(WriteStdinTool));
+    builtin_selection::tag_groups(registry);
 }

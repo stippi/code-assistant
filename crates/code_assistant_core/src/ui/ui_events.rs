@@ -150,6 +150,18 @@ pub enum McpServerHealth {
     Failed { error: String },
 }
 
+/// One built-in tool group offered to a session, with whether it is currently
+/// on for that session. Carried by [`UiEvent::UpdateBuiltinTools`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct BuiltinToolToggle {
+    /// The group's id (see [`crate::tools::builtin_selection::GROUPS`]).
+    pub id: String,
+    /// Display name, e.g. "Browser".
+    pub label: String,
+    /// Whether the group's tools are offered to this session.
+    pub enabled: bool,
+}
+
 /// Events for UI updates from the agent thread
 #[derive(Debug, Clone)]
 pub enum UiEvent {
@@ -315,6 +327,9 @@ pub enum UiEvent {
     McpServerStatusChanged {
         statuses: std::collections::BTreeMap<String, McpServerHealth>,
     },
+    /// Update the built-in tool groups available to the active session and
+    /// whether each is currently on for it (see [`BuiltinToolToggle`]).
+    UpdateBuiltinTools { groups: Vec<BuiltinToolToggle> },
     /// The agent asks the user for permission to run a tool. Answered via
     /// `SessionService::respond_permission`; a
     /// [`UiEvent::ToolPermissionRequestResolved`] follows once settled.

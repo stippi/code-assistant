@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 
 const PROJECTS_FILE: &str = "project-mcp-servers.json";
 
-/// Server name → on, for the servers whose state differs from their default.
+/// Name → on, for the entries whose state differs from their default.
 type ProjectChoices = BTreeMap<String, bool>;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -39,20 +39,70 @@ struct ProjectStore {
     projects: BTreeMap<String, ProjectChoices>,
 }
 
-fn store_path() -> PathBuf {
-    config_dir().join(PROJECTS_FILE)
+/// Per-project choices kept in `<config_dir>/<file>`: only the entries whose
+/// state differs from their default, per canonical project root. Shared by
+/// the MCP server and the built-in tool selection.
+pub(crate) struct ProjectChoiceStore {
+    file: &'static str,
 }
 
-fn load_store() -> ProjectStore {
-    let path = store_path();
-    let Ok(content) = std::fs::read_to_string(&path) else {
-        return ProjectStore::default();
-    };
-    serde_json::from_str(&content).unwrap_or_else(|e| {
-        tracing::warn!("Failed to parse {}: {e}", path.display());
-        ProjectStore::default()
-    })
+impl ProjectChoiceStore {
+    pub(crate) const fn new(file: &'static str) -> Self {
+        Self { file }
+    }
+
+    fn path(&self) -> PathBuf {
+        config_dir().join(self.file)
+    }
+
+    fn load(&self) -> ProjectStore {
+        let path = self.path();
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            return ProjectStore::default();
+        };
+        serde_json::from_str(&content).unwrap_or_else(|e| {
+            tracing::warn!("Failed to parse {}: {e}", path.display());
+            ProjectStore::default()
+        })
+    }
+
+    /// The project's choices, empty without a project.
+    pub(crate) fn choices(&self, project_root: Option<&Path>) -> ProjectChoices {
+        project_root
+            .and_then(|root| self.load().projects.remove(&project_key(root)))
+            .unwrap_or_default()
+    }
+
+    /// Record `on` for `name` in the project, dropping it again when it
+    /// matches the default.
+    pub(crate) fn remember(
+        &self,
+        project_root: &Path,
+        name: &str,
+        on: bool,
+        on_by_default: bool,
+    ) -> Result<()> {
+        let key = project_key(project_root);
+        let mut store = self.load();
+        let choices = store.projects.entry(key.clone()).or_default();
+        if on == on_by_default {
+            choices.remove(name);
+        } else {
+            choices.insert(name.to_string(), on);
+        }
+        if choices.is_empty() {
+            store.projects.remove(&key);
+        }
+        atomic_write_json(&self.path(), &store)
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.load().projects.is_empty()
+    }
 }
+
+const PROJECTS: ProjectChoiceStore = ProjectChoiceStore::new(PROJECTS_FILE);
 
 fn project_key(project_root: &Path) -> String {
     // Canonical, so different spellings of a root share one entry.
@@ -60,12 +110,6 @@ fn project_key(project_root: &Path) -> String {
         .unwrap_or_else(|_| project_root.to_path_buf())
         .display()
         .to_string()
-}
-
-fn project_choices(project_root: Option<&Path>) -> ProjectChoices {
-    project_root
-        .and_then(|root| load_store().projects.remove(&project_key(root)))
-        .unwrap_or_default()
 }
 
 /// The servers available in `project_dir`, each with whether it is on by
@@ -107,7 +151,7 @@ fn session_choice(config: &SessionConfig, name: &str) -> Option<bool> {
 ///
 /// [`mcp_trust`]: crate::tools::mcp_trust
 pub fn session_mcp_servers(config: &SessionConfig) -> Vec<McpServerToggle> {
-    let project = project_choices(config.init_path.as_deref());
+    let project = PROJECTS.choices(config.init_path.as_deref());
     available_servers(config.effective_project_path().map(PathBuf::as_path))
         .into_iter()
         .map(|(name, on_by_default)| {
@@ -165,18 +209,7 @@ pub fn remember_for_project(config: &SessionConfig, name: &str, on: bool) -> Res
         .get(name)
         .copied()
         .unwrap_or(true);
-    let key = project_key(root);
-    let mut store = load_store();
-    let choices = store.projects.entry(key.clone()).or_default();
-    if on == on_by_default {
-        choices.remove(name);
-    } else {
-        choices.insert(name.to_string(), on);
-    }
-    if choices.is_empty() {
-        store.projects.remove(&key);
-    }
-    atomic_write_json(&store_path(), &store)
+    PROJECTS.remember(root, name, on, on_by_default)
 }
 
 #[cfg(test)]
@@ -258,7 +291,7 @@ mod tests {
             let config = session_in(project.path());
             remember_for_project(&config, "alpha", false).unwrap();
             remember_for_project(&config, "alpha", true).unwrap();
-            assert!(load_store().projects.is_empty());
+            assert!(PROJECTS.is_empty());
         });
     }
 
