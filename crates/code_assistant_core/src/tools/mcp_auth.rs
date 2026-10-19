@@ -18,7 +18,7 @@ use futures::FutureExt as _;
 use futures::future::{BoxFuture, Shared};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 use tokio::net::TcpListener;
 
@@ -29,7 +29,13 @@ pub struct LoopbackAuthorizer {
     /// Bound at construction so [`Self::redirect_uri`] reflects the real port;
     /// consumed by the single `authorize` call.
     listener: Mutex<Option<TcpListener>>,
+    /// Where `authorize` leaves the authorization URL, so the browser can be
+    /// opened at it again while this login waits.
+    url: UrlSlot,
 }
+
+/// The authorization URL of a login, once it is known.
+type UrlSlot = Arc<Mutex<Option<String>>>;
 
 impl LoopbackAuthorizer {
     /// Bind an ephemeral loopback port for the redirect callback.
@@ -41,6 +47,7 @@ impl LoopbackAuthorizer {
         Ok(Self {
             redirect_uri: format!("http://127.0.0.1:{port}/callback"),
             listener: Mutex::new(Some(listener)),
+            url: UrlSlot::default(),
         })
     }
 }
@@ -63,9 +70,8 @@ impl OAuthAuthorizer for LoopbackAuthorizer {
         // not open (headless, or a GPUI settings screen without a console).
         tracing::info!("MCP OAuth authorization URL: {authorization_url}");
         eprintln!("Authorize this MCP server in your browser:\n  {authorization_url}");
-        if let Err(e) = open::that(&authorization_url) {
-            tracing::warn!("Could not open the browser automatically: {e}");
-        }
+        *self.url.lock().unwrap_or_else(|e| e.into_inner()) = Some(authorization_url.clone());
+        open_browser(&authorization_url);
 
         let (mut stream, _) = tokio::time::timeout(Duration::from_secs(300), listener.accept())
             .await
@@ -109,6 +115,12 @@ impl OAuthAuthorizer for LoopbackAuthorizer {
     }
 }
 
+fn open_browser(url: &str) {
+    if let Err(e) = open::that(url) {
+        tracing::warn!("Could not open the browser automatically: {e}");
+    }
+}
+
 /// Run the OAuth browser login for the HTTP MCP server `name` and persist its
 /// tokens. The server is looked up in the global `mcp-servers.json` and, when
 /// `local_mcp_dir` is given, the project-local `.mcp.json` there (see
@@ -122,7 +134,13 @@ pub async fn login_mcp_server(name: &str, local_mcp_dir: Option<&Path>) -> Resul
 /// `server`, and persist its tokens. Binds a [`LoopbackAuthorizer`] to
 /// [`mcp::authenticate_mcp_server`].
 pub async fn login_configured_server(name: &str, server: &McpServerConfig) -> Result<()> {
-    let authorizer = LoopbackAuthorizer::bind().await?;
+    login_reporting_url(name, server, UrlSlot::default()).await
+}
+
+/// [`login_configured_server`], leaving the authorization URL in `url`.
+async fn login_reporting_url(name: &str, server: &McpServerConfig, url: UrlSlot) -> Result<()> {
+    let mut authorizer = LoopbackAuthorizer::bind().await?;
+    authorizer.url = url;
     mcp::authenticate_mcp_server(name, server, &authorizer).await
 }
 
@@ -156,6 +174,7 @@ impl mcp_client::Reauthorizer for AutoReauthorizer {
             );
         }
         relogin(server, &self.server)
+            .0
             .await
             .map_err(anyhow::Error::msg)
     }
@@ -175,34 +194,45 @@ pub fn auto_reauthorize_enabled() -> bool {
 pub fn reauthorize_in_background(server: &str, config: &McpServerConfig) {
     if mcp::has_mcp_oauth_tokens(server) && auto_reauthorize_enabled() {
         tracing::info!("MCP server '{server}' login expired; re-authorizing");
-        drop(relogin(server, config));
+        drop(relogin(server, config).0);
     }
 }
 
 /// Log the HTTP MCP server `server`, configured as `config`, in through the
-/// browser, joining a login already running for it.
+/// browser — asked for by the user. Joins a login already running for it and
+/// opens the browser at its page again: the user may have closed it, and the
+/// waiting login still takes the callback.
 pub async fn login_shared(server: &str, config: &McpServerConfig) -> Result<()> {
-    relogin(server, config).await.map_err(anyhow::Error::msg)
+    let (login, joined) = relogin(server, config);
+    let url = joined.and_then(|url| url.lock().unwrap_or_else(|e| e.into_inner()).clone());
+    if let Some(url) = url {
+        tracing::info!("MCP server '{server}' login is waiting; opening its page again");
+        open_browser(&url);
+    }
+    login.await.map_err(anyhow::Error::msg)
 }
 
 type Login = Shared<BoxFuture<'static, Result<(), String>>>;
 
 /// Logins in progress per server, so concurrent requests share one browser
-/// round trip.
-static LOGINS: LazyLock<Mutex<HashMap<String, Login>>> = LazyLock::new(Default::default);
+/// round trip, with where each one's authorization URL appears.
+static LOGINS: LazyLock<Mutex<HashMap<String, (Login, UrlSlot)>>> = LazyLock::new(Default::default);
 
 /// Join or start the browser login for `server`. It runs as its own task: a
 /// caller that gives up (a cancelled tool call) does not abandon a login the
-/// user may be completing in the browser.
-fn relogin(server: &str, config: &McpServerConfig) -> Login {
+/// user may be completing in the browser. Returns the login and, when it
+/// joined one already running, that login's URL slot.
+fn relogin(server: &str, config: &McpServerConfig) -> (Login, Option<UrlSlot>) {
     let mut logins = LOGINS.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(login) = logins.get(server) {
-        return login.clone();
+    if let Some((login, url)) = logins.get(server) {
+        return (login.clone(), Some(url.clone()));
     }
     let name = server.to_string();
     let config = config.clone();
+    let url = UrlSlot::default();
+    let task_url = url.clone();
     let task = tokio::spawn(async move {
-        let result = login_configured_server(&name, &config)
+        let result = login_reporting_url(&name, &config, task_url)
             .await
             .map_err(|e| format!("{e:#}"));
         LOGINS
@@ -217,8 +247,8 @@ fn relogin(server: &str, config: &McpServerConfig) -> Login {
     }
     .boxed()
     .shared();
-    logins.insert(server.to_string(), login.clone());
-    login
+    logins.insert(server.to_string(), (login.clone(), url));
+    (login, None)
 }
 
 /// Read the redirect request off `stream` and return its decoded query
