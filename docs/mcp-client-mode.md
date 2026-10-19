@@ -228,8 +228,10 @@ when a login expires" switch):
   `mcp_client::Reauthorizer` — code-assistant's `AutoReauthorizer` runs the
   browser login — reconnects and retries the call. A call that failed for
   another transport reason is not retried, since it may have run.
-- **At connect** (e.g. the login expired while the app was closed): the
-  server contributes no tools to that run; the login starts in the
+- **At connect** (e.g. the login expired while the app was closed): a
+  stored login the server rejects, or whose refresh fails, counts as
+  missing — the connect retries without it and the server's `401` reports
+  *login required*. The server contributes no tools to that run; the login starts in the
   background, and the new token file rebuilds the registry for the next run.
 
 Only servers with a previous login are renewed, global and project-local

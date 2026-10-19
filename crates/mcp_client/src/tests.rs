@@ -396,6 +396,42 @@ async fn http_server_requiring_auth_surfaces_authorization_required() {
     );
 }
 
+/// A stored login the server no longer accepts (the token expired and cannot
+/// be refreshed) fails the connect as [`AuthorizationRequired`], like no
+/// login at all, so the embedder offers a new login instead of a dead end.
+#[tokio::test]
+async fn unusable_stored_login_surfaces_authorization_required() {
+    let (url, _server) = spawn_auth_required_server().await;
+    let config = server_config(json!({ "url": url }));
+    let credentials: rmcp::transport::auth::StoredCredentials = serde_json::from_value(json!({
+        "client_id": "client-123",
+        "token_response": {
+            "access_token": "stale",
+            "token_type": "bearer",
+            "expires_in": 1,
+            "refresh_token": "revoked"
+        },
+        "token_received_at": 1
+    }))
+    .unwrap();
+    let store = rmcp::transport::auth::InMemoryCredentialStore::new();
+    rmcp::transport::auth::CredentialStore::save(&store, credentials)
+        .await
+        .unwrap();
+    let store: Arc<dyn rmcp::transport::auth::CredentialStore> = Arc::new(store);
+
+    let error = match McpServerConnection::connect("remote", &config, Some(store)).await {
+        Ok(_) => panic!("connect must fail when the stored login is unusable"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .downcast_ref::<crate::auth::AuthorizationRequired>()
+            .is_some(),
+        "expected AuthorizationRequired, got: {error:#}"
+    );
+}
+
 /// OAuth authorization only applies to HTTP servers; asking to authenticate a
 /// stdio server is a configuration error, surfaced without touching the
 /// network.
