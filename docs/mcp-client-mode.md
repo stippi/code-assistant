@@ -196,6 +196,23 @@ shows and preserves.
   holds so the new connection stays alive. Other sessions pick it up on
   their next run.
 
+### OAuth logins
+
+An HTTP server that demands OAuth (it answers `initialize` with `401`) and
+has no stored login contributes no tools and shows as *login required*
+(`McpServerHealth::NeedsLogin`). The browser login starts from:
+
+- the *Log in* button of that server's row in the input row's *Tools* menu
+  (`SessionService::login_mcp_server`), which also restarts the server so
+  its tools join the session — this covers servers from the project's
+  trusted `.mcp.json`;
+- the *Authenticate* action in *Settings → MCP* (global servers);
+- `code-assistant mcp-login <server>`, which finds servers in
+  `mcp-servers.json` and in the `.mcp.json` of the current directory.
+
+Tokens are stored per server name, wherever the server is configured. A
+login never starts on its own for a server that was never logged in.
+
 ### Expired OAuth logins
 
 An HTTP server that uses OAuth keeps its tokens in
@@ -215,7 +232,8 @@ when a login expires" switch):
   server contributes no tools to that run; the login starts in the
   background, and the new token file rebuilds the registry for the next run.
 
-Only servers with a previous login are renewed. Concurrent requests for one
+Only servers with a previous login are renewed, global and project-local
+alike (the renewal uses the configuration the connection was made with). Concurrent requests for one
 server share one browser login, which runs to completion even if the tool
 call that started it is cancelled. With the switch off, the tool call fails
 with a hint to log in from the settings or with `code-assistant mcp-login`.

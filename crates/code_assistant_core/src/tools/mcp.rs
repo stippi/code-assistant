@@ -86,19 +86,32 @@ pub fn mcp_oauth_credential_store(server: &str) -> std::sync::Arc<dyn mcp_client
     )))
 }
 
-/// Run the interactive OAuth login for a configured HTTP MCP server and
-/// persist its tokens, so later connects reuse them without user interaction.
-/// `authorizer` performs the browser round-trip (open the URL, capture the
-/// redirect). The server is looked up in the global `mcp-servers.json`;
-/// errors if it is unknown or not an HTTP server.
-pub async fn authenticate_mcp_server(name: &str, authorizer: &dyn OAuthAuthorizer) -> Result<()> {
-    let config = load_mcp_servers_config()?;
-    let server = config.servers.get(name).ok_or_else(|| {
-        anyhow::anyhow!(
-            "No MCP server named '{name}' in {}",
-            mcp_servers_config_path().display()
-        )
-    })?;
+/// The configuration of server `name` as an agent run sees it: the global
+/// `mcp-servers.json`, overridden by the project-local `.mcp.json` in
+/// `local_mcp_dir` when given. Errors if neither defines the server.
+pub fn resolve_mcp_server(name: &str, local_mcp_dir: Option<&Path>) -> Result<McpServerConfig> {
+    let mut config = load_mcp_servers_config()?;
+    if let Some(local) = local_mcp_dir.and_then(load_local_mcp_json) {
+        config.merge(local);
+    }
+    config.servers.remove(name).ok_or_else(|| {
+        let mut places = mcp_servers_config_path().display().to_string();
+        if let Some(dir) = local_mcp_dir {
+            places.push_str(&format!(" or {}", dir.join(".mcp.json").display()));
+        }
+        anyhow::anyhow!("No MCP server named '{name}' in {places}")
+    })
+}
+
+/// Run the interactive OAuth login for the HTTP MCP server `name`, configured
+/// as `server`, and persist its tokens, so later connects reuse them without
+/// user interaction. `authorizer` performs the browser round-trip (open the
+/// URL, capture the redirect). Errors if `server` is not an HTTP server.
+pub async fn authenticate_mcp_server(
+    name: &str,
+    server: &McpServerConfig,
+    authorizer: &dyn OAuthAuthorizer,
+) -> Result<()> {
     let store = mcp_oauth_credential_store(name);
     mcp_client::authenticate_http_server(name, server, store, authorizer, "code-assistant").await
 }
@@ -386,6 +399,47 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = load_mcp_servers_config_from(&dir.path().join("mcp-servers.json")).unwrap();
         assert!(config.servers.is_empty());
+    }
+
+    /// A login finds servers from the project's `.mcp.json` too, which
+    /// override global ones of the same name, as in an agent run.
+    #[test]
+    fn resolve_mcp_server_includes_the_project_config() {
+        let config = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(
+            config.path().join("mcp-servers.json"),
+            r#"{ "servers": {
+                "global": { "url": "https://global.example.com/mcp" },
+                "shared": { "url": "https://global.example.com/shared" }
+            } }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            project.path().join(".mcp.json"),
+            r#"{ "mcpServers": {
+                "local": { "type": "http", "url": "http://127.0.0.1:9000/mcp" },
+                "shared": { "type": "http", "url": "http://127.0.0.1:9000/shared" }
+            } }"#,
+        )
+        .unwrap();
+        temp_env::with_var("CODE_ASSISTANT_CONFIG_DIR", Some(config.path()), || {
+            let url = |name: &str, dir: Option<&Path>| match resolve_mcp_server(name, dir)
+                .unwrap()
+                .transport
+            {
+                McpTransport::Http { url, .. } => url,
+                other => panic!("expected an HTTP server, got {other:?}"),
+            };
+            let dir = Some(project.path());
+            assert_eq!(url("global", dir), "https://global.example.com/mcp");
+            assert_eq!(url("local", dir), "http://127.0.0.1:9000/mcp");
+            assert_eq!(url("shared", dir), "http://127.0.0.1:9000/shared");
+            assert_eq!(url("shared", None), "https://global.example.com/shared");
+
+            let error = resolve_mcp_server("local", None).unwrap_err();
+            assert!(error.to_string().contains("No MCP server named 'local'"));
+        });
     }
 
     #[test]

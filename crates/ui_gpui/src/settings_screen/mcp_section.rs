@@ -213,6 +213,7 @@ impl McpSection {
                         .build()?;
                     runtime.block_on(code_assistant_core::tools::mcp_auth::login_mcp_server(
                         &server_name,
+                        None,
                     ))
                 })
                 .await;

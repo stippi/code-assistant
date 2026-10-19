@@ -907,6 +907,15 @@ impl MainScreen {
                     cx.notify();
                 }
             }
+            InputAreaEvent::McpServerLoginRequested { name } => {
+                if let Some(session_id) = &self.current_session_id {
+                    let gpui = cx
+                        .try_global::<Gpui>()
+                        .expect("Failed to obtain Gpui global");
+                    gpui.cmd_login_mcp_server(session_id.clone(), name.clone());
+                    cx.notify();
+                }
+            }
             InputAreaEvent::McpStatusesRequested => {
                 let gpui = cx
                     .try_global::<Gpui>()

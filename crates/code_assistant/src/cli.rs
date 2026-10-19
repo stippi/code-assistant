@@ -35,7 +35,8 @@ pub enum Mode {
 
     /// Log in to an HTTP MCP server that requires OAuth (opens browser)
     McpLogin {
-        /// Name of the server as configured in mcp-servers.json
+        /// Name of the server as configured in mcp-servers.json or in the
+        /// .mcp.json of the current directory
         server: String,
     },
 

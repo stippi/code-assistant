@@ -195,6 +195,11 @@ impl ConfigToolRegistry {
             for status in statuses {
                 let new = match &status.result {
                     Ok(tools) => McpServerHealth::Connected { tools: tools.len() },
+                    // The connect found the login missing; the status only
+                    // carries the error text, so keep the more specific state.
+                    Err(_) if health.get(&status.server) == Some(&McpServerHealth::NeedsLogin) => {
+                        continue;
+                    }
                     Err(error) => McpServerHealth::Failed {
                         error: error.clone(),
                     },
@@ -351,20 +356,16 @@ impl ConnectionProvider for ConfigToolRegistry {
             .is_http()
             .then(|| crate::tools::mcp::mcp_oauth_credential_store(name));
         let connection = match McpServerConnection::connect(name, config, credentials).await {
-            // A login that expired while the app was closed: renew it in the
-            // background, the tools appear on the next run.
+            // No login, or one that expired while the app was closed: an
+            // expired one is renewed in the background, the tools appear on
+            // the next run; a missing one waits for the user to log in.
             Err(error)
                 if error
                     .downcast_ref::<mcp_client::AuthorizationRequired>()
                     .is_some() =>
             {
-                crate::tools::mcp_auth::reauthorize_in_background(name);
-                self.set_health(
-                    name,
-                    McpServerHealth::Failed {
-                        error: format!("{error:#}"),
-                    },
-                );
+                crate::tools::mcp_auth::reauthorize_in_background(name, config);
+                self.set_health(name, McpServerHealth::NeedsLogin);
                 return Err(error);
             }
             Err(error) => {
@@ -380,9 +381,9 @@ impl ConnectionProvider for ConfigToolRegistry {
         };
         // A login that expires while the connection is in use is renewed when
         // a tool call hits it.
-        let connection = Arc::new(
-            connection.with_reauthorizer(Arc::new(crate::tools::mcp_auth::AutoReauthorizer)),
-        );
+        let connection = Arc::new(connection.with_reauthorizer(Arc::new(
+            crate::tools::mcp_auth::AutoReauthorizer::new(config.clone()),
+        )));
         // Re-check under the lock: if another caller connected the same server
         // meanwhile, keep theirs and drop ours (shut down on drop).
         let mut connections = self.locked_connections();
@@ -615,6 +616,60 @@ mod tests {
             },
         )
         .await;
+    }
+
+    /// An HTTP server from a project's `.mcp.json` that demands OAuth, with
+    /// no login yet, waits for one (rather than reading as a plain failure),
+    /// and no browser opens on its own.
+    #[tokio::test]
+    async fn server_without_login_needs_one() {
+        use axum::http::StatusCode;
+
+        let router = axum::Router::new().route(
+            "/mcp",
+            axum::routing::any(|| async {
+                (
+                    StatusCode::UNAUTHORIZED,
+                    [(
+                        "WWW-Authenticate",
+                        "Bearer resource_metadata=\"https://auth.example.com/.well-known/oauth-protected-resource\"",
+                    )],
+                    "authorization required",
+                )
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+
+        let config = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(
+            project.path().join(".mcp.json"),
+            format!(r#"{{ "mcpServers": {{ "remote": {{ "type": "http", "url": "http://{addr}/mcp" }} }} }}"#),
+        )
+        .unwrap();
+        temp_env::async_with_vars(
+            [("CODE_ASSISTANT_CONFIG_DIR", Some(config.path()))],
+            async {
+                let provider = ConfigToolRegistry::new();
+                let _registry = provider
+                    .current_for(RegistryRequest {
+                        project_dir: Some(project.path().to_path_buf()),
+                        include_local_mcp: true,
+                    })
+                    .await;
+                assert_eq!(
+                    provider.statuses().remove("remote"),
+                    Some(McpServerHealth::NeedsLogin)
+                );
+                assert!(!crate::tools::mcp::has_mcp_oauth_tokens("remote"));
+            },
+        )
+        .await;
+        server.abort();
     }
 
     /// A server skipped while loading the configuration (an unresolvable

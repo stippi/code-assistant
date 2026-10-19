@@ -148,6 +148,9 @@ pub enum McpServerHealth {
     Connected { tools: usize },
     /// Could not connect, could not list its tools, or the connection died.
     Failed { error: String },
+    /// The server demands an OAuth login the app does not hold (never logged
+    /// in, or the login expired); see `SessionService::login_mcp_server`.
+    NeedsLogin,
 }
 
 /// One built-in tool group offered to a session, with whether it is currently

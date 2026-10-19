@@ -1086,33 +1086,8 @@ impl SessionService {
     /// new connection.
     pub async fn restart_mcp_server(&self, session_id: String, name: String) -> Result<()> {
         self.call_io(move |ctx| async move {
-            let (control, project_dir, mediator) = {
-                let mut manager = ctx.manager.lock().await;
-                let control = manager
-                    .mcp_server_control()
-                    .ok_or_else(|| anyhow!("MCP servers cannot be restarted here"))?;
-                manager.ensure_session_loaded(&session_id)?;
-                let project_dir = manager
-                    .get_session(&session_id)
-                    .and_then(|instance| instance.session.config.effective_project_path().cloned());
-                let mediator = manager.permission_mediator(&session_id)?;
-                (control, project_dir, mediator)
-            };
-            // Connecting is network or process work: not under the manager lock.
-            let include_local_mcp = SessionManager::resolve_local_mcp_trust(
-                project_dir.as_deref(),
-                Some(mediator.as_ref()),
-            )
-            .await;
-            let registry = control
-                .restart(
-                    &name,
-                    crate::session::manager::RegistryRequest {
-                        project_dir,
-                        include_local_mcp,
-                    },
-                )
-                .await;
+            let (control, req) = Self::mcp_registry_request(&ctx, &session_id).await?;
+            let registry = control.restart(&name, req).await;
             ctx.manager
                 .lock()
                 .await
@@ -1120,6 +1095,65 @@ impl SessionService {
             Ok(())
         })
         .await
+    }
+
+    /// Log an HTTP MCP server (by config name) in through the browser from a
+    /// session's MCP menu, then restart it so its tools join the session's
+    /// registry. The server may come from the project's trusted `.mcp.json`.
+    /// Resolves once the login finished (the user may take minutes in the
+    /// browser) and the server reconnected; progress arrives as
+    /// [`UiEvent::McpServerStatusChanged`].
+    pub async fn login_mcp_server(&self, session_id: String, name: String) -> Result<()> {
+        self.call_io(move |ctx| async move {
+            let (control, req) = Self::mcp_registry_request(&ctx, &session_id).await?;
+            let local_mcp_dir = req.project_dir.as_deref().filter(|_| req.include_local_mcp);
+            let server = crate::tools::mcp::resolve_mcp_server(&name, local_mcp_dir)?;
+            crate::tools::mcp_auth::login_shared(&name, &server).await?;
+            let registry = control.restart(&name, req).await;
+            ctx.manager
+                .lock()
+                .await
+                .adopt_tool_registry(&session_id, registry);
+            Ok(())
+        })
+        .await
+    }
+
+    /// The MCP server control and the registry request of a session: its
+    /// project, and whether that project's `.mcp.json` is trusted (which may
+    /// prompt the user).
+    async fn mcp_registry_request(
+        ctx: &ServiceCtx,
+        session_id: &str,
+    ) -> Result<(
+        Arc<dyn crate::session::manager::McpServerControl>,
+        crate::session::manager::RegistryRequest,
+    )> {
+        let (control, project_dir, mediator) = {
+            let mut manager = ctx.manager.lock().await;
+            let control = manager
+                .mcp_server_control()
+                .ok_or_else(|| anyhow!("MCP servers cannot be managed here"))?;
+            manager.ensure_session_loaded(session_id)?;
+            let project_dir = manager
+                .get_session(session_id)
+                .and_then(|instance| instance.session.config.effective_project_path().cloned());
+            let mediator = manager.permission_mediator(session_id)?;
+            (control, project_dir, mediator)
+        };
+        // Connecting is network or process work: not under the manager lock.
+        let include_local_mcp = SessionManager::resolve_local_mcp_trust(
+            project_dir.as_deref(),
+            Some(mediator.as_ref()),
+        )
+        .await;
+        Ok((
+            control,
+            crate::session::manager::RegistryRequest {
+                project_dir,
+                include_local_mcp,
+            },
+        ))
     }
 
     /// Publish the current state of every MCP server as an app-scoped
