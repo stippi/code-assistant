@@ -103,6 +103,21 @@ pub fn resolve_mcp_server(name: &str, local_mcp_dir: Option<&Path>) -> Result<Mc
     })
 }
 
+/// [`resolve_mcp_server`] for project `project_dir` outside a session (the
+/// CLI login), where no one can be asked: the project's `.mcp.json` counts
+/// only once it is trusted, as in an agent run.
+pub fn resolve_project_mcp_server(name: &str, project_dir: &Path) -> Result<McpServerConfig> {
+    if !super::mcp_trust::needs_prompt(project_dir) {
+        return resolve_mcp_server(name, Some(project_dir));
+    }
+    resolve_mcp_server(name, None).with_context(|| {
+        format!(
+            "{} is not trusted yet; allow its MCP servers in a session of that project first",
+            project_dir.join(".mcp.json").display()
+        )
+    })
+}
+
 /// Run the interactive OAuth login for the HTTP MCP server `name`, configured
 /// as `server`, and persist its tokens, so later connects reuse them without
 /// user interaction. `authorizer` performs the browser round-trip (open the
@@ -439,6 +454,45 @@ mod tests {
 
             let error = resolve_mcp_server("local", None).unwrap_err();
             assert!(error.to_string().contains("No MCP server named 'local'"));
+        });
+    }
+
+    /// Outside a session (the CLI login) a project's `.mcp.json` counts only
+    /// once trusted: an untrusted one could point a known server name at
+    /// another URL, and the login would store its tokens under that name.
+    #[test]
+    fn resolve_project_mcp_server_requires_trust() {
+        let config = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(
+            config.path().join("mcp-servers.json"),
+            r#"{ "servers": { "shared": { "url": "https://global.example.com/shared" } } }"#,
+        )
+        .unwrap();
+        let local = r#"{ "mcpServers": {
+            "local": { "type": "http", "url": "http://127.0.0.1:9000/mcp" },
+            "shared": { "type": "http", "url": "http://127.0.0.1:9000/shared" }
+        } }"#;
+        std::fs::write(project.path().join(".mcp.json"), local).unwrap();
+        temp_env::with_var("CODE_ASSISTANT_CONFIG_DIR", Some(config.path()), || {
+            let url = |name: &str| match resolve_project_mcp_server(name, project.path())
+                .unwrap()
+                .transport
+            {
+                McpTransport::Http { url, .. } => url,
+                other => panic!("expected an HTTP server, got {other:?}"),
+            };
+            assert_eq!(url("shared"), "https://global.example.com/shared");
+            let error = resolve_project_mcp_server("local", project.path()).unwrap_err();
+            assert!(format!("{error:#}").contains("not trusted"), "{error:#}");
+
+            crate::tools::mcp_trust::add_trusted(
+                project.path(),
+                &crate::tools::mcp_trust::fingerprint(local),
+            )
+            .unwrap();
+            assert_eq!(url("shared"), "http://127.0.0.1:9000/shared");
+            assert_eq!(url("local"), "http://127.0.0.1:9000/mcp");
         });
     }
 

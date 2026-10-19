@@ -207,8 +207,10 @@ has no stored login contributes no tools and shows as *login required*
   its tools join the session — this covers servers from the project's
   trusted `.mcp.json`;
 - the *Authenticate* action in *Settings → MCP* (global servers);
-- `code-assistant mcp-login <server>`, which finds servers in
-  `mcp-servers.json` and in the `.mcp.json` of the current directory.
+- `code-assistant mcp-login <server> [--path <project>]`, which finds
+  servers in `mcp-servers.json` and in the project's `.mcp.json` (default:
+  the current directory) once that file is trusted — the CLI cannot ask,
+  so an untrusted one is ignored as in an agent run.
 
 Tokens are stored per server name, wherever the server is configured. A
 login never starts on its own for a server that was never logged in.
