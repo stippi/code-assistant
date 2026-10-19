@@ -30,15 +30,24 @@ pub(crate) const SHORT_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 /// unreachable endpoints; TCP keepalive lets the OS notice dead peers. Reads are
 /// bounded per request by [`send_request`] and [`crate::streaming::HttpChunkStream`],
 /// since a total timeout would cut off long but healthy streams.
+///
+/// TLS goes through rustls. By default certificates are checked by the
+/// platform verifier (the OS trust store); with only the `tls-webpki-roots`
+/// feature the embedded Mozilla roots are used instead.
 pub(crate) fn http_client() -> Client {
-    Client::builder()
+    let builder = Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
-        .tcp_keepalive(Duration::from_secs(30))
-        .build()
-        .unwrap_or_else(|e| {
-            warn!("Failed to build HTTP client with timeouts, using defaults: {e}");
-            Client::new()
-        })
+        .tcp_keepalive(Duration::from_secs(30));
+    #[cfg(all(feature = "tls-webpki-roots", not(feature = "tls-native-roots")))]
+    let builder = builder.tls_certs_only(
+        webpki_root_certs::TLS_SERVER_ROOT_CERTS
+            .iter()
+            .filter_map(|der| reqwest::Certificate::from_der(der).ok()),
+    );
+    builder.build().unwrap_or_else(|e| {
+        warn!("Failed to build HTTP client with timeouts, using defaults: {e}");
+        Client::new()
+    })
 }
 
 /// Send a request, mapping transport failures to `ApiError::NetworkError` so
