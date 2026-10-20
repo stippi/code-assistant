@@ -716,15 +716,15 @@ impl SessionManager {
 
     /// Set the UI-active session and return an owned snapshot for rendering.
     ///
-    /// When `edit_until_node_id` is `Some(_)`, the snapshot transcript is
-    /// truncated to messages up to and including that node. This lets the
+    /// When `edited_node_id` is `Some(_)`, the snapshot transcript is
+    /// truncated to the messages before that node. This lets the
     /// UI restore an in-progress message edit (banner + truncated transcript)
     /// directly when connecting to a session whose draft is in edit mode,
     /// rather than loading the full transcript and then truncating it.
     pub async fn set_active_session(
         &mut self,
         session_id: String,
-        edit_until_node_id: Option<crate::persistence::NodeId>,
+        edited_node_id: Option<crate::persistence::NodeId>,
     ) -> Result<crate::session::SessionSnapshot> {
         // Check if session exists
         let session_exists = self.active_sessions.contains_key(&session_id);
@@ -771,8 +771,7 @@ impl SessionManager {
         // Build the owned snapshot for the frontend
         let mut snapshot = {
             let session_instance = self.active_sessions.get_mut(&session_id).unwrap();
-            let snapshot =
-                session_instance.build_snapshot(&self.persistence, edit_until_node_id)?;
+            let snapshot = session_instance.build_snapshot(&self.persistence, edited_node_id)?;
             // Mark what the UI now knows about (baseline for future incremental diffs)
             session_instance.last_ui_synced_path = session_instance.session.active_path.clone();
             session_instance.last_ui_synced_tool_count =
@@ -966,22 +965,22 @@ impl SessionManager {
         &mut self,
         session_id: &str,
         content_blocks: Vec<llm::ContentBlock>,
-        branch_parent_id: Option<crate::persistence::NodeId>,
+        edited_node_id: Option<crate::persistence::NodeId>,
     ) -> Result<crate::persistence::NodeId> {
         let session_instance = self
             .active_sessions
             .get_mut(session_id)
             .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
 
-        // Add the structured user message to the stored entry, as a new
-        // branch below `branch_parent_id` or at the end of the active path.
+        // Add the structured user message to the stored entry, as the edited
+        // version of `edited_node_id` or at the end of the active path.
         let message = Message::new_user_content(content_blocks);
         let mut node_id = None;
         session_instance.session = self.persistence.update_entry(session_id, |session| {
-            node_id = Some(match branch_parent_id {
-                Some(parent_id) => {
-                    debug!("Creating new branch from parent {parent_id} in session {session_id}");
-                    session.add_message_with_parent(message.clone(), Some(parent_id))
+            node_id = Some(match edited_node_id {
+                Some(edited) => {
+                    debug!("Adding an edit of node {edited} in session {session_id}");
+                    session.add_edited_message(edited, message.clone())?
                 }
                 None => session.add_message(message.clone()),
             });
@@ -1066,7 +1065,7 @@ impl SessionManager {
         &mut self,
         session_id: &str,
         content_blocks: Vec<llm::ContentBlock>,
-        branch_parent_id: Option<crate::persistence::NodeId>,
+        edited_node_id: Option<crate::persistence::NodeId>,
         llm_provider: Box<dyn LLMProvider>,
         project_manager: Box<dyn ProjectManager>,
         command_executor: Box<dyn CommandExecutor>,
@@ -1074,7 +1073,7 @@ impl SessionManager {
         registry_request: RegistryRequest,
     ) -> Result<()> {
         // Add the message first
-        self.add_user_message(session_id, content_blocks, branch_parent_id)?;
+        self.add_user_message(session_id, content_blocks, edited_node_id)?;
 
         // Then start the agent
         self.start_agent_for_session(

@@ -383,8 +383,8 @@ pub enum UiEvent {
         content: String,
         /// Any attachments from the original message
         attachments: Vec<DraftAttachment>,
-        /// The parent node ID where the new branch will be created
-        branch_parent_id: Option<NodeId>,
+        /// The edited message and whether sending replaces it
+        edit: crate::persistence::MessageEdit,
         /// Messages up to (but not including) the message being edited
         messages: Vec<MessageData>,
         /// Tool results for the truncated path

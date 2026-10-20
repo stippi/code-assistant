@@ -266,13 +266,14 @@ async fn startup(service: &SessionService, gui: &ui_gpui::Gpui, task: Option<Str
             Some(session_id) => {
                 debug!("Connecting to existing session: {}", session_id);
                 // If the session's draft is in edit mode, connect with the
-                // transcript already truncated to the branch parent so the
+                // transcript already truncated to the edited message so the
                 // edit view is restored directly on startup.
-                let edit_until_node_id = gui
+                let edited_node_id = gui
                     .load_draft_for_session(&session_id)
-                    .and_then(|draft| draft.editing_branch_parent_id);
+                    .and_then(|draft| draft.editing)
+                    .map(|edit| edit.node_id);
                 match service
-                    .load_session(session_id.clone(), edit_until_node_id)
+                    .load_session(session_id.clone(), edited_node_id)
                     .await
                 {
                     Ok(snapshot) => gui.apply_snapshot(&snapshot),

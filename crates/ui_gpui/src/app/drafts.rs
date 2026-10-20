@@ -5,15 +5,14 @@
 //! for persistence across restarts.
 
 use super::super::Gpui;
-use code_assistant_core::persistence::{DraftAttachment, NodeId, SessionDraft};
+use code_assistant_core::persistence::{DraftAttachment, MessageEdit, SessionDraft};
 use tracing::warn;
 
 impl Gpui {
     /// Save draft text, attachments and edit state for a session.
     ///
-    /// `editing_branch_parent_id` is `Some(_)` when the user is editing an
-    /// existing message (the value is the parent node where the new branch
-    /// will be created). Persisting it lets the editing banner and truncated
+    /// `editing` is `Some(_)` when the user is editing an existing message.
+    /// Persisting it lets the editing banner and truncated
     /// transcript be restored when the session is reconnected.
     ///
     /// Updates the in-memory cache immediately and schedules an async store write.
@@ -22,13 +21,13 @@ impl Gpui {
         session_id: &str,
         content: &str,
         attachments: &[DraftAttachment],
-        editing_branch_parent_id: Option<NodeId>,
+        editing: Option<MessageEdit>,
     ) {
         let draft = SessionDraft {
             session_id: session_id.to_string(),
             message: content.to_string(),
             attachments: attachments.to_vec(),
-            editing_branch_parent_id,
+            editing,
         };
         let is_empty = draft.is_empty();
 
@@ -65,9 +64,7 @@ impl Gpui {
             let still_current =
                 session_drafts.lock().unwrap().get(&draft.session_id) == Some(&draft.message);
 
-            if (still_current
-                || !draft.attachments.is_empty()
-                || draft.editing_branch_parent_id.is_some())
+            if (still_current || !draft.attachments.is_empty() || draft.editing.is_some())
                 && let Err(e) = draft_store.save(&draft)
             {
                 warn!(
@@ -89,7 +86,7 @@ impl Gpui {
                 session_id: session_id.to_string(),
                 message,
                 attachments: Vec::new(),
-                editing_branch_parent_id: None,
+                editing: None,
             })
         };
 

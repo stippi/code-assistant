@@ -2,6 +2,7 @@
 //! played by the test.
 
 use crate::test_support::MainScreenTest;
+use code_assistant_core::persistence::MessageEdit;
 use code_assistant_core::ui::UiEvent;
 use gpui_kit::TestAppContext;
 use std::io::ErrorKind;
@@ -12,11 +13,11 @@ fn handoff(prompt: &str) -> UiEvent {
     }
 }
 
-fn edit_ready(content: &str, branch_parent_id: u64) -> UiEvent {
+fn edit_ready(content: &str, edit: MessageEdit) -> UiEvent {
     UiEvent::MessageEditReady {
         content: content.into(),
         attachments: Vec::new(),
-        branch_parent_id: Some(branch_parent_id),
+        edit,
         messages: Vec::new(),
         tool_results: Vec::new(),
     }
@@ -126,7 +127,11 @@ fn a_handoff_prepared_in_the_background_keeps_its_draft(cx: &mut TestAppContext)
 fn a_started_edit_survives_a_switch(cx: &mut TestAppContext) {
     let mut test = MainScreenTest::new(cx);
     test.view_session("a");
-    test.push(edit_ready("original message", 7));
+    let edit = MessageEdit {
+        node_id: 7,
+        in_place: false,
+    };
+    test.push(edit_ready("original message", edit));
     assert!(test.is_editing());
     assert_eq!(test.input_text(), "original message");
 
@@ -137,5 +142,5 @@ fn a_started_edit_survives_a_switch(cx: &mut TestAppContext) {
     assert!(test.is_editing());
     assert_eq!(test.input_text(), "original message");
     let stored = test.stores.drafts.stored("a").unwrap();
-    assert_eq!(stored.editing_branch_parent_id, Some(7));
+    assert_eq!(stored.editing, Some(edit));
 }
