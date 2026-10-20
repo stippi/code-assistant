@@ -107,6 +107,14 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
   the `audio` crate (macOS voice-processing I/O with echo cancellation,
   `cpal` half-duplex elsewhere); see `docs/voice-mode.md`
 
+### Architecture Panel
+- Right panel view showing the project as boxes of components with
+  dependency arrows, one level at a time (`code_assistant_core::architecture`)
+- Structure, interfaces and edges come from a deterministic scan (Rust,
+  TS/JS, Python); a model only explains, one call per component, cached by
+  the hash of the component's digest; model in `architecture.json`
+  (*Settings → Architecture*); see `docs/architecture-panel.md`
+
 ### Session Storage
 - One folder per session below `sessions/`, the ID is its path:
   `<project-slug>/<YYYY-MM-DD>-<NNN>` (`persistence::layout`)

@@ -1,5 +1,6 @@
 //! Settings screen — full-screen view for configuring providers, models, and general preferences.
 
+mod architecture_section;
 mod general_section;
 mod mcp_section;
 mod models_section;
@@ -27,6 +28,7 @@ pub enum SettingsSection {
     Tools,
     McpServers,
     Voice,
+    Architecture,
 }
 
 /// Events emitted by the settings screen.
@@ -49,6 +51,7 @@ pub struct SettingsScreen {
     tools_section: Entity<tools_section::ToolsSection>,
     mcp_section: Entity<mcp_section::McpSection>,
     voice_section: Entity<voice_section::VoiceSection>,
+    architecture_section: Entity<architecture_section::ArchitectureSection>,
 }
 
 impl SettingsScreen {
@@ -61,6 +64,8 @@ impl SettingsScreen {
         let tools_section = cx.new(|cx| tools_section::ToolsSection::new(window, cx));
         let mcp_section = cx.new(|cx| mcp_section::McpSection::new(window, cx));
         let voice_section = cx.new(|cx| voice_section::VoiceSection::new(window, cx));
+        let architecture_section =
+            cx.new(|cx| architecture_section::ArchitectureSection::new(window, cx));
 
         Self {
             focus_handle: cx.focus_handle(),
@@ -72,6 +77,7 @@ impl SettingsScreen {
             tools_section,
             mcp_section,
             voice_section,
+            architecture_section,
         }
     }
 
@@ -119,6 +125,10 @@ impl SettingsScreen {
             }
             SettingsSection::Voice => {
                 self.voice_section.update(cx, |s, _cx| s.reload());
+            }
+            SettingsSection::Architecture => {
+                self.architecture_section
+                    .update(cx, |s, cx| s.reload(window, cx));
             }
             SettingsSection::General => {
                 self.general_section
@@ -313,6 +323,12 @@ impl Render for SettingsScreen {
                                         "Voice",
                                         "icons/mic.svg",
                                         cx,
+                                    ))
+                                    .child(self.render_nav_item(
+                                        SettingsSection::Architecture,
+                                        "Architecture",
+                                        "icons/list_tree.svg",
+                                        cx,
                                     )),
                             ),
                     )
@@ -337,6 +353,9 @@ impl Render for SettingsScreen {
                                 self.mcp_section.clone().into_any_element()
                             }
                             SettingsSection::Voice => self.voice_section.clone().into_any_element(),
+                            SettingsSection::Architecture => {
+                                self.architecture_section.clone().into_any_element()
+                            }
                         },
                     )),
             )

@@ -215,6 +215,8 @@ struct ServiceCtx {
     manager: Arc<Mutex<SessionManager>>,
     runtime: Arc<AgentRuntimeOptions>,
     events: EventStream,
+    /// The architecture overviews of the sessions' projects.
+    architecture: Arc<crate::architecture::Analyzer>,
 }
 
 impl ServiceCtx {
@@ -263,6 +265,23 @@ impl SessionService {
         runtime: Arc<AgentRuntimeOptions>,
         events: EventStream,
     ) -> (Self, impl Future<Output = ()>) {
+        let architecture = Arc::new(crate::architecture::Analyzer::new(
+            Arc::new(crate::architecture::LlmSummarizer::new(
+                runtime.llm_client_factory.clone(),
+            )),
+            Some(crate::config_dir::data_dir().join("architecture")),
+        ));
+        Self::with_architecture(manager, runtime, events, architecture)
+    }
+
+    /// Like [`SessionService::new`], with the analyzer behind the
+    /// architecture overview supplied (tests: a fixed model, no disk cache).
+    pub fn with_architecture(
+        manager: Arc<Mutex<SessionManager>>,
+        runtime: Arc<AgentRuntimeOptions>,
+        events: EventStream,
+        architecture: Arc<crate::architecture::Analyzer>,
+    ) -> (Self, impl Future<Output = ()>) {
         let (tx, rx) = async_channel::bounded::<Dispatch>(COMMAND_CAPACITY);
         let (control_tx, control_rx) = async_channel::bounded::<Command>(16);
         let admission = Arc::new(tokio::sync::Semaphore::new(COMMAND_CAPACITY));
@@ -270,6 +289,7 @@ impl SessionService {
             manager,
             runtime,
             events: events.clone(),
+            architecture,
         };
         let worker = async move {
             let control = {
@@ -2399,6 +2419,7 @@ async fn run_command(ctx: ServiceCtx, command: Command, permit: tokio::sync::Own
     drop(permit);
 }
 
+mod architecture;
 mod browsers;
 mod files;
 pub use files::{

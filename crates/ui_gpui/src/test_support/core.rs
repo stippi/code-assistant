@@ -43,9 +43,17 @@ impl TestCore {
                 Box::new(code_assistant_core::mocks::create_command_executor_mock())
             }),
             project_manager_factory: default_project_manager_factory(),
-            llm_client_factory: Some(llm),
+            llm_client_factory: Some(llm.clone()),
         };
-        let (service, worker) = SessionService::new(manager, Arc::new(options), events);
+        let architecture = Arc::new(code_assistant_core::architecture::Analyzer::new(
+            Arc::new(
+                code_assistant_core::architecture::LlmSummarizer::new(Some(llm))
+                    .with_model("test-model"),
+            ),
+            None,
+        ));
+        let (service, worker) =
+            SessionService::with_architecture(manager, Arc::new(options), events, architecture);
         runtime.spawn(worker);
         Self {
             service,

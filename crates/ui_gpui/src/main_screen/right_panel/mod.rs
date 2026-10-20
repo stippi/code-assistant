@@ -1,11 +1,13 @@
 //! The right sidebar's views.
 //!
 //! The sidebar hosts the [`review_view::ReviewView`], the project's files
-//! ([`files_view::FilesView`]) and, with the `browser-panel` feature, the
-//! agent's browser ([`browser::BrowserPanel`]). The title bar switches
+//! ([`files_view::FilesView`]), its architecture
+//! ([`architecture::ArchitectureView`]) and, with the `browser-panel`
+//! feature, the agent's browser ([`browser::BrowserPanel`]). The title bar switches
 //! between them ([`RightPanelView::ALL`]). The shown view is remembered per
 //! session.
 
+pub mod architecture;
 #[cfg(feature = "browser-panel")]
 mod browser;
 mod file_filter;
@@ -16,6 +18,7 @@ mod review_rows;
 pub mod review_view;
 
 pub use crate::comments::CommentChange;
+use architecture::ArchitectureView;
 use code_assistant_core::line_comments::LineComment;
 use files_view::FilesView;
 use gpui_kit::{Context, Entity, FocusHandle, Focusable, Render, Window, div, prelude::*};
@@ -26,6 +29,7 @@ use review_view::ReviewView;
 pub enum RightPanelView {
     Review,
     Files,
+    Architecture,
     #[cfg(feature = "browser-panel")]
     Browser,
 }
@@ -35,6 +39,7 @@ impl RightPanelView {
     pub const ALL: &[(RightPanelView, &'static str)] = &[
         (RightPanelView::Review, "Review"),
         (RightPanelView::Files, "Files"),
+        (RightPanelView::Architecture, "Architecture"),
         #[cfg(feature = "browser-panel")]
         (RightPanelView::Browser, "Browser"),
     ];
@@ -44,6 +49,7 @@ impl RightPanelView {
         match self {
             RightPanelView::Review => "review",
             RightPanelView::Files => "files",
+            RightPanelView::Architecture => "architecture",
             #[cfg(feature = "browser-panel")]
             RightPanelView::Browser => "browser",
         }
@@ -54,6 +60,7 @@ impl RightPanelView {
     pub fn from_str(s: &str) -> Self {
         match s {
             "files" => RightPanelView::Files,
+            "architecture" => RightPanelView::Architecture,
             #[cfg(feature = "browser-panel")]
             "browser" => RightPanelView::Browser,
             _ => RightPanelView::Review,
@@ -65,12 +72,14 @@ pub struct RightPanel {
     active_view: RightPanelView,
     review_view: Entity<ReviewView>,
     files_view: Entity<FilesView>,
+    architecture: Entity<ArchitectureView>,
     #[cfg(feature = "browser-panel")]
     browser: Entity<browser::BrowserPanel>,
     session_id: Option<String>,
     #[cfg(feature = "browser-panel")]
     _browser_events: gpui_kit::Subscription,
     _comment_subscriptions: Vec<gpui_kit::Subscription>,
+    _architecture_events: gpui_kit::Subscription,
     focus_handle: FocusHandle,
 }
 
@@ -90,12 +99,21 @@ impl RightPanel {
                 cx.emit(change.clone())
             }),
         ];
+        let architecture = cx.new(ArchitectureView::new);
+        let architecture_events = cx.subscribe(
+            &architecture,
+            |this, _, open: &architecture::OpenFileInFiles, cx| {
+                this.open_file(open.0.clone(), None, cx)
+            },
+        );
         #[cfg(feature = "browser-panel")]
         let browser = cx.new(browser::BrowserPanel::new);
         Self {
             active_view: RightPanelView::Review,
             review_view,
             files_view,
+            architecture,
+            _architecture_events: architecture_events,
             #[cfg(feature = "browser-panel")]
             _browser_events: cx.subscribe(&browser, |this, _, event, cx| match event {
                 // The agent started browsing: show it.
@@ -128,6 +146,11 @@ impl RightPanel {
             .read(cx)
             .path()
             .map(str::to_owned)
+    }
+
+    #[cfg(test)]
+    pub fn architecture(&self) -> &Entity<ArchitectureView> {
+        &self.architecture
     }
 
     /// Show `path` (project-relative or absolute) in the Files view, with
@@ -190,14 +213,20 @@ impl RightPanel {
         cx.notify();
     }
 
-    /// The Files view follows the session only while it is shown, so a
-    /// hidden one neither lists nor watches.
+    /// The Files and Architecture views follow the session only while
+    /// shown, so a hidden one neither scans nor watches.
     fn sync_files_session(&mut self, cx: &mut Context<Self>) {
-        let session_id = (self.active_view == RightPanelView::Files)
-            .then(|| self.session_id.clone())
-            .flatten();
+        let shown = |view| {
+            (self.active_view == view)
+                .then(|| self.session_id.clone())
+                .flatten()
+        };
+        let files = shown(RightPanelView::Files);
+        let architecture = shown(RightPanelView::Architecture);
         self.files_view
-            .update(cx, |files, cx| files.set_session(session_id, cx));
+            .update(cx, |view, cx| view.set_session(files, cx));
+        self.architecture
+            .update(cx, |view, cx| view.set_session(architecture, cx));
     }
 
     /// Re-request data for the active view.
@@ -205,6 +234,9 @@ impl RightPanel {
         self.review_view.update(cx, |v, cx| v.reload(cx));
         if self.active_view == RightPanelView::Files {
             self.files_view.update(cx, |v, cx| v.reload(cx));
+        }
+        if self.active_view == RightPanelView::Architecture {
+            self.architecture.update(cx, |v, cx| v.reload(cx));
         }
     }
 }
@@ -220,6 +252,7 @@ impl Render for RightPanel {
         let body = match self.active_view {
             RightPanelView::Review => self.review_view.clone().into_any_element(),
             RightPanelView::Files => self.files_view.clone().into_any_element(),
+            RightPanelView::Architecture => self.architecture.clone().into_any_element(),
             #[cfg(feature = "browser-panel")]
             RightPanelView::Browser => self.browser.clone().into_any_element(),
         };
