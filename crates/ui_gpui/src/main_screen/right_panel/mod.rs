@@ -91,7 +91,7 @@ impl RightPanel {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let review_view = cx.new(|cx| ReviewView::new(window, cx));
         let files_view = cx.new(|cx| FilesView::new(window, cx));
-        let comment_subscriptions = vec![
+        let mut comment_subscriptions = vec![
             cx.subscribe(&review_view, |_, _, change: &CommentChange, cx| {
                 cx.emit(change.clone())
             }),
@@ -100,6 +100,11 @@ impl RightPanel {
             }),
         ];
         let architecture = cx.new(ArchitectureView::new);
+        comment_subscriptions.push(
+            cx.subscribe(&architecture, |_, _, change: &CommentChange, cx| {
+                cx.emit(change.clone())
+            }),
+        );
         let architecture_events = cx.subscribe(
             &architecture,
             |this, _, open: &architecture::OpenFileInFiles, cx| {
@@ -133,6 +138,8 @@ impl RightPanel {
     pub fn set_comments(&mut self, comments: Vec<LineComment>, cx: &mut Context<Self>) {
         self.files_view
             .update(cx, |v, cx| v.set_comments(comments.clone(), cx));
+        self.architecture
+            .update(cx, |v, cx| v.set_comments(comments.clone(), cx));
         self.review_view
             .update(cx, |v, cx| v.set_comments(comments, cx));
     }
@@ -163,7 +170,11 @@ impl RightPanel {
 
     /// Show where `comment` was made and open it for editing.
     pub fn reveal_comment(&mut self, comment: LineComment, cx: &mut Context<Self>) {
-        if comment.in_diff {
+        if comment.on_component {
+            self.set_active_view(RightPanelView::Architecture, cx);
+            self.architecture
+                .update(cx, |v, cx| v.reveal_comment(comment, cx));
+        } else if comment.in_diff {
             self.set_active_view(RightPanelView::Review, cx);
             self.review_view
                 .update(cx, |v, cx| v.reveal_comment(comment, cx));

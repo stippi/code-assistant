@@ -113,7 +113,9 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
 - Structure, interfaces and edges come from a deterministic scan (Rust,
   TS/JS, Python); a model only explains, one call per component, cached by
   the hash of the component's digest; model in `architecture.json`
-  (*Settings → Architecture*); see `docs/architecture-panel.md`
+  (*Settings → Architecture*); components take comments for the composer
+  like file lines do (`LineComment::on_component`); see
+  `docs/architecture-panel.md`
 
 ### Session Storage
 - One folder per session below `sessions/`, the ID is its path:

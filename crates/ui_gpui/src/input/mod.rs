@@ -1322,6 +1322,7 @@ mod tests {
                     old_side: false,
                     in_diff: false,
                     on_message: false,
+                    on_component: false,
                     excerpt: "fn main() {}".into(),
                     text: "rename this".into(),
                 },

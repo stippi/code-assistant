@@ -102,7 +102,7 @@ impl InputArea {
                 };
                 format!("{} · {text}{ellipsis}", c.location_label())
             }
-            _ if comments.iter().any(|c| c.on_message) => {
+            _ if comments.iter().any(|c| c.on_message || c.on_component) => {
                 format!("{} comments", comments.len())
             }
             _ => {
@@ -321,6 +321,7 @@ mod tests {
             old_side: false,
             in_diff: false,
             on_message: false,
+            on_component: false,
             excerpt: "x".into(),
             text: text.into(),
         }

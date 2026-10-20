@@ -37,6 +37,33 @@ One level of the project at a time:
 - **Click** a box to open its level (breadcrumb to go back up); a file box
   opens the file in the Files view.
 
+## Comments
+
+Components take comments like file lines and chat passages do. The comment
+button on a box (shown on hover) or on the shown component's card opens the
+usual comment card; the comment joins the composer's draft (one per
+component; the button edits it again). Commented boxes are outlined and
+carry the comment mark, the card and the inspector show the text, and the
+composer chip reveals it in the Architecture view.
+
+A component comment is a `LineComment` with `on_component` set: `file` is
+the component's folder or file (the project root for the project), and the
+excerpt is what the overview said about it (name, kind, summary,
+constraints, uses / used by, parts), so the agent sees what the user looked
+at. On send it renders as
+
+```xml
+<comment on="component" path="crates/llm">
+<component>
+llm (package) at crates/llm
+…
+</component>
+split providers out
+</comment>
+```
+
+inside the usual `<line-comments>` block.
+
 ## How it is built: deterministic structure, small model calls
 
 The token cost stays low by splitting the work:

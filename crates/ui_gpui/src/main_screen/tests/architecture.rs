@@ -4,6 +4,7 @@
 use crate::main_screen::right_panel::RightPanelView;
 use crate::main_screen::right_panel::architecture::ArchitectureView;
 use crate::test_support::{MainScreenTest, TestCore};
+use code_assistant_core::line_comments::LineComment;
 use code_assistant_core::mocks::{MockLLMProvider, create_test_response_text};
 use code_assistant_core::session::SessionConfig;
 use gpui_kit::{Entity, TestAppContext};
@@ -26,6 +27,23 @@ impl MainScreenTest {
     fn with_architecture<T>(&mut self, f: impl FnOnce(&ArchitectureView) -> T) -> T {
         let view = self.architecture();
         view.read_with(&self.cx, |view, _| f(view))
+    }
+
+    fn draft_comments(&mut self) -> Vec<LineComment> {
+        let input = self
+            .main_screen
+            .read_with(&self.cx, |s, _| s.input_area.clone());
+        input.read_with(&self.cx, |input, _| input.comments().to_vec())
+    }
+
+    fn hover(&mut self, selector: &'static str) {
+        let bounds = self
+            .cx
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("nothing rendered as {selector}"));
+        self.cx
+            .simulate_mouse_move(bounds.center(), None, gpui_kit::Modifiers::none());
+        self.settle();
     }
 }
 
@@ -107,6 +125,32 @@ fn the_architecture_view_shows_explains_and_drills_into_components(cx: &mut Test
     });
     assert!(test.shows("architecture-box-core"));
 
+    // A box takes a comment, sent with what the overview says about it.
+    assert!(!test.shows("architecture-comment-core"));
+    test.hover("architecture-box-core");
+    test.click("architecture-comment-core");
+    test.cx.simulate_input("keep the domain free of IO");
+    test.click("comment-save");
+    let comments = test.draft_comments();
+    assert_eq!(comments.len(), 1);
+    let comment = &comments[0];
+    assert!(comment.on_component);
+    assert_eq!(comment.file, root.join("crates/core"));
+    assert_eq!(comment.text, "keep the domain free of IO");
+    assert!(
+        comment
+            .excerpt
+            .starts_with("core (package) at crates/core\nHolds the domain")
+    );
+    assert!(
+        comment.excerpt.contains("Used by: app"),
+        "{}",
+        comment.excerpt
+    );
+    // Marked even when not hovered.
+    test.hover("architecture-box-app");
+    assert!(test.shows("architecture-comment-core"));
+
     // A package opens its level, explained by a second call.
     test.click("architecture-box-core");
     test.wait_until("core is explained", |test| {
@@ -123,6 +167,14 @@ fn the_architecture_view_shows_explains_and_drills_into_components(cx: &mut Test
         );
     });
 
+    // The level's own card edits the same comment.
+    test.click("architecture-comment-current");
+    test.cx.simulate_input(" — or is it too small?");
+    test.click("comment-save");
+    let comments = test.draft_comments();
+    assert_eq!(comments.len(), 1);
+    assert!(comments[0].text.contains("or is it too small?"));
+
     // A file opens in the Files view.
     test.click("architecture-box-model.rs");
     let panel = test
@@ -135,4 +187,13 @@ fn the_architecture_view_shows_explains_and_drills_into_components(cx: &mut Test
             Some("crates/core/src/model.rs")
         );
     });
+
+    // Revealing the comment from the composer shows the component and
+    // opens the comment.
+    let comment = test.draft_comments()[0].clone();
+    panel.update(&mut test.cx, |panel, cx| panel.reveal_comment(comment, cx));
+    test.wait_until("the comment is open again", |test| {
+        test.with_architecture(|view| view.comment_editor_open())
+    });
+    test.with_architecture(|view| assert_eq!(view.current(), ""));
 }

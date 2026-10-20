@@ -11,22 +11,30 @@
 //! graph and highlights its dependencies. A [`TreeWatcher`] rescans when
 //! source files or manifests change, and a changed component is explained
 //! again — its previous explanation stays visible meanwhile.
+//!
+//! Components take comments like file lines and chat passages do: the
+//! comment button on a box (or on the shown component's card) opens the
+//! [`CommentEditor`]; the comment goes to the composer's draft with what the
+//! overview said about the component, and commented boxes are marked.
 
 mod layout;
 
 use crate::Gpui;
+use crate::comments::CommentChange;
+use crate::comments::editor::{CommentEditor, CommentEditorEvent};
 use crate::shared::file_icons;
 use code_assistant_core::architecture::{
     ArchitectureConfig, ArchitectureModel, Component, ComponentKind, ComponentSummary,
     is_relevant_path,
 };
+use code_assistant_core::line_comments::LineComment;
 use code_assistant_core::session::TreeWatcher;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size};
 use gpui_kit::{
-    App, Bounds, Context, FocusHandle, Focusable, Hsla, PathBuilder, Pixels, Point, Render,
-    SharedString, Task, Window, canvas, div, point, prelude::*, px,
+    App, Bounds, Context, Entity, FocusHandle, Focusable, Hsla, PathBuilder, Pixels, Point, Render,
+    SharedString, Subscription, Task, Window, canvas, div, point, prelude::*, px,
 };
 use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -53,6 +61,9 @@ const MAX_BOXES: usize = 60;
 pub struct OpenFileInFiles(pub String);
 
 impl gpui_kit::EventEmitter<OpenFileInFiles> for ArchitectureView {}
+
+/// Comments made on components, for the composer's draft.
+impl gpui_kit::EventEmitter<CommentChange> for ArchitectureView {}
 
 pub struct ArchitectureView {
     session_id: Option<String>,
@@ -85,6 +96,15 @@ pub struct ArchitectureView {
     details: bool,
     /// Graph width as last painted; the layout follows it.
     graph_width: Rc<Cell<Option<Pixels>>>,
+    /// The draft's comments (the ones on components are shown here).
+    comments: Vec<LineComment>,
+    /// The open comment card and where it floats (window coordinates).
+    comment_editor: Option<(Entity<CommentEditor>, Point<Pixels>)>,
+    _comment_editor_subscription: Option<Subscription>,
+    /// A comment to open once the editor can be placed (needs a window).
+    comment_request: Option<LineComment>,
+    /// A comment to reveal once the scan named the project root.
+    pending_reveal: Option<LineComment>,
     watcher: Option<(PathBuf, TreeWatcher)>,
     watch_task: Option<Task<()>>,
     focus_handle: FocusHandle,
@@ -112,6 +132,11 @@ impl ArchitectureView {
             inspected: None,
             details: false,
             graph_width: Rc::new(Cell::new(None)),
+            comments: Vec::new(),
+            comment_editor: None,
+            _comment_editor_subscription: None,
+            comment_request: None,
+            pending_reveal: None,
             watcher: None,
             watch_task: None,
             focus_handle: cx.focus_handle(),
@@ -139,6 +164,9 @@ impl ArchitectureView {
         self.summary_errors.clear();
         self.hovered = None;
         self.inspected = None;
+        self.comment_editor = None;
+        self._comment_editor_subscription = None;
+        self.comment_request = None;
         self.watcher = None;
         self.watch_task = None;
         self.current = session_id
@@ -154,6 +182,163 @@ impl ArchitectureView {
     /// Scan again and explain the shown component if it changed.
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         self.rescan(cx);
+    }
+
+    /// The draft's comments, for the markers.
+    pub fn set_comments(&mut self, comments: Vec<LineComment>, cx: &mut Context<Self>) {
+        self.comments = comments;
+        cx.notify();
+    }
+
+    /// The absolute path a comment on component `id` refers to.
+    fn component_path(&self, id: &str) -> Option<PathBuf> {
+        let root = self.root.as_ref()?;
+        Some(if id.is_empty() {
+            root.clone()
+        } else {
+            root.join(id)
+        })
+    }
+
+    /// The component a comment is on, if it is one of this project's.
+    fn comment_component(&self, comment: &LineComment) -> Option<String> {
+        if !comment.on_component {
+            return None;
+        }
+        let rel = comment.file.strip_prefix(self.root.as_ref()?).ok()?;
+        let id = rel
+            .iter()
+            .map(|c| c.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
+        self.model.as_ref()?.get(&id).map(|_| id)
+    }
+
+    /// The draft's comment on component `id`, if any.
+    fn comment_on(&self, id: &str) -> Option<&LineComment> {
+        let path = self.component_path(id)?;
+        self.comments
+            .iter()
+            .find(|c| c.on_component && c.file == path)
+    }
+
+    /// What the overview says about component `id`, sent along with a
+    /// comment on it so the model knows what the user looked at.
+    fn component_excerpt(&self, model: &ArchitectureModel, id: &str) -> String {
+        let Some(component) = model.get(id) else {
+            return String::new();
+        };
+        let path = if id.is_empty() { "." } else { id };
+        let mut lines = vec![format!(
+            "{} ({}) at {path}",
+            component.name,
+            component.kind.label()
+        )];
+        let own = self.summaries.get(id);
+        if let Some(line) = own
+            .map(|s| s.summary.clone())
+            .filter(|s| !s.is_empty())
+            .or_else(|| self.part_line(model, id))
+        {
+            lines.push(line);
+        }
+        if let Some(own) = own {
+            lines.extend(own.constraints.iter().map(|c| format!("Constraint: {c}")));
+        }
+        let uses = names(model, model.uses(id));
+        if !uses.is_empty() {
+            lines.push(format!("Uses: {}", uses.join(", ")));
+        }
+        let used_by = names(model, model.used_by(id));
+        if !used_by.is_empty() {
+            lines.push(format!("Used by: {}", used_by.join(", ")));
+        }
+        let parts: Vec<&str> = component
+            .children
+            .iter()
+            .take(30)
+            .map(|c| model.name(c))
+            .collect();
+        if !parts.is_empty() {
+            lines.push(format!("Parts: {}", parts.join(", ")));
+        }
+        lines.join("\n")
+    }
+
+    /// Open the comment card for component `id` (its existing comment, or a
+    /// new one) at `position`.
+    fn start_comment(
+        &mut self,
+        id: &str,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let comment = match self.comment_on(id) {
+            Some(existing) => existing.clone(),
+            None => {
+                let (Some(model), Some(path)) = (self.model.clone(), self.component_path(id))
+                else {
+                    return;
+                };
+                LineComment::on_component(path, self.component_excerpt(&model, id))
+            }
+        };
+        self.open_comment_editor(comment, position, window, cx);
+    }
+
+    fn open_comment_editor(
+        &mut self,
+        comment: LineComment,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let editor = cx.new(|cx| CommentEditor::new(comment, window, cx));
+        self._comment_editor_subscription = Some(cx.subscribe(
+            &editor,
+            |this, _, event: &CommentEditorEvent, cx| {
+                match event {
+                    CommentEditorEvent::Save(comment) => {
+                        cx.emit(CommentChange::Upsert(comment.clone()))
+                    }
+                    CommentEditorEvent::Delete(id) => cx.emit(CommentChange::Remove(*id)),
+                    CommentEditorEvent::Cancel => {}
+                }
+                this.comment_editor = None;
+                this._comment_editor_subscription = None;
+                cx.notify();
+            },
+        ));
+        self.comment_editor = Some((editor, position));
+        cx.notify();
+    }
+
+    /// Show the component `comment` is on and open it for editing.
+    pub fn reveal_comment(&mut self, comment: LineComment, cx: &mut Context<Self>) {
+        if self.model.is_none() {
+            self.pending_reveal = Some(comment);
+            return;
+        }
+        let Some(id) = self.comment_component(&comment) else {
+            return;
+        };
+        let parent = self
+            .model
+            .as_ref()
+            .and_then(|m| m.get(&id))
+            .and_then(|c| c.parent.clone());
+        // The component as a box on its parent's level, the project as the
+        // shown level.
+        let level = parent.unwrap_or_default();
+        if level != self.current {
+            self.navigate(level, cx);
+        }
+        if !id.is_empty() {
+            self.inspected = Some(id);
+        }
+        self.comment_request = Some(comment);
+        cx.notify();
     }
 
     fn service(cx: &App) -> Option<code_assistant_core::session::SessionService> {
@@ -203,6 +388,9 @@ impl ArchitectureView {
                         if this.root.as_ref() != Some(&root) {
                             this.root = Some(root.clone());
                             this.start_watcher(root, cx);
+                        }
+                        if let Some(comment) = this.pending_reveal.take() {
+                            this.reveal_comment(comment, cx);
                         }
                         if this.config.auto_summarize {
                             this.explain(this.current.clone(), false, cx);
@@ -493,8 +681,18 @@ impl ArchitectureView {
                             .text_xs()
                             .text_color(theme.muted_foreground)
                             .child(size_label(component)),
-                    ),
+                    )
+                    .child(comment_button(
+                        "architecture-comment-current",
+                        "architecture-comment-current".to_owned(),
+                        component.id.clone(),
+                        self.comment_on(&component.id).is_some(),
+                        cx,
+                    )),
             );
+        if let Some(comment) = self.comment_on(&component.id) {
+            card = card.child(comment_note(comment.text.clone(), cx));
+        }
 
         match summary {
             Some(summary) => {
@@ -798,11 +996,23 @@ impl ArchitectureView {
     ) -> impl IntoElement {
         let theme = cx.theme();
         let line = self.part_line(model, &component.id);
+        let commented = self.comment_on(&component.id).is_some();
         let border = match state {
             BoxState::Focused => theme.primary,
             BoxState::Related => theme.primary.opacity(0.5),
+            _ if commented => theme.warning,
             _ => theme.border,
         };
+        // Shown on hover, and always once there is a comment.
+        let comment_button = (commented || state == BoxState::Focused).then(|| {
+            comment_button(
+                ("architecture-comment", ix),
+                format!("architecture-comment-{}", component.name),
+                component.id.clone(),
+                commented,
+                cx,
+            )
+        });
         let id_for_hover = component.id.clone();
         let id_for_click = component.id.clone();
         let name = component.name.clone();
@@ -848,6 +1058,7 @@ impl ArchitectureView {
                             .text_color(theme.foreground)
                             .child(component.name.clone()),
                     )
+                    .children(comment_button)
                     .when(opens_level, |d| {
                         d.child(
                             gpui_kit::svg()
@@ -923,6 +1134,9 @@ impl ArchitectureView {
             );
         if let Some(line) = self.part_line(model, id) {
             panel = panel.child(div().text_xs().text_color(theme.foreground).child(line));
+        }
+        if let Some(comment) = self.comment_on(id) {
+            panel = panel.child(comment_note(comment.text.clone(), cx));
         }
         if let Some(own) = own {
             if !own.responsibility.is_empty() {
@@ -1153,6 +1367,68 @@ fn kind_icon(component: &Component, color: Hsla) -> gpui_kit::AnyElement {
     }
 }
 
+/// The button commenting on component `id`: a plus while it has no
+/// comment, the comment mark after.
+fn comment_button(
+    element_id: impl Into<gpui_kit::ElementId>,
+    selector: String,
+    id: String,
+    commented: bool,
+    cx: &Context<ArchitectureView>,
+) -> impl IntoElement {
+    let theme = cx.theme();
+    div()
+        .id(element_id)
+        .debug_selector(move || selector.clone())
+        .flex_none()
+        .size(px(18.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_sm()
+        .cursor_pointer()
+        .hover(|s| s.bg(theme.muted))
+        .tooltip(move |window, cx| {
+            gpui_kit::component::tooltip::Tooltip::new(if commented {
+                "Edit comment"
+            } else {
+                "Comment"
+            })
+            .build(window, cx)
+        })
+        .child(
+            gpui_kit::svg()
+                .size(px(12.))
+                .path(if commented {
+                    "icons/message_bubbles.svg"
+                } else {
+                    "icons/message_circle_plus.svg"
+                })
+                .text_color(if commented {
+                    theme.warning
+                } else {
+                    theme.muted_foreground
+                }),
+        )
+        .on_click(cx.listener(move |this, _, window, cx| {
+            // Not a click on the box.
+            cx.stop_propagation();
+            let position = window.mouse_position();
+            this.start_comment(&id, position, window, cx);
+        }))
+}
+
+/// The user's comment on a component, as the card and inspector show it.
+fn comment_note(text: String, cx: &App) -> impl IntoElement {
+    div()
+        .pl_2()
+        .border_l_2()
+        .border_color(cx.theme().warning.opacity(0.6))
+        .text_xs()
+        .text_color(cx.theme().foreground)
+        .child(text)
+}
+
 fn badge(text: &'static str, cx: &App) -> impl IntoElement {
     div()
         .flex_none()
@@ -1256,7 +1532,16 @@ impl Focusable for ArchitectureView {
 }
 
 impl Render for ArchitectureView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A revealed comment opens where the user clicked to reveal it.
+        if let Some(comment) = self.comment_request.take() {
+            let position = window.mouse_position();
+            self.open_comment_editor(comment, position, window, cx);
+        }
+        let editor = self
+            .comment_editor
+            .as_ref()
+            .map(|(editor, position)| crate::comments::floating(*position, editor.clone()));
         let theme = cx.theme();
         let message = |text: String| {
             div()
@@ -1317,6 +1602,7 @@ impl Render for ArchitectureView {
             .track_focus(&self.focus_handle)
             .child(self.render_toolbar(cx))
             .child(body)
+            .children(editor)
     }
 }
 
@@ -1347,6 +1633,10 @@ impl ArchitectureView {
 
     pub fn summary(&self, id: &str) -> Option<&ComponentSummary> {
         self.summaries.get(id)
+    }
+
+    pub fn comment_editor_open(&self) -> bool {
+        self.comment_editor.is_some()
     }
 }
 
