@@ -16,7 +16,7 @@
 
 use crate::config::{DefaultProjectManager, ProjectManager, save_project};
 use crate::injection::without_injections;
-use crate::persistence::{ChatMetadata, DraftAttachment, NodeId, SessionModelConfig};
+use crate::persistence::{ChatMetadata, DraftAttachment, MessageEdit, NodeId, SessionModelConfig};
 use crate::session::SessionManager;
 use crate::session::event_stream::EventStream;
 use crate::session::manager::RunTask;
@@ -112,8 +112,8 @@ pub struct MessageEditContext {
     pub content: String,
     /// Any attachments from the original message.
     pub attachments: Vec<DraftAttachment>,
-    /// The parent node ID where the new branch will be created.
-    pub branch_parent_id: Option<NodeId>,
+    /// The edited message and whether sending replaces it.
+    pub edit: MessageEdit,
     /// Transcript truncated to messages before the one being edited.
     pub transcript: TranscriptData,
 }
@@ -525,13 +525,13 @@ impl SessionService {
     pub async fn load_session(
         &self,
         session_id: String,
-        edit_until_node_id: Option<NodeId>,
+        edited_node_id: Option<NodeId>,
     ) -> Result<crate::session::SessionSnapshot> {
         self.call_session(session_id.clone(), move |ctx| async move {
             let snapshot = {
                 let mut manager = ctx.manager.lock().await;
                 let snapshot = manager
-                    .set_active_session(session_id.clone(), edit_until_node_id)
+                    .set_active_session(session_id.clone(), edited_node_id)
                     .await?;
                 // Showing a session is visiting it: the unread mark clears.
                 if let Err(e) = manager.update_session_lifecycle(&session_id, |lifecycle| {
@@ -716,11 +716,11 @@ impl SessionService {
         session_id: String,
         message: String,
         attachments: Vec<DraftAttachment>,
-        branch_parent_id: Option<NodeId>,
+        edited_node_id: Option<NodeId>,
     ) -> Result<()> {
         if let Some(command) = NewContextCommand::parse(&message) {
             return self
-                .start_new_context(session_id, message, command, attachments, branch_parent_id)
+                .start_new_context(session_id, message, command, attachments, edited_node_id)
                 .await;
         }
         self.call_session(session_id.clone(), move |ctx| async move {
@@ -729,7 +729,7 @@ impl SessionService {
                 &session_id,
                 &message,
                 &attachments,
-                branch_parent_id,
+                edited_node_id,
                 RunOptions::default(),
             )
             .await
@@ -1285,12 +1285,10 @@ impl SessionService {
                 _ => Vec::new(),
             };
 
-            // The branch parent is the parent of the node being edited.
-            let branch_parent_id = node.parent_id;
             let messages = session_instance
-                .convert_messages_to_ui_data_until(
+                .convert_messages_to_ui_data_before(
                     session_instance.session.config.tool_syntax,
-                    branch_parent_id,
+                    Some(node_id),
                 )
                 .unwrap_or_default();
             let tool_results = manager
@@ -1300,7 +1298,7 @@ impl SessionService {
             Ok(MessageEditContext {
                 content,
                 attachments,
-                branch_parent_id,
+                edit: session_instance.session.message_edit(node_id),
                 transcript: TranscriptData {
                     messages,
                     tool_results,
@@ -1887,15 +1885,15 @@ async fn send_user_message_impl(
     session_id: &str,
     message: &str,
     attachments: &[DraftAttachment],
-    branch_parent_id: Option<NodeId>,
+    edited_node_id: Option<NodeId>,
     options: RunOptions,
 ) -> Result<()> {
     debug!(
-        "User message for session {}: {} (with {} attachments, branch_parent: {:?})",
+        "User message for session {}: {} (with {} attachments, edited_node: {:?})",
         session_id,
         message,
         attachments.len(),
-        branch_parent_id
+        edited_node_id
     );
 
     let content_blocks = user_message_blocks(ctx, session_id, message, attachments).await?;
@@ -1905,7 +1903,7 @@ async fn send_user_message_impl(
         message,
         content_blocks,
         attachments,
-        branch_parent_id,
+        edited_node_id,
         options,
     )
     .await
@@ -1919,7 +1917,7 @@ async fn append_and_run(
     message: &str,
     content_blocks: Vec<llm::ContentBlock>,
     attachments: &[DraftAttachment],
-    branch_parent_id: Option<NodeId>,
+    edited_node_id: Option<NodeId>,
     options: RunOptions,
 ) -> Result<()> {
     // First, add the user message to the session and get the new node_id.
@@ -1933,9 +1931,9 @@ async fn append_and_run(
         manager.reserve_agent_run(session_id, cancellation.clone())?;
         let prepared: Result<_> = (|| {
             let node_id = manager
-                .add_user_message(session_id, content_blocks, branch_parent_id)
+                .add_user_message(session_id, content_blocks, edited_node_id)
                 .context("Failed to add user message")?;
-            let updates = if branch_parent_id.is_some() {
+            let updates = if edited_node_id.is_some() {
                 manager.get_sibling_branch_infos(session_id, node_id)
             } else {
                 Vec::new()
@@ -3684,6 +3682,140 @@ mod tests {
         assert_eq!(taken.as_deref(), Some("/demo then this"));
         service.request_stop(id.clone()).await.unwrap();
         service.terminate_agent(id).await.unwrap();
+    }
+
+    /// Runs whose first model request fails (like a content filter
+    /// rejecting the message), the ones after it answer.
+    fn failing_then_answering() -> LlmClientFactory {
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        Arc::new(move |_| {
+            let response = if runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                Err(anyhow!("blocked by the content filter"))
+            } else {
+                Ok(crate::mocks::create_test_response_text("done"))
+            };
+            Ok(Box::new(MockLLMProvider::new(vec![response]).streaming()))
+        })
+    }
+
+    async fn wait_until_idle(service: &SessionService, id: &str) {
+        for _ in 0..200 {
+            let snapshot = service.load_session(id.to_string(), None).await.unwrap();
+            if snapshot.activity_state.is_terminal() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("session {id} did not become idle");
+    }
+
+    fn user_text(node: &crate::persistence::MessageNode) -> String {
+        match &node.message.content {
+            llm::MessageContent::Text(text) => text.clone(),
+            llm::MessageContent::Structured(blocks) => blocks
+                .iter()
+                .filter_map(|block| match block {
+                    llm::ContentBlock::Text { text, .. } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect(),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn editing_the_unanswered_last_message_replaces_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (service, manager) = test_service_with_llm(tmp.path(), failing_then_answering());
+        let id = service.create_session(None, None).await.unwrap();
+        service
+            .send_user_message(id.clone(), "rejected".into(), vec![], None)
+            .await
+            .unwrap();
+        wait_until_idle(&service, &id).await;
+        let node_id = {
+            let manager = manager.lock().await;
+            *manager
+                .get_session(&id)
+                .unwrap()
+                .session
+                .active_path
+                .last()
+                .unwrap()
+        };
+
+        let edit = service
+            .start_message_edit(id.clone(), node_id)
+            .await
+            .unwrap();
+        assert_eq!(edit.content, "rejected");
+        assert_eq!(
+            edit.edit,
+            MessageEdit {
+                node_id,
+                in_place: true
+            }
+        );
+        assert!(edit.transcript.messages.is_empty());
+
+        service
+            .send_user_message(id.clone(), "rephrased".into(), vec![], Some(node_id))
+            .await
+            .unwrap();
+        wait_until_idle(&service, &id).await;
+
+        let manager = manager.lock().await;
+        let session = &manager.get_session(&id).unwrap().session;
+        assert_eq!(session.active_path[0], node_id);
+        assert_eq!(user_text(&session.message_nodes[&node_id]), "rephrased");
+        assert!(
+            session
+                .message_nodes
+                .values()
+                .all(|node| user_text(node) != "rejected"),
+            "the rejected message is gone, not kept as a branch"
+        );
+        assert_eq!(session.get_branch_info(node_id), None);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn editing_an_answered_first_message_branches_from_the_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (service, manager) = test_service_with_llm(tmp.path(), scripted_turn("done"));
+        let id = service.create_session(None, None).await.unwrap();
+        service
+            .send_user_message(id.clone(), "first".into(), vec![], None)
+            .await
+            .unwrap();
+        wait_until_idle(&service, &id).await;
+        let first = {
+            let manager = manager.lock().await;
+            manager.get_session(&id).unwrap().session.active_path[0]
+        };
+
+        let edit = service.start_message_edit(id.clone(), first).await.unwrap();
+        assert_eq!(
+            edit.edit,
+            MessageEdit {
+                node_id: first,
+                in_place: false
+            }
+        );
+        assert!(edit.transcript.messages.is_empty());
+
+        service
+            .send_user_message(id.clone(), "second try".into(), vec![], Some(first))
+            .await
+            .unwrap();
+        wait_until_idle(&service, &id).await;
+
+        let manager = manager.lock().await;
+        let session = &manager.get_session(&id).unwrap().session;
+        let edited = session.active_path[0];
+        assert_ne!(edited, first);
+        assert_eq!(user_text(&session.message_nodes[&edited]), "second try");
+        assert_eq!(session.message_nodes[&edited].parent_id, None);
+        let branches = session.get_branch_info(edited).unwrap();
+        assert_eq!(branches.sibling_ids, vec![first, edited]);
     }
 
     #[tokio::test(flavor = "multi_thread")]

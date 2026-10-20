@@ -362,12 +362,12 @@ pub struct Gpui {
     voice: app::voice::VoiceState,
 }
 
-/// State for a pending message edit (for branching)
+/// State for a pending message edit
 #[derive(Clone, Debug)]
 pub struct PendingEdit {
     pub content: String,
     pub attachments: Vec<code_assistant_core::persistence::DraftAttachment>,
-    pub branch_parent_id: Option<code_assistant_core::persistence::NodeId>,
+    pub edit: code_assistant_core::persistence::MessageEdit,
 }
 
 fn init(cx: &mut App) {

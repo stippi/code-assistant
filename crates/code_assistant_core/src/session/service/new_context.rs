@@ -16,7 +16,7 @@ impl SessionService {
         message: String,
         command: NewContextCommand,
         attachments: Vec<DraftAttachment>,
-        branch_parent_id: Option<NodeId>,
+        edited_node_id: Option<NodeId>,
     ) -> Result<()> {
         ensure!(
             attachments.is_empty(),
@@ -25,7 +25,7 @@ impl SessionService {
         // `/new` stores no message of its own; its boundary is appended at
         // the end of the active path and cannot branch off an edited message.
         ensure!(
-            branch_parent_id.is_none() || matches!(command, NewContextCommand::Handoff { .. }),
+            edited_node_id.is_none() || matches!(command, NewContextCommand::Handoff { .. }),
             "/new can't replace an edited message"
         );
         let service = self.clone();
@@ -37,7 +37,7 @@ impl SessionService {
                 &session_id,
                 &message,
                 command,
-                branch_parent_id,
+                edited_node_id,
                 new_session,
             )
             .await?;
@@ -174,7 +174,7 @@ async fn start_new_context_impl(
     session_id: &str,
     message: &str,
     command: NewContextCommand,
-    branch_parent_id: Option<NodeId>,
+    edited_node_id: Option<NodeId>,
     new_session: tokio::sync::oneshot::Sender<String>,
 ) -> Result<()> {
     match command {
@@ -192,7 +192,7 @@ async fn start_new_context_impl(
         }
         // The request to write the handoff rides along with the typed
         // message, so the generation request is the history as it is. An
-        // edited message branches off like any other.
+        // edited message is added like any other.
         NewContextCommand::Handoff { .. } => {
             let mut blocks = content_blocks_from(message, &[], None);
             blocks.push(llm::ContentBlock::new_text(
@@ -211,7 +211,7 @@ async fn start_new_context_impl(
                 message,
                 blocks,
                 &[],
-                branch_parent_id,
+                edited_node_id,
                 options,
             )
             .await
@@ -563,7 +563,7 @@ mod tests {
                 id.clone(),
                 "/handoff focus on tests".into(),
                 vec![],
-                edit.branch_parent_id,
+                Some(edit.edit.node_id),
             )
             .await
             .unwrap();
@@ -684,7 +684,12 @@ mod tests {
             .unwrap();
 
         service
-            .send_user_message(id.clone(), "/handoff".into(), vec![], edit.branch_parent_id)
+            .send_user_message(
+                id.clone(),
+                "/handoff".into(),
+                vec![],
+                Some(edit.edit.node_id),
+            )
             .await
             .unwrap();
         next(&mut subscription, &id, |event| match event {

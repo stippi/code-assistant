@@ -257,10 +257,14 @@ impl Render for BranchSwitcher {
 
 1. User klickt Edit-Button auf einer User-Nachricht
 2. Die Message-Inhalte und Attachments werden in den Input-Bereich geladen
-3. UI markiert den "Branch-Punkt" (die Node, nach der die neue Nachricht eingefügt wird)
-4. User editiert und sendet
+3. UI merkt sich die bearbeitete Node (`MessageEdit { node_id, in_place }`,
+   auch im Draft) und zeigt den Transcript bis vor diese Node
+4. User editiert und sendet (`send_user_message(.., Some(node_id))`)
 5. System erstellt neue MessageNode mit gleichem `parent_id` wie das Original
-6. `active_path` wird aktualisiert auf den neuen Branch
+   (auch `None` bei der ersten Nachricht) und aktualisiert `active_path` auf
+   den neuen Branch — außer die Node beendet den aktiven Pfad (z.B. weil der
+   Provider sie per Content-Filter abgelehnt hat): dann wird ihre Message in
+   place ersetzt, ohne Branch (`ChatSession::add_edited_message`)
 
 ```rust
 // In input_area.rs oder messages.rs
@@ -614,9 +618,9 @@ impl Agent {
    - BranchSwitcher rendern wo nötig
 
 4. **InputArea-Anpassungen** (`gpui/input_area.rs`) ✅
-   - `branch_parent_id` tracking for edit mode
+   - `editing: Option<MessageEdit>` tracking for edit mode
    - `set_content_for_edit()` method
-   - MessageSubmitted event includes `branch_parent_id`
+   - MessageSubmitted event includes `editing`
 
 5. **Root/App-Integration** (`gpui/root.rs`, `gpui/mod.rs`) ✅
    - Event-Handling für Branch-Events
@@ -642,7 +646,7 @@ impl Agent {
    - Tiefe Verschachtelung
 
 4. **Additional Work Needed**
-   - ~~Backend support for creating new branches from edited messages (when `branch_parent_id` is set)~~ ✅ DONE
+   - ~~Backend support for creating new branches from edited messages~~ ✅ DONE
    - Terminal UI support for branching (currently ignores branch events)
 
 ## Datei-Änderungen Übersicht

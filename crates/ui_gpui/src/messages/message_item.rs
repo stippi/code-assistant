@@ -111,6 +111,7 @@ pub fn render_message(
                 el.child(
                     div()
                         .id("edit-message-btn")
+                        .debug_selector(|| "edit-message-btn".into())
                         .p_1()
                         .rounded_sm()
                         .cursor(CursorStyle::PointingHand)
