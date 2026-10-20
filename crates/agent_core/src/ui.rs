@@ -115,6 +115,22 @@ impl ContextBoundary {
 }
 
 impl DisplayFragment {
+    /// The images among `blocks`, e.g. those a user attached to a message.
+    pub fn images(blocks: &[llm::ContentBlock]) -> Vec<Self> {
+        blocks
+            .iter()
+            .filter_map(|block| match block {
+                llm::ContentBlock::Image {
+                    media_type, data, ..
+                } => Some(DisplayFragment::Image {
+                    media_type: media_type.clone(),
+                    data: data.clone(),
+                }),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Create a ThinkingText fragment without duration (used during live streaming)
     pub fn thinking_text(text: impl Into<String>) -> Self {
         DisplayFragment::ThinkingText {

@@ -937,6 +937,14 @@ mod tests {
         let there = path(tmp.path(), &to);
         assert!(has_image(&there[0]));
         assert_eq!(texts(&there[1]), ["on it"]);
+        // A frontend switching over sees the image in the first message.
+        let snapshot = service.load_session(to, None).await.unwrap();
+        assert!(
+            snapshot.messages[0]
+                .fragments
+                .iter()
+                .any(|fragment| matches!(fragment, crate::ui::DisplayFragment::Image { .. }))
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

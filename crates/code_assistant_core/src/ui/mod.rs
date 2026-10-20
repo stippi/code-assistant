@@ -133,18 +133,7 @@ pub fn context_divider(message: &llm::Message) -> Vec<DisplayFragment> {
         summary,
     };
     let images = match &message.content {
-        llm::MessageContent::Structured(blocks) => blocks
-            .iter()
-            .filter_map(|block| match block {
-                llm::ContentBlock::Image {
-                    media_type, data, ..
-                } => Some(DisplayFragment::Image {
-                    media_type: media_type.clone(),
-                    data: data.clone(),
-                }),
-                _ => None,
-            })
-            .collect(),
+        llm::MessageContent::Structured(blocks) => DisplayFragment::images(blocks),
         llm::MessageContent::Text(_) => Vec::new(),
     };
     std::iter::once(divider).chain(images).collect()

@@ -368,6 +368,7 @@ impl MessageContainer {
         let block = BlockData::CompactionSummary(CompactionSummaryBlock {
             boundary,
             summary: summary.into(),
+            images: Vec::new(),
             is_expanded: false,
         });
         let view = cx.new(|cx| {
@@ -421,11 +422,26 @@ impl MessageContainer {
 
         // Try to parse the base64 image data
         let image = image::parse_base64_image(&media_type, &data);
+        let mut image = Some(ImageBlock { media_type, image });
+
+        let mut elements = self.elements.lock().unwrap();
+        // The images a new context opens with belong to its divider, which
+        // shows them with the prompt.
+        if let Some(last) = elements.last() {
+            last.update(cx, |view, cx| {
+                if let Some(divider) = view.block_mut().as_compaction_mut() {
+                    divider.images.extend(image.take());
+                    cx.notify();
+                }
+            });
+        }
+        let Some(image) = image else {
+            return;
+        };
 
         let request_id = *self.current_request_id.lock().unwrap();
         let block_id = self.allocate_block_id();
-        let mut elements = self.elements.lock().unwrap();
-        let block = BlockData::ImageBlock(ImageBlock { media_type, image });
+        let block = BlockData::ImageBlock(image);
         let view = cx.new(|cx| {
             BlockView::new(
                 block,

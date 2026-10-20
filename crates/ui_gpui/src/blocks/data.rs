@@ -20,6 +20,8 @@ pub struct TextBlock {
 pub struct CompactionSummaryBlock {
     pub boundary: agent_core::ui::ContextBoundary,
     pub summary: String,
+    /// The images a new context opens with, shown with the prompt.
+    pub images: Vec<ImageBlock>,
     pub is_expanded: bool,
 }
 
