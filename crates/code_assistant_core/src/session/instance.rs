@@ -789,7 +789,7 @@ impl SessionInstance {
             if message.is_compaction_summary {
                 messages_data.push(MessageData {
                     role: MessageRole::System,
-                    fragments: vec![crate::ui::context_divider(message)],
+                    fragments: crate::ui::context_divider(message),
                     node_id,
                     branch_info: node_id.and_then(|id| self.session.get_branch_info(id)),
                 });
@@ -888,7 +888,7 @@ impl SessionInstance {
             if message.is_compaction_summary {
                 messages_data.push(MessageData {
                     role: MessageRole::System,
-                    fragments: vec![crate::ui::context_divider(message)],
+                    fragments: crate::ui::context_divider(message),
                     node_id: Some(node_id),
                     branch_info: self.session.get_branch_info(node_id),
                 });

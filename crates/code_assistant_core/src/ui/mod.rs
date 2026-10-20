@@ -111,8 +111,9 @@ impl agent_core::AgentUi for AgentUiAdapter {
     }
 }
 
-/// The divider a stored compaction summary or new-context boundary renders as.
-pub fn context_divider(message: &llm::Message) -> DisplayFragment {
+/// The divider a stored compaction summary or new-context boundary renders
+/// as, followed by the images a new context opens with.
+pub fn context_divider(message: &llm::Message) -> Vec<DisplayFragment> {
     let summary = match &message.content {
         llm::MessageContent::Text(text) => text.trim().to_string(),
         llm::MessageContent::Structured(blocks) => blocks
@@ -127,8 +128,53 @@ pub fn context_divider(message: &llm::Message) -> DisplayFragment {
             .trim()
             .to_string(),
     };
-    DisplayFragment::ContextDivider {
+    let divider = DisplayFragment::ContextDivider {
         boundary: agent_core::ui::ContextBoundary::of(message),
         summary,
+    };
+    let images = match &message.content {
+        llm::MessageContent::Structured(blocks) => blocks
+            .iter()
+            .filter_map(|block| match block {
+                llm::ContentBlock::Image {
+                    media_type, data, ..
+                } => Some(DisplayFragment::Image {
+                    media_type: media_type.clone(),
+                    data: data.clone(),
+                }),
+                _ => None,
+            })
+            .collect(),
+        llm::MessageContent::Text(_) => Vec::new(),
+    };
+    std::iter::once(divider).chain(images).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_new_context_shows_its_images_below_the_divider() {
+        let mut message = llm::Message::new_context(String::new());
+        message.content = llm::MessageContent::Structured(vec![
+            llm::ContentBlock::new_text("Next step"),
+            llm::ContentBlock::Image {
+                media_type: "image/png".into(),
+                data: "aGk=".into(),
+                start_time: None,
+                end_time: None,
+            },
+        ]);
+
+        let fragments = context_divider(&message);
+
+        assert!(matches!(
+            &fragments[..],
+            [
+                DisplayFragment::ContextDivider { summary, .. },
+                DisplayFragment::Image { data, .. },
+            ] if summary == "Next step" && data == "aGk="
+        ));
     }
 }

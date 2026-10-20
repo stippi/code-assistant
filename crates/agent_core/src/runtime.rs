@@ -904,6 +904,20 @@ impl AgentRuntime {
         attachments: Vec<ContentBlock>,
     ) -> Result<()> {
         let summary = prompt.trim().to_string();
+        // The images show below the divider, where the user sees what the
+        // new context opens with.
+        let images: Vec<DisplayFragment> = attachments
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Image {
+                    media_type, data, ..
+                } => Some(DisplayFragment::Image {
+                    media_type: media_type.clone(),
+                    data: data.clone(),
+                }),
+                _ => None,
+            })
+            .collect();
         let mut message = Message::new_context(String::new());
         message.content = if attachments.is_empty() {
             MessageContent::Text(prompt)
@@ -916,6 +930,9 @@ impl AgentRuntime {
             boundary: ContextBoundary::NewContext,
             summary,
         })?;
+        for image in &images {
+            self.ui.display_fragment(image)?;
+        }
         Ok(())
     }
 
