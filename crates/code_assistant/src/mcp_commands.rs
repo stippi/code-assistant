@@ -3,9 +3,10 @@
 //! `401 Auth required`).
 //!
 //! `mcp-login <server>` runs the browser OAuth flow and stores the resulting
-//! tokens under `<config_dir>/mcp-oauth/<server>.json`; subsequent agent runs
-//! reuse them silently. The server may also come from the trusted `.mcp.json`
-//! of the project given by `--path`. This mirrors what Cline's "Authenticate" button does.
+//! tokens under `<config_dir>/mcp-oauth/`, per server name and URL;
+//! subsequent agent runs reuse them silently. The server may also come from
+//! the trusted `.mcp.json` of the project given by `--path`. This mirrors
+//! what Cline's "Authenticate" button does.
 //! The flow itself lives in `code_assistant_core::tools::mcp_auth` so the
 //! settings UI can drive the same login.
 
@@ -25,12 +26,13 @@ pub async fn run_mcp_login(server: &str, project_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Remove any stored OAuth tokens for the MCP server `server`.
+/// Remove every stored OAuth login of the MCP server `server`, whatever URL
+/// it was made for.
 pub fn run_mcp_logout(server: &str) -> Result<()> {
-    if mcp::forget_mcp_oauth_tokens(server)? {
-        println!("Logged out. Removed stored OAuth tokens for MCP server '{server}'.");
-    } else {
-        println!("No stored OAuth tokens for MCP server '{server}'.");
+    match mcp::forget_mcp_oauth_tokens(server)? {
+        0 => println!("No stored OAuth tokens for MCP server '{server}'."),
+        1 => println!("Logged out. Removed the stored OAuth tokens for MCP server '{server}'."),
+        n => println!("Logged out. Removed {n} stored OAuth logins for MCP server '{server}'."),
     }
     Ok(())
 }

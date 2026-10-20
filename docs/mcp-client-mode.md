@@ -212,13 +212,18 @@ has no stored login contributes no tools and shows as *login required*
   the current directory) once that file is trusted — the CLI cannot ask,
   so an untrusted one is ignored as in an agent run.
 
-Tokens are stored per server name, wherever the server is configured. A
-login never starts on its own for a server that was never logged in.
+A login belongs to the server's name and URL
+(`<config_dir>/mcp-oauth/<name>-<url hash>.json`): a project server that
+shares a global server's name neither uses nor replaces the global login.
+Tokens from before, stored by name only (`<name>.json`), move to the global
+server of that name on first use. `code-assistant mcp-logout <server>`
+removes every login of the name. A login never starts on its own for a
+server that was never logged in.
 
 ### Expired OAuth logins
 
-An HTTP server that uses OAuth keeps its tokens in
-`<config_dir>/mcp-oauth/<server>.json`; rmcp refreshes the access token
+An HTTP server that uses OAuth keeps its tokens in `<config_dir>/mcp-oauth/`
+(see above); rmcp refreshes the access token
 silently. When that fails too (the refresh token expired or was revoked),
 the login is renewed automatically, unless `"auto_reauthorize": false` is set
 at the top level of `mcp-servers.json` (the settings page's "Log in again

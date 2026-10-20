@@ -17,7 +17,7 @@ use anyhow::{Context, Result};
 use futures::FutureExt as _;
 use futures::future::{BoxFuture, Shared};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -163,7 +163,7 @@ impl AutoReauthorizer {
 #[async_trait::async_trait]
 impl mcp_client::Reauthorizer for AutoReauthorizer {
     async fn reauthorize(&self, server: &str) -> Result<()> {
-        if !mcp::has_mcp_oauth_tokens(server) {
+        if !mcp::has_mcp_oauth_tokens(server, &self.server) {
             anyhow::bail!("MCP server '{server}' requires authorization");
         }
         if !auto_reauthorize_enabled() {
@@ -192,7 +192,7 @@ pub fn auto_reauthorize_enabled() -> bool {
 /// that found the login expired: the server's tools appear on the next run,
 /// once the new token is stored.
 pub fn reauthorize_in_background(server: &str, config: &McpServerConfig) {
-    if mcp::has_mcp_oauth_tokens(server) && auto_reauthorize_enabled() {
+    if mcp::has_mcp_oauth_tokens(server, config) && auto_reauthorize_enabled() {
         tracing::info!("MCP server '{server}' login expired; re-authorizing");
         drop(relogin(server, config).0);
     }
@@ -214,23 +214,27 @@ pub async fn login_shared(server: &str, config: &McpServerConfig) -> Result<()> 
 
 type Login = Shared<BoxFuture<'static, Result<(), String>>>;
 
-/// Logins in progress per server, so concurrent requests share one browser
+/// Logins in progress by token file (server name and URL, see
+/// [`mcp::mcp_oauth_token_path`]), so concurrent requests share one browser
 /// round trip, with where each one's authorization URL appears.
-static LOGINS: LazyLock<Mutex<HashMap<String, (Login, UrlSlot)>>> = LazyLock::new(Default::default);
+static LOGINS: LazyLock<Mutex<HashMap<PathBuf, (Login, UrlSlot)>>> =
+    LazyLock::new(Default::default);
 
 /// Join or start the browser login for `server`. It runs as its own task: a
 /// caller that gives up (a cancelled tool call) does not abandon a login the
 /// user may be completing in the browser. Returns the login and, when it
 /// joined one already running, that login's URL slot.
 fn relogin(server: &str, config: &McpServerConfig) -> (Login, Option<UrlSlot>) {
+    let key = mcp::mcp_oauth_token_path(server, config);
     let mut logins = LOGINS.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((login, url)) = logins.get(server) {
+    if let Some((login, url)) = logins.get(&key) {
         return (login.clone(), Some(url.clone()));
     }
     let name = server.to_string();
     let config = config.clone();
     let url = UrlSlot::default();
     let task_url = url.clone();
+    let task_key = key.clone();
     let task = tokio::spawn(async move {
         let result = login_reporting_url(&name, &config, task_url)
             .await
@@ -238,7 +242,7 @@ fn relogin(server: &str, config: &McpServerConfig) -> (Login, Option<UrlSlot>) {
         LOGINS
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(&name);
+            .remove(&task_key);
         result
     });
     let login = async move {
@@ -247,7 +251,7 @@ fn relogin(server: &str, config: &McpServerConfig) -> (Login, Option<UrlSlot>) {
     }
     .boxed()
     .shared();
-    logins.insert(server.to_string(), (login.clone(), url));
+    logins.insert(key, (login.clone(), url));
     (login, None)
 }
 
@@ -329,7 +333,11 @@ mod tests {
                 );
 
                 std::fs::create_dir_all(mcp::mcp_oauth_dir()).unwrap();
-                std::fs::write(mcp::mcp_oauth_token_path("remote"), "{}").unwrap();
+                std::fs::write(
+                    mcp::mcp_oauth_token_path("remote", &reauthorizer.server),
+                    "{}",
+                )
+                .unwrap();
                 let servers = mcp::McpServersConfig {
                     auto_reauthorize: false,
                     ..Default::default()

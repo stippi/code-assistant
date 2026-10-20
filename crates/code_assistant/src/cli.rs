@@ -46,7 +46,7 @@ pub enum Mode {
 
     /// Remove stored OAuth tokens for an HTTP MCP server
     McpLogout {
-        /// Name of the server as configured in mcp-servers.json
+        /// Name of the server; removes its logins for every URL
         server: String,
     },
 

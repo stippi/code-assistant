@@ -354,7 +354,7 @@ impl ConnectionProvider for ConfigToolRegistry {
         let credentials = config
             .transport
             .is_http()
-            .then(|| crate::tools::mcp::mcp_oauth_credential_store(name));
+            .then(|| crate::tools::mcp::mcp_oauth_credential_store(name, config));
         let connection = match McpServerConnection::connect(name, config, credentials).await {
             // No login, or one that expired while the app was closed: an
             // expired one is renewed in the background, the tools appear on
@@ -665,7 +665,10 @@ mod tests {
                     provider.statuses().remove("remote"),
                     Some(McpServerHealth::NeedsLogin)
                 );
-                assert!(!crate::tools::mcp::has_mcp_oauth_tokens("remote"));
+                assert!(
+                    std::fs::read_dir(crate::tools::mcp::mcp_oauth_dir())
+                        .map_or(true, |mut entries| entries.next().is_none())
+                );
             },
         )
         .await;
