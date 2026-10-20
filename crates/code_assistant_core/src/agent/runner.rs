@@ -232,9 +232,14 @@ impl Agent {
         self.runtime.generate_handoff(prompt).await
     }
 
-    /// Open a fresh context whose first user message is `prompt`.
-    pub fn append_new_context(&mut self, prompt: String) -> Result<()> {
-        self.runtime.append_new_context(prompt)
+    /// Open a fresh context whose first user message is `prompt` followed by
+    /// `attachments`.
+    pub fn append_new_context(
+        &mut self,
+        prompt: String,
+        attachments: Vec<llm::ContentBlock>,
+    ) -> Result<()> {
+        self.runtime.append_new_context(prompt, attachments)
     }
 
     /// Run a single iteration of the agent loop without waiting for user input.

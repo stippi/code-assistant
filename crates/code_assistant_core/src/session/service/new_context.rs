@@ -18,10 +18,6 @@ impl SessionService {
         attachments: Vec<DraftAttachment>,
         branch_parent_id: Option<NodeId>,
     ) -> Result<()> {
-        ensure!(
-            attachments.is_empty(),
-            "/new and /handoff don't take attachments"
-        );
         // `/new` stores no message of its own; its boundary is appended at
         // the end of the active path and cannot branch off an edited message.
         ensure!(
@@ -37,6 +33,7 @@ impl SessionService {
                 &session_id,
                 &message,
                 command,
+                &attachments,
                 branch_parent_id,
                 new_session,
             )
@@ -55,7 +52,10 @@ impl SessionService {
                     }
                     return;
                 };
-                if let Err(error) = service.continue_in_new_session(&session_id, prompt).await {
+                if let Err(error) = service
+                    .continue_in_new_session(&session_id, prompt, attachments)
+                    .await
+                {
                     warn!("Failed to continue {session_id} in a new session: {error:#}");
                     service.events.publish_ui(
                         &session_id,
@@ -151,16 +151,31 @@ impl SessionService {
     }
 
     /// Create a session with `from`'s settings whose first user message is
-    /// `prompt`, start the agent on it, and tell `from`'s viewers to switch.
-    /// Without a prompt the session stays empty, like after `/clear`.
-    async fn continue_in_new_session(&self, from: &str, prompt: String) -> Result<()> {
+    /// `prompt` with `attachments`, start the agent on it, and tell `from`'s
+    /// viewers to switch. Without either the session stays empty, like after
+    /// `/clear`.
+    async fn continue_in_new_session(
+        &self,
+        from: &str,
+        prompt: String,
+        attachments: Vec<DraftAttachment>,
+    ) -> Result<()> {
         let to = self.start_fresh_session(from.to_string()).await?;
         let from = from.to_string();
         self.call_session(to.clone(), move |ctx| async move {
-            if !prompt.trim().is_empty() {
-                let blocks = content_blocks_from(&prompt, &[], None);
-                append_and_run(&ctx, &to, &prompt, blocks, &[], None, RunOptions::default())
-                    .await?;
+            if !prompt.trim().is_empty() || !attachments.is_empty() {
+                let root = project_root(&ctx, &to).await?;
+                let blocks = content_blocks_from(&prompt, &attachments, root.as_deref());
+                append_and_run(
+                    &ctx,
+                    &to,
+                    &prompt,
+                    blocks,
+                    &attachments,
+                    None,
+                    RunOptions::default(),
+                )
+                .await?;
             }
             ctx.notify_session(&from, UiEvent::SessionHandedOff { to });
             Ok(())
@@ -169,14 +184,32 @@ impl SessionService {
     }
 }
 
+/// The project path line comments in attachments are named relative to.
+async fn project_root(ctx: &ServiceCtx, session_id: &str) -> Result<Option<std::path::PathBuf>> {
+    let mut manager = ctx.manager.lock().await;
+    manager.ensure_session_loaded(session_id)?;
+    Ok(manager
+        .get_session(session_id)
+        .ok_or_else(|| anyhow!("Session {session_id} not found"))?
+        .session
+        .config
+        .effective_project_path()
+        .cloned())
+}
+
 async fn start_new_context_impl(
     ctx: &ServiceCtx,
     session_id: &str,
     message: &str,
     command: NewContextCommand,
+    attachments: &[DraftAttachment],
     branch_parent_id: Option<NodeId>,
     new_session: tokio::sync::oneshot::Sender<String>,
 ) -> Result<()> {
+    let root = project_root(ctx, session_id).await?;
+    // The attachments go along into the new context; `/handoff` also shows
+    // them to the agent writing the prompt.
+    let carried = content_blocks_from("", attachments, root.as_deref());
     match command {
         // Nothing of `/new` is stored in this session: the boundary (same
         // session) or the new session's first message carries the prompt.
@@ -184,6 +217,7 @@ async fn start_new_context_impl(
             let options = RunOptions {
                 task: RunTask::NewContext(NewContextRun {
                     prompt: Some(prompt),
+                    attachments: carried,
                     new_session,
                 }),
                 ..Default::default()
@@ -194,13 +228,14 @@ async fn start_new_context_impl(
         // message, so the generation request is the history as it is. An
         // edited message branches off like any other.
         NewContextCommand::Handoff { .. } => {
-            let mut blocks = content_blocks_from(message, &[], None);
+            let mut blocks = content_blocks_from(message, attachments, root.as_deref());
             blocks.push(llm::ContentBlock::new_text(
                 crate::session::new_context::handoff_request(),
             ));
             let options = RunOptions {
                 task: RunTask::NewContext(NewContextRun {
                     prompt: None,
+                    attachments: carried,
                     new_session,
                 }),
                 ..Default::default()
@@ -210,7 +245,7 @@ async fn start_new_context_impl(
                 session_id,
                 message,
                 blocks,
-                &[],
+                attachments,
                 branch_parent_id,
                 options,
             )
@@ -806,7 +841,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn commands_are_neither_queued_nor_sent_with_attachments() {
+    async fn commands_are_not_queued() {
         let tmp = tempfile::tempdir().unwrap();
         let (service, _) = test_service_with_manager(tmp.path());
         let id = service.create_session(None, None).await.unwrap();
@@ -815,13 +850,122 @@ mod tests {
             .queue_user_message(id.clone(), "/handoff".into(), vec![])
             .await;
         assert!(queued.is_err());
-        let attachment = DraftAttachment::Text {
-            content: "notes".into(),
-        };
-        let sent = service
-            .send_user_message(id, "/new with notes".into(), vec![attachment], None)
-            .await;
-        assert!(sent.unwrap_err().to_string().contains("attachments"));
+    }
+
+    fn image() -> DraftAttachment {
+        DraftAttachment::Image {
+            content: "aGk=".into(),
+            mime_type: "image/png".into(),
+            width: None,
+            height: None,
+        }
+    }
+
+    fn has_image(message: &llm::Message) -> bool {
+        matches!(&message.content, llm::MessageContent::Structured(blocks)
+            if blocks.iter().any(|block| matches!(block, llm::ContentBlock::Image { .. })))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handoff_carries_its_attachments_into_the_new_context() {
+        let tmp = tempfile::tempdir().unwrap();
+        let llm = answering(&["Next: fix the layout", "on it"]);
+        let (service, _) = test_service_with_llm(tmp.path(), llm.clone().into_factory());
+        let id = service.create_session(None, None).await.unwrap();
+        let mut subscription = service.subscribe();
+
+        service
+            .send_user_message(
+                id.clone(),
+                "/handoff this looks off".into(),
+                vec![image()],
+                None,
+            )
+            .await
+            .unwrap();
+        answer_target(
+            &service,
+            &mut subscription,
+            &id,
+            NewContextTarget::SameSession,
+        )
+        .await;
+        idle(&mut subscription, &id).await;
+
+        let messages = path(tmp.path(), &id);
+        assert_eq!(messages.len(), 3, "{messages:?}");
+        assert!(
+            has_image(&messages[0]),
+            "the agent writing the handoff sees it"
+        );
+        assert!(messages[1].is_new_context);
+        assert_eq!(texts(&messages[1]), ["Next: fix the layout"]);
+        assert!(has_image(&messages[1]));
+
+        let requests = llm.get_requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1].messages.len(), 1);
+        assert!(has_image(&requests[1].messages[0]));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn new_with_only_an_attachment_starts_a_new_session_with_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let llm = answering(&["on it"]);
+        let (service, _) = test_service_with_llm(tmp.path(), llm.clone().into_factory());
+        let id = service.create_session(None, None).await.unwrap();
+        let mut subscription = service.subscribe();
+
+        service
+            .send_user_message(id.clone(), "/new".into(), vec![image()], None)
+            .await
+            .unwrap();
+        answer_target(
+            &service,
+            &mut subscription,
+            &id,
+            NewContextTarget::NewSession,
+        )
+        .await;
+        let to = next(&mut subscription, &id, |event| match event {
+            UiEvent::SessionHandedOff { to } => Some(to),
+            _ => None,
+        })
+        .await;
+        idle(&mut subscription, &to).await;
+
+        let there = path(tmp.path(), &to);
+        assert!(has_image(&there[0]));
+        assert_eq!(texts(&there[1]), ["on it"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn new_with_only_an_attachment_opens_the_context_with_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let llm = answering(&["on it"]);
+        let (service, _) = test_service_with_llm(tmp.path(), llm.clone().into_factory());
+        let id = service.create_session(None, None).await.unwrap();
+        let mut subscription = service.subscribe();
+
+        service
+            .send_user_message(id.clone(), "/new".into(), vec![image()], None)
+            .await
+            .unwrap();
+        answer_target(
+            &service,
+            &mut subscription,
+            &id,
+            NewContextTarget::SameSession,
+        )
+        .await;
+        idle(&mut subscription, &id).await;
+
+        let messages = path(tmp.path(), &id);
+        assert_eq!(messages.len(), 2, "{messages:?}");
+        assert!(messages[0].is_new_context && has_image(&messages[0]));
+        let requests = llm.get_requests();
+        assert_eq!(requests.len(), 1);
+        assert!(has_image(&requests[0].messages[0]));
     }
 
     async fn prepared(subscription: &mut Subscription, session_id: &str) -> String {

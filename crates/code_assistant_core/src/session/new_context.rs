@@ -290,6 +290,9 @@ pub(crate) struct NewContextRun {
     /// The prompt of `/new`; `None` for `/handoff`, whose prompt the agent
     /// writes first (the request is the last message of the history).
     pub prompt: Option<String>,
+    /// The attachments sent with the command, which the new context opens
+    /// with after the prompt.
+    pub attachments: Vec<llm::ContentBlock>,
     /// Receives the prompt when the user chose a new session, which the
     /// service then creates; the run itself only covers this session.
     pub new_session: oneshot::Sender<String>,
@@ -314,8 +317,8 @@ impl NewContextRun {
         };
         match target {
             NewContextTarget::SameSession => {
-                let opens_with_prompt = !prompt.trim().is_empty();
-                agent.append_new_context(prompt)?;
+                let opens_with_prompt = !prompt.trim().is_empty() || !self.attachments.is_empty();
+                agent.append_new_context(prompt, self.attachments)?;
                 if opens_with_prompt || pending.lock().unwrap().is_some() {
                     agent.run_single_iteration().await?;
                     return Ok(true);
