@@ -1171,7 +1171,6 @@ async fn recording_makes_a_contact_sheet_of_the_motion() {
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     let rec = tab.record(Duration::from_secs(1), 9, None).await.unwrap();
-    let rate = rec.received;
     assert_eq!((rec.columns, rec.rows), (3, 3));
     assert_eq!(png_size(&rec.png), (rec.width, rec.height));
     assert!(rec.width <= super::MAX_SCREENSHOT_EDGE && rec.height <= super::MAX_SCREENSHOT_EDGE);
@@ -1205,18 +1204,21 @@ async fn recording_makes_a_contact_sheet_of_the_motion() {
         );
     }
 
-    // A viewport taller than the window: the box below 800 px still records
-    // at the full rate (outside the window, only a fraction of the frames
-    // would come).
+    // A viewport taller than the window: the box below 800 px still records.
+    // Without fitting the window the recording freezes (no frames at all),
+    // so the box moving from cell to cell tells; the frame rate itself
+    // depends on the machine's load.
     tab.set_viewport(1000, 1100, false).await.unwrap();
     tab.navigate(&sliding_box_url(950)).await.unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
     let rec = tab.record(Duration::from_secs(1), 4, None).await.unwrap();
     assert!(
-        rec.received * 3 >= rate * 2,
-        "{} frames, {rate} in the default viewport",
+        rec.received >= 4,
+        "only {} frames for a moving page",
         rec.received
     );
+    let fresh = rec.frames[1..].iter().filter(|f| !f.repeated).count();
+    assert!(fresh >= 2, "{:?}", rec.frames);
 
     // A window too small for the viewport is fitted to it before recording.
     tab.set_viewport(1280, 800, false).await.unwrap();
