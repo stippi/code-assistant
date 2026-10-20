@@ -71,6 +71,8 @@ pub enum InputAreaEvent {
     McpServerToggled { name: String, enabled: bool },
     /// The user asked to restart an MCP server.
     McpServerRestartRequested { name: String },
+    /// The user asked to log an MCP server in (OAuth, through the browser).
+    McpServerLoginRequested { name: String },
     /// The MCP menu opened and wants fresh server states.
     McpStatusesRequested,
     /// A built-in tool group was toggled on/off for the session.
@@ -802,6 +804,9 @@ impl InputArea {
             }
             McpSelectorEvent::RestartRequested { name } => {
                 cx.emit(InputAreaEvent::McpServerRestartRequested { name: name.clone() });
+            }
+            McpSelectorEvent::LoginRequested { name } => {
+                cx.emit(InputAreaEvent::McpServerLoginRequested { name: name.clone() });
             }
             McpSelectorEvent::Opened => cx.emit(InputAreaEvent::McpStatusesRequested),
             McpSelectorEvent::BuiltinToolToggled { id, enabled } => {

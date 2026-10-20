@@ -35,13 +35,18 @@ pub enum Mode {
 
     /// Log in to an HTTP MCP server that requires OAuth (opens browser)
     McpLogin {
-        /// Name of the server as configured in mcp-servers.json
+        /// Name of the server as configured in mcp-servers.json or in the
+        /// project's trusted .mcp.json
         server: String,
+
+        /// Path to the project whose .mcp.json may define the server
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
     },
 
     /// Remove stored OAuth tokens for an HTTP MCP server
     McpLogout {
-        /// Name of the server as configured in mcp-servers.json
+        /// Name of the server; removes its logins for every URL
         server: String,
     },
 
@@ -332,6 +337,20 @@ mod tests {
         match args.mode {
             Some(Mode::Acp { verbose, .. }) => assert!(verbose),
             _ => panic!("Expected acp mode"),
+        }
+    }
+
+    #[test]
+    fn test_mcp_login_mode() {
+        let args = Args::try_parse_from(["test", "mcp-login", "remote", "--path", "/project"])
+            .expect("Failed to parse mcp-login args");
+
+        match args.mode {
+            Some(Mode::McpLogin { server, path }) => {
+                assert_eq!(server, "remote");
+                assert_eq!(path, std::path::PathBuf::from("/project"));
+            }
+            _ => panic!("Expected mcp-login mode"),
         }
     }
 }

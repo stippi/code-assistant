@@ -25,20 +25,70 @@ pub fn mcp_servers_config_path() -> PathBuf {
 }
 
 /// Directory holding persisted OAuth tokens for HTTP MCP servers — one JSON
-/// file per server, written by the interactive login and reused silently on
-/// later connects.
+/// file per server name and URL, written by the interactive login and reused
+/// silently on later connects.
 pub fn mcp_oauth_dir() -> PathBuf {
     crate::config_dir::config_dir().join("mcp-oauth")
 }
 
-/// The OAuth token file for `server`. The server name is sanitized to a safe
-/// file stem so an unusual name cannot escape [`mcp_oauth_dir`].
-pub fn mcp_oauth_token_path(server: &str) -> PathBuf {
-    let stem: String = server
-        .chars()
+/// The server name as a safe file stem, so an unusual name cannot escape
+/// [`mcp_oauth_dir`]. Never contains `-`, which separates the URL hash.
+fn oauth_file_stem(name: &str) -> String {
+    name.chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect();
-    mcp_oauth_dir().join(format!("{stem}.json"))
+        .collect()
+}
+
+/// The OAuth token file for server `name`, configured as `server`. A login
+/// belongs to the name and the server's URL: a project's server that shares
+/// a global server's name neither uses nor replaces the global server's
+/// tokens.
+pub fn mcp_oauth_token_path(name: &str, server: &McpServerConfig) -> PathBuf {
+    let hash = format!("{:x}", md5::compute(oauth_url(server)));
+    mcp_oauth_dir().join(format!("{}-{}.json", oauth_file_stem(name), &hash[..16]))
+}
+
+/// The URL a server's login belongs to. A stdio server never logs in; it
+/// gets a token file that is never written.
+fn oauth_url(server: &McpServerConfig) -> &str {
+    match &server.transport {
+        McpTransport::Http { url, .. } => url,
+        _ => "",
+    }
+}
+
+/// Where tokens were stored by server name only, before logins were kept
+/// per URL.
+fn legacy_oauth_token_path(name: &str) -> PathBuf {
+    mcp_oauth_dir().join(format!("{}.json", oauth_file_stem(name)))
+}
+
+/// A login stored by name only came from the global server of that name
+/// (project servers could not log in then): move it to that server's token
+/// file when `server` is it.
+fn adopt_legacy_oauth_tokens(name: &str, server: &McpServerConfig) {
+    let legacy = legacy_oauth_token_path(name);
+    if !legacy.exists() {
+        return;
+    }
+    let path = mcp_oauth_token_path(name, server);
+    let is_global = load_mcp_servers_config()
+        .ok()
+        .and_then(|config| {
+            let global = config.servers.get(name)?;
+            Some(global.transport.is_http() && oauth_url(global) == oauth_url(server))
+        })
+        .unwrap_or(false);
+    if is_global
+        && !path.exists()
+        && let Err(e) = std::fs::rename(&legacy, &path)
+    {
+        tracing::warn!(
+            "Failed to move {} to {}: {e}",
+            legacy.display(),
+            path.display()
+        );
+    }
 }
 
 /// A fingerprint of the persisted OAuth tokens (file names + sizes + modified
@@ -80,46 +130,95 @@ pub fn mcp_oauth_fingerprint() -> String {
 /// [`mcp_client::McpServerConnection::connect`] so a stored token is reused
 /// without user interaction, and to [`mcp_client::authenticate_http_server`]
 /// so the interactive login persists.
-pub fn mcp_oauth_credential_store(server: &str) -> std::sync::Arc<dyn mcp_client::CredentialStore> {
+pub fn mcp_oauth_credential_store(
+    name: &str,
+    server: &McpServerConfig,
+) -> std::sync::Arc<dyn mcp_client::CredentialStore> {
+    adopt_legacy_oauth_tokens(name, server);
     std::sync::Arc::new(mcp_client::FileCredentialStore::new(mcp_oauth_token_path(
-        server,
+        name, server,
     )))
 }
 
-/// Run the interactive OAuth login for a configured HTTP MCP server and
-/// persist its tokens, so later connects reuse them without user interaction.
-/// `authorizer` performs the browser round-trip (open the URL, capture the
-/// redirect). The server is looked up in the global `mcp-servers.json`;
-/// errors if it is unknown or not an HTTP server.
-pub async fn authenticate_mcp_server(name: &str, authorizer: &dyn OAuthAuthorizer) -> Result<()> {
-    let config = load_mcp_servers_config()?;
-    let server = config.servers.get(name).ok_or_else(|| {
-        anyhow::anyhow!(
-            "No MCP server named '{name}' in {}",
-            mcp_servers_config_path().display()
+/// The configuration of server `name` as an agent run sees it: the global
+/// `mcp-servers.json`, overridden by the project-local `.mcp.json` in
+/// `local_mcp_dir` when given. Errors if neither defines the server.
+pub fn resolve_mcp_server(name: &str, local_mcp_dir: Option<&Path>) -> Result<McpServerConfig> {
+    let mut config = load_mcp_servers_config()?;
+    if let Some(local) = local_mcp_dir.and_then(load_local_mcp_json) {
+        config.merge(local);
+    }
+    config.servers.remove(name).ok_or_else(|| {
+        let mut places = mcp_servers_config_path().display().to_string();
+        if let Some(dir) = local_mcp_dir {
+            places.push_str(&format!(" or {}", dir.join(".mcp.json").display()));
+        }
+        anyhow::anyhow!("No MCP server named '{name}' in {places}")
+    })
+}
+
+/// [`resolve_mcp_server`] for project `project_dir` outside a session (the
+/// CLI login), where no one can be asked: the project's `.mcp.json` counts
+/// only once it is trusted, as in an agent run.
+pub fn resolve_project_mcp_server(name: &str, project_dir: &Path) -> Result<McpServerConfig> {
+    if !super::mcp_trust::needs_prompt(project_dir) {
+        return resolve_mcp_server(name, Some(project_dir));
+    }
+    resolve_mcp_server(name, None).with_context(|| {
+        format!(
+            "{} is not trusted yet; allow its MCP servers in a session of that project first",
+            project_dir.join(".mcp.json").display()
         )
-    })?;
-    let store = mcp_oauth_credential_store(name);
+    })
+}
+
+/// Run the interactive OAuth login for the HTTP MCP server `name`, configured
+/// as `server`, and persist its tokens, so later connects reuse them without
+/// user interaction. `authorizer` performs the browser round-trip (open the
+/// URL, capture the redirect). Errors if `server` is not an HTTP server.
+pub async fn authenticate_mcp_server(
+    name: &str,
+    server: &McpServerConfig,
+    authorizer: &dyn OAuthAuthorizer,
+) -> Result<()> {
+    let store = mcp_oauth_credential_store(name, server);
     mcp_client::authenticate_http_server(name, server, store, authorizer, "code-assistant").await
 }
 
-/// Forget any stored OAuth tokens for `server` (e.g. to force a fresh login).
-/// Returns whether a token file was present.
-pub fn forget_mcp_oauth_tokens(server: &str) -> Result<bool> {
-    let path = mcp_oauth_token_path(server);
-    if path.exists() {
-        std::fs::remove_file(&path)
-            .with_context(|| format!("Failed to remove {}", path.display()))?;
-        Ok(true)
-    } else {
-        Ok(false)
+/// Forget every stored OAuth login of server `name`, whatever URL it was
+/// made for (e.g. to force a fresh login). Returns how many there were.
+pub fn forget_mcp_oauth_tokens(name: &str) -> Result<usize> {
+    let stem = oauth_file_stem(name);
+    let Ok(entries) = std::fs::read_dir(mcp_oauth_dir()) else {
+        return Ok(0);
+    };
+    let mut removed = 0;
+    for entry in entries.filter_map(|entry| entry.ok()) {
+        let file_name = entry.file_name();
+        let Some(file_stem) = file_name.to_str().and_then(|n| n.strip_suffix(".json")) else {
+            continue;
+        };
+        let of_name = file_stem == stem
+            || file_stem
+                .strip_prefix(&stem)
+                .and_then(|rest| rest.strip_prefix('-'))
+                .is_some();
+        if of_name {
+            let path = entry.path();
+            std::fs::remove_file(&path)
+                .with_context(|| format!("Failed to remove {}", path.display()))?;
+            removed += 1;
+        }
     }
+    Ok(removed)
 }
 
-/// Whether a persisted OAuth token file exists for `server`. A coarse "have we
-/// logged in" signal for status output and UI; it does not check expiry.
-pub fn has_mcp_oauth_tokens(server: &str) -> bool {
-    mcp_oauth_token_path(server).exists()
+/// Whether a persisted OAuth login exists for server `name`, configured as
+/// `server`. A coarse "have we logged in" signal for status output and UI;
+/// it does not check expiry.
+pub fn has_mcp_oauth_tokens(name: &str, server: &McpServerConfig) -> bool {
+    adopt_legacy_oauth_tokens(name, server);
+    mcp_oauth_token_path(name, server).exists()
 }
 
 /// Discover a server's tools for a configuration UI, reusing stored OAuth
@@ -134,7 +233,7 @@ pub async fn discover_server_tools(
     let credentials = server
         .transport
         .is_http()
-        .then(|| mcp_oauth_credential_store(server_name));
+        .then(|| mcp_oauth_credential_store(server_name, server));
     mcp_client::discover_tools(server_name, server, credentials).await
 }
 
@@ -386,6 +485,168 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = load_mcp_servers_config_from(&dir.path().join("mcp-servers.json")).unwrap();
         assert!(config.servers.is_empty());
+    }
+
+    /// A login finds servers from the project's `.mcp.json` too, which
+    /// override global ones of the same name, as in an agent run.
+    #[test]
+    fn resolve_mcp_server_includes_the_project_config() {
+        let config = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(
+            config.path().join("mcp-servers.json"),
+            r#"{ "servers": {
+                "global": { "url": "https://global.example.com/mcp" },
+                "shared": { "url": "https://global.example.com/shared" }
+            } }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            project.path().join(".mcp.json"),
+            r#"{ "mcpServers": {
+                "local": { "type": "http", "url": "http://127.0.0.1:9000/mcp" },
+                "shared": { "type": "http", "url": "http://127.0.0.1:9000/shared" }
+            } }"#,
+        )
+        .unwrap();
+        temp_env::with_var("CODE_ASSISTANT_CONFIG_DIR", Some(config.path()), || {
+            let url = |name: &str, dir: Option<&Path>| match resolve_mcp_server(name, dir)
+                .unwrap()
+                .transport
+            {
+                McpTransport::Http { url, .. } => url,
+                other => panic!("expected an HTTP server, got {other:?}"),
+            };
+            let dir = Some(project.path());
+            assert_eq!(url("global", dir), "https://global.example.com/mcp");
+            assert_eq!(url("local", dir), "http://127.0.0.1:9000/mcp");
+            assert_eq!(url("shared", dir), "http://127.0.0.1:9000/shared");
+            assert_eq!(url("shared", None), "https://global.example.com/shared");
+
+            let error = resolve_mcp_server("local", None).unwrap_err();
+            assert!(error.to_string().contains("No MCP server named 'local'"));
+        });
+    }
+
+    /// Outside a session (the CLI login) a project's `.mcp.json` counts only
+    /// once trusted: an untrusted one could point a known server name at
+    /// another URL, and the login would store its tokens under that name.
+    #[test]
+    fn resolve_project_mcp_server_requires_trust() {
+        let config = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(
+            config.path().join("mcp-servers.json"),
+            r#"{ "servers": { "shared": { "url": "https://global.example.com/shared" } } }"#,
+        )
+        .unwrap();
+        let local = r#"{ "mcpServers": {
+            "local": { "type": "http", "url": "http://127.0.0.1:9000/mcp" },
+            "shared": { "type": "http", "url": "http://127.0.0.1:9000/shared" }
+        } }"#;
+        std::fs::write(project.path().join(".mcp.json"), local).unwrap();
+        temp_env::with_var("CODE_ASSISTANT_CONFIG_DIR", Some(config.path()), || {
+            let url = |name: &str| match resolve_project_mcp_server(name, project.path())
+                .unwrap()
+                .transport
+            {
+                McpTransport::Http { url, .. } => url,
+                other => panic!("expected an HTTP server, got {other:?}"),
+            };
+            assert_eq!(url("shared"), "https://global.example.com/shared");
+            let error = resolve_project_mcp_server("local", project.path()).unwrap_err();
+            assert!(format!("{error:#}").contains("not trusted"), "{error:#}");
+
+            crate::tools::mcp_trust::add_trusted(
+                project.path(),
+                &crate::tools::mcp_trust::fingerprint(local),
+            )
+            .unwrap();
+            assert_eq!(url("shared"), "http://127.0.0.1:9000/shared");
+            assert_eq!(url("local"), "http://127.0.0.1:9000/mcp");
+        });
+    }
+
+    fn http_server(url: &str) -> McpServerConfig {
+        McpServerConfig {
+            transport: McpTransport::http(url),
+            enabled: true,
+            off_in_new_sessions: false,
+            enabled_tools: None,
+            disabled_tools: Vec::new(),
+        }
+    }
+
+    /// A login belongs to a server name at one URL: a project server that
+    /// shares a global server's name neither sees nor replaces its tokens.
+    #[test]
+    fn oauth_tokens_are_kept_per_name_and_url() {
+        let config = tempfile::tempdir().unwrap();
+        temp_env::with_var("CODE_ASSISTANT_CONFIG_DIR", Some(config.path()), || {
+            let global = http_server("https://global.example.com/mcp");
+            let project = http_server("http://127.0.0.1:9000/mcp");
+            let path = mcp_oauth_token_path("remote", &global);
+            assert_eq!(path.parent(), Some(mcp_oauth_dir().as_path()));
+            assert_ne!(path, mcp_oauth_token_path("remote", &project));
+            assert_ne!(path, mcp_oauth_token_path("other", &global));
+            assert_eq!(path, mcp_oauth_token_path("remote", &global.clone()));
+
+            std::fs::create_dir_all(mcp_oauth_dir()).unwrap();
+            std::fs::write(&path, "{}").unwrap();
+            assert!(has_mcp_oauth_tokens("remote", &global));
+            assert!(!has_mcp_oauth_tokens("remote", &project));
+        });
+    }
+
+    /// Tokens stored by name only, before logins were kept per URL, came
+    /// from the global server of that name: it takes them over, a project
+    /// server of the same name does not.
+    #[test]
+    fn legacy_oauth_tokens_go_to_the_global_server() {
+        let config = tempfile::tempdir().unwrap();
+        temp_env::with_var("CODE_ASSISTANT_CONFIG_DIR", Some(config.path()), || {
+            std::fs::write(
+                config.path().join("mcp-servers.json"),
+                r#"{ "servers": { "remote": { "url": "https://global.example.com/mcp" } } }"#,
+            )
+            .unwrap();
+            let legacy = mcp_oauth_dir().join("remote.json");
+            std::fs::create_dir_all(mcp_oauth_dir()).unwrap();
+            std::fs::write(&legacy, "{}").unwrap();
+
+            let project = http_server("http://127.0.0.1:9000/mcp");
+            assert!(!has_mcp_oauth_tokens("remote", &project));
+            assert!(legacy.exists());
+
+            let global = http_server("https://global.example.com/mcp");
+            assert!(has_mcp_oauth_tokens("remote", &global));
+            assert!(!legacy.exists());
+            assert!(mcp_oauth_token_path("remote", &global).exists());
+        });
+    }
+
+    /// Logging out by name forgets every login of that name, whatever URL.
+    #[test]
+    fn forget_oauth_tokens_removes_every_login_of_the_name() {
+        let config = tempfile::tempdir().unwrap();
+        temp_env::with_var("CODE_ASSISTANT_CONFIG_DIR", Some(config.path()), || {
+            assert_eq!(forget_mcp_oauth_tokens("remote").unwrap(), 0);
+            std::fs::create_dir_all(mcp_oauth_dir()).unwrap();
+            let paths = [
+                mcp_oauth_token_path("remote", &http_server("https://a.example.com/mcp")),
+                mcp_oauth_token_path("remote", &http_server("https://b.example.com/mcp")),
+                mcp_oauth_dir().join("remote.json"),
+            ];
+            for path in &paths {
+                std::fs::write(path, "{}").unwrap();
+            }
+            let other = mcp_oauth_token_path("remote_x", &http_server("https://a.example.com/mcp"));
+            std::fs::write(&other, "{}").unwrap();
+
+            assert_eq!(forget_mcp_oauth_tokens("remote").unwrap(), 3);
+            assert!(paths.iter().all(|path| !path.exists()));
+            assert!(other.exists());
+        });
     }
 
     #[test]

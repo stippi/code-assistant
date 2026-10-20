@@ -11,7 +11,8 @@
 //!
 //! Each MCP server also shows its connection state (a dot, the error on
 //! hover; see [`Self::set_statuses`]) and a restart button, available
-//! whatever the state.
+//! whatever the state — or, while the server waits for an OAuth login, a
+//! *Log in* button instead.
 
 use code_assistant_core::ui::ui_events::{BuiltinToolToggle, McpServerHealth, McpServerToggle};
 use gpui_kit::component::tooltip::Tooltip;
@@ -31,6 +32,8 @@ pub enum McpSelectorEvent {
     BuiltinToolToggled { id: String, enabled: bool },
     /// The user asked to restart a server.
     RestartRequested { name: String },
+    /// The user asked to log a server in that waits for an OAuth login.
+    LoginRequested { name: String },
     /// The popover opened; the server states should be refreshed.
     Opened,
 }
@@ -91,7 +94,7 @@ impl McpSelector {
             server.enabled
                 && matches!(
                     self.statuses.get(&server.name),
-                    Some(McpServerHealth::Failed { .. })
+                    Some(McpServerHealth::Failed { .. } | McpServerHealth::NeedsLogin)
                 )
         })
     }
@@ -120,11 +123,30 @@ fn health_display(health: Option<&McpServerHealth>, cx: &App) -> (Hsla, SharedSt
         ),
         Some(McpServerHealth::Connecting) => (cx.theme().warning, "Connecting…".into()),
         Some(McpServerHealth::Failed { error }) => (cx.theme().danger, error.clone().into()),
+        Some(McpServerHealth::NeedsLogin) => (
+            cx.theme().danger,
+            "Login required — log in to use its tools".into(),
+        ),
         None => (
             cx.theme().muted_foreground.opacity(0.5),
             "Not connected — starts with the next agent run".into(),
         ),
     }
+}
+
+/// The small square button next to a server's switch.
+fn row_button(id: String, cx: &App) -> gpui_kit::Stateful<gpui_kit::Div> {
+    div()
+        .id(SharedString::from(id))
+        .flex_none()
+        .h(px(18.))
+        .min_w(px(18.))
+        .rounded_sm()
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .hover(|s| s.bg(cx.theme().muted))
 }
 
 fn status_dot(color: Hsla) -> gpui_kit::Div {
@@ -251,7 +273,38 @@ impl Render for McpSelector {
                 let switch_name = server.name.clone();
                 let toggle_name = server.name.clone();
                 let restart_name = server.name.clone();
-                let (dot_color, status_text) = health_display(self.statuses.get(&server.name), cx);
+                let health = self.statuses.get(&server.name);
+                let needs_login = health == Some(&McpServerHealth::NeedsLogin);
+                let (dot_color, status_text) = health_display(health, cx);
+                let action = if needs_login {
+                    row_button(format!("mcp-login-{restart_name}"), cx)
+                        .px_1()
+                        .text_xs()
+                        .text_color(cx.theme().foreground)
+                        .tooltip(|window, cx| {
+                            Tooltip::new("Log in through the browser").build(window, cx)
+                        })
+                        .child("Log in")
+                        .on_click(cx.listener(move |_this, _, _window, cx| {
+                            cx.emit(McpSelectorEvent::LoginRequested {
+                                name: restart_name.clone(),
+                            });
+                        }))
+                } else {
+                    row_button(format!("mcp-restart-{restart_name}"), cx)
+                        .tooltip(|window, cx| Tooltip::new("Restart server").build(window, cx))
+                        .child(
+                            Icon::default()
+                                .path("icons/rotate_cw.svg")
+                                .with_size(Size::XSmall)
+                                .text_color(cx.theme().muted_foreground),
+                        )
+                        .on_click(cx.listener(move |_this, _, _window, cx| {
+                            cx.emit(McpSelectorEvent::RestartRequested {
+                                name: restart_name.clone(),
+                            });
+                        }))
+                };
                 let row = div()
                     .flex()
                     .items_center()
@@ -280,30 +333,7 @@ impl Render for McpSelector {
                                     .child(SharedString::from(name)),
                             ),
                     )
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("mcp-restart-{restart_name}")))
-                            .flex_none()
-                            .size(px(18.))
-                            .rounded_sm()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .hover(|s| s.bg(cx.theme().muted))
-                            .tooltip(|window, cx| Tooltip::new("Restart server").build(window, cx))
-                            .child(
-                                Icon::default()
-                                    .path("icons/rotate_cw.svg")
-                                    .with_size(Size::XSmall)
-                                    .text_color(cx.theme().muted_foreground),
-                            )
-                            .on_click(cx.listener(move |_this, _, _window, cx| {
-                                cx.emit(McpSelectorEvent::RestartRequested {
-                                    name: restart_name.clone(),
-                                });
-                            })),
-                    )
+                    .child(action)
                     .child(
                         Switch::new(SharedString::from(format!("mcp-toggle-{switch_name}")))
                             .checked(server.enabled)

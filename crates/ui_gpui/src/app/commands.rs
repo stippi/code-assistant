@@ -479,6 +479,22 @@ impl Gpui {
         });
     }
 
+    /// Log an MCP server in through the browser from the session's MCP menu,
+    /// then restart it; its state arrives via `McpServerStatusChanged`
+    /// notifications.
+    pub(crate) fn cmd_login_mcp_server(&self, session_id: String, name: String) {
+        let Some(service) = self.session_service() else {
+            return;
+        };
+        let gpui = self.clone();
+        self.dispatch(async move {
+            if let Err(e) = service.login_mcp_server(session_id, name.clone()).await {
+                gpui.display_error(format!("Logging in to MCP server '{name}' failed: {e:#}"));
+            }
+            let _ = service.refresh_mcp_server_statuses().await;
+        });
+    }
+
     /// Ask for the current MCP server states (e.g. when the MCP menu opens).
     pub(crate) fn cmd_refresh_mcp_server_statuses(&self) {
         let Some(service) = self.session_service() else {

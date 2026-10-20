@@ -57,9 +57,9 @@ fn main() -> Result<()> {
         }
         Some(Mode::CodexLogout) => codex_commands::run_codex_logout(),
         Some(Mode::CodexStatus) => codex_commands::run_codex_status(),
-        Some(Mode::McpLogin { server }) => {
+        Some(Mode::McpLogin { server, path }) => {
             setup_logging(1, true);
-            block_on(mcp_commands::run_mcp_login(&server))
+            block_on(mcp_commands::run_mcp_login(&server, &path))
         }
         Some(Mode::McpLogout { server }) => mcp_commands::run_mcp_logout(&server),
         Some(Mode::Server { verbose }) => {

@@ -12,12 +12,13 @@
 //! [`AutoReauthorizer`] runs that same login on its own when a server's login
 //! expired, if `auto_reauthorize` is on in `mcp-servers.json`.
 
-use super::mcp::{self, AuthorizationOutcome, OAuthAuthorizer};
+use super::mcp::{self, AuthorizationOutcome, McpServerConfig, OAuthAuthorizer};
 use anyhow::{Context, Result};
 use futures::FutureExt as _;
 use futures::future::{BoxFuture, Shared};
 use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 use tokio::net::TcpListener;
 
@@ -28,7 +29,13 @@ pub struct LoopbackAuthorizer {
     /// Bound at construction so [`Self::redirect_uri`] reflects the real port;
     /// consumed by the single `authorize` call.
     listener: Mutex<Option<TcpListener>>,
+    /// Where `authorize` leaves the authorization URL, so the browser can be
+    /// opened at it again while this login waits.
+    url: UrlSlot,
 }
+
+/// The authorization URL of a login, once it is known.
+type UrlSlot = Arc<Mutex<Option<String>>>;
 
 impl LoopbackAuthorizer {
     /// Bind an ephemeral loopback port for the redirect callback.
@@ -40,6 +47,7 @@ impl LoopbackAuthorizer {
         Ok(Self {
             redirect_uri: format!("http://127.0.0.1:{port}/callback"),
             listener: Mutex::new(Some(listener)),
+            url: UrlSlot::default(),
         })
     }
 }
@@ -62,9 +70,8 @@ impl OAuthAuthorizer for LoopbackAuthorizer {
         // not open (headless, or a GPUI settings screen without a console).
         tracing::info!("MCP OAuth authorization URL: {authorization_url}");
         eprintln!("Authorize this MCP server in your browser:\n  {authorization_url}");
-        if let Err(e) = open::that(&authorization_url) {
-            tracing::warn!("Could not open the browser automatically: {e}");
-        }
+        *self.url.lock().unwrap_or_else(|e| e.into_inner()) = Some(authorization_url.clone());
+        open_browser(&authorization_url);
 
         let (mut stream, _) = tokio::time::timeout(Duration::from_secs(300), listener.accept())
             .await
@@ -108,23 +115,55 @@ impl OAuthAuthorizer for LoopbackAuthorizer {
     }
 }
 
-/// Run the OAuth browser login for the configured HTTP MCP server `name` and
-/// persist its tokens. A convenience wrapper binding a [`LoopbackAuthorizer`]
-/// to [`mcp::authenticate_mcp_server`].
-pub async fn login_mcp_server(name: &str) -> Result<()> {
-    let authorizer = LoopbackAuthorizer::bind().await?;
-    mcp::authenticate_mcp_server(name, &authorizer).await
+fn open_browser(url: &str) {
+    if let Err(e) = open::that(url) {
+        tracing::warn!("Could not open the browser automatically: {e}");
+    }
+}
+
+/// Run the OAuth browser login for the HTTP MCP server `name` and persist its
+/// tokens. The server is looked up in the global `mcp-servers.json` and, when
+/// `local_mcp_dir` is given, the project-local `.mcp.json` there (see
+/// [`mcp::resolve_mcp_server`]).
+pub async fn login_mcp_server(name: &str, local_mcp_dir: Option<&Path>) -> Result<()> {
+    let server = mcp::resolve_mcp_server(name, local_mcp_dir)?;
+    login_configured_server(name, &server).await
+}
+
+/// Run the OAuth browser login for the HTTP MCP server `name`, configured as
+/// `server`, and persist its tokens. Binds a [`LoopbackAuthorizer`] to
+/// [`mcp::authenticate_mcp_server`].
+pub async fn login_configured_server(name: &str, server: &McpServerConfig) -> Result<()> {
+    login_reporting_url(name, server, UrlSlot::default()).await
+}
+
+/// [`login_configured_server`], leaving the authorization URL in `url`.
+async fn login_reporting_url(name: &str, server: &McpServerConfig, url: UrlSlot) -> Result<()> {
+    let mut authorizer = LoopbackAuthorizer::bind().await?;
+    authorizer.url = url;
+    mcp::authenticate_mcp_server(name, server, &authorizer).await
 }
 
 /// Logs an HTTP MCP server in again when its OAuth login expired, if
 /// `auto_reauthorize` is on in `mcp-servers.json`. The setting is read on
 /// every use, so switching it in the settings applies at once.
-pub struct AutoReauthorizer;
+///
+/// Holds the server's configuration rather than looking it up by name, so a
+/// server from a project's `.mcp.json` is renewed as well.
+pub struct AutoReauthorizer {
+    server: McpServerConfig,
+}
+
+impl AutoReauthorizer {
+    pub fn new(server: McpServerConfig) -> Self {
+        Self { server }
+    }
+}
 
 #[async_trait::async_trait]
 impl mcp_client::Reauthorizer for AutoReauthorizer {
     async fn reauthorize(&self, server: &str) -> Result<()> {
-        if !mcp::has_mcp_oauth_tokens(server) {
+        if !mcp::has_mcp_oauth_tokens(server, &self.server) {
             anyhow::bail!("MCP server '{server}' requires authorization");
         }
         if !auto_reauthorize_enabled() {
@@ -134,7 +173,10 @@ impl mcp_client::Reauthorizer for AutoReauthorizer {
                  `code-assistant mcp-login {server}`)"
             );
         }
-        relogin(server).await.map_err(anyhow::Error::msg)
+        relogin(server, &self.server)
+            .0
+            .await
+            .map_err(anyhow::Error::msg)
     }
 }
 
@@ -149,34 +191,58 @@ pub fn auto_reauthorize_enabled() -> bool {
 /// automatic re-authorization is on, without waiting for it. For a connect
 /// that found the login expired: the server's tools appear on the next run,
 /// once the new token is stored.
-pub fn reauthorize_in_background(server: &str) {
-    if mcp::has_mcp_oauth_tokens(server) && auto_reauthorize_enabled() {
+pub fn reauthorize_in_background(server: &str, config: &McpServerConfig) {
+    if mcp::has_mcp_oauth_tokens(server, config) && auto_reauthorize_enabled() {
         tracing::info!("MCP server '{server}' login expired; re-authorizing");
-        drop(relogin(server));
+        drop(relogin(server, config).0);
     }
+}
+
+/// Log the HTTP MCP server `server`, configured as `config`, in through the
+/// browser — asked for by the user. Joins a login already running for it and
+/// opens the browser at its page again: the user may have closed it, and the
+/// waiting login still takes the callback.
+pub async fn login_shared(server: &str, config: &McpServerConfig) -> Result<()> {
+    let (login, joined) = relogin(server, config);
+    let url = joined.and_then(|url| url.lock().unwrap_or_else(|e| e.into_inner()).clone());
+    if let Some(url) = url {
+        tracing::info!("MCP server '{server}' login is waiting; opening its page again");
+        open_browser(&url);
+    }
+    login.await.map_err(anyhow::Error::msg)
 }
 
 type Login = Shared<BoxFuture<'static, Result<(), String>>>;
 
-/// Logins in progress per server, so concurrent requests share one browser
-/// round trip.
-static LOGINS: LazyLock<Mutex<HashMap<String, Login>>> = LazyLock::new(Default::default);
+/// Logins in progress by token file (server name and URL, see
+/// [`mcp::mcp_oauth_token_path`]), so concurrent requests share one browser
+/// round trip, with where each one's authorization URL appears.
+static LOGINS: LazyLock<Mutex<HashMap<PathBuf, (Login, UrlSlot)>>> =
+    LazyLock::new(Default::default);
 
 /// Join or start the browser login for `server`. It runs as its own task: a
 /// caller that gives up (a cancelled tool call) does not abandon a login the
-/// user may be completing in the browser.
-fn relogin(server: &str) -> Login {
+/// user may be completing in the browser. Returns the login and, when it
+/// joined one already running, that login's URL slot.
+fn relogin(server: &str, config: &McpServerConfig) -> (Login, Option<UrlSlot>) {
+    let key = mcp::mcp_oauth_token_path(server, config);
     let mut logins = LOGINS.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(login) = logins.get(server) {
-        return login.clone();
+    if let Some((login, url)) = logins.get(&key) {
+        return (login.clone(), Some(url.clone()));
     }
     let name = server.to_string();
+    let config = config.clone();
+    let url = UrlSlot::default();
+    let task_url = url.clone();
+    let task_key = key.clone();
     let task = tokio::spawn(async move {
-        let result = login_mcp_server(&name).await.map_err(|e| format!("{e:#}"));
+        let result = login_reporting_url(&name, &config, task_url)
+            .await
+            .map_err(|e| format!("{e:#}"));
         LOGINS
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(&name);
+            .remove(&task_key);
         result
     });
     let login = async move {
@@ -185,8 +251,8 @@ fn relogin(server: &str) -> Login {
     }
     .boxed()
     .shared();
-    logins.insert(server.to_string(), login.clone());
-    login
+    logins.insert(key, (login.clone(), url));
+    (login, None)
 }
 
 /// Read the redirect request off `stream` and return its decoded query
@@ -253,21 +319,32 @@ mod tests {
         temp_env::async_with_vars(
             [("CODE_ASSISTANT_CONFIG_DIR", Some(config.path()))],
             async {
-                let error = AutoReauthorizer.reauthorize("remote").await.unwrap_err();
+                let reauthorizer = AutoReauthorizer::new(McpServerConfig {
+                    transport: mcp::McpTransport::http("https://mcp.example.com/mcp"),
+                    enabled: true,
+                    off_in_new_sessions: false,
+                    enabled_tools: None,
+                    disabled_tools: Vec::new(),
+                });
+                let error = reauthorizer.reauthorize("remote").await.unwrap_err();
                 assert!(
                     error.to_string().contains("requires authorization"),
                     "{error}"
                 );
 
                 std::fs::create_dir_all(mcp::mcp_oauth_dir()).unwrap();
-                std::fs::write(mcp::mcp_oauth_token_path("remote"), "{}").unwrap();
+                std::fs::write(
+                    mcp::mcp_oauth_token_path("remote", &reauthorizer.server),
+                    "{}",
+                )
+                .unwrap();
                 let servers = mcp::McpServersConfig {
                     auto_reauthorize: false,
                     ..Default::default()
                 };
                 mcp::save_mcp_servers_config(&servers).unwrap();
                 assert!(!auto_reauthorize_enabled());
-                let error = AutoReauthorizer.reauthorize("remote").await.unwrap_err();
+                let error = reauthorizer.reauthorize("remote").await.unwrap_err();
                 assert!(error.to_string().contains("is off"), "{error}");
             },
         )

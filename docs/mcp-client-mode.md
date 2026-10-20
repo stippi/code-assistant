@@ -196,10 +196,34 @@ shows and preserves.
   holds so the new connection stays alive. Other sessions pick it up on
   their next run.
 
+### OAuth logins
+
+An HTTP server that demands OAuth (it answers `initialize` with `401`) and
+has no stored login contributes no tools and shows as *login required*
+(`McpServerHealth::NeedsLogin`). The browser login starts from:
+
+- the *Log in* button of that server's row in the input row's *Tools* menu
+  (`SessionService::login_mcp_server`), which also restarts the server so
+  its tools join the session — this covers servers from the project's
+  trusted `.mcp.json`;
+- the *Authenticate* action in *Settings → MCP* (global servers);
+- `code-assistant mcp-login <server> [--path <project>]`, which finds
+  servers in `mcp-servers.json` and in the project's `.mcp.json` (default:
+  the current directory) once that file is trusted — the CLI cannot ask,
+  so an untrusted one is ignored as in an agent run.
+
+A login belongs to the server's name and URL
+(`<config_dir>/mcp-oauth/<name>-<url hash>.json`): a project server that
+shares a global server's name neither uses nor replaces the global login.
+Tokens from before, stored by name only (`<name>.json`), move to the global
+server of that name on first use. `code-assistant mcp-logout <server>`
+removes every login of the name. A login never starts on its own for a
+server that was never logged in.
+
 ### Expired OAuth logins
 
-An HTTP server that uses OAuth keeps its tokens in
-`<config_dir>/mcp-oauth/<server>.json`; rmcp refreshes the access token
+An HTTP server that uses OAuth keeps its tokens in `<config_dir>/mcp-oauth/`
+(see above); rmcp refreshes the access token
 silently. When that fails too (the refresh token expired or was revoked),
 the login is renewed automatically, unless `"auto_reauthorize": false` is set
 at the top level of `mcp-servers.json` (the settings page's "Log in again
@@ -211,11 +235,14 @@ when a login expires" switch):
   `mcp_client::Reauthorizer` — code-assistant's `AutoReauthorizer` runs the
   browser login — reconnects and retries the call. A call that failed for
   another transport reason is not retried, since it may have run.
-- **At connect** (e.g. the login expired while the app was closed): the
-  server contributes no tools to that run; the login starts in the
+- **At connect** (e.g. the login expired while the app was closed): a
+  stored login the server rejects, or whose refresh fails, counts as
+  missing — the connect retries without it and the server's `401` reports
+  *login required*. The server contributes no tools to that run; the login starts in the
   background, and the new token file rebuilds the registry for the next run.
 
-Only servers with a previous login are renewed. Concurrent requests for one
+Only servers with a previous login are renewed, global and project-local
+alike (the renewal uses the configuration the connection was made with). Concurrent requests for one
 server share one browser login, which runs to completion even if the tool
 call that started it is cancelled. With the switch off, the tool call fails
 with a hint to log in from the settings or with `code-assistant mcp-login`.

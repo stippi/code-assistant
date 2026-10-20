@@ -189,8 +189,11 @@ impl McpServerConnection {
     }
 
     /// Try to connect with a previously stored OAuth token. Returns `Ok(None)`
-    /// when the store holds no usable credentials, so the caller falls back to
-    /// an unauthenticated attempt.
+    /// when the store holds no usable credentials — none at all, or a login
+    /// the server no longer accepts (e.g. the refresh failed) — so the caller
+    /// falls back to an unauthenticated attempt, whose `401` reports that a
+    /// login is needed. Only a timeout is passed on: the server is not
+    /// answering, and a second attempt would just wait again.
     async fn connect_http_with_stored_token(
         name: &str,
         url: &str,
@@ -218,14 +221,18 @@ impl McpServerConnection {
             auth_client,
             http_transport_config(url, headers)?,
         );
-        Self::serve_http(name, transport)
-            .await
-            .map(Some)
-            .with_context(|| {
-                format!(
-                    "failed to connect to HTTP MCP server '{name}' ({url}) with stored credentials"
-                )
-            })
+        match Self::serve_http(name, transport).await {
+            Ok(service) => Ok(Some(service)),
+            Err(error) if error.is::<InitializeTimeout>() => Err(error.context(format!(
+                "failed to connect to HTTP MCP server '{name}' ({url}) with stored credentials"
+            ))),
+            Err(error) => {
+                tracing::warn!(
+                    "MCP server '{name}' did not accept the stored login, trying without: {error:#}"
+                );
+                Ok(None)
+            }
+        }
     }
 
     /// Serve the client handler over a streamable HTTP transport, mapping the
@@ -237,7 +244,7 @@ impl McpServerConnection {
         E: std::error::Error + Send + Sync + 'static,
     {
         match tokio::time::timeout(CONNECT_TIMEOUT, ().serve(transport)).await {
-            Err(_elapsed) => Err(anyhow!("timeout initializing MCP server '{name}'")),
+            Err(_elapsed) => Err(anyhow::Error::new(InitializeTimeout(name.to_string()))),
             Ok(Ok(service)) => Ok(service),
             Ok(Err(error)) => match error.auth_challenge() {
                 Some(challenge) => Err(anyhow::Error::new(AuthorizationRequired {
@@ -418,6 +425,11 @@ impl McpServerConnection {
         }
     }
 }
+
+/// The server did not complete the MCP initialize handshake in time.
+#[derive(Debug, thiserror::Error)]
+#[error("timeout initializing MCP server '{0}'")]
+struct InitializeTimeout(String);
 
 /// The session itself failed (sending, or the transport closed), as opposed
 /// to the server answering with an error or the call timing out.
