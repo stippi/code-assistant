@@ -260,10 +260,21 @@ async fn key_chords_set_their_modifiers() {
     session.close().await;
 }
 
+/// Against the live DuckDuckGo page, to notice when its markup changes (the
+/// parser itself is tested offline in `client::search_tests`). DuckDuckGo
+/// answers repeated requests with a bot check for a while; then the test
+/// skips, since the page says nothing about the parser.
 #[tokio::test]
 async fn test_web_search() {
     let client = WebClient::new().await.unwrap();
-    let results = client.search("rust programming", 1).await.unwrap();
+    let results = match client.search("rust programming", 1).await {
+        Ok(results) => results,
+        Err(error) if error.is::<crate::SearchBlocked>() => {
+            eprintln!("skipping test_web_search: {error}");
+            return;
+        }
+        Err(error) => panic!("search failed: {error:#}"),
+    };
 
     println!("\nSearch Results:");
     for (i, result) in results.iter().enumerate() {
