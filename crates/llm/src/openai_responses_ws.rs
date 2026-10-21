@@ -979,6 +979,7 @@ impl OpenAIResponsesWsClient {
 
         let tools = request
             .tools
+            .filter(|tools| !tools.is_empty())
             .map(|tools| tools.into_iter().map(function_tool).collect());
 
         let reasoning = if capabilities.supports_reasoning {
@@ -1030,8 +1031,9 @@ impl OpenAIResponsesWsClient {
             instructions,
             previous_response_id,
             input: send_input,
+            // The API rejects a tool choice for a request without tools.
+            tool_choice: tools.as_ref().map(|_| "auto".to_string()),
             tools,
-            tool_choice: Some("auto".to_string()),
             parallel_tool_calls: false,
             reasoning,
             store: false,

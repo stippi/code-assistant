@@ -1170,17 +1170,10 @@ impl LLMProvider for OpenAIClient {
             messages.extend(Self::convert_message(message));
         }
 
-        let openai_request = OpenAIRequest {
-            model: self.model.clone(),
-            messages,
-            temperature: self.get_temperature(),
-            top_p: self.get_top_p(),
-            stream: None,
-            stream_options: None,
-            prompt_cache_key: Some(crate::prompt_caching::prompt_cache_key(&request.session_id)),
-            reasoning_effort: self.get_reasoning_effort(),
-            tool_choice: Some(serde_json::json!("auto")),
-            tools: request.tools.map(|tools| {
+        let tools: Option<Vec<serde_json::Value>> = request
+            .tools
+            .filter(|tools| !tools.is_empty())
+            .map(|tools| {
                 tools
                     .into_iter()
                     .map(|tool| {
@@ -1194,7 +1187,20 @@ impl LLMProvider for OpenAIClient {
                         })
                     })
                     .collect()
-            }),
+            });
+
+        let openai_request = OpenAIRequest {
+            model: self.model.clone(),
+            messages,
+            temperature: self.get_temperature(),
+            top_p: self.get_top_p(),
+            stream: None,
+            stream_options: None,
+            prompt_cache_key: Some(crate::prompt_caching::prompt_cache_key(&request.session_id)),
+            reasoning_effort: self.get_reasoning_effort(),
+            // The API rejects a tool choice for a request without tools.
+            tool_choice: tools.as_ref().map(|_| serde_json::json!("auto")),
+            tools,
         };
 
         let request_start = std::time::SystemTime::now();
