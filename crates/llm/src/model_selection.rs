@@ -4,7 +4,8 @@
 //! Everything a model needs beyond its provider and ID comes from the
 //! capability catalog and the provider's model listing; an entry only holds
 //! what the user changed. The file replaces `models.json`, whose entries are
-//! imported once (the old file stays untouched, older builds keep reading it).
+//! imported while it is missing (the old file stays untouched, older builds
+//! keep reading it).
 
 use crate::capabilities::{Effort, catalog};
 use crate::config_merge::merge_patch;
@@ -14,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use tracing::info;
+use tracing::debug;
 
 const FILE_NAME: &str = "model-selection.json";
 const LEGACY_FILE_NAME: &str = "models.json";
@@ -31,7 +32,8 @@ impl ModelSelection {
     }
 
     /// The selection from the config directory. Without one, the entries of
-    /// a legacy `models.json` are imported and saved as the selection.
+    /// a legacy `models.json` are imported — in memory only: loading never
+    /// writes, the selection file appears with the first change saved.
     pub fn load_or_import() -> Result<Self> {
         let path = Self::path();
         if let Some(selection) = Self::load_from(&path)? {
@@ -46,12 +48,10 @@ impl ModelSelection {
         let legacy: HashMap<String, ModelConfig> = serde_json::from_str(&content)
             .with_context(|| format!("Failed to parse {}", legacy_path.display()))?;
         let selection = Self::import_legacy(legacy);
-        selection.save_to(&path)?;
-        info!(
-            "Imported {} models from {} into {}",
+        debug!(
+            "Imported {} models from {}",
             selection.models.len(),
-            legacy_path.display(),
-            path.display()
+            legacy_path.display()
         );
         Ok(selection)
     }

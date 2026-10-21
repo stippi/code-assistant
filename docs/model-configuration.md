@@ -66,7 +66,9 @@ provider label appended.
 `model-selection.json` replaces `models.json`. When it is missing, the old
 file's entries are imported (`ModelSelection::import_legacy`): names stay,
 reasoning fields move into `default_effort`, limits the catalog already knows
-are dropped. The old file is not touched, so older builds keep working.
+are dropped. Loading never writes: the selection file appears with the first
+change saved in the settings. The old file is not touched, so older builds
+keep working.
 
 ## Adding a model to the catalog
 

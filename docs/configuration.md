@@ -84,9 +84,10 @@ An entry only holds what you override:
 - `config` — extra request fields, merged into every request as a JSON Merge
   Patch (objects merge, `null` removes a field the client sends)
 
-On first start without `model-selection.json`, the entries of an old
+As long as there is no `model-selection.json`, the entries of an old
 `models.json` are imported: their names stay (sessions refer to them), their
-reasoning settings become the `default_effort`. The old file is left as it is.
+reasoning settings become the `default_effort`. The new file is written with
+your first change in *Settings → Models*; the old file is left as it is.
 
 See [`providers.example.json`](../providers.example.json) and
 [`model-selection.example.json`](../model-selection.example.json).
