@@ -532,6 +532,19 @@ async fn create_mock_server(
                 let generator = generator.clone();
                 let test_case = test_case.clone();
                 async move {
+                    // Like the real APIs, reject a tool choice without tools.
+                    let has_tools = req
+                        .get("tools")
+                        .and_then(|tools| tools.as_array())
+                        .is_some_and(|tools| !tools.is_empty());
+                    if req.get("tool_choice").is_some() && !has_tools {
+                        return (
+                            axum::http::StatusCode::BAD_REQUEST,
+                            "tool_choice is only allowed when tools are specified",
+                        )
+                            .into_response();
+                    }
+
                     let is_streaming = path.contains("stream")
                         || req.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
 
