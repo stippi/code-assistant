@@ -1456,6 +1456,7 @@ impl LLMProvider for OpenAIResponsesClient {
 
         let tools = request
             .tools
+            .filter(|tools| !tools.is_empty())
             .map(|tools| tools.into_iter().map(function_tool).collect());
 
         // Configure for stateless mode with encrypted reasoning
@@ -1464,8 +1465,9 @@ impl LLMProvider for OpenAIResponsesClient {
         let responses_request = ResponsesRequest {
             model: self.model.clone(),
             input,
+            // The API rejects a tool choice for a request without tools.
+            tool_choice: tools.as_ref().map(|_| "auto".to_string()),
             tools,
-            tool_choice: Some("auto".to_string()),
             parallel_tool_calls: false,
             store,
             stream: streaming_callback.is_some(),
