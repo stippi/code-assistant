@@ -3,7 +3,9 @@ use crate::aicore::{
     AiCoreVertexClient,
 };
 use crate::auth::TokenManager;
-use crate::provider_config::{ConfigurationSystem, ModelConfig, ProviderConfig};
+use crate::capabilities::{Effort, ModelCapabilities};
+use crate::config_merge::merge_patch;
+use crate::provider_config::{ConfigurationSystem, LlmApiClientKind, ModelConfig, ProviderConfig};
 use crate::{
     AnthropicClient, CerebrasClient, GroqClient, LLMProvider, MinimaxClient, MistralAiClient,
     MoonshotClient, OllamaClient, OpenAIClient, OpenAIResponsesClient, OpenAIResponsesWsClient,
@@ -225,9 +227,11 @@ pub struct LLMClientConfig {
     pub fast_playback: bool,
 }
 
-/// Create an LLM client using the new model-based configuration system
+/// Create an LLM client for a configured model, reasoning at `effort`
+/// (`None`: the model's default).
 pub async fn create_llm_client_from_model(
     model_name: &str,
+    effort: Option<Effort>,
     playback_path: Option<PathBuf>,
     fast_playback: bool,
     record_path: Option<PathBuf>,
@@ -238,6 +242,7 @@ pub async fn create_llm_client_from_model(
     create_llm_client_from_configs(
         model_config,
         provider_config,
+        effort,
         playback_path,
         fast_playback,
         record_path,
@@ -249,6 +254,7 @@ pub async fn create_llm_client_from_model(
 pub async fn create_llm_client_from_configs(
     model_config: &ModelConfig,
     provider_config: &ProviderConfig,
+    effort: Option<Effort>,
     playback_path: Option<PathBuf>,
     fast_playback: bool,
     record_path_override: Option<PathBuf>,
@@ -298,6 +304,14 @@ pub async fn create_llm_client_from_configs(
             .map(PathBuf::from)
     });
 
+    // From here on the model's `config` is the complete request overlay the
+    // client merges into every request.
+    let api = ConfigurationSystem::api_client_kind_for_configs(model_config, provider_config)?;
+    let model_config = &ModelConfig {
+        config: request_overlay(model_config, api, effort),
+        ..model_config.clone()
+    };
+
     match provider_type {
         LLMProviderType::AiCore => {
             create_ai_core_client(model_config, provider_config, record_path.clone()).await
@@ -333,6 +347,24 @@ pub async fn create_llm_client_from_configs(
         LLMProviderType::OpenRouter => {
             create_openrouter_client(model_config, provider_config).await
         }
+    }
+}
+
+/// The patch merged into every request for this model: the fields its
+/// capabilities imply at `effort`, with the user's `config` block on top.
+fn request_overlay(
+    model_config: &ModelConfig,
+    api: LlmApiClientKind,
+    effort: Option<Effort>,
+) -> Value {
+    let overlay = ModelCapabilities::resolve(api, &model_config.id).request_overlay(api, effort);
+    let mut user_config = model_config.config.clone();
+    match user_config.as_object_mut() {
+        Some(fields) => {
+            fields.remove("record_path");
+            merge_patch(overlay, user_config)
+        }
+        None => overlay,
     }
 }
 
@@ -736,4 +768,46 @@ async fn create_ollama_client(
     let client = OllamaClient::new(model_config.id.clone(), base_url);
     let client = apply_custom_config(client, model_config);
     Ok(Box::new(client))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn model(id: &str, config: Value) -> ModelConfig {
+        ModelConfig {
+            provider: "test".into(),
+            id: id.into(),
+            config,
+            context_token_limit: 200_000,
+            edit_format: Default::default(),
+        }
+    }
+
+    #[test]
+    fn overlay_puts_the_user_config_on_top_of_the_effort() {
+        let opus = model(
+            "claude-opus-5",
+            json!({ "temperature": 1.0, "thinking": { "display": "omitted" }, "record_path": "/tmp/x" }),
+        );
+        assert_eq!(
+            request_overlay(&opus, LlmApiClientKind::Anthropic, Some(Effort::Low)),
+            json!({
+                "thinking": { "type": "adaptive", "display": "omitted" },
+                "output_config": { "effort": "low" },
+                "max_tokens": 64000,
+                "temperature": 1.0
+            })
+        );
+    }
+
+    #[test]
+    fn overlay_without_user_config_is_the_capability_overlay() {
+        let gpt = model("gpt-5.6", Value::Null);
+        assert_eq!(
+            request_overlay(&gpt, LlmApiClientKind::OpenAiResponsesWs, None),
+            json!({ "reasoning": { "effort": "high", "summary": "auto" } })
+        );
+    }
 }

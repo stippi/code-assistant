@@ -2261,6 +2261,7 @@ fn schedule_agent_impl(
                 None => {
                     create_llm_client_from_model(
                         &session_config.model_name,
+                        None,
                         runtime.playback_path.clone(),
                         runtime.fast_playback,
                         runtime.record_path.clone(),

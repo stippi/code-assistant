@@ -300,8 +300,14 @@ impl DefaultSubAgentRunner {
                 tokio::task::spawn_blocking(move || factory(&model)).await??
             }
             None => {
-                llm::factory::create_llm_client_from_model(&self.model_name, None, false, None)
-                    .await?
+                llm::factory::create_llm_client_from_model(
+                    &self.model_name,
+                    None,
+                    None,
+                    false,
+                    None,
+                )
+                .await?
             }
         };
 

@@ -1286,7 +1286,9 @@ impl TerminalTuiApp {
         // user-set durable goals (/goal) one bounded turn at a time. The verdicts
         // come from an LLM evaluator on the configured model; without a
         // usable provider the goals simply stay parked.
-        match llm::factory::create_llm_client_from_model(&config.model, None, false, None).await {
+        match llm::factory::create_llm_client_from_model(&config.model, None, None, false, None)
+            .await
+        {
             Ok(provider) => {
                 code_assistant_core::goals::spawn_goal_controller(
                     code_assistant_core::goals::GoalController::with_stores(

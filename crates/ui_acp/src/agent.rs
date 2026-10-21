@@ -970,6 +970,7 @@ impl AgentState {
         // Create LLM client
         let llm_client = match create_llm_client_from_model(
             &model_name_for_prompt,
+            None,
             self.playback_path.clone(),
             self.fast_playback,
             None,

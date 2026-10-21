@@ -16,6 +16,7 @@ mod utils;
 pub mod aicore;
 pub mod anthropic;
 pub mod auth;
+pub mod capabilities;
 pub mod cerebras;
 pub mod codex_auth;
 pub mod config_merge;
