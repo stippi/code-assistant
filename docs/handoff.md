@@ -28,7 +28,11 @@ The user can read, edit and send it; no second model request is needed.
 - Accepting a slash-menu entry inserts `/<command> ` so the argument can be
   typed right after it (like skills).
 - Only accepted while the session is idle; during a run the message is
-  rejected with an error (not queued). Attachments are rejected too.
+  rejected with an error (not queued).
+- Attachments sent with the command open the new context together with its
+  prompt: in the same session they are part of the boundary node, in a new
+  session part of its first message. `/handoff` also keeps them on its
+  stored message, so the agent writing the prompt sees them.
 - Editing a message into `/handoff` branches off like any edit; the
   handoff is written from that branch. `/new` cannot replace an edited
   message: it stores no message, and its boundary is appended at the end

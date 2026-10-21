@@ -266,8 +266,9 @@ impl StreamProcessorTrait for JsonStreamProcessor {
     ) -> Result<Vec<DisplayFragment>, UIError> {
         let mut fragments = Vec::new();
 
-        // User messages show their text as typed; blocks (e.g. queued messages)
-        // stay separate paragraphs instead of being glued together
+        // User messages show their text as typed, then their images; blocks
+        // (e.g. queued messages) stay separate paragraphs instead of being
+        // glued together
         if message.role == llm::MessageRole::User {
             let text = match &message.content {
                 MessageContent::Text(text) => text.clone(),
@@ -282,6 +283,9 @@ impl StreamProcessorTrait for JsonStreamProcessor {
             };
             if !text.trim().is_empty() {
                 fragments.push(DisplayFragment::PlainText(text));
+            }
+            if let MessageContent::Structured(blocks) = &message.content {
+                fragments.extend(DisplayFragment::images(blocks));
             }
             return Ok(fragments);
         }

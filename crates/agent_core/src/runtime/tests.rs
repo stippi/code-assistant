@@ -681,12 +681,39 @@ fn append_new_context_appends_the_boundary() {
         .append_message(Message::new_user("Old ask"))
         .unwrap();
 
-    runtime.append_new_context("Next step".into()).unwrap();
+    runtime
+        .append_new_context("Next step".into(), Vec::new())
+        .unwrap();
 
     let saved = capture.saved();
     let last = &saved.nodes[saved.active_path.last().unwrap()].message;
     assert!(last.is_new_context && last.is_compaction_summary);
     assert_eq!(text(last), "Next step");
+}
+
+#[test]
+fn append_new_context_carries_the_attachments() {
+    let (mut runtime, capture) = runtime();
+    let image = ContentBlock::Image {
+        media_type: "image/png".into(),
+        data: "aGk=".into(),
+        start_time: None,
+        end_time: None,
+    };
+
+    runtime
+        .append_new_context("Next step".into(), vec![image.clone()])
+        .unwrap();
+
+    let saved = capture.saved();
+    let last = &saved.nodes[saved.active_path.last().unwrap()].message;
+    assert!(last.is_new_context);
+    let MessageContent::Structured(blocks) = &last.content else {
+        panic!("the attachments make the content structured");
+    };
+    assert_eq!(blocks.len(), 2);
+    assert!(matches!(&blocks[0], ContentBlock::Text { text, .. } if text == "Next step"));
+    assert!(matches!(&blocks[1], ContentBlock::Image { data, .. } if data == "aGk="));
 }
 
 fn blocks_text(message: &Message) -> Vec<String> {

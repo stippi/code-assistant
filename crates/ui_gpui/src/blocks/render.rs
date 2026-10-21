@@ -807,6 +807,14 @@ impl BlockView {
                         .pb_2()
                         .text_color(cx.theme().foreground)
                         .child(self.markdown_view(&block.summary, true, cx))
+                        .child(
+                            div().flex().flex_wrap().gap_2().children(
+                                block
+                                    .images
+                                    .iter()
+                                    .map(|image| Self::render_image(image, cx)),
+                            ),
+                        )
                         .into_any_element();
                     let body = self.with_copy_button(group_name, body, cx);
 
@@ -819,55 +827,58 @@ impl BlockView {
 
                 container.into_any_element()
             }
-            BlockData::ImageBlock(block) => {
-                if let Some(image) = &block.image {
+            BlockData::ImageBlock(block) => Self::render_image(block, cx),
+        }
+    }
+
+    /// An image, or a placeholder if it could not be parsed.
+    fn render_image(block: &super::ImageBlock, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        if let Some(image) = &block.image {
+            div()
+                .mt_2()
+                .flex_none() // Don't grow or shrink
+                .child(
                     div()
-                        .mt_2()
-                        .flex_none() // Don't grow or shrink
-                        .child(
-                            div()
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .rounded_md()
-                                .overflow_hidden()
-                                .bg(cx.theme().popover)
-                                .shadow_sm()
-                                .child(
-                                    img(ImageSource::Image(image.clone()))
-                                        .max_h(px(MAX_IMAGE_HEIGHT)) // Use constant for max height
-                                        .object_fit(ObjectFit::Contain), // Maintain aspect ratio
-                                ),
-                        )
-                        .into_any_element()
-                } else {
-                    // Fallback to placeholder if image parsing failed
-                    div()
-                        .mt_2()
-                        .flex_none()
-                        .p_2()
-                        .bg(cx.theme().warning.opacity(0.1))
                         .border_1()
-                        .border_color(cx.theme().warning.opacity(0.3))
+                        .border_color(cx.theme().border)
                         .rounded_md()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .max_w(px(200.0)) // Limit width of error message
+                        .overflow_hidden()
+                        .bg(cx.theme().popover)
+                        .shadow_sm()
                         .child(
-                            div()
-                                .text_color(cx.theme().warning_foreground)
-                                .text_xs()
-                                .child("⚠️"),
-                        )
-                        .child(
-                            div()
-                                .text_color(cx.theme().warning_foreground.opacity(0.8))
-                                .text_xs()
-                                .child(format!("Failed: {}", block.media_type)),
-                        )
-                        .into_any_element()
-                }
-            }
+                            img(ImageSource::Image(image.clone()))
+                                .max_h(px(MAX_IMAGE_HEIGHT)) // Use constant for max height
+                                .object_fit(ObjectFit::Contain), // Maintain aspect ratio
+                        ),
+                )
+                .into_any_element()
+        } else {
+            // Fallback to placeholder if image parsing failed
+            div()
+                .mt_2()
+                .flex_none()
+                .p_2()
+                .bg(cx.theme().warning.opacity(0.1))
+                .border_1()
+                .border_color(cx.theme().warning.opacity(0.3))
+                .rounded_md()
+                .flex()
+                .items_center()
+                .gap_2()
+                .max_w(px(200.0)) // Limit width of error message
+                .child(
+                    div()
+                        .text_color(cx.theme().warning_foreground)
+                        .text_xs()
+                        .child("⚠️"),
+                )
+                .child(
+                    div()
+                        .text_color(cx.theme().warning_foreground.opacity(0.8))
+                        .text_xs()
+                        .child(format!("Failed: {}", block.media_type)),
+                )
+                .into_any_element()
         }
     }
 }

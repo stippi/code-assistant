@@ -204,6 +204,7 @@ impl StreamProcessorTrait for XmlStreamProcessor {
                     if !combined_text.trim().is_empty() {
                         fragments.push(DisplayFragment::PlainText(combined_text));
                     }
+                    fragments.extend(DisplayFragment::images(blocks));
                 }
             }
         } else {

@@ -575,9 +575,10 @@ impl AgentState {
             // Replay what the user typed, without injected instructions.
             let message = without_injections(&message);
             if message.is_compaction_summary {
-                let fragment = code_assistant_core::ui::context_divider(&message);
-                ui.display_fragment(&fragment)
-                    .map_err(|_| acp::Error::internal_error())?;
+                for fragment in code_assistant_core::ui::context_divider(&message) {
+                    ui.display_fragment(&fragment)
+                        .map_err(|_| acp::Error::internal_error())?;
+                }
                 continue;
             }
 

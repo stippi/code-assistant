@@ -895,15 +895,33 @@ impl AgentRuntime {
         anyhow::bail!("The model did not produce a handoff text")
     }
 
-    /// Opens a fresh context whose first user message is `prompt` (empty: the
-    /// next user message opens it) and shows the divider for it.
-    pub fn append_new_context(&mut self, prompt: String) -> Result<()> {
+    /// Opens a fresh context whose first user message is `prompt` followed by
+    /// `attachments` (both empty: the next user message opens it) and shows
+    /// the divider for it.
+    pub fn append_new_context(
+        &mut self,
+        prompt: String,
+        attachments: Vec<ContentBlock>,
+    ) -> Result<()> {
         let summary = prompt.trim().to_string();
-        self.append_message(Message::new_context(prompt))?;
+        // The images show below the divider, where the user sees what the
+        // new context opens with.
+        let images = DisplayFragment::images(&attachments);
+        let mut message = Message::new_context(String::new());
+        message.content = if attachments.is_empty() {
+            MessageContent::Text(prompt)
+        } else {
+            let text = (!prompt.is_empty()).then(|| ContentBlock::new_text(prompt));
+            MessageContent::Structured(text.into_iter().chain(attachments).collect())
+        };
+        self.append_message(message)?;
         self.ui.display_fragment(&DisplayFragment::ContextDivider {
             boundary: ContextBoundary::NewContext,
             summary,
         })?;
+        for image in &images {
+            self.ui.display_fragment(image)?;
+        }
         Ok(())
     }
 
@@ -938,12 +956,15 @@ impl AgentRuntime {
             .filter_map(|id| nodes.get(id))
             .map(|node| node.message.clone())
             .collect();
-        // A new context opens with its prompt as a plain user message.
+        // A new context opens with its prompt (and attachments) as a plain
+        // user message.
         if messages
             .first()
             .is_some_and(|message| message.is_new_context)
         {
-            if handoff::user_message_text(&messages[0]).is_none() {
+            let has_attachments = matches!(&messages[0].content,
+                MessageContent::Structured(blocks) if !blocks.is_empty());
+            if !has_attachments && handoff::user_message_text(&messages[0]).is_none() {
                 messages.remove(0);
             }
         } else if let Some(summary) = messages
