@@ -103,6 +103,22 @@ fn provider_rows(config: &ConfigurationSystem, provider_id: &str, filter: &str) 
     rows
 }
 
+/// The API a provider type speaks, as shown on its card.
+fn api_label(provider_type: &str) -> String {
+    if provider_type == "ai-core" {
+        // The API differs per deployment.
+        return "SAP AI Core".to_string();
+    }
+    let provider = llm::provider_config::ProviderConfig {
+        label: String::new(),
+        provider: provider_type.to_string(),
+        config: serde_json::Value::Null,
+    };
+    ConfigurationSystem::api_client_kind_for_configs(&ModelConfig::new("", ""), &provider)
+        .map(|kind| kind.to_string())
+        .unwrap_or_else(|_| provider_type.to_string())
+}
+
 /// "1M", "272K"
 fn format_tokens(tokens: u32) -> String {
     if tokens >= 1_000_000 && tokens.is_multiple_of(1_000_000) {
@@ -541,6 +557,12 @@ impl ModelsSection {
                 }
             }
         };
+        // Providers may share a label (one proxy, several APIs): the API and
+        // the provider ID tell them apart.
+        let status = format!(
+            "{} · {provider_id} · {status}",
+            api_label(&provider.provider)
+        );
         let error = listing.and_then(|listing| listing.error.clone());
         let id_for_refresh = provider_id.to_string();
         let id_for_add = provider_id.to_string();
@@ -1032,6 +1054,14 @@ mod tests {
             provider_rows(&config, "anthropic", "opus-5")[0].id,
             "claude-opus-5"
         );
+    }
+
+    #[test]
+    fn cards_name_the_api() {
+        assert_eq!(api_label("anthropic"), "Anthropic API");
+        assert_eq!(api_label("openai-responses"), "OpenAI Responses API");
+        assert_eq!(api_label("vertex"), "Vertex API");
+        assert_eq!(api_label("ai-core"), "SAP AI Core");
     }
 
     #[test]
