@@ -25,6 +25,23 @@ impl SelectItem for EffortOption {
         self.0.label().into()
     }
 
+    /// The selected level, led by the brain icon (the menu lists plain labels).
+    fn display_title(&self) -> Option<gpui_kit::AnyElement> {
+        Some(
+            div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .child(
+                    Icon::default()
+                        .path("icons/brain.svg")
+                        .with_size(Size::XSmall),
+                )
+                .child(self.0.label())
+                .into_any_element(),
+        )
+    }
+
     fn value(&self) -> &Self::Value {
         &self.0
     }
@@ -111,7 +128,7 @@ impl Render for EffortSelector {
                     .appearance(false)
                     .icon(
                         Icon::default()
-                            .path("icons/brain.svg")
+                            .path("icons/chevron_up_down.svg")
                             .with_size(Size::XSmall)
                             .text_color(cx.theme().muted_foreground),
                     )
