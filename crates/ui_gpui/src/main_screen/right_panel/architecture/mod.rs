@@ -55,6 +55,11 @@ const GAP_Y: f32 = 34.;
 const ISOLATED_GAP: f32 = 22.;
 /// Boxes shown per level; a larger folder lists the rest by name.
 const MAX_BOXES: usize = 60;
+/// The inspector's height until the user resizes it, and its bounds.
+const INSPECTOR_HEIGHT: f32 = 260.;
+const MIN_INSPECTOR_HEIGHT: f32 = 60.;
+/// Room the graph keeps when the inspector is dragged up.
+const MIN_GRAPH_HEIGHT: f32 = 80.;
 
 /// Asks the right panel to show a file in the Files view.
 #[derive(Clone, Debug)]
@@ -96,6 +101,15 @@ pub struct ArchitectureView {
     details: bool,
     /// Graph width as last painted; the layout follows it.
     graph_width: Rc<Cell<Option<Pixels>>>,
+    /// The inspector's height once the user dragged its top edge; until
+    /// then it fits its content up to `INSPECTOR_HEIGHT`.
+    inspector_height: Option<f32>,
+    /// While dragging the inspector's edge: the pointer's y and the
+    /// inspector's height when the drag started.
+    inspector_drag: Option<(f32, f32)>,
+    /// Heights as last painted: the inspector's and the whole body's.
+    inspector_painted: Rc<Cell<f32>>,
+    body_painted: Rc<Cell<f32>>,
     /// The draft's comments (the ones on components are shown here).
     comments: Vec<LineComment>,
     /// The open comment card and where it floats (window coordinates).
@@ -132,6 +146,10 @@ impl ArchitectureView {
             inspected: None,
             details: false,
             graph_width: Rc::new(Cell::new(None)),
+            inspector_height: None,
+            inspector_drag: None,
+            inspector_painted: Rc::new(Cell::new(0.)),
+            body_painted: Rc::new(Cell::new(0.)),
             comments: Vec::new(),
             comment_editor: None,
             _comment_editor_subscription: None,
@@ -1094,12 +1112,13 @@ impl ArchitectureView {
         let component = model.get(id)?;
         let theme = cx.theme();
         let own = self.summaries.get(id);
+        let height = self.inspector_height_now();
         let mut panel = div()
-            .flex_none()
-            .max_h(px(260.))
+            .map(|d| match height {
+                Some(height) => d.h(px(height)),
+                None => d.max_h(px(INSPECTOR_HEIGHT)),
+            })
             .overflow_y_scrollbar()
-            .border_t_1()
-            .border_color(theme.border)
             .p_3()
             .flex()
             .flex_col()
@@ -1197,7 +1216,107 @@ impl ArchitectureView {
                 "Click to open this level"
             },
         ));
-        Some(panel.into_any_element())
+
+        let painted = self.inspector_painted.clone();
+        let measure = canvas(
+            move |bounds, _, _| painted.set(f32::from(bounds.size.height)),
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full();
+        let dragging = self.inspector_drag.is_some();
+        let handle = div()
+            .id("architecture-inspector-resize")
+            .absolute()
+            .top_0()
+            .left_0()
+            .w_full()
+            .h(px(5.))
+            .cursor_row_resize()
+            .bg(theme.drag_border)
+            .opacity(if dragging { 1.0 } else { 0.0 })
+            .hover(|s| s.opacity(1.0))
+            .on_mouse_down(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|this, ev: &gpui_kit::MouseDownEvent, _, cx| {
+                    let height = this
+                        .inspector_height_now()
+                        .unwrap_or_else(|| this.inspector_painted.get());
+                    this.inspector_drag = Some((f32::from(ev.position.y), height));
+                    cx.stop_propagation();
+                    cx.notify();
+                }),
+            );
+        Some(
+            div()
+                .relative()
+                .flex_none()
+                .border_t_1()
+                .border_color(theme.border)
+                .child(measure)
+                .child(panel)
+                .child(handle)
+                .into_any_element(),
+        )
+    }
+
+    /// The inspector's height the user chose, kept clear of the graph.
+    fn inspector_height_now(&self) -> Option<f32> {
+        let height = self.inspector_height?;
+        let body = self.body_painted.get();
+        Some(if body > 0. {
+            height
+                .min(body - MIN_GRAPH_HEIGHT)
+                .max(MIN_INSPECTOR_HEIGHT)
+        } else {
+            height
+        })
+    }
+
+    fn drag_inspector(&mut self, y: f32, cx: &mut Context<Self>) {
+        let Some((start_y, start_height)) = self.inspector_drag else {
+            return;
+        };
+        // Dragging the top edge up grows the inspector.
+        self.inspector_height = Some((start_height + start_y - y).max(MIN_INSPECTOR_HEIGHT));
+        cx.notify();
+    }
+
+    fn end_inspector_drag(&mut self, cx: &mut Context<Self>) {
+        if self.inspector_drag.take().is_some() {
+            self.inspector_height = self.inspector_height_now();
+            cx.notify();
+        }
+    }
+
+    /// While the inspector's edge is dragged, an overlay follows the pointer
+    /// even over the boxes.
+    fn render_drag_overlay(&self, cx: &mut Context<Self>) -> Option<gpui_kit::AnyElement> {
+        self.inspector_drag?;
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .cursor_row_resize()
+                .on_mouse_move(cx.listener(|this, ev: &gpui_kit::MouseMoveEvent, _, cx| {
+                    this.drag_inspector(f32::from(ev.position.y), cx)
+                }))
+                .on_mouse_up(
+                    gpui_kit::MouseButton::Left,
+                    cx.listener(|this, _: &gpui_kit::MouseUpEvent, _, cx| {
+                        this.end_inspector_drag(cx)
+                    }),
+                )
+                .on_mouse_up_out(
+                    gpui_kit::MouseButton::Left,
+                    cx.listener(|this, _: &gpui_kit::MouseUpEvent, _, cx| {
+                        this.end_inspector_drag(cx)
+                    }),
+                )
+                .into_any_element(),
+        )
     }
 }
 
@@ -1575,11 +1694,22 @@ impl Render for ArchitectureView {
                                 .text_color(muted)
                                 .child("The project has more files than the scan reads.")
                         });
+                        let painted = self.body_painted.clone();
+                        let measure = canvas(
+                            move |bounds, _, _| painted.set(f32::from(bounds.size.height)),
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full();
                         div()
+                            .relative()
                             .flex_1()
                             .min_h_0()
                             .flex()
                             .flex_col()
+                            .child(measure)
                             .child(
                                 div()
                                     .flex_1()
@@ -1595,13 +1725,16 @@ impl Render for ArchitectureView {
                 }
             }
         };
+        let drag_overlay = self.render_drag_overlay(cx);
         div()
+            .relative()
             .size_full()
             .flex()
             .flex_col()
             .track_focus(&self.focus_handle)
             .child(self.render_toolbar(cx))
             .child(body)
+            .children(drag_overlay)
             .children(editor)
     }
 }

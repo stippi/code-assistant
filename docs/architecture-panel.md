@@ -33,7 +33,8 @@ One level of the project at a time:
   points at it.
 - **Hover** highlights a box's dependencies (blue: what it uses, green: what
   uses it) and shows its details below the graph: responsibility,
-  constraints, uses / used by, and its public items.
+  constraints, uses / used by, and its public items. Dragging the details'
+  top edge resizes them.
 - **Click** a box to open its level (breadcrumb to go back up); a file box
   opens the file in the Files view.
 
