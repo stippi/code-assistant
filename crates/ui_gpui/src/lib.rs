@@ -349,7 +349,7 @@ pub struct Gpui {
     /// Used by the sidebar to decide whether to show a "persist" icon.
     persisted_projects: Arc<Mutex<std::collections::HashSet<String>>>,
 
-    /// Incremented each time config files (providers.json / models.json) change on disk.
+    /// Incremented each time config files (providers, model selection, ...) change on disk.
     /// Components compare their locally cached generation with this to know when to reload.
     config_generation: Arc<std::sync::atomic::AtomicU64>,
 
@@ -977,7 +977,7 @@ impl Gpui {
     }
 
     /// Current config generation counter. Incremented each time providers.json
-    /// or models.json change on disk. Components compare this to their cached
+    /// or the model selection change on disk. Components compare this to their cached
     /// value to decide when to reload.
     pub fn config_generation(&self) -> u64 {
         self.config_generation

@@ -158,7 +158,7 @@ pub struct SessionManager {
     /// editing tool, regardless of the model's `edit_format` preference.
     ///
     /// This corresponds to `--use-diff-format` on the command line. When
-    /// false, the model's `edit_format` from `models.json` is honored.
+    /// false, the model's `edit_format` from the model selection is honored.
     force_diff_format: bool,
 
     /// Prevents system idle sleep while any agent is running.
@@ -210,7 +210,7 @@ impl SessionManager {
     ) -> Self {
         // The CLI's `--use-diff-format` flag is plumbed through the template's
         // `use_diff_blocks` field. Capture it as the override and reset the
-        // template so subsequent per-session resolution from `models.json`
+        // template so subsequent per-session resolution from the model selection
         // isn't shadowed by a stale template value.
         let force_diff_format = session_config_template.use_diff_blocks;
         let mut session_config_template = session_config_template;
@@ -621,7 +621,7 @@ impl SessionManager {
     ///
     /// Precedence:
     /// 1. CLI override (`force_diff_format`, set via `--use-diff-format`).
-    /// 2. The model's `edit_format` from `models.json`.
+    /// 2. The model's `edit_format` from the model selection.
     /// 3. Otherwise `false` (the simple `edit` tool).
     fn resolve_use_diff_blocks(&self, model_config: Option<&SessionModelConfig>) -> bool {
         if self.force_diff_format {
@@ -780,7 +780,11 @@ impl SessionManager {
             &model_config_for_event.model_name,
             model_config_for_event.effort,
         );
-        snapshot.current_model = model_config_for_event.model_name;
+        // Frontends select models by key; older sessions name theirs.
+        snapshot.current_model = llm::provider_config::ConfigurationSystem::load()
+            .ok()
+            .and_then(|config| config.resolve_key(&model_config_for_event.model_name))
+            .unwrap_or(model_config_for_event.model_name);
         snapshot.armed_wakeups = self
             .wakeup_handle
             .as_ref()
@@ -1892,7 +1896,7 @@ impl SessionManager {
             // there is no API-client compatibility left to preserve, and
             // blocking here would pin the session to an unusable model.
             // Any configured model may take over (the escape hatch that
-            // lets a session heal after models.json changed underneath it).
+            // lets a session heal after the model selection changed underneath it).
             return Ok(ModelSwitchCheck::allowed(model_name));
         };
         let new_kind = config.model_api_client_kind(model_name).with_context(|| {
@@ -3103,13 +3107,7 @@ mod tests {
     }
 
     fn model_config(provider: &str, id: &str) -> llm::provider_config::ModelConfig {
-        llm::provider_config::ModelConfig {
-            provider: provider.to_string(),
-            id: id.to_string(),
-            config: serde_json::json!({}),
-            context_token_limit: 1000,
-            edit_format: llm::provider_config::EditFormat::Simple,
-        }
+        llm::provider_config::ModelConfig::new(provider, id)
     }
 
     fn model_switch_test_config() -> llm::provider_config::ConfigurationSystem {
@@ -3157,6 +3155,7 @@ mod tests {
                     model_config("aicore", "gpt-aicore-id"),
                 ),
             ]),
+            discovery: Default::default(),
         }
     }
 
@@ -3202,7 +3201,7 @@ mod tests {
         );
     }
 
-    /// A session whose recorded model was removed from models.json must be
+    /// A session whose recorded model was removed from the model selection must be
     /// allowed to switch to any configured model — there is no API-client
     /// compatibility left to preserve, and blocking would pin the session
     /// to an unusable model (headless channels could never recover).
@@ -3239,7 +3238,7 @@ mod tests {
         let (manager, _dir) = build_manager(true);
 
         // Force-diff is on; even a model name that won't be found in
-        // models.json (returns default `Simple`) should resolve to true.
+        // the model selection (returns default `Simple`) should resolve to true.
         let cfg = SessionModelConfig::new("__nonexistent_test_model_xyz__".to_string());
         assert!(manager.resolve_use_diff_blocks(Some(&cfg)));
 

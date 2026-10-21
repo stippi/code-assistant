@@ -14,7 +14,7 @@ use tracing::warn;
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DefaultModelConfig {
-    /// Display name of the model (a key of `models.json`).
+    /// The model's key (`provider/model-id`; older files hold its name).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
 }
@@ -50,11 +50,11 @@ impl DefaultModelConfig {
     }
 }
 
-/// The configured default model, if it names a model of `models.json`.
+/// The key of the configured default model, if it is offered.
 pub fn configured_default_model() -> Option<String> {
     let model = DefaultModelConfig::load().model?;
     let config = llm::provider_config::ConfigurationSystem::load().ok()?;
-    config.get_model(&model).is_some().then_some(model)
+    config.resolve_key(&model)
 }
 
 #[cfg(test)]

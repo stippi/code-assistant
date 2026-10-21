@@ -151,7 +151,8 @@ pub struct BranchInfo {
 /// Model configuration for a session
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SessionModelConfig {
-    /// Display name of the model from models.json
+    /// The model's key (`provider/model-id`); sessions from before model
+    /// keys hold its display name, which still resolves.
     pub model_name: String,
     /// Reasoning effort chosen for the session; `None` runs the model's
     /// default. Kept across model switches: a model that does not support

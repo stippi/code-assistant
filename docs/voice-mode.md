@@ -107,7 +107,7 @@ section. It follows the pattern of `handoff.json` and `lifecycle.json`.
 ```
 
 Credentials come from the referenced `providers.json` entry, so nothing is
-duplicated. Realtime models stay out of `models.json` on purpose: they cannot
+duplicated. Realtime models stay out of the model selection on purpose: they cannot
 run a normal session, and adding them there would put them into every model
 picker. The settings section offers the providers that can serve realtime
 sessions (`llm::realtime::connector_for_provider`):

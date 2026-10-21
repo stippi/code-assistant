@@ -6,8 +6,10 @@
 //! them, which translates the session's [`Effort`] into the provider's
 //! fields.
 //!
-//! Sources, most specific first: the built-in [`catalog`], then
-//! [`fallback`] rules per API family for models the catalog does not know.
+//! Sources, most specific first: the built-in [`catalog`], the provider's
+//! model listing ([`crate::discovery`]), then [`fallback`] rules per API
+//! family for models neither knows about. User overrides are applied by
+//! [`crate::provider_config::ConfigurationSystem::model_capabilities`].
 
 pub mod catalog;
 mod effort;
@@ -17,6 +19,7 @@ mod reasoning;
 pub use effort::Effort;
 pub use reasoning::{ReasoningSpec, ReasoningStyle};
 
+use crate::discovery::DiscoveredModel;
 use crate::provider_config::{EditFormat, LlmApiClientKind};
 use serde_json::{Value, json};
 
@@ -34,19 +37,30 @@ pub struct ModelCapabilities {
 }
 
 impl ModelCapabilities {
-    /// Capabilities of `model_id` served through an API of kind `api`.
-    pub fn resolve(api: LlmApiClientKind, model_id: &str) -> Self {
+    /// Capabilities of `model_id` served through an API of kind `api`,
+    /// with what the provider's listing said about it.
+    pub fn resolve(
+        api: LlmApiClientKind,
+        model_id: &str,
+        discovered: Option<&DiscoveredModel>,
+    ) -> Self {
+        let listed = |field: fn(&DiscoveredModel) -> Option<u32>| discovered.and_then(field);
         match catalog::lookup(model_id) {
             Some(entry) => Self {
                 display_name: Some(entry.name.clone()),
-                context_window: entry.context_window,
-                max_output: entry.max_output,
+                context_window: entry.context_window.or(listed(|m| m.context_window)),
+                max_output: entry.max_output.or(listed(|m| m.max_output)),
                 edit_format: entry.edit_format,
                 reasoning: entry.reasoning.clone(),
             },
             None => Self {
-                reasoning: fallback::reasoning(api, model_id),
-                ..Self::default()
+                display_name: discovered.and_then(|m| m.display_name.clone()),
+                context_window: listed(|m| m.context_window),
+                max_output: listed(|m| m.max_output),
+                edit_format: None,
+                reasoning: discovered
+                    .and_then(|m| m.reasoning.clone())
+                    .or_else(|| fallback::reasoning(api, model_id)),
             },
         }
     }
@@ -80,7 +94,7 @@ mod tests {
 
     #[test]
     fn catalog_models_get_their_reasoning_and_output_limit() {
-        let caps = ModelCapabilities::resolve(LlmApiClientKind::Anthropic, "claude-opus-5");
+        let caps = ModelCapabilities::resolve(LlmApiClientKind::Anthropic, "claude-opus-5", None);
         assert_eq!(caps.display_name.as_deref(), Some("Claude Opus 5"));
         assert_eq!(caps.context_window, Some(1_000_000));
         assert_eq!(
@@ -95,8 +109,11 @@ mod tests {
 
     #[test]
     fn proxy_aliases_resolve_to_the_catalog_model() {
-        let caps =
-            ModelCapabilities::resolve(LlmApiClientKind::Anthropic, "anthropic--claude-4.6-sonnet");
+        let caps = ModelCapabilities::resolve(
+            LlmApiClientKind::Anthropic,
+            "anthropic--claude-4.6-sonnet",
+            None,
+        );
         assert_eq!(caps.display_name.as_deref(), Some("Claude Sonnet 4.6"));
         let overlay = caps.request_overlay(LlmApiClientKind::Anthropic, None);
         assert_eq!(overlay["thinking"]["type"], "adaptive");
@@ -104,7 +121,8 @@ mod tests {
 
     #[test]
     fn unknown_anthropic_model_gets_a_neutral_request() {
-        let caps = ModelCapabilities::resolve(LlmApiClientKind::Anthropic, "claude-unknown-9");
+        let caps =
+            ModelCapabilities::resolve(LlmApiClientKind::Anthropic, "claude-unknown-9", None);
         assert_eq!(caps, ModelCapabilities::default());
         assert_eq!(
             caps.request_overlay(LlmApiClientKind::Anthropic, Some(Effort::High)),
@@ -113,8 +131,32 @@ mod tests {
     }
 
     #[test]
+    fn listing_fills_in_what_the_catalog_does_not_know() {
+        let mut listed = DiscoveredModel::new("claude-opus-9");
+        listed.display_name = Some("Claude Opus 9".into());
+        listed.context_window = Some(2_000_000);
+        listed.reasoning = Some(ReasoningSpec {
+            style: ReasoningStyle::AnthropicAdaptive,
+            levels: vec![Effort::Low, Effort::High],
+            default: Effort::High,
+        });
+        let caps =
+            ModelCapabilities::resolve(LlmApiClientKind::Anthropic, "claude-opus-9", Some(&listed));
+        assert_eq!(caps.display_name.as_deref(), Some("Claude Opus 9"));
+        assert_eq!(caps.context_window, Some(2_000_000));
+        assert!(caps.reasoning.is_some());
+
+        // The catalog wins where it knows the model.
+        let mut listed = DiscoveredModel::new("claude-opus-5");
+        listed.context_window = Some(123);
+        let caps =
+            ModelCapabilities::resolve(LlmApiClientKind::Anthropic, "claude-opus-5", Some(&listed));
+        assert_eq!(caps.context_window, Some(1_000_000));
+    }
+
+    #[test]
     fn max_tokens_is_only_set_for_anthropic() {
-        let caps = ModelCapabilities::resolve(LlmApiClientKind::Vertex, "gemini-3.5-flash");
+        let caps = ModelCapabilities::resolve(LlmApiClientKind::Vertex, "gemini-3.5-flash", None);
         assert_eq!(
             caps.request_overlay(LlmApiClientKind::Vertex, Some(Effort::Minimal)),
             json!({ "generation_config": { "thinking_config": { "thinking_level": "minimal" } } })

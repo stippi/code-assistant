@@ -403,11 +403,9 @@ fn compute_sub_agent_usage(messages: &[Message], model_name: &str) -> SubAgentUs
     }
 
     // Resolve the model's context token limit
-    if let Ok(config_system) = llm::provider_config::ConfigurationSystem::load()
-        && let Some(model) = config_system.get_model(model_name)
-    {
-        total.context_limit = Some(model.context_token_limit);
-    }
+    total.context_limit = llm::provider_config::ConfigurationSystem::load()
+        .ok()
+        .and_then(|config| config.context_limit(model_name));
 
     total
 }

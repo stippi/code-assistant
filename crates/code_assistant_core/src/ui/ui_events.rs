@@ -440,7 +440,7 @@ pub enum UiEvent {
     UpdateReviewDiff,
 
     // === Configuration Events ===
-    /// Configuration files (providers.json / models.json) were changed on disk.
+    /// Configuration files (providers, model selection, ...) were changed on disk.
     /// The UI should reload model lists, settings sections, etc.
     ConfigChanged,
 

@@ -275,9 +275,9 @@ impl CommandProcessor {
 
         let model_name = args.join(" ");
 
-        // Check if the model exists
-        if self.config.models.contains_key(&model_name) {
-            CommandResult::SwitchModel(model_name)
+        // Models are switched to by name or key
+        if let Some(key) = self.config.resolve_key(&model_name) {
+            CommandResult::SwitchModel(key)
         } else {
             CommandResult::InvalidCommand(format!(
                 "Model '{model_name}' not found. Use '/model' to list available models.",
@@ -359,15 +359,15 @@ impl CommandProcessor {
 
     /// Get formatted list of available models
     pub fn get_models_list(&self) -> String {
-        let mut models: Vec<_> = self.config.models.keys().cloned().collect();
-        models.sort();
-
         let mut output = String::from("Available models:\n");
-        for model_name in models {
-            if let Ok((_model_config, provider_config)) =
-                self.config.get_model_with_provider(&model_name)
+        for key in self.config.list_models() {
+            if let Ok((_model_config, provider_config)) = self.config.get_model_with_provider(&key)
             {
-                output.push_str(&format!("  {} ({})\n", model_name, provider_config.label));
+                output.push_str(&format!(
+                    "  {} ({}) — {key}\n",
+                    self.config.display_name(&key),
+                    provider_config.label
+                ));
             }
         }
         output
@@ -396,10 +396,7 @@ mod tests {
     /// session/routing commands don't read config, and `new()`'s disk load
     /// would fail in CI (no `providers.json`).
     fn test_processor() -> CommandProcessor {
-        let config = ConfigurationSystem {
-            providers: Default::default(),
-            models: Default::default(),
-        };
+        let config = ConfigurationSystem::default();
         CommandProcessor {
             config,
             skill_names: Vec::new(),

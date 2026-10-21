@@ -981,9 +981,10 @@ impl SessionService {
         self.call_session(session_id.clone(), move |ctx| async move {
             let config_system =
                 ConfigurationSystem::load().context("Failed to load model configuration")?;
-            if config_system.get_model(&model_name).is_none() {
+            // Sessions refer to models by key; callers may pass a name.
+            let Some(model_name) = config_system.resolve_key(&model_name) else {
                 bail!("Model '{model_name}' not found in configuration.");
-            }
+            };
 
             // The chosen effort carries over; the new model runs it at its
             // closest supported level.
@@ -2183,19 +2184,20 @@ async fn resume_session_impl(ctx: &ServiceCtx, session_id: &str) -> Result<()> {
 }
 
 /// Start the agent loop for a session against its current message history.
-/// The model config an agent run will use: the session's own — unless it
-/// records a model unknown to the current configuration (models.json
-/// changed since the session last ran), then the default model. Without
+/// The model config an agent run will use: the session's own, referring to
+/// the model by key (sessions from before model keys name it by display
+/// name) — unless it records a model the configuration no longer offers,
+/// then the default model. Without
 /// the fallback such a session is permanently undispatchable, which
 /// headless channels (no model picker) cannot recover from. The caller
 /// persists the result, so the session heals.
 fn runnable_model_config(
     session_config: SessionModelConfig,
     default_model_name: &str,
-    model_exists: impl Fn(&str) -> bool,
+    resolve_key: impl Fn(&str) -> Option<String>,
 ) -> SessionModelConfig {
-    if model_exists(&session_config.model_name) {
-        return session_config;
+    if let Some(key) = resolve_key(&session_config.model_name) {
+        return SessionModelConfig::new(key).with_effort(session_config.effort);
     }
     warn!(
         "Session records unknown model '{}'; falling back to '{default_model_name}'",
@@ -2274,7 +2276,7 @@ fn schedule_agent_impl(
             if let Ok(config) = ConfigurationSystem::load() {
                 session_config =
                     runnable_model_config(session_config, &default_model_name, |model| {
-                        config.get_model(model).is_some()
+                        config.resolve_key(model)
                     });
             }
             let llm_client = match &runtime.llm_client_factory {
@@ -3230,16 +3232,26 @@ mod tests {
     #[test]
     fn runnable_model_config_falls_back_when_the_model_vanished() {
         let kept = runnable_model_config(
-            SessionModelConfig::new("known".to_string()),
+            SessionModelConfig::new("provider/known".to_string()),
             "default",
-            |model| model == "known",
+            |model| (model == "provider/known").then(|| model.to_string()),
         );
-        assert_eq!(kept.model_name, "known");
+        assert_eq!(kept.model_name, "provider/known");
+
+        let by_name = runnable_model_config(
+            SessionModelConfig::new("Known Model".to_string()),
+            "default",
+            |model| (model == "Known Model").then(|| "provider/known".to_string()),
+        );
+        assert_eq!(
+            by_name.model_name, "provider/known",
+            "named models heal to their key"
+        );
 
         let replaced = runnable_model_config(
             SessionModelConfig::new("vanished".to_string()).with_effort(Some(Effort::Max)),
             "default",
-            |_| false,
+            |_| None,
         );
         assert_eq!(replaced.model_name, "default");
         assert_eq!(

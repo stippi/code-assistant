@@ -1,5 +1,5 @@
 use agent_client_protocol::schema as acp;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::Mutex;
 
@@ -219,10 +219,10 @@ impl AgentState {
 
     /// Look up the context-window token limit for a model from configuration.
     fn model_context_limit(model_name: &str) -> Option<u64> {
-        let config = ConfigurationSystem::load().ok()?;
-        let model = config.get_model(model_name)?;
-        let limit = model.context_token_limit;
-        (limit > 0).then_some(limit as u64)
+        let limit = ConfigurationSystem::load()
+            .ok()?
+            .context_limit(model_name)?;
+        (limit > 0).then_some(u64::from(limit))
     }
 
     /// Build the model selector config option (a `select` dropdown grouped by
@@ -241,62 +241,55 @@ impl AgentState {
             }
         };
 
-        // Group available model display names by provider label.
+        // Group the offered models (by key, ordered by display name) by
+        // provider label.
         let mut by_provider: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        let mut available_names: HashSet<String> = HashSet::new();
-
-        for (display_name, model_config) in &config.models {
-            let Some(provider_config) = config.providers.get(&model_config.provider) else {
-                tracing::warn!(
-                    provider = %model_config.provider,
-                    model = %display_name,
-                    "ACP: Skipping model because provider configuration is missing"
-                );
+        for key in config.list_models() {
+            let provider = &config.models[&key].provider;
+            let Some(provider_config) = config.providers.get(provider) else {
                 continue;
             };
-
-            available_names.insert(display_name.clone());
             by_provider
                 .entry(provider_config.label.clone())
                 .or_default()
-                .push(display_name.clone());
+                .push(key);
         }
 
-        if available_names.is_empty() {
+        if by_provider.is_empty() {
             tracing::warn!("ACP: No available models found for model selector");
             return None;
         }
 
-        let preferred_display = preferred_model
-            .and_then(|name| available_names.contains(name).then(|| name.to_string()));
-        let default_display = available_names
-            .contains(default_model)
-            .then(|| default_model.to_string());
+        // Sessions may still name their model; options are keyed.
+        let preferred_key = preferred_model.and_then(|name| config.resolve_key(name));
+        let default_key = config.resolve_key(default_model);
 
-        // Deterministic fallback: first model by (provider label, name).
+        // Deterministic fallback: the first model of the first provider.
         let first_model = by_provider
-            .iter()
+            .values()
             .next()
-            .and_then(|(_, names)| names.iter().min().cloned());
+            .and_then(|keys| keys.first().cloned());
 
-        let selected_model_name = preferred_display
+        let selected_model_name = preferred_key
             .clone()
-            .or_else(|| default_display.clone())
+            .or(default_key)
             .or(first_model)
             .unwrap_or_else(|| default_model.to_string());
 
         let selection_changed = match preferred_model {
-            Some(original) => preferred_display.as_deref() != Some(original),
+            Some(original) => preferred_key.as_deref() != Some(original),
             None => false,
         };
 
         // Build grouped select options.
         let mut groups: Vec<acp::SessionConfigSelectGroup> = Vec::new();
-        for (label, mut names) in by_provider {
-            names.sort();
-            let options = names
+        for (label, keys) in by_provider {
+            let options = keys
                 .into_iter()
-                .map(|name| acp::SessionConfigSelectOption::new(name.clone(), name))
+                .map(|key| {
+                    let name = config.display_name(&key);
+                    acp::SessionConfigSelectOption::new(key, name)
+                })
                 .collect::<Vec<_>>();
             groups.push(acp::SessionConfigSelectGroup::new(
                 label.clone(),
@@ -722,12 +715,12 @@ impl AgentState {
                     tracing::error!(error = ?err, "ACP: Failed to load configuration while setting model");
                     to_acp_error(&err)
                 })?;
-                if config.get_model(&value).is_none() {
+                let Some(key) = config.resolve_key(&value) else {
                     tracing::warn!(model_id = %value, "ACP: Invalid model selection request");
                     return Err(acp::Error::invalid_params());
-                }
+                };
                 // The chosen effort carries over to the new model.
-                SessionModelConfig::new(value).with_effort(current.effort)
+                SessionModelConfig::new(key).with_effort(current.effort)
             }
             EFFORT_CONFIG_ID => {
                 let Some(effort) = Effort::parse(&value) else {

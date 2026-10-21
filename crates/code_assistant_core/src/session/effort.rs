@@ -43,7 +43,7 @@ mod tests {
 
     #[test]
     fn offers_the_model_levels_and_moves_the_request_onto_them() {
-        let fable = ModelCapabilities::resolve(LlmApiClientKind::Anthropic, "claude-fable-5");
+        let fable = ModelCapabilities::resolve(LlmApiClientKind::Anthropic, "claude-fable-5", None);
         let choice = EffortChoice::new(&fable, Some(Effort::Off));
         assert_eq!(choice.levels.first(), Some(&Effort::Low));
         assert_eq!(choice.selected, Some(Effort::Low));
@@ -53,7 +53,7 @@ mod tests {
 
     #[test]
     fn models_without_reasoning_offer_nothing() {
-        let plain = ModelCapabilities::resolve(LlmApiClientKind::Groq, "llama-4-scout");
+        let plain = ModelCapabilities::resolve(LlmApiClientKind::Groq, "llama-4-scout", None);
         assert_eq!(
             EffortChoice::new(&plain, Some(Effort::High)),
             EffortChoice::default()

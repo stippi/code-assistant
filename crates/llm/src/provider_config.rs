@@ -1,4 +1,6 @@
-use crate::capabilities::ModelCapabilities;
+use crate::capabilities::{Effort, ModelCapabilities};
+use crate::discovery::DiscoveryCache;
+use crate::model_selection::ModelSelection;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -96,37 +98,71 @@ impl EditFormat {
     }
 }
 
-/// Configuration for a single model
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A model offered in the model picker: a model ID of a configured
+/// provider, plus whatever the user overrides. Everything else comes from
+/// the model's capabilities ([`ConfigurationSystem::model_capabilities`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelConfig {
-    /// Provider ID that this model uses
+    /// Provider ID (a key of `providers.json`)
     pub provider: String,
     /// Model ID within the provider
     pub id: String,
-    /// Model-specific configuration
+    /// Display name; defaults to the catalog's or the provider's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Catalog model this one behaves like, for IDs the catalog does not
+    /// know (e.g. a proxy's name for a known model).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub behaves_like: Option<String>,
+    /// Context window override (token count)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_token_limit: Option<u32>,
+    /// File-editing tool format override
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edit_format: Option<EditFormat>,
+    /// Effort for sessions that did not choose one
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_effort: Option<Effort>,
+    /// Extra request fields, merged into every request (JSON Merge Patch)
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     pub config: serde_json::Value,
-    /// Maximum context window supported by the model (token count)
-    pub context_token_limit: u32,
-    /// Preferred file-editing tool format for this model.
-    ///
-    /// Defaults to `EditFormat::Simple`. Set to `"diff"` in `models.json`
-    /// for models that benefit from the diff-format guard (e.g. GPT-5.x).
-    #[serde(default, skip_serializing_if = "edit_format_is_default")]
-    pub edit_format: EditFormat,
 }
 
-fn edit_format_is_default(format: &EditFormat) -> bool {
-    *format == EditFormat::default()
+impl ModelConfig {
+    pub fn new(provider: impl Into<String>, id: impl Into<String>) -> Self {
+        Self {
+            provider: provider.into(),
+            id: id.into(),
+            name: None,
+            behaves_like: None,
+            context_token_limit: None,
+            edit_format: None,
+            default_effort: None,
+            config: serde_json::Value::Null,
+        }
+    }
+
+    /// The stable reference to this model: `provider/id`.
+    pub fn key(&self) -> String {
+        Self::key_for(&self.provider, &self.id)
+    }
+
+    pub fn key_for(provider: &str, id: &str) -> String {
+        format!("{provider}/{id}")
+    }
 }
 
-/// Configuration for all models (model_display_name -> ModelConfig)
+/// The models offered in the picker, by key (`provider/id`).
 pub type ModelsConfig = HashMap<String, ModelConfig>;
 
 /// Combined configuration system
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ConfigurationSystem {
     pub providers: ProvidersConfig,
+    /// The models offered in the picker, by key (`provider/id`).
     pub models: ModelsConfig,
+    /// The providers' last model listings.
+    pub discovery: DiscoveryCache,
 }
 
 impl ConfigurationSystem {
@@ -135,7 +171,7 @@ impl ConfigurationSystem {
     /// Applications embedding the agent stack under their own home directory
     /// (e.g. pal with `$PAL_HOME`) call this once at startup so that every
     /// implicit [`ConfigurationSystem::load`] — session service, sub-agents,
-    /// compaction, model pickers — reads `models.json`/`providers.json` from
+    /// compaction, model pickers — reads `providers.json` and the model selection from
     /// that directory. Like `CODE_ASSISTANT_CONFIG_DIR` the override is
     /// exclusive (no other location is searched), and it takes precedence
     /// over the environment variable, which belongs to code-assistant
@@ -147,36 +183,41 @@ impl ConfigurationSystem {
     /// Load configuration from the default locations
     pub fn load() -> Result<Self> {
         let providers = Self::load_providers_config(None)?;
-        let models = Self::load_models_config(None)?;
-
-        // Validate that all models reference valid providers
-        Self::validate_model_provider_references(&models, &providers)?;
-
-        Ok(Self { providers, models })
+        let selection = ModelSelection::load_or_import()?;
+        Self::from_parts(providers, selection, DiscoveryCache::load())
     }
 
-    /// Load configuration from custom file paths
-    pub fn load_from_paths(
-        providers_path: Option<PathBuf>,
-        models_path: Option<PathBuf>,
+    /// Assemble a configuration from its loaded parts.
+    pub fn from_parts(
+        providers: ProvidersConfig,
+        selection: ModelSelection,
+        discovery: DiscoveryCache,
     ) -> Result<Self> {
-        let providers = Self::load_providers_config(providers_path)?;
-        let models = Self::load_models_config(models_path)?;
+        let models: ModelsConfig = selection
+            .models
+            .into_iter()
+            .map(|model| (model.key(), model))
+            .collect();
 
         // Validate that all models reference valid providers
         Self::validate_model_provider_references(&models, &providers)?;
 
-        Ok(Self { providers, models })
+        Ok(Self {
+            providers,
+            models,
+            discovery,
+        })
+    }
+
+    /// Path of a file in the configuration directory (where it exists, or
+    /// where it would be created).
+    pub fn config_file_path(file_name: &str) -> PathBuf {
+        Self::determine_config_path(file_name, None).0
     }
 
     /// Get the resolved path to providers.json (first found or fallback).
     pub fn providers_config_path() -> PathBuf {
         Self::determine_config_path("providers.json", None).0
-    }
-
-    /// Get the resolved path to models.json (first found or fallback).
-    pub fn models_config_path() -> PathBuf {
-        Self::determine_config_path("models.json", None).0
     }
 
     /// Load providers configuration from file
@@ -212,46 +253,64 @@ impl ConfigurationSystem {
         Ok(config)
     }
 
-    /// Load models configuration from file
-    pub fn load_models_config(custom_path: Option<PathBuf>) -> Result<ModelsConfig> {
-        let custom_path_ref = custom_path.as_ref();
-        let (config_path, searched_paths) =
-            Self::determine_config_path("models.json", custom_path_ref);
-
-        if !config_path.exists() {
-            return Err(Self::missing_config_error(
-                "Models",
-                &config_path,
-                &searched_paths,
-                "models.example.json",
-                custom_path_ref.is_some(),
-            ));
-        }
-
-        let content = std::fs::read_to_string(&config_path)
-            .with_context(|| format!("Failed to read models config: {}", config_path.display()))?;
-
-        let config: ModelsConfig = serde_json::from_str(&content)
-            .with_context(|| format!("Failed to parse models config: {}", config_path.display()))?;
-
-        Ok(config)
-    }
-
     /// Get the default path for providers configuration
     pub fn default_providers_path() -> PathBuf {
         let (path, _) = Self::determine_config_path("providers.json", None);
         path
     }
 
-    /// Get the default path for models configuration
-    pub fn default_models_path() -> PathBuf {
-        let (path, _) = Self::determine_config_path("models.json", None);
-        path
+    /// The key of a model referred to by key or by name (sessions created
+    /// before models had keys refer to them by their display name).
+    pub fn resolve_key(&self, model_ref: &str) -> Option<String> {
+        if self.models.contains_key(model_ref) {
+            return Some(model_ref.to_string());
+        }
+        let mut keys: Vec<&String> = self.models.keys().collect();
+        keys.sort();
+        keys.iter()
+            .find(|key| self.models[**key].name.as_deref() == Some(model_ref))
+            .or_else(|| keys.iter().find(|key| self.display_name(key) == model_ref))
+            .map(|key| key.to_string())
     }
 
-    /// Get a model configuration by display name
-    pub fn get_model(&self, model_name: &str) -> Option<&ModelConfig> {
-        self.models.get(model_name)
+    /// Get a model by key or name
+    pub fn get_model(&self, model_ref: &str) -> Option<&ModelConfig> {
+        self.models.get(&self.resolve_key(model_ref)?)
+    }
+
+    /// The name the model is shown with: the user's name for it, else the
+    /// catalog's or provider's, else its ID — with the provider's label
+    /// when another offered model has the same name.
+    pub fn display_name(&self, key: &str) -> String {
+        let Some(model) = self.models.get(key) else {
+            return key.to_string();
+        };
+        if let Some(name) = &model.name {
+            return name.clone();
+        }
+        let base = self.base_display_name(model);
+        let ambiguous = self
+            .models
+            .iter()
+            .any(|(other_key, other)| other_key != key && self.base_display_name(other) == base);
+        match self.providers.get(&model.provider) {
+            Some(provider) if ambiguous => format!("{base} · {}", provider.label),
+            _ => base,
+        }
+    }
+
+    fn base_display_name(&self, model: &ModelConfig) -> String {
+        if let Some(name) = &model.name {
+            return name.clone();
+        }
+        crate::capabilities::catalog::lookup(model.behaves_like.as_deref().unwrap_or(&model.id))
+            .map(|entry| entry.name.clone())
+            .or_else(|| {
+                self.discovery
+                    .model(&model.provider, &model.id)
+                    .and_then(|discovered| discovered.display_name.clone())
+            })
+            .unwrap_or_else(|| model.id.clone())
     }
 
     /// Get a provider configuration by provider ID
@@ -279,9 +338,11 @@ impl ConfigurationSystem {
         Ok((model, provider))
     }
 
-    /// List all available model names
+    /// The keys of the offered models, ordered by display name
     pub fn list_models(&self) -> Vec<String> {
-        self.models.keys().cloned().collect()
+        let mut keys: Vec<String> = self.models.keys().cloned().collect();
+        keys.sort_by_cached_key(|key| (self.display_name(key).to_lowercase(), key.clone()));
+        keys
     }
 
     /// List all available provider IDs
@@ -289,11 +350,36 @@ impl ConfigurationSystem {
         self.providers.keys().cloned().collect()
     }
 
-    /// What a configured model can do (context, output limit, reasoning).
-    pub fn model_capabilities(&self, model_name: &str) -> Result<ModelCapabilities> {
-        let (model, provider) = self.get_model_with_provider(model_name)?;
+    /// What an offered model can do (context, output limit, reasoning):
+    /// the catalog and the provider's listing, with the user's overrides.
+    pub fn model_capabilities(&self, model_ref: &str) -> Result<ModelCapabilities> {
+        let (model, provider) = self.get_model_with_provider(model_ref)?;
         let api = Self::api_client_kind_for_configs(model, provider)?;
-        Ok(ModelCapabilities::resolve(api, &model.id))
+        let mut capabilities = ModelCapabilities::resolve(
+            api,
+            model.behaves_like.as_deref().unwrap_or(&model.id),
+            self.discovery.model(&model.provider, &model.id),
+        );
+        if let Some(limit) = model.context_token_limit {
+            capabilities.context_window = Some(limit);
+        }
+        if let Some(format) = model.edit_format {
+            capabilities.edit_format = Some(format);
+        }
+        if let (Some(effort), Some(reasoning)) =
+            (model.default_effort, capabilities.reasoning.as_mut())
+        {
+            reasoning.default = effort
+                .closest_in(&reasoning.levels)
+                .unwrap_or(reasoning.default);
+        }
+        capabilities.display_name = Some(self.display_name(&model.key()));
+        Ok(capabilities)
+    }
+
+    /// The context window of an offered model, if known.
+    pub fn context_limit(&self, model_ref: &str) -> Option<u32> {
+        self.model_capabilities(model_ref).ok()?.context_window
     }
 
     /// Resolve the API/client family used by a configured model.
@@ -587,37 +673,16 @@ impl ConfigurationSystem {
         )
     }
 
-    /// Compute the unique identifier for a model using its provider and model IDs.
-    pub fn model_identifier(&self, model_name: &str) -> Option<String> {
-        self.models
-            .get(model_name)
-            .map(|model| format!("{}/{}", model.provider, model.id))
-    }
-
-    /// Resolve a model identifier ("provider/model") back to the configured display name.
-    pub fn model_name_from_identifier(&self, identifier: &str) -> Option<String> {
-        self.models.iter().find_map(|(name, model)| {
-            let candidate = format!("{}/{}", model.provider, model.id);
-            if candidate == identifier {
-                Some(name.clone())
-            } else {
-                None
-            }
-        })
-    }
-
-    /// Look up the edit-format preference for a given model display name.
-    ///
-    /// Returns `EditFormat::Simple` (the default) if the model is unknown or
-    /// has no explicit `edit_format` in `models.json`.
-    pub fn edit_format_for(&self, model_name: &str) -> EditFormat {
-        self.get_model(model_name)
-            .map(|m| m.edit_format)
+    /// The edit format an offered model uses (`Simple` when unknown).
+    pub fn edit_format_for(&self, model_ref: &str) -> EditFormat {
+        self.model_capabilities(model_ref)
+            .ok()
+            .and_then(|capabilities| capabilities.edit_format)
             .unwrap_or_default()
     }
 }
 
-/// Resolve the `EditFormat` for a model display name, loading the
+/// Resolve the `EditFormat` for a model, loading the
 /// configuration on demand. Returns `EditFormat::Simple` on any error
 /// (missing config file, unknown model, parse failure) — callers that
 /// require the model to exist should use `ConfigurationSystem::get_model`
@@ -702,43 +767,114 @@ mod tests {
         });
     }
 
-    #[test]
-    fn test_model_config_edit_format_default() {
-        // Models without an explicit edit_format should default to Simple
-        // and round-trip without serializing the field.
-        let json = r#"{
-            "provider": "openai-main",
-            "id": "gpt-4.1",
-            "config": {},
-            "context_token_limit": 128000
-        }"#;
-        let model: ModelConfig = serde_json::from_str(json).expect("parse model config");
-        assert_eq!(model.edit_format, EditFormat::Simple);
+    fn provider(provider_type: &str, label: &str) -> ProviderConfig {
+        ProviderConfig {
+            label: label.into(),
+            provider: provider_type.into(),
+            config: serde_json::json!({}),
+        }
+    }
 
-        let serialized = serde_json::to_value(&model).expect("serialize model config");
-        assert!(
-            serialized.get("edit_format").is_none(),
-            "default edit_format should be omitted when serializing, got {serialized}"
+    fn config(models: Vec<ModelConfig>) -> ConfigurationSystem {
+        let providers = [
+            ("anthropic".to_string(), provider("anthropic", "Anthropic")),
+            ("hai".to_string(), provider("anthropic", "HAI Proxy")),
+        ]
+        .into_iter()
+        .collect();
+        ConfigurationSystem::from_parts(
+            providers,
+            ModelSelection { models },
+            DiscoveryCache::default(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn models_are_found_by_key_or_name() {
+        let legacy = ModelConfig {
+            name: Some("Claude Opus 4.8 (SAP, HAI)".into()),
+            ..ModelConfig::new("hai", "anthropic--claude-4.8-opus")
+        };
+        let config = config(vec![ModelConfig::new("anthropic", "claude-opus-5"), legacy]);
+
+        assert_eq!(
+            config.resolve_key("anthropic/claude-opus-5").as_deref(),
+            Some("anthropic/claude-opus-5")
+        );
+        assert_eq!(
+            config.resolve_key("Claude Opus 4.8 (SAP, HAI)").as_deref(),
+            Some("hai/anthropic--claude-4.8-opus")
+        );
+        assert_eq!(
+            config.resolve_key("Claude Opus 5").as_deref(),
+            Some("anthropic/claude-opus-5"),
+            "the catalog name"
+        );
+        assert!(config.get_model("GPT-9").is_none());
+    }
+
+    #[test]
+    fn same_model_on_two_providers_shows_the_provider() {
+        let config = config(vec![
+            ModelConfig::new("anthropic", "claude-opus-4-8"),
+            ModelConfig::new("hai", "anthropic--claude-4.8-opus"),
+        ]);
+        assert_eq!(
+            config.display_name("anthropic/claude-opus-4-8"),
+            "Claude Opus 4.8 · Anthropic"
+        );
+        assert_eq!(
+            config.display_name("hai/anthropic--claude-4.8-opus"),
+            "Claude Opus 4.8 · HAI Proxy"
         );
     }
 
     #[test]
-    fn test_model_config_edit_format_diff() {
-        // Models can opt into the diff-format edit tool via models.json.
-        let json = r#"{
-            "provider": "openai-responses",
-            "id": "gpt-5-codex",
-            "config": {},
-            "context_token_limit": 128000,
-            "edit_format": "diff"
-        }"#;
-        let model: ModelConfig = serde_json::from_str(json).expect("parse model config");
-        assert_eq!(model.edit_format, EditFormat::Diff);
-        assert!(model.edit_format.is_diff());
+    fn overrides_win_over_the_catalog() {
+        let config = config(vec![ModelConfig {
+            context_token_limit: Some(200_000),
+            edit_format: Some(EditFormat::Diff),
+            default_effort: Some(Effort::Minimal),
+            ..ModelConfig::new("anthropic", "claude-opus-5")
+        }]);
+        let capabilities = config
+            .model_capabilities("anthropic/claude-opus-5")
+            .unwrap();
+        assert_eq!(capabilities.context_window, Some(200_000));
+        assert_eq!(
+            config.edit_format_for("anthropic/claude-opus-5"),
+            EditFormat::Diff
+        );
+        // Minimal is not an Opus level: the closest one becomes the default.
+        assert_eq!(capabilities.reasoning.unwrap().default, Effort::Low);
+    }
 
-        // Round-trip preserves the value.
-        let serialized = serde_json::to_string(&model).expect("serialize");
-        let reparsed: ModelConfig = serde_json::from_str(&serialized).expect("reparse");
-        assert_eq!(reparsed.edit_format, EditFormat::Diff);
+    #[test]
+    fn behaves_like_borrows_a_catalog_entry() {
+        let config = config(vec![ModelConfig {
+            behaves_like: Some("claude-sonnet-5".into()),
+            ..ModelConfig::new("hai", "anthropic--claude-5-sonnet")
+        }]);
+        let capabilities = config
+            .model_capabilities("hai/anthropic--claude-5-sonnet")
+            .unwrap();
+        assert_eq!(
+            capabilities.display_name.as_deref(),
+            Some("Claude Sonnet 5")
+        );
+        assert!(capabilities.reasoning.is_some());
+    }
+
+    #[test]
+    fn models_of_unknown_providers_are_rejected() {
+        let result = ConfigurationSystem::from_parts(
+            ProvidersConfig::new(),
+            ModelSelection {
+                models: vec![ModelConfig::new("missing", "model")],
+            },
+            DiscoveryCache::default(),
+        );
+        assert!(result.is_err());
     }
 }

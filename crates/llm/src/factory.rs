@@ -227,8 +227,8 @@ pub struct LLMClientConfig {
     pub fast_playback: bool,
 }
 
-/// Create an LLM client for a configured model, reasoning at `effort`
-/// (`None`: the model's default).
+/// Create an LLM client for an offered model (by key or name), reasoning
+/// at `effort` (`None`: the model's default).
 pub async fn create_llm_client_from_model(
     model_name: &str,
     effort: Option<Effort>,
@@ -238,10 +238,12 @@ pub async fn create_llm_client_from_model(
 ) -> Result<Box<dyn LLMProvider>> {
     let config_system = ConfigurationSystem::load()?;
     let (model_config, provider_config) = config_system.get_model_with_provider(model_name)?;
+    let capabilities = config_system.model_capabilities(model_name)?;
 
     create_llm_client_from_configs(
         model_config,
         provider_config,
+        &capabilities,
         effort,
         playback_path,
         fast_playback,
@@ -254,6 +256,7 @@ pub async fn create_llm_client_from_model(
 pub async fn create_llm_client_from_configs(
     model_config: &ModelConfig,
     provider_config: &ProviderConfig,
+    capabilities: &ModelCapabilities,
     effort: Option<Effort>,
     playback_path: Option<PathBuf>,
     fast_playback: bool,
@@ -308,7 +311,7 @@ pub async fn create_llm_client_from_configs(
     // client merges into every request.
     let api = ConfigurationSystem::api_client_kind_for_configs(model_config, provider_config)?;
     let model_config = &ModelConfig {
-        config: request_overlay(model_config, api, effort),
+        config: request_overlay(model_config, capabilities, api, effort),
         ..model_config.clone()
     };
 
@@ -354,10 +357,11 @@ pub async fn create_llm_client_from_configs(
 /// capabilities imply at `effort`, with the user's `config` block on top.
 fn request_overlay(
     model_config: &ModelConfig,
+    capabilities: &ModelCapabilities,
     api: LlmApiClientKind,
     effort: Option<Effort>,
 ) -> Value {
-    let overlay = ModelCapabilities::resolve(api, &model_config.id).request_overlay(api, effort);
+    let overlay = capabilities.request_overlay(api, effort);
     let mut user_config = model_config.config.clone();
     match user_config.as_object_mut() {
         Some(fields) => {
@@ -775,24 +779,24 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn model(id: &str, config: Value) -> ModelConfig {
-        ModelConfig {
-            provider: "test".into(),
-            id: id.into(),
+    fn overlay(id: &str, api: LlmApiClientKind, config: Value, effort: Option<Effort>) -> Value {
+        let model = ModelConfig {
             config,
-            context_token_limit: 200_000,
-            edit_format: Default::default(),
-        }
+            ..ModelConfig::new("test", id)
+        };
+        let capabilities = ModelCapabilities::resolve(api, id, None);
+        request_overlay(&model, &capabilities, api, effort)
     }
 
     #[test]
     fn overlay_puts_the_user_config_on_top_of_the_effort() {
-        let opus = model(
-            "claude-opus-5",
-            json!({ "temperature": 1.0, "thinking": { "display": "omitted" }, "record_path": "/tmp/x" }),
-        );
         assert_eq!(
-            request_overlay(&opus, LlmApiClientKind::Anthropic, Some(Effort::Low)),
+            overlay(
+                "claude-opus-5",
+                LlmApiClientKind::Anthropic,
+                json!({ "temperature": 1.0, "thinking": { "display": "omitted" }, "record_path": "/tmp/x" }),
+                Some(Effort::Low),
+            ),
             json!({
                 "thinking": { "type": "adaptive", "display": "omitted" },
                 "output_config": { "effort": "low" },
@@ -804,9 +808,13 @@ mod tests {
 
     #[test]
     fn overlay_without_user_config_is_the_capability_overlay() {
-        let gpt = model("gpt-5.6", Value::Null);
         assert_eq!(
-            request_overlay(&gpt, LlmApiClientKind::OpenAiResponsesWs, None),
+            overlay(
+                "gpt-5.6",
+                LlmApiClientKind::OpenAiResponsesWs,
+                Value::Null,
+                None
+            ),
             json!({ "reasoning": { "effort": "high", "summary": "auto" } })
         );
     }

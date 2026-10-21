@@ -1805,8 +1805,8 @@ impl Render for MainScreen {
                     .ok()
                     .and_then(|config| {
                         config
-                            .get_model(model_name)
-                            .map(|m| (model_name.clone(), m.context_token_limit))
+                            .context_limit(model_name)
+                            .map(|limit| (model_name.clone(), limit))
                     })
             });
         }

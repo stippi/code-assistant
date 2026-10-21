@@ -43,17 +43,17 @@ fn build_rows_from_config() -> Vec<PopupRow> {
     let Ok(config) = ConfigurationSystem::load() else {
         return Vec::new();
     };
-    let mut names: Vec<String> = config.models.keys().cloned().collect();
-    names.sort();
-    names
+    config
+        .list_models()
         .into_iter()
-        .map(|name| {
+        .map(|key| {
             let description = config
-                .get_model_with_provider(&name)
+                .get_model_with_provider(&key)
                 .map(|(_, prov)| prov.label.clone())
                 .unwrap_or_default();
+            // Switching resolves the name back to the model's key.
             PopupRow {
-                label: name,
+                label: config.display_name(&key),
                 description,
                 has_submenu: false,
             }
