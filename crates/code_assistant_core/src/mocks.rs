@@ -1212,6 +1212,12 @@ impl ToolTestFixture {
         fixture
     }
 
+    /// Offer these MCP servers' resources (the `:mcp:<server>` scope).
+    pub fn with_mcp_resources(mut self, servers: Arc<mcp_client::McpResourceServers>) -> Self {
+        self.services.mcp_resources = Some(servers);
+        self
+    }
+
     /// Enable plan state for this fixture
     pub fn with_plan(mut self) -> Self {
         self.services.plan = Some(PlanState::default());

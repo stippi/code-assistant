@@ -59,6 +59,10 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
   `.mcp.json` at the project root
 - The registry is rebuilt from the current config at the start of every
   agent run (`ToolRegistryProvider` seam)
+- Server resources are read through the file tools' `:mcp:<server>` scope
+  (`read_files` paths = resource URIs, `list_files` lists them); servers
+  travel in the registry's `McpResourceServers` extension into
+  `ToolServices::mcp_resources`, and the system prompt lists their catalog
 - An expired OAuth login is renewed by a browser login when a call or
   connect hits it (`mcp_client::Reauthorizer`, `tools::mcp_auth`), unless
   `auto_reauthorize` is off in `mcp-servers.json`; a server without a login

@@ -50,6 +50,10 @@ pub struct ToolServices {
     /// from the owning `SessionManager`'s persistence; when absent the tools
     /// fall back to the default on-disk store.
     pub session_source: Option<Arc<dyn crate::session_query::SessionSource>>,
+    /// The MCP servers whose resources the file tools reach through the
+    /// `:mcp:<server>` scope: the agent's registry's servers, minus those the
+    /// session switched off. `None` where MCP resources are not offered.
+    pub mcp_resources: Option<Arc<mcp_client::McpResourceServers>>,
 }
 
 impl ToolServices {
@@ -64,6 +68,7 @@ impl ToolServices {
             terminal_interrupts: None,
             browser_sessions: None,
             session_source: None,
+            mcp_resources: None,
         }
     }
 }
@@ -80,6 +85,7 @@ pub trait ToolServicesAccess {
     fn sub_agent_runner(&self) -> Option<&dyn SubAgentRunner>;
     fn pty_sessions(&self) -> Option<&PtySessionManager>;
     fn browser_sessions(&self) -> Option<&web::BrowserSessionManager>;
+    fn mcp_resources(&self) -> Option<&mcp_client::McpResourceServers>;
 }
 
 impl ToolServicesAccess for ToolContext<'_> {
@@ -115,5 +121,10 @@ impl ToolServicesAccess for ToolContext<'_> {
     fn browser_sessions(&self) -> Option<&web::BrowserSessionManager> {
         self.extension::<ToolServices>()
             .and_then(|services| services.browser_sessions.as_deref())
+    }
+
+    fn mcp_resources(&self) -> Option<&mcp_client::McpResourceServers> {
+        self.extension::<ToolServices>()
+            .and_then(|services| services.mcp_resources.as_deref())
     }
 }

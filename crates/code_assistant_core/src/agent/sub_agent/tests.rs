@@ -154,6 +154,7 @@ async fn sub_agent_tool_retains_structured_failure_output() {
         terminal_interrupts: None,
         browser_sessions: None,
         session_source: None,
+        mcp_resources: None,
     };
     let executor = command_executor::DefaultCommandExecutor;
     let mut context = tools_core::ToolContext {

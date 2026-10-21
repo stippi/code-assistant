@@ -23,7 +23,10 @@ use crate::auth::{AuthorizationRequired, OAuthAuthorizer, Reauthorizer, SharedCr
 use crate::config::{McpServerConfig, McpTransport};
 use anyhow::{Context, Result, anyhow};
 use rmcp::ServiceExt;
-use rmcp::model::{CallToolRequestParams, CallToolResult, JsonObject, Tool as McpToolDescriptor};
+use rmcp::model::{
+    CallToolRequestParams, CallToolResult, JsonObject, ReadResourceRequestParams,
+    ReadResourceResult, Resource, ResourceTemplate, Tool as McpToolDescriptor,
+};
 use rmcp::service::{RoleClient, RunningService, ServiceError};
 use rmcp::transport::IntoTransport;
 use rmcp::transport::auth::{
@@ -33,12 +36,13 @@ use rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
 };
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 /// Timeout for the initialize handshake and for tool discovery.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
-/// Timeout for a single tool call round-trip. Generous: MCP tools may do
+/// Timeout for a single tool call or resource read round-trip. Generous: MCP tools may do
 /// real work (searches, API calls), but a hung server must not hang a turn
 /// forever.
 const CALL_TIMEOUT: Duration = Duration::from_secs(300);
@@ -78,7 +82,7 @@ enum Recovery {
     Reauthorized,
 }
 
-/// Why a single call attempt failed.
+/// Why a single request attempt failed.
 enum CallError {
     Timeout,
     Service(ServiceError),
@@ -284,22 +288,84 @@ impl McpServerConnection {
             .with_context(|| format!("failed to list tools of MCP server '{}'", self.name))
     }
 
-    /// Round-trip a `tools/call` request. When an HTTP server's session fails
-    /// at the transport, the connection is reopened (re-authorizing if the
-    /// login expired); the call is retried when the server had rejected it
-    /// for authorization, so it cannot have run.
+    /// Whether the server declared the `resources` capability in its
+    /// initialize handshake.
+    pub fn supports_resources(&self) -> bool {
+        self.current()
+            .peer_info()
+            .is_some_and(|info| info.capabilities.resources.is_some())
+    }
+
+    /// All resources the server lists (follows pagination).
+    pub async fn list_resources(&self) -> Result<Vec<Resource>> {
+        tokio::time::timeout(CONNECT_TIMEOUT, self.current().list_all_resources())
+            .await
+            .with_context(|| format!("timeout listing resources of MCP server '{}'", self.name))?
+            .with_context(|| format!("failed to list resources of MCP server '{}'", self.name))
+    }
+
+    /// All resource templates the server lists (follows pagination).
+    pub async fn list_resource_templates(&self) -> Result<Vec<ResourceTemplate>> {
+        tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            self.current().list_all_resource_templates(),
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "timeout listing resource templates of MCP server '{}'",
+                self.name
+            )
+        })?
+        .with_context(|| {
+            format!(
+                "failed to list resource templates of MCP server '{}'",
+                self.name
+            )
+        })
+    }
+
+    /// Round-trip a `tools/call` request, recovering the session like
+    /// [`Self::request`].
     pub async fn call_tool(
         &self,
         tool: &str,
         arguments: Option<JsonObject>,
     ) -> Result<CallToolResult> {
+        self.request(&format!("tool '{tool}'"), |service| {
+            let mut params = CallToolRequestParams::new(tool.to_string());
+            params.arguments = arguments.clone();
+            async move { service.call_tool(params).await }
+        })
+        .await
+    }
+
+    /// Round-trip a `resources/read` request, recovering the session like
+    /// [`Self::request`].
+    pub async fn read_resource(&self, uri: &str) -> Result<ReadResourceResult> {
+        self.request(&format!("reading resource '{uri}'"), |service| {
+            let params = ReadResourceRequestParams::new(uri);
+            async move { service.read_resource(params).await }
+        })
+        .await
+    }
+
+    /// Send one request (`what` names it in errors). When an HTTP server's
+    /// session fails at the transport, the connection is reopened
+    /// (re-authorizing if the login expired); the request is retried when the
+    /// server had rejected it for authorization, so it cannot have run.
+    async fn request<T, F, Fut>(&self, what: &str, send: F) -> Result<T>
+    where
+        F: Fn(Arc<Service>) -> Fut,
+        Fut: Future<Output = Result<T, ServiceError>>,
+    {
         let service = self.current();
-        let error = match Self::call_on(&service, tool, arguments.clone()).await {
+        let error = match Self::send_on(service.clone(), &send).await {
             Ok(result) => return Ok(result),
             Err(CallError::Service(error)) if self.reconnect.is_some() && is_transport(&error) => {
                 error
             }
-            Err(error) => return Err(self.call_error(tool, error)),
+            Err(error) => return Err(self.request_error(what, error)),
         };
         let rejected = rejected_for_authorization(&error);
         match self.recover(&service).await {
@@ -307,44 +373,37 @@ impl McpServerConnection {
             Ok(Recovery::Reconnected) if rejected => {}
             Ok(Recovery::Reconnected) => {
                 return Err(self
-                    .call_error(tool, CallError::Service(error))
+                    .request_error(what, CallError::Service(error))
                     .context("reconnected to the server; the call can be retried"));
             }
             Err(recovery) => {
                 return Err(recovery.context(format!(
-                    "tool '{tool}' failed on MCP server '{}' ({error})",
+                    "{what} failed on MCP server '{}' ({error})",
                     self.name
                 )));
             }
         }
-        Self::call_on(&self.current(), tool, arguments)
+        Self::send_on(self.current(), &send)
             .await
-            .map_err(|error| self.call_error(tool, error))
+            .map_err(|error| self.request_error(what, error))
     }
 
-    async fn call_on(
-        service: &Service,
-        tool: &str,
-        arguments: Option<JsonObject>,
-    ) -> Result<CallToolResult, CallError> {
-        let mut params = CallToolRequestParams::new(tool.to_string());
-        params.arguments = arguments;
-        match tokio::time::timeout(CALL_TIMEOUT, service.call_tool(params)).await {
+    async fn send_on<T, F, Fut>(service: Arc<Service>, send: &F) -> Result<T, CallError>
+    where
+        F: Fn(Arc<Service>) -> Fut,
+        Fut: Future<Output = Result<T, ServiceError>>,
+    {
+        match tokio::time::timeout(CALL_TIMEOUT, send(service)).await {
             Err(_elapsed) => Err(CallError::Timeout),
             Ok(result) => result.map_err(CallError::Service),
         }
     }
 
-    fn call_error(&self, tool: &str, error: CallError) -> anyhow::Error {
+    fn request_error(&self, what: &str, error: CallError) -> anyhow::Error {
         match error {
-            CallError::Timeout => anyhow!(
-                "timeout calling tool '{tool}' on MCP server '{}'",
-                self.name
-            ),
-            CallError::Service(error) => anyhow::Error::new(error).context(format!(
-                "tool '{tool}' failed on MCP server '{}'",
-                self.name
-            )),
+            CallError::Timeout => anyhow!("timeout: {what} on MCP server '{}'", self.name),
+            CallError::Service(error) => anyhow::Error::new(error)
+                .context(format!("{what} failed on MCP server '{}'", self.name)),
         }
     }
 

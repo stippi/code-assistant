@@ -22,17 +22,20 @@ pub struct ListFilesInput {
 pub struct ListFilesOutput {
     pub expanded_paths: Vec<(PathBuf, FileTreeEntry)>,
     pub failed_paths: Vec<(String, String)>,
+    /// Path → listing of an MCP server's resources (`:mcp:<server>` scope).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resource_listings: Vec<(String, String)>,
 }
 
 // Render implementation for output formatting
 impl Render for ListFilesOutput {
     fn status(&self) -> String {
+        let listed = self.expanded_paths.len() + self.resource_listings.len();
         if self.failed_paths.is_empty() {
-            format!("Listed files in {} path(s)", self.expanded_paths.len())
+            format!("Listed files in {listed} path(s)")
         } else {
             format!(
-                "Listed files in {} path(s), {} path(s) failed",
-                self.expanded_paths.len(),
+                "Listed files in {listed} path(s), {} path(s) failed",
                 self.failed_paths.len()
             )
         }
@@ -50,6 +53,10 @@ impl Render for ListFilesOutput {
             output.push('\n');
         }
 
+        for (path, listing) in &self.resource_listings {
+            output.push_str(&format!("Path: {path}\n{listing}\n"));
+        }
+
         // Format expanded paths
         if !self.expanded_paths.is_empty() {
             for (path, tree) in &self.expanded_paths {
@@ -59,7 +66,7 @@ impl Render for ListFilesOutput {
                 output.push_str(&tree.to_string());
                 output.push('\n');
             }
-        } else if self.failed_paths.is_empty() {
+        } else if self.failed_paths.is_empty() && self.resource_listings.is_empty() {
             output.push_str("No files found.\n");
         }
 
@@ -70,7 +77,7 @@ impl Render for ListFilesOutput {
 // ToolResult implementation
 impl ToolResult for ListFilesOutput {
     fn is_success(&self) -> bool {
-        !self.expanded_paths.is_empty()
+        !self.expanded_paths.is_empty() || !self.resource_listings.is_empty()
     }
 }
 
@@ -92,7 +99,7 @@ impl Tool for ListFilesTool {
                     "project": {
                         "examples": ["project-name"],
                         "type": "string",
-                        "description": "Name of the project context"
+                        "description": "Name of the project context. `:mcp:<server>` instead lists an MCP server's resources; its paths are URI prefixes (`.` for all)."
                     },
                     "paths": {
                         "examples": ["File path here"],
@@ -133,6 +140,12 @@ impl Tool for ListFilesTool {
         context: &mut ToolContext<'a>,
         input: &mut Self::Input,
     ) -> Result<Self::Output> {
+        if let Some(server) = crate::config::mcp_scope_server(&input.project) {
+            let connection = super::mcp_resources::resource_server(context, server)
+                .map(|server| server.connection.clone());
+            return Ok(list_mcp_resources(connection, &input.paths).await);
+        }
+
         // Get explorer for the specified project
         let mut explorer = match context
             .project_manager()
@@ -149,6 +162,7 @@ impl Tool for ListFilesTool {
                             input.project, e
                         ),
                     )],
+                    resource_listings: Vec::new(),
                 });
             }
         };
@@ -197,8 +211,48 @@ impl Tool for ListFilesTool {
         Ok(ListFilesOutput {
             expanded_paths,
             failed_paths,
+            resource_listings: Vec::new(),
         })
     }
+}
+
+/// List the current resources of the MCP server an `:mcp:<server>` scope
+/// names (`connection`, or why it is not available), once per path: a URI
+/// prefix, or `.` (or nothing) for all.
+async fn list_mcp_resources(
+    connection: Result<std::sync::Arc<mcp_client::McpServerConnection>, String>,
+    paths: &[String],
+) -> ListFilesOutput {
+    let mut output = ListFilesOutput {
+        expanded_paths: Vec::new(),
+        failed_paths: Vec::new(),
+        resource_listings: Vec::new(),
+    };
+    let paths = if paths.is_empty() {
+        vec![".".to_string()]
+    } else {
+        paths.to_vec()
+    };
+    let catalog = match connection {
+        Ok(connection) => mcp_client::ResourceCatalog::discover(&connection)
+            .await
+            .map_err(|error| format!("{error:#}")),
+        Err(error) => Err(error),
+    };
+    for path in paths {
+        match &catalog {
+            Ok(catalog) => {
+                let prefix = match path.as_str() {
+                    "." | "/" => "",
+                    prefix => prefix,
+                };
+                let listing = catalog.render_listing(prefix);
+                output.resource_listings.push((path, listing));
+            }
+            Err(error) => output.failed_paths.push((path, error.clone())),
+        }
+    }
+    output
 }
 
 #[cfg(test)]
@@ -258,6 +312,7 @@ mod tests {
         let failed_paths = vec![("nonexistent".to_string(), "Directory not found".to_string())];
 
         let output = ListFilesOutput {
+            resource_listings: Vec::new(),
             expanded_paths,
             failed_paths,
         };

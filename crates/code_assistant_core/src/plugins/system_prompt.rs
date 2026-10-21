@@ -70,6 +70,18 @@ impl SystemPromptProvider for CodeAssistantSystemPrompt {
             }
         }
 
+        // Append the resources of the session's MCP servers, readable through
+        // the `:mcp:<server>` scope of the file tools.
+        let disabled_servers =
+            crate::tools::mcp_selection::session_disabled_mcp_servers(&state.session_config);
+        if let Some(servers) =
+            crate::tools::mcp::session_resource_servers(ctx.registry, &disabled_servers)
+            && let Some(section) = crate::tools::mcp::render_resources_section(&servers)
+        {
+            system_message.push_str("\n\n");
+            system_message.push_str(&section);
+        }
+
         // Append guidance files if present. Global AGENTS.md is loaded first so
         // project-specific guidance can refine or override it in the prompt.
         let guidance_files = read_guidance_files(
