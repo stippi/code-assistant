@@ -12,7 +12,7 @@ use super::shared::context_breakdown::ContextUsage;
 use super::shared::file_icons;
 use attachment::{AttachmentEvent, AttachmentView};
 use base64::Engine;
-use code_assistant_core::persistence::{DraftAttachment, NodeId};
+use code_assistant_core::persistence::{DraftAttachment, MessageEdit};
 use code_assistant_core::ui::ui_events::{BuiltinToolToggle, McpServerHealth, McpServerToggle};
 use gpui_kit::component::input::{
     Enter, Escape, IndentInline, InputEvent, MoveDown, MoveUp, Paste, Textarea, TextareaState,
@@ -44,8 +44,8 @@ pub enum InputAreaEvent {
     MessageSubmitted {
         content: String,
         attachments: Vec<DraftAttachment>,
-        /// If set, this message creates a new branch from this parent node
-        branch_parent_id: Option<NodeId>,
+        /// If set, this message is an edit of an earlier one
+        editing: Option<MessageEdit>,
     },
     /// Content changed (for draft saving)
     ContentChanged {
@@ -142,9 +142,8 @@ pub struct InputArea {
     // Context usage summed across the active node path of the session
     context_total_usage: Option<ContextUsage>,
 
-    // Branch editing state
-    /// When editing a message, this is the parent node ID where the new branch will be created
-    branch_parent_id: Option<NodeId>,
+    /// The message being edited, if any
+    editing: Option<MessageEdit>,
 
     // Subscriptions
     _input_subscription: Subscription,
@@ -215,7 +214,7 @@ impl InputArea {
             context_usage: None,
             context_total_usage: None,
 
-            branch_parent_id: None,
+            editing: None,
 
             _input_subscription: input_subscription,
             _model_selector_subscription: model_selector_subscription,
@@ -249,33 +248,33 @@ impl InputArea {
         });
     }
 
-    /// Set content for editing a message (creates a branch).
+    /// Set content for editing a message.
     ///
-    /// `branch_parent_id` doubles as the edit-mode flag: `Some(_)` shows the
+    /// `editing` doubles as the edit-mode flag: `Some(_)` shows the
     /// editing banner, `None` clears edit mode. Like `set_content`, this emits
     /// no change event: callers that need the draft saved save it themselves.
     pub fn set_content_for_edit(
         &mut self,
         text: String,
         attachments: Vec<DraftAttachment>,
-        branch_parent_id: Option<NodeId>,
+        editing: Option<MessageEdit>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.branch_parent_id = branch_parent_id;
+        self.editing = editing;
         self.set_content(text, attachments, window, cx);
         cx.notify();
     }
 
-    /// The branch parent node when editing an existing message, if any.
+    /// The message being edited, if any.
     /// `Some(_)` indicates the input is currently in edit mode.
-    pub fn branch_parent_id(&self) -> Option<NodeId> {
-        self.branch_parent_id
+    pub fn editing(&self) -> Option<MessageEdit> {
+        self.editing
     }
 
     /// Clear the edit mode state
     fn clear_edit_mode(&mut self) {
-        self.branch_parent_id = None;
+        self.editing = None;
     }
 
     /// Put the keyboard focus into the text field.
@@ -287,13 +286,13 @@ impl InputArea {
 
     /// Check if we're currently in edit mode (editing an existing message)
     pub fn is_editing(&self) -> bool {
-        self.branch_parent_id.is_some()
+        self.editing.is_some()
     }
 
     /// Cancel edit mode - clears input and emits event to restore original messages
     pub fn cancel_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.branch_parent_id.is_some() {
-            self.branch_parent_id = None;
+        if self.editing.is_some() {
+            self.editing = None;
             self.clear(window, cx);
             cx.emit(InputAreaEvent::CancelEditRequested);
         }
@@ -391,7 +390,7 @@ impl InputArea {
     pub fn is_blank(&self, cx: &gpui_kit::App) -> bool {
         self.text_input.read(cx).value().trim().is_empty()
             && self.attachments.is_empty()
-            && self.branch_parent_id.is_none()
+            && self.editing.is_none()
     }
 
     /// Whether there is something to send: text, or attachments such as
@@ -455,8 +454,8 @@ impl InputArea {
                 return;
             }
 
-            // Capture branch_parent_id before clearing
-            let branch_parent_id = self.branch_parent_id;
+            // Capture editing before clearing
+            let editing = self.editing;
 
             // Clear draft before doing anything else
             cx.emit(InputAreaEvent::ClearDraftRequested);
@@ -465,7 +464,7 @@ impl InputArea {
             cx.emit(InputAreaEvent::MessageSubmitted {
                 content: current_text,
                 attachments: self.attachments.clone(),
-                branch_parent_id,
+                editing,
             });
 
             // Clear the input and attachments
@@ -880,8 +879,8 @@ impl InputArea {
         let content = self.text_input.read(cx).value().to_string();
 
         if self.has_sendable_content(cx) {
-            // Capture branch_parent_id before clearing
-            let branch_parent_id = self.branch_parent_id;
+            // Capture editing before clearing
+            let editing = self.editing;
 
             // FIRST: Clear draft before doing anything else
             cx.emit(InputAreaEvent::ClearDraftRequested);
@@ -890,7 +889,7 @@ impl InputArea {
             cx.emit(InputAreaEvent::MessageSubmitted {
                 content: content.clone(),
                 attachments: self.attachments.clone(),
-                branch_parent_id,
+                editing,
             });
 
             // Clear the input and attachments
@@ -949,7 +948,7 @@ impl InputArea {
                                     div()
                                         .text_sm()
                                         .text_color(cx.theme().warning)
-                                        .child("Editing message — this will create a new branch"),
+                                        .child(edit_banner_text(self.editing)),
                                 ),
                         )
                         .child(
@@ -1162,6 +1161,14 @@ impl Render for InputArea {
             })
             .track_focus(&self.focus_handle(cx))
             .child(self.render_input_area(window, cx))
+    }
+}
+
+/// What sending the edited message will do.
+fn edit_banner_text(editing: Option<MessageEdit>) -> &'static str {
+    match editing {
+        Some(MessageEdit { in_place: true, .. }) => "Editing message — this will replace it",
+        _ => "Editing message — this will create a new branch",
     }
 }
 

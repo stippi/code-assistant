@@ -1014,15 +1014,15 @@ impl Gpui {
             UiEvent::MessageEditReady {
                 content,
                 attachments,
-                branch_parent_id,
+                edit,
                 messages,
                 tool_results,
             } => {
                 debug!(
-                    "UI: MessageEditReady event - content len: {}, attachments: {}, parent: {:?}, {} messages",
+                    "UI: MessageEditReady event - content len: {}, attachments: {}, edit: {:?}, {} messages",
                     content.len(),
                     attachments.len(),
-                    branch_parent_id,
+                    edit,
                     messages.len()
                 );
 
@@ -1123,7 +1123,7 @@ impl Gpui {
                 self.set_pending_edit(PendingEdit {
                     content,
                     attachments,
-                    branch_parent_id,
+                    edit,
                 });
 
                 // Refresh UI to trigger RootView to process the pending edit

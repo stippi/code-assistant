@@ -57,6 +57,7 @@ impl RenderOnce for BranchSwitcherElement {
         div().flex().w_full().justify_end().child(
             // The bubble itself - positioned to overlap the border
             div()
+                .debug_selector(|| "branch-switcher".into())
                 .flex()
                 .flex_row()
                 .items_center()

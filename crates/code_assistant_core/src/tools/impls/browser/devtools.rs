@@ -136,8 +136,30 @@ mod tests {
     use super::super::page::{BrowserNavigateTool, NavigateInput};
     use super::*;
     use crate::mocks::ToolTestFixture;
-    use crate::tools::core::{Render, ResourcesTracker, Tool};
+    use crate::tools::core::{Render, ResourcesTracker, Tool, ToolContext};
     use anyhow::Result;
+
+    /// Run `tool` until its output contains `expected`, or a generous limit
+    /// passes: what a page does after loading may take long on a loaded
+    /// machine.
+    async fn read_until<T: Tool<Output = BrowserOutput>>(
+        tool: &T,
+        context: &mut ToolContext<'_>,
+        input: &mut T::Input,
+        expected: &str,
+    ) -> Result<String> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let output = tool
+                .execute(context, input)
+                .await?
+                .render(&mut ResourcesTracker::default());
+            if output.contains(expected) || std::time::Instant::now() > deadline {
+                return Ok(output);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
 
     #[tokio::test]
     async fn console_errors_and_a_response_body() -> Result<()> {
@@ -169,7 +191,6 @@ mod tests {
                 },
             )
             .await?;
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         let render = |out: BrowserOutput| out.render(&mut ResourcesTracker::default());
 
         let mut console = ReadConsoleInput {
@@ -178,11 +199,13 @@ mod tests {
             pattern: None,
             target: Target::default(),
         };
-        let errors = render(
-            BrowserReadConsoleTool
-                .execute(&mut context, &mut console)
-                .await?,
-        );
+        let errors = read_until(
+            &BrowserReadConsoleTool,
+            &mut context,
+            &mut console,
+            "broken",
+        )
+        .await?;
         assert!(errors.starts_with("[error] broken"), "{errors}");
         assert!(!errors.contains("ready"), "{errors}");
 
@@ -192,11 +215,14 @@ mod tests {
             request_id: None,
             target: Target::default(),
         };
-        let listed = render(
-            BrowserReadNetworkTool
-                .execute(&mut context, &mut network)
-                .await?,
-        );
+        // The page fetches after loading.
+        let listed = read_until(
+            &BrowserReadNetworkTool,
+            &mut context,
+            &mut network,
+            "GET 200 fetch",
+        )
+        .await?;
         assert!(listed.contains("GET 200 fetch"), "{listed}");
         let id = listed.trim_start_matches('[').split(']').next().unwrap();
         network.request_id = Some(id.to_string());

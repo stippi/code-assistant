@@ -32,6 +32,45 @@ fn a_sent_message_gets_the_agents_reply(cx: &mut TestAppContext) {
     assert!(test.stores.drafts.stored(&session_id).is_none());
 }
 
+#[gpui_kit::test]
+fn editing_a_rejected_message_replaces_it(cx: &mut TestAppContext) {
+    // Responses are taken from the end: the first request is rejected.
+    let llm = MockLLMProvider::new(vec![
+        Ok(create_test_response_text("Gladly")),
+        Err(anyhow::anyhow!("blocked by the content filter")),
+    ]);
+    let mut test = MainScreenTest::with_core(cx, TestCore::new(llm.streaming().into_factory()));
+    let session_id = test.open_new_session();
+    test.send("rejected");
+    test.wait_until("the request failed", |test| !test.agent_is_running());
+
+    test.click("edit-message-btn");
+    test.wait_until("the edit started", |test| test.is_editing());
+    assert_eq!(test.input_text(), "rejected");
+    assert!(test.transcript().is_empty());
+
+    test.focus_input();
+    test.cx.simulate_keystrokes("end");
+    test.type_text(" and rephrased");
+    test.cx.simulate_keystrokes("enter");
+    test.wait_until("the agent replied", |test| {
+        !test.agent_is_running() && test.transcript().len() == 2
+    });
+
+    assert_eq!(
+        test.transcript(),
+        ["user: rejected and rephrased", "assistant: Gladly"]
+    );
+    assert!(!test.shows("branch-switcher"), "no branch was started");
+    let core = test.core.as_ref().unwrap();
+    let session = core
+        .store()
+        .load_chat_session(&session_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.message_nodes.len(), 2);
+}
+
 /// Agent runs that wait on the model until stopped.
 fn waiting_for_the_model() -> TestCore {
     TestCore::new(PendingLLMProvider::default().into_factory())

@@ -769,13 +769,13 @@ impl MainScreen {
             InputAreaEvent::MessageSubmitted {
                 content,
                 attachments,
-                branch_parent_id,
+                editing,
             } => {
                 if let Some(args) = goal_command_args(content) {
                     let gpui = cx
                         .try_global::<Gpui>()
                         .expect("Failed to obtain Gpui global");
-                    if !attachments.is_empty() || branch_parent_id.is_some() {
+                    if !attachments.is_empty() || editing.is_some() {
                         gpui.display_status(
                             "A goal cannot contain attachments or be submitted while editing. \
                              Use /goal <completion criteria> or /goal cancel.",
@@ -792,7 +792,7 @@ impl MainScreen {
                         &session_id,
                         content.clone(),
                         attachments.clone(),
-                        *branch_parent_id,
+                        *editing,
                         cx,
                     );
                 }
@@ -805,14 +805,8 @@ impl MainScreen {
                 if let Some(session_id) = self.current_session_id.clone() {
                     // Persist the edit anchor alongside the text so the editing
                     // banner/truncated view can be restored on reconnect.
-                    let editing_branch_parent_id = self.input_area.read(cx).branch_parent_id();
-                    self.save_draft_for_session(
-                        &session_id,
-                        content,
-                        attachments,
-                        editing_branch_parent_id,
-                        cx,
-                    );
+                    let editing = self.input_area.read(cx).editing();
+                    self.save_draft_for_session(&session_id, content, attachments, editing, cx);
                     self.report_user_activity(session_id, cx);
                 }
             }
@@ -1040,12 +1034,13 @@ impl MainScreen {
         match event {
             SessionSidebarEvent::SessionSelected { session_id } => {
                 // If the session's draft is in edit mode, load it already
-                // truncated to the branch parent so the edit view is
+                // truncated to the edited message so the edit view is
                 // restored in a single event (no full-then-truncate flash).
-                let edit_until_node_id = gpui
+                let edited_node_id = gpui
                     .load_draft_for_session(session_id)
-                    .and_then(|draft| draft.editing_branch_parent_id);
-                gpui.cmd_load_session(session_id.clone(), edit_until_node_id);
+                    .and_then(|draft| draft.editing)
+                    .map(|edit| edit.node_id);
+                gpui.cmd_load_session(session_id.clone(), edited_node_id);
             }
             SessionSidebarEvent::NewSessionRequested {
                 name,
@@ -1075,7 +1070,7 @@ impl MainScreen {
         session_id: &str,
         content: String,
         attachments: Vec<code_assistant_core::persistence::DraftAttachment>,
-        branch_parent_id: Option<code_assistant_core::persistence::NodeId>,
+        editing: Option<code_assistant_core::persistence::MessageEdit>,
         cx: &mut Context<Self>,
     ) {
         if content.trim().is_empty() && attachments.is_empty() {
@@ -1105,11 +1100,11 @@ impl MainScreen {
                 false
             };
 
-            // Log branch editing info
-            if branch_parent_id.is_some() {
+            // Log editing info
+            if editing.is_some() {
                 tracing::info!(
-                    "MainScreen: Sending edited message (branch from {:?}) to session {}: {} (with {} attachments)",
-                    branch_parent_id,
+                    "MainScreen: Sending edited message ({:?}) to session {}: {} (with {} attachments)",
+                    editing,
                     session_id,
                     content,
                     attachments.len()
@@ -1132,17 +1127,17 @@ impl MainScreen {
             } else {
                 // Send message normally (agent is idle)
                 tracing::info!(
-                    "MainScreen: Sending user message to session {}: {} (with {} attachments, branch_parent: {:?})",
+                    "MainScreen: Sending user message to session {}: {} (with {} attachments, editing: {:?})",
                     session_id,
                     content,
                     attachments.len(),
-                    branch_parent_id
+                    editing
                 );
                 gpui.cmd_send_user_message(
                     session_id.to_string(),
                     content.clone(),
                     attachments.clone(),
-                    branch_parent_id,
+                    editing.map(|edit| edit.node_id),
                 );
             }
         }
@@ -1153,15 +1148,16 @@ impl MainScreen {
         &mut self,
         content: String,
         attachments: Vec<code_assistant_core::persistence::DraftAttachment>,
-        branch_parent_id: Option<code_assistant_core::persistence::NodeId>,
+        edit: code_assistant_core::persistence::MessageEdit,
         window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) {
+        let editing = Some(edit);
         self.input_area.update(cx, |input_area, cx| {
             input_area.set_content_for_edit(
                 content.clone(),
                 attachments.clone(),
-                branch_parent_id,
+                editing,
                 window,
                 cx,
             );
@@ -1170,7 +1166,7 @@ impl MainScreen {
         // its edit anchor) is saved here; otherwise switching sessions would
         // drop the edit until the user types.
         if let Some(session_id) = self.current_session_id.clone() {
-            self.save_draft_for_session(&session_id, &content, &attachments, branch_parent_id, cx);
+            self.save_draft_for_session(&session_id, &content, &attachments, editing, cx);
         }
         cx.notify();
     }
@@ -1180,11 +1176,11 @@ impl MainScreen {
         session_id: &str,
         content: &str,
         attachments: &[code_assistant_core::persistence::DraftAttachment],
-        editing_branch_parent_id: Option<code_assistant_core::persistence::NodeId>,
+        editing: Option<code_assistant_core::persistence::MessageEdit>,
         cx: &mut Context<Self>,
     ) {
         if let Some(gpui) = cx.try_global::<Gpui>() {
-            gpui.save_draft_for_session(session_id, content, attachments, editing_branch_parent_id);
+            gpui.save_draft_for_session(session_id, content, attachments, editing);
         }
     }
 
@@ -1567,13 +1563,10 @@ impl MainScreen {
         }
 
         // Read everything we need from Gpui in a scoped borrow, then drop the ref
-        let (input_value, attachments, editing_branch_parent_id, gpui_handle) = {
+        let (input_value, attachments, editing, gpui_handle) = {
             let gpui = cx.try_global::<Gpui>();
 
-            let (input_value, attachments, editing_branch_parent_id) = if let (
-                Some(new_id),
-                Some(gpui),
-            ) =
+            let (input_value, attachments, editing) = if let (Some(new_id), Some(gpui)) =
                 (new_session_id.as_ref(), &gpui)
             {
                 if let Some(draft) = gpui.load_draft_for_session(new_id) {
@@ -1582,13 +1575,9 @@ impl MainScreen {
                         new_id,
                         draft.message.len(),
                         draft.attachments.len(),
-                        draft.editing_branch_parent_id
+                        draft.editing
                     );
-                    (
-                        draft.message,
-                        draft.attachments,
-                        draft.editing_branch_parent_id,
-                    )
+                    (draft.message, draft.attachments, draft.editing)
                 } else {
                     debug!("No draft found for new session: {}", new_id);
                     ("".to_string(), Vec::new(), None)
@@ -1608,12 +1597,7 @@ impl MainScreen {
                 None
             };
 
-            (
-                input_value,
-                attachments,
-                editing_branch_parent_id,
-                gpui_handle,
-            )
+            (input_value, attachments, editing, gpui_handle)
             // `gpui` borrow of `cx` dropped here
         };
 
@@ -1623,13 +1607,7 @@ impl MainScreen {
         // banner behind. The truncated transcript itself is produced directly by
         // the (edit-aware) `LoadSession` request.
         self.input_area.update(cx, |input_area, cx| {
-            input_area.set_content_for_edit(
-                input_value,
-                attachments,
-                editing_branch_parent_id,
-                window,
-                cx,
-            );
+            input_area.set_content_for_edit(input_value, attachments, editing, window, cx);
         });
 
         // Request fresh worktree listing for the new session
@@ -1778,14 +1756,14 @@ impl Render for MainScreen {
 
         self.offer_prepared_handoff(window, cx);
 
-        // Check for pending edit (message editing for branching)
+        // Check for pending edit (message editing)
         if let Some(gpui) = cx.try_global::<Gpui>()
             && let Some(pending_edit) = gpui.take_pending_edit()
         {
             self.handle_message_edit_ready(
                 pending_edit.content,
                 pending_edit.attachments,
-                pending_edit.branch_parent_id,
+                pending_edit.edit,
                 window,
                 cx,
             );

@@ -141,14 +141,14 @@ impl Gpui {
 
     /// Connect a session to the UI: apply the returned snapshot and refresh
     /// the skill catalog for the `/skill` picker.
-    pub(crate) fn cmd_load_session(&self, session_id: String, edit_until_node_id: Option<NodeId>) {
+    pub(crate) fn cmd_load_session(&self, session_id: String, edited_node_id: Option<NodeId>) {
         let Some(service) = self.session_service() else {
             return;
         };
         let gpui = self.clone();
         self.dispatch(async move {
             match service
-                .load_session(session_id.clone(), edit_until_node_id)
+                .load_session(session_id.clone(), edited_node_id)
                 .await
             {
                 Ok(snapshot) => {
@@ -271,7 +271,7 @@ impl Gpui {
         session_id: String,
         message: String,
         attachments: Vec<DraftAttachment>,
-        branch_parent_id: Option<NodeId>,
+        edited_node_id: Option<NodeId>,
     ) {
         let Some(service) = self.session_service() else {
             return;
@@ -281,7 +281,7 @@ impl Gpui {
         let gpui = self.clone();
         self.dispatch(async move {
             if let Err(e) = service
-                .send_user_message(session_id, message, attachments, branch_parent_id)
+                .send_user_message(session_id, message, attachments, edited_node_id)
                 .await
             {
                 gpui.display_error(format!("Failed to send message: {e:#}"));
@@ -619,7 +619,7 @@ impl Gpui {
                 Ok(edit) => gpui.push_event(UiEvent::MessageEditReady {
                     content: edit.content,
                     attachments: edit.attachments,
-                    branch_parent_id: edit.branch_parent_id,
+                    edit: edit.edit,
                     messages: edit.transcript.messages,
                     tool_results: edit.transcript.tool_results,
                 }),

@@ -203,9 +203,7 @@ impl MainScreenTest {
             .lock()
             .unwrap()
             .as_ref()
-            .is_some_and(|state| {
-                *state != code_assistant_core::session::instance::SessionActivityState::Idle
-            })
+            .is_some_and(|state| !state.is_terminal())
     }
 
     /// Whether the viewed session's agent waits for the model's answer: it

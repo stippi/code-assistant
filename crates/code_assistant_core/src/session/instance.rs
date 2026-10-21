@@ -629,21 +629,21 @@ impl SessionInstance {
     /// Generate UI events for connecting to this session.
     /// Returns SetMessages event with all session messages including incomplete streaming message.
     ///
-    /// If `until_node_id` is `Some(_)`, the transcript is truncated to messages
-    /// up to and including that node. This is used to restore the "edit mode"
-    /// view (truncated to the branch parent) directly when connecting to a
-    /// session whose draft is in edit mode, avoiding a full-then-truncate flash.
+    /// If `edited_node_id` is `Some(_)`, the transcript is truncated to the
+    /// messages before that node. This is used to restore the "edit mode"
+    /// view directly when connecting to a session whose draft is in edit
+    /// mode, avoiding a full-then-truncate flash.
     ///
     /// Tool outputs stored outside the session record are deferred (see
     /// [`Self::convert_tool_executions_to_ui_data`]).
     pub fn build_snapshot(
         &self,
         persistence: &FileSessionPersistence,
-        until_node_id: Option<crate::persistence::NodeId>,
+        edited_node_id: Option<crate::persistence::NodeId>,
     ) -> Result<crate::session::SessionSnapshot, anyhow::Error> {
         // Convert session messages to UI data (optionally truncated for edit mode)
-        let mut messages =
-            self.convert_messages_to_ui_data_until(self.session.config.tool_syntax, until_node_id)?;
+        let mut messages = self
+            .convert_messages_to_ui_data_before(self.session.config.tool_syntax, edited_node_id)?;
         let mut tool_results = self.convert_tool_executions_to_ui_data(persistence)?;
 
         // Merge in the latest live tool statuses (e.g. from running
@@ -712,16 +712,16 @@ impl SessionInstance {
         &self,
         tool_syntax: crate::types::ToolSyntax,
     ) -> Result<Vec<MessageData>, anyhow::Error> {
-        self.convert_messages_to_ui_data_until(tool_syntax, None)
+        self.convert_messages_to_ui_data_before(tool_syntax, None)
     }
 
     /// Convert session messages to UI MessageData format, stopping at a specific node
-    /// If `until_node_id` is Some, includes all messages up to and including that node.
-    /// If `until_node_id` is None, includes all messages (same as convert_messages_to_ui_data).
-    pub fn convert_messages_to_ui_data_until(
+    /// If `edited_node_id` is Some, includes the messages before that node.
+    /// If `edited_node_id` is None, includes all messages (same as convert_messages_to_ui_data).
+    pub fn convert_messages_to_ui_data_before(
         &self,
         tool_syntax: crate::types::ToolSyntax,
-        until_node_id: Option<crate::persistence::NodeId>,
+        edited_node_id: Option<crate::persistence::NodeId>,
     ) -> Result<Vec<MessageData>, anyhow::Error> {
         // Create dummy UI for stream processor
         struct DummyUI;
@@ -764,20 +764,18 @@ impl SessionInstance {
         // Build message iterator from tree or legacy messages
         let message_iter: Vec<(Option<crate::persistence::NodeId>, &llm::Message)> =
             if !self.session.message_nodes.is_empty() {
-                // Use active path from tree, but stop at until_node_id
-                let mut iter = Vec::new();
-                for &node_id in &self.session.active_path {
-                    if let Some(node) = self.session.message_nodes.get(&node_id) {
-                        iter.push((Some(node_id), &node.message));
-                        // Stop after adding the until_node_id
-                        if until_node_id == Some(node_id) {
-                            break;
-                        }
-                    }
-                }
-                iter
+                // Use active path from tree, but stop before edited_node_id
+                self.session
+                    .active_path
+                    .iter()
+                    .take_while(|&&node_id| edited_node_id != Some(node_id))
+                    .filter_map(|&node_id| {
+                        let node = self.session.message_nodes.get(&node_id)?;
+                        Some((Some(node_id), &node.message))
+                    })
+                    .collect()
             } else {
-                // Fall back to legacy linear messages (no until_node_id support)
+                // Fall back to legacy linear messages (no edited_node_id support)
                 self.session
                     .messages
                     .iter()

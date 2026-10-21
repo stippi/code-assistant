@@ -17,7 +17,7 @@ pub use browser_session::{
     ViewGuard,
 };
 pub use chromiumoxide::layout::Point;
-pub use client::{PageMetadata, WebClient, WebPage, WebSearchResult};
+pub use client::{PageMetadata, SearchBlocked, WebClient, WebPage, WebSearchResult};
 pub use perplexity::{PerplexityCitation, PerplexityClient, PerplexityMessage, PerplexityResponse};
 pub use profile_lock::ProfileInUse;
 pub use recording::{Recording, SheetFrame};

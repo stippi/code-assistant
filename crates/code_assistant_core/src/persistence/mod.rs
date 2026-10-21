@@ -511,6 +511,39 @@ impl ChatSession {
         node_id
     }
 
+    /// How sending an edit of the message at `node_id` changes the tree:
+    /// in place when it is a user message ending the active path.
+    pub fn message_edit(&self, node_id: NodeId) -> MessageEdit {
+        let in_place = self.active_path.last() == Some(&node_id)
+            && self
+                .message_nodes
+                .get(&node_id)
+                .is_some_and(|node| node.message.role == llm::MessageRole::User);
+        MessageEdit { node_id, in_place }
+    }
+
+    /// Add `message` as the edited version of the message at `edited`:
+    /// replacing it when the edit is in place (see [`Self::message_edit`]),
+    /// otherwise as a new branch next to it. Returns the node holding the
+    /// edited message.
+    pub fn add_edited_message(&mut self, edited: NodeId, message: Message) -> Result<NodeId> {
+        let parent_id = self
+            .message_nodes
+            .get(&edited)
+            .ok_or_else(|| anyhow::anyhow!("Node not found: {edited}"))?
+            .parent_id;
+        if !self.message_edit(edited).in_place {
+            return Ok(self.add_message_with_parent(message, parent_id));
+        }
+        // Keeping id, parent and creation time keeps the node's place among
+        // its siblings.
+        let node = self.message_nodes.get_mut(&edited).expect("checked above");
+        node.message = message;
+        node.extension = None;
+        self.updated_at = SystemTime::now();
+        Ok(edited)
+    }
+
     /// Switch to a different branch by making a different sibling node active.
     /// Updates active_path to follow the new branch to its deepest descendant.
     pub fn switch_branch(&mut self, new_node_id: NodeId) -> Result<()> {
@@ -1392,13 +1425,22 @@ pub struct SessionDraft {
     pub message: String,
     /// Additional attachments (images, files, etc.)
     pub attachments: Vec<DraftAttachment>,
-    /// When editing an existing message, this is the parent node where the new
-    /// branch will be created. `Some(_)` means the draft is in "edit mode" and
-    /// the UI should restore the editing banner and truncated transcript when
-    /// the session is connected. Defaults to `None` for backward compatibility
-    /// with drafts written before this field existed.
+    /// The message being edited. `Some(_)` means the draft is in "edit mode"
+    /// and the UI should restore the editing banner and truncated transcript
+    /// when the session is connected.
     #[serde(default)]
-    pub editing_branch_parent_id: Option<NodeId>,
+    pub editing: Option<MessageEdit>,
+}
+
+/// A user message being edited in the composer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageEdit {
+    /// The node of the message being edited.
+    pub node_id: NodeId,
+    /// Sending replaces the message instead of starting a branch next to
+    /// it: it ends the active path, nothing answered it yet (e.g. the
+    /// provider rejected it). See [`ChatSession::message_edit`].
+    pub in_place: bool,
 }
 
 impl SessionDraft {
@@ -1406,9 +1448,7 @@ impl SessionDraft {
     /// edit state: an in-progress edit (even with empty text) must persist so
     /// the editing banner can be restored when reconnecting to the session.
     pub fn is_empty(&self) -> bool {
-        self.message.is_empty()
-            && self.attachments.is_empty()
-            && self.editing_branch_parent_id.is_none()
+        self.message.is_empty() && self.attachments.is_empty() && self.editing.is_none()
     }
 }
 
@@ -2297,7 +2337,7 @@ mod tests {
             session_id: session_id.into(),
             message: message.into(),
             attachments: Vec::new(),
-            editing_branch_parent_id: None,
+            editing: None,
         }
     }
 
