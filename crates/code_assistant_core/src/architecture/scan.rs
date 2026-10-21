@@ -14,7 +14,7 @@
 
 use super::extract::{FileFacts, Import, Language};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -400,7 +400,8 @@ fn file_name(path: &str) -> &str {
 
 #[derive(Default)]
 struct Dir {
-    files: Vec<String>,
+    /// Sorted like `dirs`, so the parts' order does not follow the walk's.
+    files: BTreeSet<String>,
     dirs: BTreeMap<String, Dir>,
 }
 
@@ -408,7 +409,9 @@ impl Dir {
     fn insert(&mut self, path: &str) {
         match path.split_once('/') {
             Some((head, rest)) => self.dirs.entry(head.to_owned()).or_default().insert(rest),
-            None => self.files.push(path.to_owned()),
+            None => {
+                self.files.insert(path.to_owned());
+            }
         }
     }
 

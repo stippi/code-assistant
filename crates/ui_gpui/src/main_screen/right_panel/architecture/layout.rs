@@ -134,11 +134,20 @@ pub fn layered(count: usize, edges: &[(usize, usize)], columns: usize) -> Layout
         }
     }
 
+    // Rows are centered within the widest row, which is all the width the
+    // boxes take; centering within `columns` would push narrow levels right.
+    let width = ranks
+        .iter()
+        .chain(std::iter::once(&isolated))
+        .map(|nodes| nodes.len().min(columns))
+        .max()
+        .unwrap_or(0)
+        .max(1);
     let mut slots = vec![Slot { row: 0, column: 0. }; count];
     let mut row = 0;
     let mut place = |nodes: &[usize], row: &mut usize| {
         for chunk in nodes.chunks(columns) {
-            let offset = (columns - chunk.len()) as f32 / 2.;
+            let offset = (width - chunk.len()) as f32 / 2.;
             for (ix, &n) in chunk.iter().enumerate() {
                 slots[n] = Slot {
                     row: *row,
@@ -156,7 +165,7 @@ pub fn layered(count: usize, edges: &[(usize, usize)], columns: usize) -> Layout
     Layout {
         slots,
         rows: row,
-        columns: columns.min(count.max(1)),
+        columns: width,
         isolated_from,
     }
 }
@@ -296,6 +305,22 @@ mod tests {
             transitive_reduction(2, &[(0, 1), (1, 0)]),
             vec![(0, 1), (1, 0)]
         );
+    }
+
+    #[test]
+    fn narrow_levels_stay_within_their_columns() {
+        // A chain of two on room for five: one column, not centered in five.
+        let layout = layered(2, &[(0, 1)], 5);
+        assert_eq!(layout.columns, 1);
+        assert!(layout.slots.iter().all(|s| s.column == 0.));
+
+        // Ranks of one and three on room for five.
+        let layout = layered(4, &[(0, 1), (0, 2), (0, 3)], 5);
+        assert_eq!(layout.columns, 3);
+        assert_eq!(layout.slots[0].column, 1.);
+        let mut below: Vec<f32> = layout.slots[1..].iter().map(|s| s.column).collect();
+        below.sort_by(f32::total_cmp);
+        assert_eq!(below, vec![0., 1., 2.]);
     }
 
     #[test]
