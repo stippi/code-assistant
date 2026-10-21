@@ -57,7 +57,7 @@ impl SubAgentRunner for DefaultSubAgentRunner {
                 // request fails. Preserve their usage as well as their tool list.
                 sub_ui.set_usage(compute_sub_agent_usage(
                     &agent.message_history(),
-                    &self.model_name,
+                    &self.model.model_name,
                 ));
                 iteration?;
                 cancellation.check()?;

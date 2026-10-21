@@ -1,9 +1,9 @@
-//! The selector row below the composer: model | worktree | sandbox |
-//! permissions | MCP | context ring.
+//! The selector row below the composer: model | effort | worktree |
+//! sandbox | permissions | MCP | context ring.
 //!
 //! When the row is too narrow for all of them (a wide right panel), the
 //! secondary selectors collapse behind a "⋯" button and only the model
-//! selector stays inline. The row measures itself after layout; a change
+//! and effort selectors stay inline. The row measures itself after layout; a change
 //! of fit re-renders on the next frame.
 
 use super::InputArea;
@@ -65,7 +65,10 @@ impl InputArea {
                     .flex_1()
                     .min_w_0()
                     .flex()
-                    .child(self.model_selector.clone()),
+                    .items_center()
+                    .gap_1()
+                    .child(self.model_selector.clone())
+                    .child(self.effort_selector.clone()),
             )
             .map(|row| {
                 if collapsed {

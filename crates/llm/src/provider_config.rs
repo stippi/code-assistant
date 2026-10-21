@@ -1,3 +1,4 @@
+use crate::capabilities::ModelCapabilities;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -286,6 +287,13 @@ impl ConfigurationSystem {
     /// List all available provider IDs
     pub fn list_providers(&self) -> Vec<String> {
         self.providers.keys().cloned().collect()
+    }
+
+    /// What a configured model can do (context, output limit, reasoning).
+    pub fn model_capabilities(&self, model_name: &str) -> Result<ModelCapabilities> {
+        let (model, provider) = self.get_model_with_provider(model_name)?;
+        let api = Self::api_client_kind_for_configs(model, provider)?;
+        Ok(ModelCapabilities::resolve(api, &model.id))
     }
 
     /// Resolve the API/client family used by a configured model.

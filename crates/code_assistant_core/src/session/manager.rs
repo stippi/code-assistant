@@ -8,6 +8,7 @@ use tokio::sync::Mutex;
 use crate::agent::{Agent, AgentComponents, DefaultSubAgentRunner, SubAgentCancellationRegistry};
 use crate::config::ProjectManager;
 use crate::persistence::{ChatMetadata, ChatSession, FileSessionPersistence, SessionModelConfig};
+use crate::session::effort::EffortChoice;
 use crate::session::instance::SessionInstance;
 use crate::session::sleep_inhibitor::SleepInhibitor;
 use crate::session::{SessionCheckpoint, SessionConfig};
@@ -15,6 +16,7 @@ use crate::ui::ui_events::UiEvent;
 use crate::utils::file_utils;
 use command_executor::{CommandExecutor, SandboxedCommandExecutor};
 use llm::LLMProvider;
+use llm::capabilities::Effort;
 use sandbox::SandboxPolicy;
 use tools_core::permissions::{
     PermissionDecision, PermissionMediator, PermissionRequest, PermissionRequestReason,
@@ -744,27 +746,22 @@ impl SessionManager {
             session_instance.reload_from_persistence(&self.persistence)?;
         }
 
-        let model_name_for_event = {
-            let existing_model_name = {
+        let model_config_for_event = {
+            let existing_model_config = {
                 let session_instance = self.active_sessions.get_mut(&session_id).unwrap();
-                session_instance
-                    .session
-                    .model_config
-                    .as_ref()
-                    .map(|config| config.model_name.clone())
+                session_instance.session.model_config.clone()
             };
 
-            if let Some(model_name) = existing_model_name {
-                model_name
+            if let Some(model_config) = existing_model_config {
+                model_config
             } else {
                 let default_model_config = self.default_model_config();
-                let model_name = default_model_config.model_name.clone();
                 {
                     let session_instance = self.active_sessions.get_mut(&session_id).unwrap();
                     session_instance.session.model_config = Some(default_model_config.clone());
                 }
                 needs_persist = true;
-                model_name
+                default_model_config
             }
         };
 
@@ -779,7 +776,11 @@ impl SessionManager {
             snapshot
         };
 
-        snapshot.current_model = model_name_for_event;
+        snapshot.effort = EffortChoice::for_model(
+            &model_config_for_event.model_name,
+            model_config_for_event.effort,
+        );
+        snapshot.current_model = model_config_for_event.model_name;
         snapshot.armed_wakeups = self
             .wakeup_handle
             .as_ref()
@@ -1337,11 +1338,10 @@ impl SessionManager {
             .unwrap_or_else(|| Arc::new(SubAgentCancellationRegistry::default()));
 
         // Create sub-agent runner
-        let model_name_for_subagent = session_state
+        let model_for_subagent = session_state
             .model_config
-            .as_ref()
-            .map(|c| c.model_name.clone())
-            .unwrap_or_else(|| self.default_model_name());
+            .clone()
+            .unwrap_or_else(|| self.default_model_config());
         // Permission tier and session-scoped grants, shared between the
         // agent and its sub-agents. The grants live on the session instance
         // so "always allow" answers survive across agent runs; the tier
@@ -1358,7 +1358,7 @@ impl SessionManager {
 
         let sub_agent_runner: Arc<dyn crate::agent::SubAgentRunner> = Arc::new(
             DefaultSubAgentRunner::new(
-                model_name_for_subagent,
+                model_for_subagent,
                 session_config.clone(),
                 sandbox_context_clone,
                 sub_agent_cancellation_registry.clone(),
@@ -1984,6 +1984,27 @@ impl SessionManager {
         };
 
         Ok(ModelSwitchOutcome { warning })
+    }
+
+    /// Choose the reasoning effort of a session's next runs (`None`: the
+    /// model's default). Returns the updated model config.
+    pub fn set_session_effort(
+        &mut self,
+        session_id: &str,
+        effort: Option<Effort>,
+    ) -> Result<SessionModelConfig> {
+        let fallback = self.default_model_config();
+        let session = self.persistence.update_entry(session_id, |session| {
+            let model_config = session.model_config.get_or_insert(fallback);
+            model_config.effort = effort;
+            Ok(())
+        })?;
+        if let Some(instance) = self.active_sessions.get_mut(session_id) {
+            instance.session.model_config = session.model_config.clone();
+        }
+        session
+            .model_config
+            .context("session has no model config after setting its effort")
     }
 
     pub fn set_session_sandbox_policy(

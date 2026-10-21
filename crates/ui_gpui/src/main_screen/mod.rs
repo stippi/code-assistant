@@ -867,6 +867,14 @@ impl MainScreen {
                     gpui.cmd_switch_model(session_id.clone(), model_name.clone());
                 }
             }
+            InputAreaEvent::EffortChanged { effort } => {
+                if let Some(session_id) = &self.current_session_id {
+                    let gpui = cx
+                        .try_global::<Gpui>()
+                        .expect("Failed to obtain Gpui global");
+                    gpui.cmd_set_effort(session_id.clone(), *effort);
+                }
+            }
 
             InputAreaEvent::SandboxChanged { policy } => {
                 if let Some(session_id) = &self.current_session_id {
@@ -1808,6 +1816,16 @@ impl Render for MainScreen {
         {
             self.input_area.update(cx, |input_area, cx| {
                 input_area.set_current_sandbox_policy(policy.clone(), window, cx);
+            });
+        }
+
+        let current_effort = cx
+            .try_global::<Gpui>()
+            .map(|gpui| gpui.get_current_effort())
+            .unwrap_or_default();
+        if self.input_area.read(cx).effort_choice(cx) != &current_effort {
+            self.input_area.update(cx, |input_area, cx| {
+                input_area.set_effort_choice(current_effort, window, cx);
             });
         }
 

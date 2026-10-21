@@ -253,6 +253,7 @@ pub struct Gpui {
 
     // Current model selection
     current_model: Arc<Mutex<Option<String>>>,
+    current_effort: Arc<Mutex<code_assistant_core::session::effort::EffortChoice>>,
     allowed_models: Arc<Mutex<Option<Vec<String>>>>,
 
     // Current sandbox selection.
@@ -555,6 +556,7 @@ impl Gpui {
         *self.current_error.lock().unwrap() = None;
         *self.plan_state.lock().unwrap() = None;
         *self.current_model.lock().unwrap() = None;
+        *self.current_effort.lock().unwrap() = Default::default();
         *self.allowed_models.lock().unwrap() = None;
         *self.current_sandbox_policy.lock().unwrap() = None;
         *self.current_permission_tier.lock().unwrap() = None;
@@ -634,6 +636,7 @@ impl Gpui {
 
             // Current model selection
             current_model: Arc::new(Mutex::new(None)),
+            current_effort: Arc::default(),
             allowed_models: Arc::new(Mutex::new(None)),
             // Current sandbox selection.
             current_sandbox_policy: Arc::new(Mutex::new(None)),
@@ -991,6 +994,10 @@ impl Gpui {
 
     pub fn get_current_model(&self) -> Option<String> {
         self.current_model.lock().unwrap().clone()
+    }
+
+    pub fn get_current_effort(&self) -> code_assistant_core::session::effort::EffortChoice {
+        self.current_effort.lock().unwrap().clone()
     }
 
     pub fn get_allowed_models(&self) -> Option<Vec<String>> {

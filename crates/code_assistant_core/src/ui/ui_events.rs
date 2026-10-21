@@ -314,6 +314,10 @@ pub enum UiEvent {
     CompleteReasoning,
     /// Update the current model selection in the UI
     UpdateCurrentModel { model_name: String },
+    /// Update the reasoning effort levels and selection for the session's model
+    UpdateEffort {
+        choice: crate::session::effort::EffortChoice,
+    },
     /// Update the models that may be selected for the active session.
     UpdateAllowedModels { models: Vec<String> },
     /// Update the current sandbox selection in the UI

@@ -238,6 +238,18 @@ impl Actions {
         });
     }
 
+    fn set_effort(&self, session_id: String, effort: llm::capabilities::Effort) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            if this.refuse_if_view_only().await {
+                return;
+            }
+            if let Err(e) = this.service.set_effort(session_id, Some(effort)).await {
+                this.display_error(format!("{e:#}"));
+            }
+        });
+    }
+
     fn change_permission_tier(&self, session_id: String, tier: tools_core::PermissionTier) {
         let this = self.clone();
         tokio::spawn(async move {
@@ -551,6 +563,29 @@ async fn handle_command_result(
         CommandResult::InsertInputTemplate(_) => {}
         // Turned into a submitted message by the input manager.
         CommandResult::SendMessage(_) => {}
+        CommandResult::ShowEffort => {
+            let mut state = app_state.lock().await;
+            let choice = &state.current_effort;
+            let message = match choice.selected {
+                Some(selected) => format!(
+                    "Effort: {selected} (available: {})",
+                    choice
+                        .levels
+                        .iter()
+                        .map(|level| level.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                None => "The current model has no effort levels".to_string(),
+            };
+            state.set_info_message(Some(message));
+        }
+        CommandResult::SetEffort(effort) => {
+            let session_id = app_state.lock().await.current_session_id.clone();
+            if let Some(session_id) = session_id {
+                actions.set_effort(session_id, effort);
+            }
+        }
         CommandResult::ShowPermissionTier => {
             let mut state = app_state.lock().await;
             let message = match state.current_permission_tier {
@@ -943,6 +978,24 @@ async fn event_loop(
                                     }
                                 }
 
+                                KeyEventResult::ShowEffort => {
+                                    handle_command_result(
+                                        crate::commands::CommandResult::ShowEffort,
+                                        &app_state,
+                                        &renderer,
+                                        &actions,
+                                    )
+                                    .await;
+                                }
+                                KeyEventResult::SetEffort(effort) => {
+                                    handle_command_result(
+                                        crate::commands::CommandResult::SetEffort(effort),
+                                        &app_state,
+                                        &renderer,
+                                        &actions,
+                                    )
+                                    .await;
+                                }
                                 KeyEventResult::ShowPermissionTier => {
                                     let mut state = app_state.lock().await;
                                     let message = match state.current_permission_tier {

@@ -18,6 +18,7 @@ use crate::config::{DefaultProjectManager, ProjectManager, save_project};
 use crate::injection::without_injections;
 use crate::persistence::{ChatMetadata, DraftAttachment, MessageEdit, NodeId, SessionModelConfig};
 use crate::session::SessionManager;
+use crate::session::effort::EffortChoice;
 use crate::session::event_stream::EventStream;
 use crate::session::manager::RunTask;
 use crate::session::new_context::{NewContextCommand, NewContextRun};
@@ -30,6 +31,7 @@ use crate::ui::ui_events::{MessageData, ToolResultData};
 use crate::utils::content::content_blocks_from;
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use command_executor::CommandExecutor;
+use llm::capabilities::Effort;
 use llm::factory::create_llm_client_from_model;
 use llm::provider_config::ConfigurationSystem;
 use sandbox::SandboxPolicy;
@@ -983,12 +985,18 @@ impl SessionService {
                 bail!("Model '{model_name}' not found in configuration.");
             }
 
-            let outcome = {
+            // The chosen effort carries over; the new model runs it at its
+            // closest supported level.
+            let (outcome, effort) = {
                 let mut manager = ctx.manager.lock().await;
-                manager.set_session_model_config(
+                let effort = manager
+                    .get_session_model_config(&session_id)?
+                    .and_then(|config| config.effort);
+                let outcome = manager.set_session_model_config(
                     &session_id,
-                    Some(SessionModelConfig::new(model_name.clone())),
-                )?
+                    Some(SessionModelConfig::new(model_name.clone()).with_effort(effort)),
+                )?;
+                (outcome, effort)
             };
             if let Some(warning) = &outcome.warning {
                 warn!("{}", warning);
@@ -1003,7 +1011,9 @@ impl SessionService {
 
             // Fan out the change so every view of this session updates; the
             // warning stays caller-only (it belongs to the interaction).
+            let choice = EffortChoice::for_model(&model_name, effort);
             ctx.notify_session(&session_id, UiEvent::UpdateCurrentModel { model_name });
+            ctx.notify_session(&session_id, UiEvent::UpdateEffort { choice });
             ctx.notify_session(
                 &session_id,
                 UiEvent::UpdateAllowedModels {
@@ -1015,6 +1025,22 @@ impl SessionService {
                 warning: outcome.warning,
                 allowed_models,
             })
+        })
+        .await
+    }
+
+    /// Choose the reasoning effort for the session's next runs (`None`: the
+    /// model's default).
+    pub async fn set_effort(&self, session_id: String, effort: Option<Effort>) -> Result<()> {
+        self.call_session(session_id.clone(), move |ctx| async move {
+            let model_config = {
+                let mut manager = ctx.manager.lock().await;
+                manager.set_session_effort(&session_id, effort)?
+            };
+            info!("Set effort for session {session_id} to {effort:?}");
+            let choice = EffortChoice::for_model(&model_config.model_name, model_config.effort);
+            ctx.notify_session(&session_id, UiEvent::UpdateEffort { choice });
+            Ok(())
         })
         .await
     }
@@ -2175,7 +2201,7 @@ fn runnable_model_config(
         "Session records unknown model '{}'; falling back to '{default_model_name}'",
         session_config.model_name
     );
-    SessionModelConfig::new(default_model_name.to_string())
+    SessionModelConfig::new(default_model_name.to_string()).with_effort(session_config.effort)
 }
 
 async fn start_agent_impl(ctx: &ServiceCtx, session_id: &str, options: RunOptions) -> Result<()> {
@@ -2261,7 +2287,7 @@ fn schedule_agent_impl(
                 None => {
                     create_llm_client_from_model(
                         &session_config.model_name,
-                        None,
+                        session_config.effort,
                         runtime.playback_path.clone(),
                         runtime.fast_playback,
                         runtime.record_path.clone(),
@@ -2819,6 +2845,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn set_effort_persists_for_the_next_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (service, manager) = test_service_with_manager(tmp.path());
+        let id = service.create_session(None, None).await.unwrap();
+
+        service
+            .set_effort(id.clone(), Some(llm::capabilities::Effort::Low))
+            .await
+            .unwrap();
+
+        let config = manager
+            .lock()
+            .await
+            .get_session_model_config(&id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(config.model_name, "test-model");
+        assert_eq!(config.effort, Some(llm::capabilities::Effort::Low));
+    }
+
+    #[tokio::test]
     async fn load_session_returns_snapshot() {
         let tmp = tempfile::tempdir().unwrap();
         let service = test_service(tmp.path());
@@ -3190,11 +3237,16 @@ mod tests {
         assert_eq!(kept.model_name, "known");
 
         let replaced = runnable_model_config(
-            SessionModelConfig::new("vanished".to_string()),
+            SessionModelConfig::new("vanished".to_string()).with_effort(Some(Effort::Max)),
             "default",
             |_| false,
         );
         assert_eq!(replaced.model_name, "default");
+        assert_eq!(
+            replaced.effort,
+            Some(Effort::Max),
+            "the effort carries over"
+        );
     }
 
     #[tokio::test]

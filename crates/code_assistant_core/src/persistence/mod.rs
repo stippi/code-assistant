@@ -1,5 +1,6 @@
 use anyhow::Result;
 use llm::Message;
+use llm::capabilities::Effort;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -152,6 +153,11 @@ pub struct BranchInfo {
 pub struct SessionModelConfig {
     /// Display name of the model from models.json
     pub model_name: String,
+    /// Reasoning effort chosen for the session; `None` runs the model's
+    /// default. Kept across model switches: a model that does not support
+    /// it runs at its closest level.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<Effort>,
     /// Legacy recording path persisted in older session files (ignored at runtime)
     #[serde(default, rename = "record_path", skip_serializing)]
     _legacy_record_path: Option<PathBuf>,
@@ -735,15 +741,22 @@ impl SessionModelConfig {
     pub fn new(model_name: String) -> Self {
         Self {
             model_name,
+            effort: None,
             _legacy_record_path: None,
             _legacy_context_token_limit: None,
         }
+    }
+
+    pub fn with_effort(mut self, effort: Option<Effort>) -> Self {
+        self.effort = effort;
+        self
     }
 
     #[cfg(test)]
     pub fn new_for_tests(model_name: String) -> Self {
         Self {
             model_name,
+            effort: None,
             _legacy_record_path: None,
             _legacy_context_token_limit: None,
         }

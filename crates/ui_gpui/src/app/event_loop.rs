@@ -889,6 +889,14 @@ impl Gpui {
                 // Refresh UI to update the model selector
                 cx.refresh();
             }
+            UiEvent::UpdateEffort { choice } => {
+                debug!(
+                    "UI: UpdateEffort event with selection {:?}",
+                    choice.selected
+                );
+                *self.current_effort.lock().unwrap() = choice;
+                cx.refresh();
+            }
             UiEvent::UpdateAllowedModels { models } => {
                 debug!("UI: UpdateAllowedModels event with {} models", models.len());
                 *self.allowed_models.lock().unwrap() = Some(models);
