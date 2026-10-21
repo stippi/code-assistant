@@ -6,6 +6,7 @@
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::select::{Select, SelectState};
 use gpui_kit::component::switch::Switch;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size};
 use gpui_kit::{
     App, Context, Entity, FocusHandle, Focusable, SharedString, Subscription, div, prelude::*, px,
@@ -35,8 +36,9 @@ struct ModelRow {
 }
 
 /// The rows of a provider: its listed models plus the shown ones it did not
-/// list (added by hand, or gone from the listing), shown ones first, each
-/// group by name; only those matching `filter` (name or ID).
+/// list (added by hand, or gone from the listing), by name — independent of
+/// whether they are shown, so toggling a model does not move it; only those
+/// matching `filter` (name or ID).
 fn provider_rows(config: &ConfigurationSystem, provider_id: &str, filter: &str) -> Vec<ModelRow> {
     let Some(provider) = config.providers.get(provider_id) else {
         return Vec::new();
@@ -93,9 +95,9 @@ fn provider_rows(config: &ConfigurationSystem, provider_id: &str, filter: &str) 
         })
         .collect();
     rows.sort_by(|a, b| {
-        b.enabled
-            .cmp(&a.enabled)
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        a.name
+            .to_lowercase()
+            .cmp(&b.name.to_lowercase())
             .then_with(|| a.id.cmp(&b.id))
     });
     rows
@@ -138,7 +140,13 @@ pub struct ModelsSection {
     discovery: DiscoveryCache,
     /// Providers whose model listing is being fetched.
     refreshing: HashSet<String>,
+    /// Providers whose model list is open (all are while filtering).
+    expanded: HashSet<String>,
     filter_input: Entity<InputState>,
+    /// The configuration and the rows per provider, rebuilt when the
+    /// selection, the listings or the filter change — not on every frame.
+    config: ConfigurationSystem,
+    rows: HashMap<String, Vec<ModelRow>>,
     /// "Add model ID" input per provider.
     add_inputs: HashMap<String, Entity<InputState>>,
     editor: Option<Editor>,
@@ -149,19 +157,25 @@ impl ModelsSection {
     pub fn new(window: &mut gpui_kit::Window, cx: &mut Context<Self>) -> Self {
         let filter_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Filter models by name or ID"));
-        let filter_subscription =
-            cx.subscribe_in(&filter_input, window, |_, _, event: &InputEvent, _, cx| {
+        let filter_subscription = cx.subscribe_in(
+            &filter_input,
+            window,
+            |this, _, event: &InputEvent, _, cx| {
                 if matches!(event, InputEvent::Change) {
-                    cx.notify();
+                    this.rebuild(cx);
                 }
-            });
+            },
+        );
         let mut this = Self {
             focus_handle: cx.focus_handle(),
             providers: ProvidersConfig::new(),
             selection: ModelSelection::default(),
             discovery: DiscoveryCache::default(),
             refreshing: HashSet::new(),
+            expanded: HashSet::new(),
             filter_input,
+            config: ConfigurationSystem::default(),
+            rows: HashMap::new(),
             add_inputs: HashMap::new(),
             editor: None,
             _filter_subscription: filter_subscription,
@@ -200,6 +214,29 @@ impl ModelsSection {
                 .collect();
         for provider_id in stale {
             self.refresh(provider_id, cx);
+        }
+        self.rebuild(cx);
+    }
+
+    /// Recompute the configuration view and every provider's rows.
+    fn rebuild(&mut self, cx: &mut Context<Self>) {
+        self.config = self.view_config();
+        let filter = self.filter_input.read(cx).value().to_string();
+        self.rows = self
+            .providers
+            .keys()
+            .map(|id| (id.clone(), provider_rows(&self.config, id, &filter)))
+            .collect();
+        cx.notify();
+    }
+
+    fn filtering(&self, cx: &App) -> bool {
+        !self.filter_input.read(cx).value().trim().is_empty()
+    }
+
+    fn toggle_expanded(&mut self, provider_id: &str, cx: &mut Context<Self>) {
+        if !self.expanded.remove(provider_id) {
+            self.expanded.insert(provider_id.to_string());
         }
         cx.notify();
     }
@@ -246,7 +283,7 @@ impl ModelsSection {
                 if let Err(e) = this.discovery.save() {
                     warn!("Failed to save the model listings: {e:#}");
                 }
-                cx.notify();
+                this.rebuild(cx);
             })
             .ok();
         })
@@ -258,7 +295,7 @@ impl ModelsSection {
         if let Err(e) = self.selection.save() {
             warn!("Failed to save the model selection: {e:#}");
         }
-        cx.notify();
+        self.rebuild(cx);
     }
 
     fn set_enabled(
@@ -481,17 +518,13 @@ impl ModelsSection {
         self.persist(cx);
     }
 
-    fn render_provider(
-        &self,
-        provider_id: &str,
-        config: &ConfigurationSystem,
-        filter: &str,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    fn render_provider(&self, provider_id: &str, cx: &mut Context<Self>) -> impl IntoElement {
         let provider = &self.providers[provider_id];
-        let rows = provider_rows(config, provider_id, filter);
+        let rows = self.rows.get(provider_id).cloned().unwrap_or_default();
+        let open = self.filtering(cx) || self.expanded.contains(provider_id);
         let listing = self.discovery.providers.get(provider_id);
-        let shown = config
+        let shown = self
+            .config
             .models
             .values()
             .filter(|model| model.provider == provider_id)
@@ -511,6 +544,7 @@ impl ModelsSection {
         let error = listing.and_then(|listing| listing.error.clone());
         let id_for_refresh = provider_id.to_string();
         let id_for_add = provider_id.to_string();
+        let id_for_toggle = provider_id.to_string();
 
         div()
             .flex()
@@ -520,14 +554,30 @@ impl ModelsSection {
             .border_color(cx.theme().border)
             .bg(cx.theme().secondary)
             .overflow_hidden()
-            // Header
+            // Header (opens and closes the model list)
             .child(
                 div()
+                    .id(SharedString::from(format!("provider-models-{provider_id}")))
                     .flex()
                     .items_center()
                     .gap_3()
                     .px_4()
                     .py_3()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(cx.theme().muted.opacity(0.3)))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.toggle_expanded(&id_for_toggle, cx);
+                    }))
+                    .child(
+                        Icon::default()
+                            .path(SharedString::from(if open {
+                                "icons/chevron_down.svg"
+                            } else {
+                                "icons/chevron_right.svg"
+                            }))
+                            .with_size(Size::XSmall)
+                            .text_color(cx.theme().muted_foreground),
+                    )
                     .child(
                         div()
                             .flex_1()
@@ -549,6 +599,9 @@ impl ModelsSection {
                                     .child(SharedString::from(status)),
                             ),
                     )
+                    .when_some(error, |el, error| {
+                        el.child(Self::render_error_badge(provider_id, error, cx))
+                    })
                     .child(
                         div()
                             .id(SharedString::from(format!("refresh-models-{provider_id}")))
@@ -564,6 +617,8 @@ impl ModelsSection {
                                 el.cursor_pointer()
                                     .hover(|s| s.bg(cx.theme().muted.opacity(0.5)))
                                     .on_click(cx.listener(move |this, _, _, cx| {
+                                        // Refreshing does not open or close the card.
+                                        cx.stop_propagation();
                                         this.refresh(id_for_refresh.clone(), cx);
                                     }))
                             })
@@ -575,56 +630,81 @@ impl ModelsSection {
                             .child("Refresh"),
                     ),
             )
-            .when_some(error, |el, error| {
+            // Model rows
+            .when(open, |el| {
                 el.child(
-                    div()
-                        .px_4()
-                        .pb_2()
-                        .text_xs()
-                        .text_color(cx.theme().danger)
-                        .child(SharedString::from(error)),
+                    div().flex().flex_col().children(
+                        rows.into_iter()
+                            .map(|row| self.render_row(provider_id, row, cx).into_any_element()),
+                    ),
                 )
             })
-            // Model rows
-            .child(
-                div().flex().flex_col().children(
-                    rows.into_iter()
-                        .map(|row| self.render_row(provider_id, row, cx).into_any_element()),
-                ),
-            )
             // Add by hand
-            .when_some(self.add_inputs.get(provider_id).cloned(), |el, input| {
-                el.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .px_4()
-                        .py_2()
-                        .border_t_1()
-                        .border_color(cx.theme().border)
-                        .child(
-                            div()
-                                .flex_1()
-                                .child(Input::new(&input).with_size(Size::Small)),
-                        )
-                        .child(
-                            div()
-                                .id(SharedString::from(format!("add-model-{provider_id}")))
-                                .px_3()
-                                .py_1()
-                                .rounded_md()
-                                .cursor_pointer()
-                                .text_xs()
-                                .bg(cx.theme().primary)
-                                .text_color(cx.theme().primary_foreground)
-                                .hover(|s| s.bg(cx.theme().primary.opacity(0.8)))
-                                .child("Add")
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.add_by_hand(&id_for_add, window, cx);
-                                })),
-                        ),
-                )
+            .when_some(
+                self.add_inputs.get(provider_id).cloned().filter(|_| open),
+                |el, input| {
+                    el.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .px_4()
+                            .py_2()
+                            .border_t_1()
+                            .border_color(cx.theme().border)
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .child(Input::new(&input).with_size(Size::Small)),
+                            )
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("add-model-{provider_id}")))
+                                    .px_3()
+                                    .py_1()
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .text_xs()
+                                    .bg(cx.theme().primary)
+                                    .text_color(cx.theme().primary_foreground)
+                                    .hover(|s| s.bg(cx.theme().primary.opacity(0.8)))
+                                    .child("Add")
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.add_by_hand(&id_for_add, window, cx);
+                                    })),
+                            ),
+                    )
+                },
+            )
+    }
+
+    /// A small "Error" badge whose tooltip carries the listing's error.
+    fn render_error_badge(
+        provider_id: &str,
+        error: String,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let danger = cx.theme().danger;
+        div()
+            .id(SharedString::from(format!("listing-error-{provider_id}")))
+            .flex()
+            .items_center()
+            .gap_1()
+            .px_2()
+            .py(px(2.))
+            .rounded_md()
+            .text_xs()
+            .text_color(danger)
+            .bg(danger.opacity(0.12))
+            .child(
+                Icon::default()
+                    .path(SharedString::from("icons/circle_alert.svg"))
+                    .with_size(Size::XSmall)
+                    .text_color(danger),
+            )
+            .child("Listing failed")
+            .tooltip(move |window, cx| {
+                Tooltip::new(SharedString::from(error.clone())).build(window, cx)
             })
     }
 
@@ -837,10 +917,16 @@ impl Render for ModelsSection {
         _window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let config = self.view_config();
-        let filter = self.filter_input.read(cx).value().to_string();
-        let mut provider_ids: Vec<String> = self.providers.keys().cloned().collect();
+        let filtering = self.filtering(cx);
+        let mut provider_ids: Vec<String> = self
+            .providers
+            .keys()
+            // While filtering, providers without a match drop out.
+            .filter(|id| !filtering || self.rows.get(*id).is_some_and(|rows| !rows.is_empty()))
+            .cloned()
+            .collect();
         provider_ids.sort_by_key(|id| self.providers[id].label.to_lowercase());
+        let no_providers = self.providers.is_empty();
 
         div()
             .flex()
@@ -866,7 +952,7 @@ impl Render for ModelsSection {
                          built-in catalog and the provider; expand a shown model to override them.",
                     ),
             )
-            .when(provider_ids.is_empty(), |el| {
+            .when(no_providers, |el| {
                 el.child(
                     div()
                         .py_8()
@@ -877,11 +963,10 @@ impl Render for ModelsSection {
                         .child("Add a provider in the Providers section first."),
                 )
             })
-            .when(!provider_ids.is_empty(), |el| {
+            .when(!no_providers, |el| {
                 el.child(Input::new(&self.filter_input).with_size(Size::Small))
                     .children(provider_ids.iter().map(|provider_id| {
-                        self.render_provider(provider_id, &config, &filter, cx)
-                            .into_any_element()
+                        self.render_provider(provider_id, cx).into_any_element()
                     }))
             })
     }
@@ -914,7 +999,7 @@ mod tests {
     }
 
     #[test]
-    fn rows_list_shown_models_first_including_unlisted_ones() {
+    fn rows_are_ordered_by_name_and_include_unlisted_shown_models() {
         let config = config(
             vec![
                 ModelConfig::new("anthropic", "claude-opus-5"),
@@ -927,13 +1012,14 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                ("Claude Opus 5", true),
-                ("claude-private-preview", true),
                 ("Claude Haiku 4.5", false),
+                ("Claude Opus 5", true),
                 ("Claude Sonnet 5", false),
-            ]
+                ("claude-private-preview", true),
+            ],
+            "toggling a model must not move its row"
         );
-        assert!(rows[0].capabilities.reasoning.is_some());
+        assert!(rows[1].capabilities.reasoning.is_some());
     }
 
     #[test]
