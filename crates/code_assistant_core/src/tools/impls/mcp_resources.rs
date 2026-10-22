@@ -290,6 +290,16 @@ mod tests {
                     "docs://guide.md" => {
                         vec![ResourceContents::text("one\ntwo\nthree", "docs://guide.md")]
                     }
+                    "docs://both" => vec![
+                        ResourceContents::text("a1\na2", "docs://both/a"),
+                        ResourceContents::text("b1\nb2", "docs://both/b"),
+                    ],
+                    "docs://archive.zip" => vec![ResourceContents::BlobResourceContents {
+                        uri: String::new(),
+                        mime_type: Some("application/zip".into()),
+                        blob: "//4A".into(), // 0xff 0xfe 0x00: not UTF-8
+                        meta: None,
+                    }],
                     // Not listed, and its tail looks like a line range.
                     "urn:docs:42" => vec![ResourceContents::text("answer", "urn:docs:42")],
                     "docs://logo.png" => vec![ResourceContents::BlobResourceContents {
@@ -388,6 +398,42 @@ mod tests {
             .await;
             assert!(!ok);
             assert!(text.contains("no resource docs://missing"), "{text}");
+        }
+
+        #[tokio::test]
+        async fn each_part_of_a_resource_is_its_own_file_with_the_range_applied() {
+            let (ok, text, _) = invoke(
+                "read_files",
+                docs_servers().await,
+                json!({ "project": ":mcp:docs", "paths": ["docs://both:2-2"] }),
+            )
+            .await;
+            assert!(ok, "{text}");
+            assert!(
+                text.contains(">>>>> FILE: docs://both/a:2-2\na2\n<<<<< END FILE"),
+                "{text}"
+            );
+            assert!(
+                text.contains(">>>>> FILE: docs://both/b:2-2\nb2\n<<<<< END FILE"),
+                "{text}"
+            );
+        }
+
+        #[tokio::test]
+        async fn unusable_content_fails_under_the_requested_path() {
+            let (ok, text, _) = invoke(
+                "read_files",
+                docs_servers().await,
+                json!({ "project": ":mcp:docs", "paths": ["docs://archive.zip"] }),
+            )
+            .await;
+            assert!(!ok);
+            assert!(
+                text.contains(
+                    "Failed to load 'docs://archive.zip' in project ':mcp:docs': binary content"
+                ),
+                "{text}"
+            );
         }
 
         #[tokio::test]

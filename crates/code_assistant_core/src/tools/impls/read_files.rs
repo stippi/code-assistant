@@ -477,6 +477,25 @@ impl Tool for ReadFilesTool {
     }
 }
 
+/// The requested lines of a resource's `text`, or why they are not read.
+fn resource_text(
+    request: &super::mcp_resources::ResourceRequest,
+    text: &str,
+    ignore_size_limit: bool,
+) -> Result<String, String> {
+    let content = request.select_lines(text)?;
+    if !ignore_size_limit && !request.has_line_range() && content.len() > MAX_FILE_SIZE {
+        return Err(format!(
+            "Resource is too large to read in full ({}KB, {} lines). Read a line range, \
+             e.g. {}:1-200, or set ignore_size_limit to true",
+            content.len() / 1024,
+            content.lines().count(),
+            request.uri
+        ));
+    }
+    Ok(content)
+}
+
 /// Read resources of the MCP server an `:mcp:<server>` scope names: each
 /// path is a resource URI, optionally with a line range.
 async fn read_mcp_resources(
@@ -531,60 +550,46 @@ async fn read_mcp_resources(
             .iter()
             .map(ResourcePart::from_contents)
             .collect();
-        let headed = parts.len() > 1;
-        let mut texts = Vec::new();
+        // Several parts become one file each, named by their own URI with the
+        // requested range, which applies to each of them.
+        let range = &path[request.uri.len()..];
+        let single = parts.len() == 1;
         for part in parts {
+            let name = if single || part.uri().is_empty() {
+                path.clone()
+            } else {
+                format!("{}{range}", part.uri())
+            };
             match part {
-                ResourcePart::Text { uri, text, .. } if headed => {
-                    texts.push(format!("--- {uri} ---\n{text}"))
+                ResourcePart::Text { text, .. } => {
+                    match resource_text(&request, &text, input.ignore_size_limit) {
+                        Ok(content) => {
+                            output.loaded_files.insert(
+                                PathBuf::from(name),
+                                LoadedFileContent {
+                                    content,
+                                    start_line: request.start_line.unwrap_or(1),
+                                },
+                            );
+                        }
+                        Err(error) => output.failed_files.push((PathBuf::from(name), error)),
+                    }
                 }
-                ResourcePart::Text { text, .. } => texts.push(text),
                 ResourcePart::Image {
-                    uri,
                     media_type,
                     base64_data,
+                    ..
                 } => output.images.push(LoadedImage {
-                    path: PathBuf::from(uri),
+                    path: PathBuf::from(name),
                     media_type,
                     base64_data,
                 }),
                 unusable => {
                     let reason = unusable.unusable_reason().unwrap_or_default();
-                    output
-                        .failed_files
-                        .push((PathBuf::from(unusable.uri()), reason));
+                    output.failed_files.push((PathBuf::from(path), reason));
                 }
             }
         }
-        if texts.is_empty() {
-            continue;
-        }
-        let content = match request.select_lines(&texts.join("\n")) {
-            Ok(content) => content,
-            Err(error) => {
-                output.failed_files.push((PathBuf::from(path), error));
-                continue;
-            }
-        };
-        if !input.ignore_size_limit && !request.has_line_range() && content.len() > MAX_FILE_SIZE {
-            output.failed_files.push((
-                PathBuf::from(path),
-                format!(
-                    "Resource is too large to read in full ({}KB, {} lines). Read a line range, \
-                     e.g. {path}:1-200, or set ignore_size_limit to true",
-                    content.len() / 1024,
-                    content.lines().count()
-                ),
-            ));
-            continue;
-        }
-        output.loaded_files.insert(
-            PathBuf::from(path),
-            LoadedFileContent {
-                content,
-                start_line: request.start_line.unwrap_or(1),
-            },
-        );
     }
     output
 }
