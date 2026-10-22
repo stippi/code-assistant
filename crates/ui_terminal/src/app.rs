@@ -1322,6 +1322,8 @@ impl TerminalTuiApp {
                 service.clone(),
                 Some(sleep_inhibitor),
             ));
+            // Background sub-agents report their results to the service.
+            manager.set_sub_agent_sink(Arc::new(service.clone()));
             // Idle handoff: long sessions left idle get a prepared
             // `/new <prompt>` while the prompt cache is warm.
             manager.set_idle_handoff(

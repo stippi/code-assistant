@@ -39,6 +39,8 @@ pub(crate) struct RunConfig {
     pub session: SessionConfig,
     pub model: Option<SessionModelConfig>,
     pub task: RunTask,
+    /// Builds sub-agents' LLM clients; `None` uses the configured providers.
+    pub sub_agent_llm: Option<crate::session::service::LlmClientFactory>,
 }
 
 /// What a run does.
@@ -187,6 +189,10 @@ pub struct SessionManager {
     /// run ends.
     idle_handoff: Option<crate::session::idle_handoff::IdleHandoffTimers>,
 
+    /// Receives the results of background sub-agents; without it, agents
+    /// can only spawn sub-agents they wait for.
+    sub_agent_sink: Option<Arc<dyn crate::agent::sub_agent::SubAgentSink>>,
+
     /// If set, an unanswered permission prompt fails closed after this long
     /// (see [`SessionPermissionMediator`]). Left `None` for interactive
     /// frontends; set by embedders that run unattended lanes (channels,
@@ -231,6 +237,7 @@ impl SessionManager {
             hooks_factory: None,
             wakeup_handle: None,
             idle_handoff: None,
+            sub_agent_sink: None,
             permission_timeout: None,
             events,
         }
@@ -248,6 +255,14 @@ impl SessionManager {
     /// without the wakeup tools.
     pub fn set_wakeup_handle(&mut self, handle: crate::session::wakeup::WakeupHandle) {
         self.wakeup_handle = Some(handle);
+    }
+
+    /// Install the receiver of background sub-agent results (normally the
+    /// [`crate::session::SessionService`]). Wiring layers set this right
+    /// after constructing the service; without it, `spawn_agent` cannot run
+    /// sub-agents in the background.
+    pub fn set_sub_agent_sink(&mut self, sink: Arc<dyn crate::agent::sub_agent::SubAgentSink>) {
+        self.sub_agent_sink = Some(sink);
     }
 
     /// Install the idle handoff timers (see
@@ -1129,6 +1144,7 @@ impl SessionManager {
             session: instance.session.config.clone(),
             model: instance.session.model_config.clone(),
             task: RunTask::Answer,
+            sub_agent_llm: None,
         };
         self.refresh_tool_registry(session_id, registry_request)
             .await;
@@ -1286,6 +1302,7 @@ impl SessionManager {
             )
         };
         let task = run_config.task;
+        let sub_agent_llm = run_config.sub_agent_llm;
         let idle_handoff = self.idle_handoff.clone();
         let pending_message_for_task = pending_message_ref.clone();
 
@@ -1378,7 +1395,17 @@ impl SessionManager {
                 self.active_sessions
                     .get(session_id)
                     .map(|instance| instance.browsers.clone()),
-            ),
+            )
+            .with_running_from(self.active_sessions.get(session_id), session_id)
+            .with_background(self.active_sessions.get(session_id).and_then(|instance| {
+                Some(crate::agent::sub_agent::BackgroundSupport {
+                    session_id: session_id.to_string(),
+                    ui: instance.create_publisher(self.events.clone(), None),
+                    cancellation: instance.background_cancellation.clone(),
+                    sink: self.sub_agent_sink.clone()?,
+                })
+            }))
+            .with_llm_client_factory_if(sub_agent_llm),
         );
 
         let components = AgentComponents {
@@ -1731,6 +1758,64 @@ impl SessionManager {
             crate::ui::ui_events::ToolResultData {
                 tool_id,
                 status: crate::ui::ToolStatus::Success,
+                message: Some(output.status()),
+                output: Some(output.render_for_ui(&mut tracker)),
+                styled_output: None,
+                duration_seconds: None,
+                images: Vec::new(),
+                output_deferred: false,
+            }
+        }))
+    }
+
+    /// Record in the stored `spawn_agent` result that the background
+    /// sub-agent started by `tool_id` ended, with its final card state. What
+    /// the model saw stays: the result itself arrives as a message.
+    pub fn mark_sub_agent_finished(
+        &mut self,
+        session_id: &str,
+        tool_id: &str,
+        ui_output: &str,
+    ) -> Result<Option<crate::ui::ui_events::ToolResultData>> {
+        use crate::tools::core::{Render, ResourcesTracker};
+        use crate::tools::impls::spawn_agent::SpawnAgentOutput;
+
+        let mut finished = None;
+        let session = self.persistence.update_entry(session_id, |session| {
+            let Some(exec) = session
+                .tool_executions
+                .iter_mut()
+                .find(|exec| exec.tool_name == "spawn_agent" && exec.tool_request.id == tool_id)
+            else {
+                return Ok(());
+            };
+            let mut output = serde_json::from_value::<SpawnAgentOutput>(exec.result_json.clone())?;
+            output.running_in = None;
+            if !ui_output.is_empty() {
+                output.ui_output = Some(ui_output.to_string());
+            }
+            exec.result_json = serde_json::to_value(&output)?;
+            finished = Some(output);
+            Ok(())
+        })?;
+        if let Some(instance) = self.active_sessions.get_mut(session_id) {
+            instance.session = session;
+        }
+        Ok(finished.map(|output| {
+            let mut tracker = ResourcesTracker::new();
+            let status = match crate::agent::sub_agent::SubAgentOutput::from_json(
+                &output.render_for_ui(&mut tracker),
+            )
+            .and_then(|o| o.activity)
+            {
+                Some(crate::agent::sub_agent::SubAgentActivity::Completed) => {
+                    crate::ui::ToolStatus::Success
+                }
+                _ => crate::ui::ToolStatus::Error,
+            };
+            crate::ui::ui_events::ToolResultData {
+                tool_id: tool_id.to_string(),
+                status,
                 message: Some(output.status()),
                 output: Some(output.render_for_ui(&mut tracker)),
                 styled_output: None,

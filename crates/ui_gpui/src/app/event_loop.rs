@@ -698,6 +698,13 @@ impl Gpui {
                     });
                 }
             }
+            UiEvent::UpdateRunningSubAgents { session_id, agents } => {
+                if self.is_current_session(&session_id) {
+                    self.update_messages_view(cx, |view, cx| {
+                        view.set_running_sub_agents(agents, cx);
+                    });
+                }
+            }
             UiEvent::UpdateSessionActivityState {
                 session_id,
                 activity_state,

@@ -319,6 +319,14 @@ pub struct SessionInstance {
     /// Cancellation registry for sub-agents running in agent tasks
     pub sub_agent_cancellation_registry: Arc<SubAgentCancellationRegistry>,
 
+    /// The sub-agents running right now, foreground and background.
+    pub running_sub_agents: Arc<crate::agent::sub_agent::RunningSubAgents>,
+
+    /// Parent token of background sub-agents: they outlive the turn that
+    /// started them (stopping the agent leaves them running) and end with
+    /// the session.
+    pub background_cancellation: tools_core::RunCancellation,
+
     /// Live PTY sessions started by this session's agents (execute_command
     /// session mode). Survives across agent runs; dropping the instance
     /// terminates all remaining sessions.
@@ -363,6 +371,7 @@ pub struct SessionInstance {
 
 impl Drop for SessionInstance {
     fn drop(&mut self) {
+        self.background_cancellation.cancel();
         self.terminate_agent();
     }
 }
@@ -377,6 +386,10 @@ impl SessionInstance {
 
         let initial_path = session.active_path.clone();
         let initial_tool_count = session.tool_executions.len();
+        let running_sub_agents = Arc::new(crate::agent::sub_agent::RunningSubAgents::default());
+        running_sub_agents.seed_ids(crate::agent::sub_agent::highest_sub_agent_id(
+            &session.tool_executions,
+        ));
 
         Self {
             session,
@@ -400,6 +413,8 @@ impl SessionInstance {
             pending_questions: Arc::default(),
             handoff_prepared_for: None,
             sub_agent_cancellation_registry: Arc::new(SubAgentCancellationRegistry::default()),
+            running_sub_agents,
+            background_cancellation: tools_core::RunCancellation::default(),
             pty_sessions: Arc::new(pty_session::PtySessionManager::default()),
             browsers: Arc::default(),
             terminal_interrupts: Arc::new(crate::tools::TerminalInterrupts::default()),
@@ -661,6 +676,15 @@ impl SessionInstance {
             }
         }
 
+        // A running background agent's card is live; its stored result only
+        // says it started.
+        for live in self.running_sub_agents.live_results() {
+            match tool_results.iter_mut().find(|r| r.tool_id == live.tool_id) {
+                Some(stored) => *stored = live,
+                None => tool_results.push(live),
+            }
+        }
+
         // If currently streaming, add the incomplete message as additional
         // MessageData, tagged with the pre-allocated node id so frontends can
         // deduplicate it against the persisted message later.
@@ -705,6 +729,7 @@ impl SessionInstance {
             pending_questions: self.pending_questions.snapshot(),
             // Filled in by the SessionManager, which holds the scheduler.
             armed_wakeups: Vec::new(),
+            running_sub_agents: self.running_sub_agents.list(),
         })
     }
 

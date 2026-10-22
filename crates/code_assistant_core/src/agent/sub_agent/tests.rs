@@ -168,6 +168,7 @@ async fn sub_agent_tool_retains_structured_failure_output() {
         instructions: "inspect".into(),
         require_file_references: false,
         mode: "read_only".into(),
+        background: false,
     };
     let output = SpawnAgentTool
         .execute(&mut context, &mut input)
@@ -302,6 +303,7 @@ fn sub_agent_success_clears_a_recovered_stream_error() {
         "child".into(),
         tools_core::RunCancellation::default(),
         crate::tools::test_registry(),
+        None,
     );
     ui.set_error("temporary stream error".into());
     ui.set_response("recovered".into());
@@ -325,4 +327,247 @@ fn sub_agent_old_registration_cannot_remove_its_replacement() {
     assert!(new.token.is_cancelled());
     drop(new);
     assert!(!registry.cancel("child"));
+}
+
+/// Records delivered background results.
+#[derive(Default)]
+struct RecordingSink {
+    finished: Mutex<Vec<(String, FinishedSubAgent)>>,
+    delivered: tokio::sync::Notify,
+}
+
+#[async_trait::async_trait]
+impl SubAgentSink for RecordingSink {
+    async fn finished(&self, session_id: &str, finished: FinishedSubAgent) {
+        self.finished
+            .lock()
+            .unwrap()
+            .push((session_id.to_string(), finished));
+        self.delivered.notify_one();
+    }
+}
+
+impl RecordingSink {
+    async fn next(&self) -> (String, FinishedSubAgent) {
+        loop {
+            if let Some(first) = {
+                let mut finished = self.finished.lock().unwrap();
+                (!finished.is_empty()).then(|| finished.remove(0))
+            } {
+                return first;
+            }
+            tokio::time::timeout(Duration::from_secs(5), self.delivered.notified())
+                .await
+                .expect("background result was not delivered");
+        }
+    }
+}
+
+struct Background {
+    runner: Arc<DefaultSubAgentRunner>,
+    ui: Arc<MockUI>,
+    sink: Arc<RecordingSink>,
+    running: Arc<RunningSubAgents>,
+    session_cancellation: tools_core::RunCancellation,
+}
+
+fn background_runner(factory: LlmClientFactory) -> Background {
+    let (runner, ui) = runner(factory);
+    let sink = Arc::new(RecordingSink::default());
+    let running = Arc::new(RunningSubAgents::default());
+    let session_cancellation = tools_core::RunCancellation::default();
+    let runner = Arc::new(
+        Arc::unwrap_or_clone(runner)
+            .with_running("session".into(), running.clone())
+            .with_background(Some(BackgroundSupport {
+                session_id: "session".into(),
+                ui: ui.clone(),
+                cancellation: session_cancellation.clone(),
+                sink: sink.clone(),
+            })),
+    );
+    Background {
+        runner,
+        ui,
+        sink,
+        running,
+        session_cancellation,
+    }
+}
+
+fn answering_provider(answer: &'static str) -> LlmClientFactory {
+    Arc::new(move |_| {
+        Ok(Box::new(MockLLMProvider::new(vec![Ok(
+            crate::mocks::create_test_response_text(answer),
+        )])))
+    })
+}
+
+fn running_events(ui: &MockUI) -> Vec<Vec<RunningSubAgentInfo>> {
+    ui.events()
+        .into_iter()
+        .filter_map(|event| match event {
+            UiEvent::UpdateRunningSubAgents { agents, .. } => Some(agents),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn background_sub_agent_delivers_its_answer_later() {
+    let bg = background_runner(answering_provider("Found it in parser.rs"));
+    let started = bg
+        .runner
+        .start_background(
+            "tool-1",
+            "Find the parser".into(),
+            SubAgentMode::ReadOnly,
+            false,
+        )
+        .await
+        .unwrap();
+    assert_eq!(started.agent_id, 1);
+    let card = SubAgentOutput::from_json(&started.ui_output).unwrap();
+    assert_eq!(card.agent_id, Some(1));
+    assert!(card.background);
+
+    let (session_id, finished) = bg.sink.next().await;
+    assert_eq!(session_id, "session");
+    assert_eq!(finished.agent_id, 1);
+    assert_eq!(finished.tool_id, "tool-1");
+    assert_eq!(
+        finished.outcome,
+        FinishedOutcome::Completed {
+            answer: "Found it in parser.rs".into()
+        }
+    );
+    assert!(finished.message().starts_with("[sub-agent #1] finished:"));
+    let card = SubAgentOutput::from_json(&finished.ui_output).unwrap();
+    assert_eq!(card.activity, Some(SubAgentActivity::Completed));
+    assert!(card.background);
+
+    // Listed while running, taken off the list when done.
+    let listed = running_events(&bg.ui);
+    assert!(listed.first().is_some_and(|agents| agents.len() == 1
+        && agents[0].background
+        && agents[0].title == "Find the parser"));
+    assert!(listed.last().is_some_and(Vec::is_empty));
+    assert!(bg.running.list().is_empty());
+}
+
+#[tokio::test]
+async fn background_sub_agent_outlives_the_parent_run() {
+    let provider = PendingLLMProvider::default();
+    let entered = provider.entered.clone();
+    let bg = background_runner(provider.into_factory());
+    bg.runner
+        .start_background("tool-1", "inspect".into(), SubAgentMode::ReadOnly, false)
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), entered.notified())
+        .await
+        .unwrap();
+
+    // Stopping the parent's turn leaves the background agent running.
+    bg.runner.parent_cancellation.cancel();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(bg.running.list().len(), 1);
+    assert!(bg.sink.finished.lock().unwrap().is_empty());
+
+    // Its own cancel ends it, reported as cancelled.
+    assert!(bg.runner.cancellation_registry.cancel("tool-1"));
+    let (_, finished) = bg.sink.next().await;
+    assert!(matches!(
+        finished.outcome,
+        FinishedOutcome::Cancelled { .. }
+    ));
+    assert!(finished.message().starts_with("[sub-agent #1] cancelled:"));
+    assert!(bg.running.list().is_empty());
+}
+
+#[tokio::test]
+async fn background_sub_agents_end_with_the_session() {
+    let provider = PendingLLMProvider::default();
+    let entered = provider.entered.clone();
+    let bg = background_runner(provider.into_factory());
+    for tool_id in ["tool-1", "tool-2"] {
+        bg.runner
+            .start_background(tool_id, "inspect".into(), SubAgentMode::ReadOnly, false)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), entered.notified())
+            .await
+            .unwrap();
+    }
+    let ids: Vec<u64> = bg.running.list().iter().map(|a| a.id).collect();
+    assert_eq!(ids, vec![1, 2]);
+
+    bg.session_cancellation.cancel();
+    for _ in 0..2 {
+        let (_, finished) = bg.sink.next().await;
+        assert!(matches!(
+            finished.outcome,
+            FinishedOutcome::Cancelled { .. }
+        ));
+    }
+    assert!(bg.running.list().is_empty());
+}
+
+#[tokio::test]
+async fn background_failure_is_delivered_as_failed() {
+    let bg = background_runner(failing_provider());
+    bg.runner
+        .start_background("tool-1", "inspect".into(), SubAgentMode::ReadOnly, false)
+        .await
+        .unwrap();
+    let (_, finished) = bg.sink.next().await;
+    let FinishedOutcome::Failed { error } = &finished.outcome else {
+        panic!("expected a failure, got {:?}", finished.outcome);
+    };
+    assert!(error.contains("fatal provider failure"));
+    assert!(finished.message().starts_with("[sub-agent #1] failed:"));
+}
+
+#[tokio::test]
+async fn writing_sub_agents_cannot_run_in_the_background() {
+    let bg = background_runner(answering_provider("done"));
+    let error = bg
+        .runner
+        .start_background("tool-1", "edit".into(), SubAgentMode::Default, false)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("read-only"));
+    assert!(bg.running.list().is_empty());
+}
+
+#[tokio::test]
+async fn background_needs_a_session_to_report_to() {
+    let (runner, _) = runner(answering_provider("done"));
+    assert!(
+        runner
+            .start_background("tool-1", "inspect".into(), SubAgentMode::ReadOnly, false)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn foreground_sub_agents_are_listed_while_they_run() {
+    let bg = background_runner(answering_provider("done"));
+    let result = bg
+        .runner
+        .run("tool-1", "inspect".into(), SubAgentMode::ReadOnly, false)
+        .await
+        .unwrap();
+    assert_eq!(result.answer, "done");
+    let card = SubAgentOutput::from_json(&result.ui_output).unwrap();
+    assert_eq!(card.agent_id, Some(1));
+    assert!(!card.background);
+    let listed = running_events(&bg.ui);
+    assert!(
+        listed
+            .first()
+            .is_some_and(|agents| agents.len() == 1 && !agents[0].background)
+    );
+    assert!(listed.last().is_some_and(Vec::is_empty));
 }

@@ -81,6 +81,8 @@ pub struct SessionSnapshot {
     pub pending_questions: Vec<questions::UserQuestionRequest>,
     /// Wakeups still to fire, soonest first.
     pub armed_wakeups: Vec<wakeup::ArmedWakeupInfo>,
+    /// Sub-agents running right now, oldest first.
+    pub running_sub_agents: Vec<crate::agent::sub_agent::RunningSubAgentInfo>,
 }
 
 impl SessionSnapshot {
@@ -107,6 +109,10 @@ impl SessionSnapshot {
             UiEvent::UpdateArmedWakeups {
                 session_id: self.session_id.clone(),
                 wakeups: self.armed_wakeups.clone(),
+            },
+            UiEvent::UpdateRunningSubAgents {
+                session_id: self.session_id.clone(),
+                agents: self.running_sub_agents.clone(),
             },
         ];
         // Show the error banner when connecting to an errored session.

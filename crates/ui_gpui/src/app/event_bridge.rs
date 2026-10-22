@@ -470,6 +470,7 @@ mod tests {
             pending_new_context_target: None,
             pending_questions: Vec::new(),
             armed_wakeups: Vec::new(),
+            running_sub_agents: Vec::new(),
         }
     }
 

@@ -296,6 +296,12 @@ pub enum UiEvent {
         session_id: String,
         wakeups: Vec<crate::session::wakeup::ArmedWakeupInfo>,
     },
+    /// The sub-agents running in a session changed (oldest first),
+    /// foreground and background ones.
+    UpdateRunningSubAgents {
+        session_id: String,
+        agents: Vec<crate::agent::sub_agent::RunningSubAgentInfo>,
+    },
     /// Update pending message display
     UpdatePendingMessage { message: Option<String> },
     /// Display an error message to the user

@@ -1,6 +1,9 @@
 mod run;
+pub mod running;
 #[cfg(test)]
 mod tests;
+
+pub use running::{RunningSubAgentInfo, RunningSubAgents, highest_sub_agent_id};
 
 use crate::agent::persistence::NoOpStatePersistence;
 use crate::agent::{Agent, AgentComponents};
@@ -158,6 +161,78 @@ impl std::fmt::Display for SubAgentFailure {
 }
 impl std::error::Error for SubAgentFailure {}
 
+/// A background sub-agent that was started: the parent goes on without
+/// waiting for it.
+#[derive(Debug, Clone)]
+pub struct BackgroundStart {
+    /// Short per-session id the model and the frontends refer to it by.
+    pub agent_id: u64,
+    /// The card state at start, for the `spawn_agent` result.
+    pub ui_output: String,
+}
+
+/// How a background sub-agent ended.
+#[derive(Debug, Clone)]
+pub struct FinishedSubAgent {
+    pub agent_id: u64,
+    /// The `spawn_agent` call that started it.
+    pub tool_id: String,
+    pub outcome: FinishedOutcome,
+    /// The final card state.
+    pub ui_output: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FinishedOutcome {
+    Completed { answer: String },
+    Failed { error: String },
+    Cancelled { message: String },
+}
+
+impl FinishedSubAgent {
+    /// The message delivered to the parent session.
+    pub fn message(&self) -> String {
+        match &self.outcome {
+            FinishedOutcome::Completed { answer } => {
+                format!(
+                    "{SUB_AGENT_FRAME} #{}] finished:\n\n{answer}",
+                    self.agent_id
+                )
+            }
+            FinishedOutcome::Failed { error } => {
+                format!("{SUB_AGENT_FRAME} #{}] failed: {error}", self.agent_id)
+            }
+            FinishedOutcome::Cancelled { message } => {
+                format!("{SUB_AGENT_FRAME} #{}] cancelled: {message}", self.agent_id)
+            }
+        }
+    }
+}
+
+/// Start of the frame of a delivered background result, so the agent and
+/// the transcript can tell it from a human message: `[sub-agent #3] finished: …`.
+pub const SUB_AGENT_FRAME: &str = "[sub-agent";
+
+/// Receives the results of background sub-agents. The production
+/// implementation is [`crate::session::SessionService`], which records the
+/// result and delivers it into the parent session; tests substitute a
+/// recorder.
+#[async_trait::async_trait]
+pub trait SubAgentSink: Send + Sync + 'static {
+    async fn finished(&self, session_id: &str, finished: FinishedSubAgent);
+}
+
+/// What a runner needs to start sub-agents that outlive the parent's turn.
+#[derive(Clone)]
+pub struct BackgroundSupport {
+    pub session_id: String,
+    /// Publishes into the session without belonging to a turn.
+    pub ui: Arc<dyn UserInterface>,
+    /// Cancelled when the session goes away, not when a turn stops.
+    pub cancellation: tools_core::RunCancellation,
+    pub sink: Arc<dyn SubAgentSink>,
+}
+
 /// Execution mode for a sub-agent, selected by the `spawn_agent` tool input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubAgentMode {
@@ -177,8 +252,23 @@ pub trait SubAgentRunner: Send + Sync {
         mode: SubAgentMode,
         require_file_references: bool,
     ) -> Result<SubAgentResult>;
+
+    /// Start a sub-agent without waiting for it; its result is delivered to
+    /// the parent session when it ends.
+    async fn start_background(
+        &self,
+        _parent_tool_id: &str,
+        _instructions: String,
+        _mode: SubAgentMode,
+        _require_file_references: bool,
+    ) -> Result<BackgroundStart> {
+        anyhow::bail!(
+            "Background sub-agents are not available here; spawn it without `background`."
+        )
+    }
 }
 
+#[derive(Clone)]
 pub struct DefaultSubAgentRunner {
     /// The parent session's model and reasoning effort.
     model: SessionModelConfig,
@@ -207,6 +297,9 @@ pub struct DefaultSubAgentRunner {
     /// Where a sub-agent's browsers are listed while it runs, so the
     /// session's browser panel can show them.
     session_browsers: Option<Arc<crate::session::browsers::SessionBrowsers>>,
+    /// Where running sub-agents are listed, with the session they belong to.
+    running: Option<(String, Arc<RunningSubAgents>)>,
+    background: Option<BackgroundSupport>,
 }
 
 impl DefaultSubAgentRunner {
@@ -240,7 +333,34 @@ impl DefaultSubAgentRunner {
             project_manager_factory: Arc::new(|| Box::new(DefaultProjectManager::new())),
             parent_cancellation: tools_core::RunCancellation::default(),
             session_browsers: None,
+            running: None,
+            background: None,
         }
+    }
+
+    /// List running sub-agents in `running`, published for `session_id`.
+    pub fn with_running(mut self, session_id: String, running: Arc<RunningSubAgents>) -> Self {
+        self.running = Some((session_id, running));
+        self
+    }
+
+    /// List running sub-agents on the session `instance`, if there is one.
+    pub fn with_running_from(
+        self,
+        instance: Option<&crate::session::instance::SessionInstance>,
+        session_id: &str,
+    ) -> Self {
+        match instance {
+            Some(instance) => {
+                self.with_running(session_id.to_string(), instance.running_sub_agents.clone())
+            }
+            None => self,
+        }
+    }
+
+    pub fn with_background(mut self, background: Option<BackgroundSupport>) -> Self {
+        self.background = background;
+        self
     }
 
     pub fn with_llm_client_factory(
@@ -248,6 +368,17 @@ impl DefaultSubAgentRunner {
         factory: crate::session::service::LlmClientFactory,
     ) -> Self {
         self.llm_client_factory = Some(factory);
+        self
+    }
+
+    /// Use `factory` for the sub-agents' LLM clients when there is one.
+    pub fn with_llm_client_factory_if(
+        mut self,
+        factory: Option<crate::session::service::LlmClientFactory>,
+    ) -> Self {
+        if factory.is_some() {
+            self.llm_client_factory = factory;
+        }
         self
     }
 
@@ -277,12 +408,14 @@ impl DefaultSubAgentRunner {
         parent_ui: Arc<dyn UserInterface>,
         parent_tool_id: String,
         cancellation: tools_core::RunCancellation,
+        listing: Option<SubAgentListing>,
     ) -> Arc<SubAgentUiAdapter> {
         Arc::new(SubAgentUiAdapter::new(
             parent_ui,
             parent_tool_id,
             cancellation,
             self.tool_registry.clone(),
+            listing,
         ))
     }
 
@@ -520,6 +653,12 @@ pub struct SubAgentOutput {
     /// Aggregated token usage from the sub-agent's LLM requests
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<SubAgentUsage>,
+    /// The sub-agent's short per-session id (`#3`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<u64>,
+    /// Started in the background: the parent did not wait for it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
 }
 
 impl SubAgentOutput {
@@ -531,6 +670,8 @@ impl SubAgentOutput {
             error: None,
             response: None,
             usage: None,
+            agent_id: None,
+            background: false,
         }
     }
 
@@ -549,12 +690,31 @@ impl Default for SubAgentOutput {
     }
 }
 
+/// Where a sub-agent is listed while it runs.
+struct SubAgentListing {
+    session_id: String,
+    running: Arc<RunningSubAgents>,
+    background: bool,
+}
+
+impl SubAgentListing {
+    async fn publish(&self, ui: &dyn UserInterface) {
+        let _ = ui
+            .send_event(UiEvent::UpdateRunningSubAgents {
+                session_id: self.session_id.clone(),
+                agents: self.running.list(),
+            })
+            .await;
+    }
+}
+
 /// A minimal UI adapter that captures sub-agent activity as structured data and streams it
 /// into the parent `spawn_agent` tool block.
 struct SubAgentUiAdapter {
     parent: Arc<dyn UserInterface>,
     parent_tool_id: String,
     cancellation: tools_core::RunCancellation,
+    listing: Option<SubAgentListing>,
     output: Mutex<SubAgentOutput>,
     /// Map from tool_id to index in output.tools for fast lookup
     tool_id_to_index: Mutex<std::collections::HashMap<String, usize>>,
@@ -568,20 +728,32 @@ impl SubAgentUiAdapter {
         parent_tool_id: String,
         cancellation: tools_core::RunCancellation,
         tool_registry: Arc<crate::tools::core::ToolRegistry>,
+        listing: Option<SubAgentListing>,
     ) -> Self {
         Self {
             parent,
             parent_tool_id,
             cancellation,
+            listing,
             output: Mutex::new(SubAgentOutput::new()),
             tool_id_to_index: Mutex::new(std::collections::HashMap::new()),
             tool_registry,
         }
     }
 
+    fn set_identity(&self, agent_id: u64, background: bool) {
+        let mut output = self.output.lock().unwrap();
+        output.agent_id = Some(agent_id);
+        output.background = background;
+    }
+
     async fn send_output_update(&self) {
-        let (json, tool_count, activity, status, message) = {
+        let (json, tool_count, activity, status, message, listing_changed) = {
             let output = self.output.lock().unwrap();
+            let listing_changed = self
+                .listing
+                .as_ref()
+                .is_some_and(|l| l.running.update(&self.parent_tool_id, &output));
             let (status, message) = match output.activity {
                 Some(SubAgentActivity::Completed) => (ToolStatus::Success, "Sub-agent completed"),
                 Some(SubAgentActivity::Failed) => (ToolStatus::Error, "Sub-agent failed"),
@@ -594,6 +766,7 @@ impl SubAgentUiAdapter {
                 output.activity,
                 status,
                 message,
+                listing_changed,
             )
         };
 
@@ -603,6 +776,24 @@ impl SubAgentUiAdapter {
             activity,
             json.len()
         );
+
+        if let Some(listing) = &self.listing
+            && listing.background
+        {
+            listing.running.set_live_result(
+                &self.parent_tool_id,
+                crate::ui::ui_events::ToolResultData {
+                    tool_id: self.parent_tool_id.clone(),
+                    status,
+                    message: Some(message.to_string()),
+                    output: Some(json.clone()),
+                    styled_output: None,
+                    duration_seconds: None,
+                    images: vec![],
+                    output_deferred: false,
+                },
+            );
+        }
 
         let _ = self
             .parent
@@ -616,6 +807,10 @@ impl SubAgentUiAdapter {
                 images: vec![],
             })
             .await;
+
+        if listing_changed && let Some(listing) = &self.listing {
+            listing.publish(self.parent.as_ref()).await;
+        }
     }
 
     fn add_tool_start(&self, name: &str, id: &str) {
