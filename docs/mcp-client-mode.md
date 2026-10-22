@@ -274,8 +274,8 @@ How it is wired:
   code-assistant's own MCP server mode gets none, so its `read_files` cannot
   reach the resources of code-assistant's servers.
 - **The system prompt** gets an *MCP Resources* section per server
-  (`tools::mcp::render_resources_section`): 25 resources and 10 templates
-  at most, resources annotated `audience: ["user"]` left out, the rest
+  (`tools::mcp::resources_prompt_section`) where the tool scope offers
+  `read_files`: 25 resources and 10 templates at most, resources annotated `audience: ["user"]` left out, the rest
   ordered by `priority`.
 - **Line ranges**: a trailing `:N`, `:N-M`, `:N-`, `:-M` is a line range
   when what precedes it still has a scheme. A URI the server listed is

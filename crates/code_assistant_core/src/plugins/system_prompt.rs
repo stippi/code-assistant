@@ -74,10 +74,11 @@ impl SystemPromptProvider for CodeAssistantSystemPrompt {
         // the `:mcp:<server>` scope of the file tools.
         let disabled_servers =
             crate::tools::mcp_selection::session_disabled_mcp_servers(&state.session_config);
-        if let Some(servers) =
-            crate::tools::mcp::session_resource_servers(ctx.registry, &disabled_servers)
-            && let Some(section) = crate::tools::mcp::render_resources_section(&servers)
-        {
+        if let Some(section) = crate::tools::mcp::resources_prompt_section(
+            ctx.registry,
+            state.tool_scope,
+            &disabled_servers,
+        ) {
             system_message.push_str("\n\n");
             system_message.push_str(&section);
         }

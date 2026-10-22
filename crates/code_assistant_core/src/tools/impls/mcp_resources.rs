@@ -508,25 +508,31 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn the_prompt_names_each_servers_resources() {
+        async fn the_prompt_names_each_servers_resources_where_read_files_is_offered() {
+            use crate::tools::core::ToolScope;
+            use crate::tools::mcp::resources_prompt_section;
+
             let servers = docs_servers().await;
-            let section = crate::tools::mcp::render_resources_section(&servers).unwrap();
+            let mut registry = ToolRegistry::new();
+            crate::tools::register_default_tools(&mut registry, &Default::default());
+            *registry.extension_mut::<McpResourceServers>() = (*servers).clone();
+
+            let section = resources_prompt_section(&registry, ToolScope::Agent, &[]).unwrap();
+            assert!(section.starts_with("# MCP Resources\n\n"), "{section}");
             assert!(section.contains("## :mcp:docs"), "{section}");
             assert!(
                 section.contains("- docs://guide.md — guide.md: The guide"),
                 "{section}"
             );
             assert!(
-                crate::tools::mcp::session_resource_servers(
-                    &{
-                        let mut registry = ToolRegistry::new();
-                        *registry.extension_mut::<McpResourceServers>() = (*servers).clone();
-                        registry
-                    },
-                    &["docs".to_string()],
-                )
-                .is_none(),
+                resources_prompt_section(&registry, ToolScope::Agent, &["docs".to_string()])
+                    .is_none(),
                 "a switched-off server is not offered"
+            );
+            assert!(
+                resources_prompt_section(&registry, ToolScope::Custom("scope:memory"), &[])
+                    .is_none(),
+                "a scope without read_files gets no section"
             );
         }
     }

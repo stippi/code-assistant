@@ -443,17 +443,19 @@ pub fn session_resource_servers(
     (!servers.is_empty()).then(|| Arc::new(servers))
 }
 
-/// The system prompt section naming the resources of `servers`, or `None`
-/// without any.
-pub fn render_resources_section(servers: &mcp_client::McpResourceServers) -> Option<String> {
-    if servers.is_empty() {
+/// The system prompt section naming the resources of the session's MCP
+/// servers (see [`session_resource_servers`]), or `None` without any or
+/// where `scope` offers no `read_files` to read them with.
+pub fn resources_prompt_section(
+    registry: &ToolRegistry,
+    scope: crate::tools::core::ToolScope,
+    disabled_servers: &[String],
+) -> Option<String> {
+    if !registry.tool_has_capability("read_files", scope.tag()) {
         return None;
     }
-    let mut out = String::from(
-        "# MCP Resources
-
-",
-    );
+    let servers = session_resource_servers(registry, disabled_servers)?;
+    let mut out = String::from("# MCP Resources\n\n");
     out.push_str(
         "These MCP servers expose resources (documents, records, files, …). Read one with \
          `read_files`, passing `:mcp:<server>` as the project and the resource URI as the path \
