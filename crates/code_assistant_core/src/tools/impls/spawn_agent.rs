@@ -18,6 +18,9 @@ pub struct SpawnAgentInput {
     /// The mode for the sub-agent: "read_only" or "default".
     #[serde(default = "default_mode", skip_serializing_if = "is_default_mode")]
     pub mode: String,
+    /// If true, return right away; the result arrives as a message later.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub background: bool,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -33,7 +36,7 @@ fn default_mode() -> String {
 }
 
 /// Output from the spawn_agent tool.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Default)]
 pub struct SpawnAgentOutput {
     /// The final answer from the sub-agent (plain text for LLM context).
     pub answer: String,
@@ -44,6 +47,37 @@ pub struct SpawnAgentOutput {
     /// the LLM needs plain text. Persisted so sessions can restore the custom UI.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui_output: Option<String>,
+    /// The sub-agent's short per-session id (`#3`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<u64>,
+    /// Set while a background sub-agent runs: the process that started it.
+    /// A background agent dies with its process, so one started by another
+    /// process was lost. Cleared when its result was delivered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub running_in: Option<String>,
+}
+
+impl SpawnAgentOutput {
+    /// The tool result of a sub-agent started in the background. `answer` is
+    /// what the model saw, and stays so: the result arrives as a message.
+    pub fn background_started(agent_id: u64, ui_output: String) -> Self {
+        Self {
+            answer: format!(
+                "Sub-agent #{agent_id} started in the background. Its result will arrive as a message starting with `[sub-agent #{agent_id}]`. Continue with other work, or end your turn to wait for it."
+            ),
+            error: None,
+            ui_output: Some(ui_output),
+            agent_id: Some(agent_id),
+            running_in: Some(crate::session::wakeup::process_instance().to_string()),
+        }
+    }
+
+    /// A background agent this process cannot deliver anymore.
+    fn lost(&self) -> bool {
+        self.running_in
+            .as_deref()
+            .is_some_and(|p| p != crate::session::wakeup::process_instance())
+    }
 }
 
 impl Render for SpawnAgentOutput {
@@ -65,6 +99,16 @@ impl Render for SpawnAgentOutput {
 
     /// Returns JSON for UI display (custom renderer)
     fn render_for_ui(&self, tracker: &mut ResourcesTracker) -> String {
+        if self.lost() {
+            let mut output = self
+                .ui_output
+                .as_deref()
+                .and_then(crate::agent::sub_agent::SubAgentOutput::from_json)
+                .unwrap_or_default();
+            output.activity = Some(crate::agent::sub_agent::SubAgentActivity::Failed);
+            output.error = Some("The app quit while this background sub-agent was running.".into());
+            return output.to_json();
+        }
         // Use structured JSON output if available, otherwise fall back to plain text
         self.ui_output
             .clone()
@@ -95,7 +139,11 @@ impl Tool for SpawnAgentTool {
             "Instead read those files directly yourself. The most effective way of using sub-agents is when you are unsure which files to explore.\n\n",
             "The sub-agent has access to read-only tools by default (file reading, searching, web access). ",
             "You can spawn multiple read-only sub-agents which are then executed in parallel. ",
-            "Normal sub-agents (mode: default) are executed sequentially if you spawn more than one."
+            "Normal sub-agents (mode: default) are executed sequentially if you spawn more than one.\n\n",
+            "Set `background: true` to not wait for a read-only sub-agent: the tool returns right away and the ",
+            "sub-agent's answer arrives later as a message starting with `[sub-agent #<id>]`. ",
+            "Meanwhile continue with other work, or end your turn if there is nothing else to do: ",
+            "the arriving result starts a new turn."
         );
 
         ToolSpec {
@@ -118,6 +166,11 @@ impl Tool for SpawnAgentTool {
                         "enum": ["read_only", "default"],
                         "default": "read_only",
                         "description": "The mode for the sub-agent. 'read_only' restricts to read-only tools. 'default' allows to perform edits."
+                    },
+                    "background": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "If true, don't wait for the sub-agent: its answer arrives later as a message. Only for mode 'read_only'."
                     }
                 },
                 "required": ["instructions"]
@@ -165,6 +218,21 @@ impl Tool for SpawnAgentTool {
             );
         }
 
+        if input.background {
+            let started = sub_agent_runner
+                .start_background(
+                    &tool_id,
+                    final_instructions,
+                    mode,
+                    input.require_file_references,
+                )
+                .await?;
+            return Ok(SpawnAgentOutput::background_started(
+                started.agent_id,
+                started.ui_output,
+            ));
+        }
+
         // Run the sub-agent
         let result = sub_agent_runner
             .run(
@@ -177,9 +245,11 @@ impl Tool for SpawnAgentTool {
 
         match result {
             Ok(sub_result) => Ok(SpawnAgentOutput {
+                agent_id: agent_id_of(&sub_result.ui_output),
                 answer: sub_result.answer,
                 error: None,
                 ui_output: Some(sub_result.ui_output),
+                running_in: None,
             }),
             Err(e) => {
                 let ui_output = match e.downcast_ref::<crate::agent::sub_agent::SubAgentFailure>() {
@@ -194,11 +264,17 @@ impl Tool for SpawnAgentTool {
                     }
                 };
                 Ok(SpawnAgentOutput {
+                    agent_id: agent_id_of(&ui_output),
                     answer: String::new(),
                     error: Some(e.to_string()),
                     ui_output: Some(ui_output),
+                    running_in: None,
                 })
             }
         }
     }
+}
+
+fn agent_id_of(ui_output: &str) -> Option<u64> {
+    crate::agent::sub_agent::SubAgentOutput::from_json(ui_output)?.agent_id
 }

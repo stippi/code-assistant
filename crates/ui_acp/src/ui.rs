@@ -969,6 +969,7 @@ impl UserInterface for ACPUserUI {
             | UiEvent::UpdateSessionActivityState { .. }
             | UiEvent::UpdateArmedWakeups { .. }
             | UiEvent::UpdateActiveMonitors { .. }
+            | UiEvent::UpdateRunningSubAgents { .. }
             | UiEvent::UpdatePendingMessage { .. }
             | UiEvent::ClearError
             | UiEvent::UpdateCurrentModel { .. }
