@@ -530,6 +530,7 @@ impl CodeExplorer for Explorer {
         let resolved = self.resolve_path(path)?;
         let path = resolved.as_path();
         debug!("Writing file: {}, append: {}", path.display(), append);
+        let _lock = crate::locks::lock_path(path).await;
 
         // Check if file is ignored by .gitignore
         if self.is_ignored(path) {
@@ -577,6 +578,7 @@ impl CodeExplorer for Explorer {
 
     async fn delete_file(&self, path: &Path) -> Result<()> {
         let resolved = self.resolve_path(path)?;
+        let _lock = crate::locks::lock_path(&resolved).await;
         std::fs::remove_file(resolved.as_path())?;
         Ok(())
     }
@@ -619,6 +621,7 @@ impl CodeExplorer for Explorer {
     ) -> Result<String> {
         let resolved = self.resolve_path(path)?;
         let path = resolved.as_path();
+        let _lock = crate::locks::lock_path(path).await;
         // Get the original content using encoding-aware reading
         let (original_content, detected_encoding) = crate::encoding::read_file_with_encoding(path)?;
 
@@ -669,6 +672,9 @@ impl CodeExplorer for Explorer {
 
         let resolved = self.resolve_path(path)?;
         let path = resolved.as_path();
+        // Held until the formatted content is read back, so no other writer
+        // lands between our write and the formatter's.
+        let _lock = crate::locks::lock_path(path).await;
 
         // Get the original content using encoding-aware reading
         let (original_content, detected_encoding) = crate::encoding::read_file_with_encoding(path)?;
@@ -1027,6 +1033,46 @@ mod tests {
             .await;
         assert!(result.is_err());
 
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_edits_from_separate_explorers_all_land() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let test_file = temp_dir.path().join("shared.txt");
+        let lines: String = (0..32).map(|i| format!("line {i:02} old\n")).collect();
+        std::fs::write(&test_file, lines)?;
+
+        // One explorer per writer, like a parent and its sub-agents.
+        let tasks: Vec<_> = (0..32)
+            .map(|i| {
+                let root = temp_dir.path().to_path_buf();
+                let file = test_file.clone();
+                tokio::spawn(async move {
+                    Explorer::new(root)
+                        .apply_replacements(
+                            &file,
+                            &[FileReplacement {
+                                search: format!("line {i:02} old\n"),
+                                replace: format!("line {i:02} new\n"),
+                                replace_all: false,
+                            }],
+                        )
+                        .await
+                })
+            })
+            .collect();
+        for task in tasks {
+            task.await??;
+        }
+
+        let content = std::fs::read_to_string(&test_file)?;
+        for i in 0..32 {
+            assert!(
+                content.contains(&format!("line {i:02} new\n")),
+                "edit {i} was lost"
+            );
+        }
         Ok(())
     }
 
