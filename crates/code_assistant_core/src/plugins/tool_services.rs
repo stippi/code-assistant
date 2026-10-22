@@ -23,6 +23,7 @@ pub struct CodeAssistantToolServices {
     pub terminal_interrupts: Option<Arc<crate::tools::TerminalInterrupts>>,
     pub browser_sessions: Option<Arc<web::BrowserSessionManager>>,
     pub session_source: Option<Arc<dyn crate::session_query::SessionSource>>,
+    pub mcp_resources: Option<Arc<mcp_client::McpResourceServers>>,
 }
 
 impl ToolServicesProvider for CodeAssistantToolServices {
@@ -38,6 +39,7 @@ impl ToolServicesProvider for CodeAssistantToolServices {
             terminal_interrupts: self.terminal_interrupts.clone(),
             browser_sessions: self.browser_sessions.clone(),
             session_source: self.session_source.clone(),
+            mcp_resources: self.mcp_resources.clone(),
         })
     }
 
@@ -59,6 +61,7 @@ impl ToolServicesProvider for CodeAssistantToolServices {
             terminal_interrupts: self.terminal_interrupts.clone(),
             browser_sessions: self.browser_sessions.clone(),
             session_source: self.session_source.clone(),
+            mcp_resources: self.mcp_resources.clone(),
         })
     }
 }

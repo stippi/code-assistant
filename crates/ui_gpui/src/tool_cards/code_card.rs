@@ -84,7 +84,7 @@ impl ToolBlockRenderer for CodeCardRenderer {
         if let Ok(json) = serde_json::from_str::<Value>(output) {
             match json.get("kind").and_then(|k| k.as_str()) {
                 Some("read_files") => {
-                    return render_read_files_output(&json, project, theme, rem_size);
+                    return render_read_files_output(&json, project, &tool.images, theme, rem_size);
                 }
                 Some("search_files") => {
                     return render_search_files_output(&json, project, theme, rem_size);
@@ -127,6 +127,7 @@ fn open_file_label(
 fn render_read_files_output(
     json: &Value,
     project: Option<&str>,
+    images: &[(String, String)],
     theme: &gpui_kit::component::theme::Theme,
     rem_size: gpui_kit::Pixels,
 ) -> Option<AnyElement> {
@@ -136,10 +137,18 @@ fn render_read_files_output(
         .and_then(|e| e.as_array())
         .cloned()
         .unwrap_or_default();
+    let image_entries = json
+        .get("images")
+        .and_then(|i| i.as_array())
+        .cloned()
+        .unwrap_or_default();
 
-    if files.is_empty() && errors.is_empty() {
+    if files.is_empty() && errors.is_empty() && image_entries.is_empty() {
         return None;
     }
+    // An MCP server's resources are no files the Files view could open.
+    let opens_files = project
+        .is_none_or(|project| code_assistant_core::config::mcp_scope_server(project).is_none());
 
     let line_height_px = rems(1.25).to_pixels(rem_size).round();
     let mut children: Vec<AnyElement> = Vec::new();
@@ -179,18 +188,18 @@ fn render_read_files_output(
         }
 
         // File header; opens the file in the Files view.
+        let header = format!("── {} ──", path);
         children.push(
             div()
                 .w_full()
                 .px_3()
                 .py_0p5()
                 .text_color(theme.muted_foreground.opacity(0.7))
-                .child(open_file_label(
-                    format!("── {} ──", path),
-                    path,
-                    start_line,
-                    project,
-                ))
+                .child(if opens_files {
+                    open_file_label(header, path, start_line, project)
+                } else {
+                    div().child(header).into_any()
+                })
                 .into_any(),
         );
 
@@ -201,6 +210,30 @@ fn render_read_files_output(
             theme.foreground,
             rem_size,
         ));
+    }
+
+    // Images read from an MCP server's resources: named, then shown.
+    for image in &image_entries {
+        let path = image
+            .get("path")
+            .and_then(|p| p.as_str())
+            .unwrap_or("unknown");
+        let media_type = image
+            .get("media_type")
+            .and_then(|m| m.as_str())
+            .unwrap_or("image");
+        children.push(
+            div()
+                .w_full()
+                .px_3()
+                .py_0p5()
+                .text_color(theme.muted_foreground.opacity(0.7))
+                .child(format!("── {path} ({media_type}) ──"))
+                .into_any(),
+        );
+    }
+    if !images.is_empty() {
+        children.push(super::inline_renderer::image_gallery(images, theme).into_any());
     }
 
     Some(

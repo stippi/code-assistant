@@ -92,6 +92,13 @@ chrono = "0.4"
 
 [dev-dependencies]
 axum = "0.7"
+# An in-process MCP server for the `:mcp:<server>` scope tests
+rmcp = { version = "3.3", default-features = false, features = [
+    "base64",
+    "client",
+    "server",
+    "transport-child-process",
+] }
 # test-util enables the paused clock (`start_paused`) for timer tests
 tokio = { version = "1.48", features = ["full", "test-util"] }
 # Safe, scoped environment-variable mutation in tests (replaces raw

@@ -1,3 +1,4 @@
+use std::any::{Any, TypeId};
 use std::borrow::Cow;
 use std::collections::HashMap;
 
@@ -10,8 +11,13 @@ use crate::tool::ToolContext;
 /// Selection is expressed through capability tags (see
 /// [`crate::spec::ToolSpec::capabilities`]); the registry itself knows
 /// nothing about application-specific scopes.
+///
+/// Tool sources may also leave typed *extensions* with the registry: data
+/// that belongs to the tool set it built (e.g. the live connections behind
+/// its tools) and travels wherever the registry goes.
 pub struct ToolRegistry {
     tools: HashMap<String, Box<dyn DynTool>>,
+    extensions: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
 }
 
 impl ToolRegistry {
@@ -19,7 +25,24 @@ impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             tools: HashMap::new(),
+            extensions: HashMap::new(),
         }
+    }
+
+    /// The extension of type `T`, if one was left with the registry.
+    pub fn extension<T: Any + Send + Sync>(&self) -> Option<&T> {
+        self.extensions
+            .get(&TypeId::of::<T>())
+            .and_then(|extension| extension.downcast_ref())
+    }
+
+    /// The extension of type `T`, created with its default first if absent.
+    pub fn extension_mut<T: Any + Send + Sync + Default>(&mut self) -> &mut T {
+        self.extensions
+            .entry(TypeId::of::<T>())
+            .or_insert_with(|| Box::new(T::default()))
+            .downcast_mut()
+            .expect("extensions are keyed by their type")
     }
 
     /// Register a tool in the registry

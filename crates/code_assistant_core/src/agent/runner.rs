@@ -99,11 +99,12 @@ impl Agent {
         // MCP servers and built-in tool groups the session deactivated → their
         // scope tags, which the runtime excludes from the offered/dispatchable
         // tool set.
-        let mut excluded_tool_capabilities: Vec<String> =
-            crate::tools::mcp_selection::session_disabled_mcp_servers(&session_config)
-                .iter()
-                .map(|server| mcp_client::server_scope_capability(server))
-                .collect();
+        let disabled_mcp_servers =
+            crate::tools::mcp_selection::session_disabled_mcp_servers(&session_config);
+        let mut excluded_tool_capabilities: Vec<String> = disabled_mcp_servers
+            .iter()
+            .map(|server| mcp_client::server_scope_capability(server))
+            .collect();
         excluded_tool_capabilities.extend(
             crate::tools::builtin_selection::session_excluded_capabilities(&session_config),
         );
@@ -122,6 +123,10 @@ impl Agent {
             terminal_interrupts,
             browser_sessions,
             session_source,
+            mcp_resources: crate::tools::mcp::session_resource_servers(
+                &tool_registry,
+                &disabled_mcp_servers,
+            ),
         });
 
         let runtime = AgentRuntime::new(AgentRuntimeComponents {

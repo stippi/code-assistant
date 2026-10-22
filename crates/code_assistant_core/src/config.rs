@@ -48,6 +48,15 @@ pub const SCOPE_CONFIG: &str = ":config:";
 /// Reserved scope token addressing the bundled (system) skills directory.
 pub const SCOPE_SYSTEM: &str = ":system:";
 
+/// Prefix of the reserved scope addressing an MCP server's resources:
+/// `:mcp:<server>`, whose paths are resource URIs.
+pub const SCOPE_MCP_PREFIX: &str = ":mcp:";
+
+/// The server an `:mcp:<server>` scope names, `None` for other scopes.
+pub fn mcp_scope_server(scope: &str) -> Option<&str> {
+    scope.strip_prefix(SCOPE_MCP_PREFIX)
+}
+
 /// Environment variable that overrides the user (global) skills root. Primarily
 /// for tests and power users who want a non-default location.
 pub const USER_SKILLS_DIR_ENV: &str = "CODE_ASSISTANT_USER_SKILLS_DIR";

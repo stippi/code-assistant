@@ -7,7 +7,7 @@ use super::{CardRenderContext, ToolBlockRenderer, ToolBlockStyle};
 use crate::blocks::{BlockView, ToolUseBlock};
 use code_assistant_core::ui::ToolStatus;
 use gpui_kit::{
-    AnyElement, Context, Element, ImageSource, ObjectFit, ParentElement, Styled, StyledImage,
+    AnyElement, Context, Div, Element, ImageSource, ObjectFit, ParentElement, Styled, StyledImage,
     Window, div, img, px, rems,
 };
 
@@ -196,44 +196,52 @@ pub(crate) fn render_inline_output_text(
 
     // Render images when expanded (for view_images tool)
     if has_images {
-        let mut gallery = div().flex().flex_wrap().gap_2().mt_2();
-
-        for (media_type, base64_data) in &tool.images {
-            if let Some(image) = crate::shared::image::parse_base64_image(media_type, base64_data) {
-                gallery = gallery.child(
-                    div()
-                        .flex_none()
-                        .border_1()
-                        .border_color(theme.border)
-                        .rounded_md()
-                        .overflow_hidden()
-                        .bg(theme.popover)
-                        .shadow_sm()
-                        .child(
-                            img(ImageSource::Image(image))
-                                .max_h(px(200.))
-                                .max_w(px(400.))
-                                .object_fit(ObjectFit::Contain),
-                        ),
-                );
-            } else {
-                gallery = gallery.child(
-                    div()
-                        .flex_none()
-                        .p_2()
-                        .bg(theme.warning.opacity(0.1))
-                        .border_1()
-                        .border_color(theme.warning.opacity(0.3))
-                        .rounded_md()
-                        .text_color(theme.warning_foreground.opacity(0.8))
-                        .text_xs()
-                        .child(format!("Failed to decode: {}", media_type)),
-                );
-            }
-        }
-
-        container = container.child(gallery);
+        container = container.child(image_gallery(&tool.images, theme));
     }
 
     Some(container.into_any())
+}
+
+/// A tool's images (`(media_type, base64_data)` pairs) side by side.
+pub(crate) fn image_gallery(
+    images: &[(String, String)],
+    theme: &gpui_kit::component::theme::Theme,
+) -> Div {
+    let mut gallery = div().flex().flex_wrap().gap_2().mt_2();
+
+    for (media_type, base64_data) in images {
+        if let Some(image) = crate::shared::image::parse_base64_image(media_type, base64_data) {
+            gallery = gallery.child(
+                div()
+                    .flex_none()
+                    .border_1()
+                    .border_color(theme.border)
+                    .rounded_md()
+                    .overflow_hidden()
+                    .bg(theme.popover)
+                    .shadow_sm()
+                    .child(
+                        img(ImageSource::Image(image))
+                            .max_h(px(200.))
+                            .max_w(px(400.))
+                            .object_fit(ObjectFit::Contain),
+                    ),
+            );
+        } else {
+            gallery = gallery.child(
+                div()
+                    .flex_none()
+                    .p_2()
+                    .bg(theme.warning.opacity(0.1))
+                    .border_1()
+                    .border_color(theme.warning.opacity(0.3))
+                    .rounded_md()
+                    .text_color(theme.warning_foreground.opacity(0.8))
+                    .text_xs()
+                    .child(format!("Failed to decode: {}", media_type)),
+            );
+        }
+    }
+
+    gallery
 }

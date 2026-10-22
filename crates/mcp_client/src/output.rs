@@ -1,6 +1,7 @@
 //! Tool output for MCP-backed tools.
 
-use rmcp::model::CallToolResult;
+use base64::Engine;
+use rmcp::model::{CallToolResult, Resource, ResourceContents};
 use serde::{Deserialize, Serialize};
 use tools_core::render::{ImageData, Render, ResourcesTracker};
 use tools_core::result::ToolResult;
@@ -24,39 +25,43 @@ pub struct McpImage {
 
 impl McpToolOutput {
     /// Reduce an MCP `CallToolResult` to text + images. Text blocks are
-    /// concatenated; resource/audio blocks are passed through as their raw
-    /// JSON; `structured_content` is used when no content blocks are present.
+    /// concatenated; embedded resources become their text or image, resource
+    /// links a line naming the link; `structured_content` is used when no
+    /// content blocks are present.
     pub fn from_call_result(result: &CallToolResult) -> Self {
         use rmcp::model::ContentBlock;
-        let mut text_parts = Vec::new();
-        let mut images = Vec::new();
+        let mut content = Content::default();
         for block in &result.content {
             match block {
-                ContentBlock::Text(text) => text_parts.push(text.text.clone()),
-                ContentBlock::Image(image) => images.push(McpImage {
+                ContentBlock::Text(text) => content.text_parts.push(text.text.clone()),
+                ContentBlock::Image(image) => content.images.push(McpImage {
                     media_type: image.mime_type.clone(),
                     base64_data: image.data.clone(),
                 }),
+                ContentBlock::Resource(embedded) => content.push_resource(&embedded.resource),
+                ContentBlock::ResourceLink(link) => content
+                    .text_parts
+                    .push(format!("[resource link] {}", describe_resource(link))),
+                ContentBlock::Audio(audio) => content
+                    .text_parts
+                    .push(format!("[audio ({}) not shown]", audio.mime_type)),
                 other => {
-                    // Resource/audio/… content: pass through as raw JSON
-                    // rather than dropping it silently.
+                    // Content types newer than this client: pass through as
+                    // raw JSON rather than dropping them silently.
                     if let Ok(json) = serde_json::to_string(other) {
-                        text_parts.push(json);
+                        content.text_parts.push(json);
                     }
                 }
             }
         }
-        if text_parts.is_empty()
+        if content.text_parts.is_empty()
             && let Some(structured) = &result.structured_content
         {
-            text_parts
+            content
+                .text_parts
                 .push(serde_json::to_string_pretty(structured).unwrap_or_else(|_| String::new()));
         }
-        Self {
-            text: text_parts.join("\n"),
-            is_error: result.is_error.unwrap_or(false),
-            images,
-        }
+        content.into_output(result.is_error.unwrap_or(false))
     }
 
     /// An error output for a failed round-trip (server dead, timeout, …).
@@ -67,6 +72,194 @@ impl McpToolOutput {
             images: Vec::new(),
         }
     }
+}
+
+/// Text and images collected from MCP content blocks.
+#[derive(Default)]
+struct Content {
+    text_parts: Vec<String>,
+    images: Vec<McpImage>,
+}
+
+/// Image types the LLM providers accept as image input.
+const IMAGE_TYPES: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp"];
+
+/// One resource content, reduced to what the model can use.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResourcePart {
+    /// Text, or binary data that decodes to UTF-8 (JSON, SVG, …).
+    Text {
+        uri: String,
+        mime_type: Option<String>,
+        text: String,
+    },
+    /// An image type the LLM providers accept.
+    Image {
+        uri: String,
+        media_type: String,
+        base64_data: String,
+    },
+    /// Other binary data, which the model cannot use.
+    Binary {
+        uri: String,
+        mime_type: Option<String>,
+        size: usize,
+    },
+    /// Invalid base64, or a content kind newer than this client.
+    Unreadable { uri: String, reason: String },
+}
+
+impl ResourcePart {
+    pub fn from_contents(contents: &ResourceContents) -> Self {
+        match contents {
+            ResourceContents::TextResourceContents {
+                uri,
+                mime_type,
+                text,
+                ..
+            } => Self::Text {
+                uri: uri.clone(),
+                mime_type: mime_type.clone(),
+                text: text.clone(),
+            },
+            ResourceContents::BlobResourceContents {
+                uri,
+                mime_type,
+                blob,
+                ..
+            } => {
+                if let Some(media_type) = mime_type
+                    .as_deref()
+                    .filter(|mime_type| IMAGE_TYPES.contains(mime_type))
+                {
+                    return Self::Image {
+                        uri: uri.clone(),
+                        media_type: media_type.to_string(),
+                        base64_data: blob.clone(),
+                    };
+                }
+                match base64::engine::general_purpose::STANDARD.decode(blob) {
+                    Ok(bytes) => match String::from_utf8(bytes) {
+                        Ok(text) => Self::Text {
+                            uri: uri.clone(),
+                            mime_type: mime_type.clone(),
+                            text,
+                        },
+                        Err(error) => Self::Binary {
+                            uri: uri.clone(),
+                            mime_type: mime_type.clone(),
+                            size: error.into_bytes().len(),
+                        },
+                    },
+                    Err(error) => Self::Unreadable {
+                        uri: uri.clone(),
+                        reason: format!("invalid base64 content: {error}"),
+                    },
+                }
+            }
+            other => Self::Unreadable {
+                uri: String::new(),
+                reason: format!(
+                    "unsupported content: {}",
+                    serde_json::to_string(other).unwrap_or_default()
+                ),
+            },
+        }
+    }
+
+    pub fn uri(&self) -> &str {
+        match self {
+            Self::Text { uri, .. }
+            | Self::Image { uri, .. }
+            | Self::Binary { uri, .. }
+            | Self::Unreadable { uri, .. } => uri,
+        }
+    }
+
+    /// Why a [`Self::Binary`] or [`Self::Unreadable`] part cannot be shown.
+    pub fn unusable_reason(&self) -> Option<String> {
+        match self {
+            Self::Binary {
+                mime_type, size, ..
+            } => Some(format!(
+                "binary content ({}, {size} bytes) cannot be shown",
+                mime_type.as_deref().unwrap_or("unknown type")
+            )),
+            Self::Unreadable { reason, .. } => Some(reason.clone()),
+            Self::Text { .. } | Self::Image { .. } => None,
+        }
+    }
+}
+
+impl Content {
+    /// Add an embedded resource: text as text under a header naming its
+    /// URI, a supported image as an image, anything else as a placeholder.
+    fn push_resource(&mut self, contents: &ResourceContents) {
+        let part = ResourcePart::from_contents(contents);
+        if let Some(reason) = part.unusable_reason() {
+            self.text_parts
+                .push(format!("[resource {}: {reason}]", part.uri()));
+            return;
+        }
+        match part {
+            ResourcePart::Text {
+                uri,
+                mime_type,
+                text,
+            } => {
+                let mime_type = mime_type
+                    .map(|mime_type| format!(" ({mime_type})"))
+                    .unwrap_or_default();
+                self.text_parts
+                    .push(format!("--- resource {uri}{mime_type} ---\n{text}"));
+            }
+            ResourcePart::Image {
+                uri,
+                media_type,
+                base64_data,
+            } => {
+                self.text_parts
+                    .push(format!("[resource {uri}: image below]"));
+                self.images.push(McpImage {
+                    media_type,
+                    base64_data,
+                });
+            }
+            ResourcePart::Binary { .. } | ResourcePart::Unreadable { .. } => {}
+        }
+    }
+
+    fn into_output(self, is_error: bool) -> McpToolOutput {
+        McpToolOutput {
+            text: self.text_parts.join("\n"),
+            is_error,
+            images: self.images,
+        }
+    }
+}
+
+/// One line describing a resource: URI, title or name, MIME type, size and
+/// description.
+pub(crate) fn describe_resource(resource: &Resource) -> String {
+    let mut line = format!(
+        "{} — {}",
+        resource.uri,
+        resource.title.as_deref().unwrap_or(&resource.name)
+    );
+    let details: Vec<String> = resource
+        .mime_type
+        .clone()
+        .into_iter()
+        .chain(resource.size.map(|size| format!("{size} bytes")))
+        .collect();
+    if !details.is_empty() {
+        line.push_str(&format!(" ({})", details.join(", ")));
+    }
+    if let Some(description) = resource.description.as_deref().filter(|d| !d.is_empty()) {
+        line.push_str(": ");
+        line.push_str(description);
+    }
+    line
 }
 
 /// Deserialize a persisted MCP tool output without a live server or registry

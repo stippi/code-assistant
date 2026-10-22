@@ -8,6 +8,7 @@ use crate::tools::core::ToolRegistry;
 use crate::tools::scope::capabilities;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub use mcp_client::{
     AuthorizationOutcome, AuthorizationRequired, DiscoveredTool, McpServerConfig, McpServerStatus,
@@ -427,6 +428,53 @@ pub async fn register_configured_mcp_tools_in(
     }
     statuses.extend(skipped);
     statuses
+}
+
+/// The MCP servers whose resources a session reaches (`:mcp:<server>`): the
+/// registry's resource servers minus those the session switched off. `None`
+/// when none are left.
+pub fn session_resource_servers(
+    registry: &ToolRegistry,
+    disabled_servers: &[String],
+) -> Option<Arc<mcp_client::McpResourceServers>> {
+    let servers = registry
+        .extension::<mcp_client::McpResourceServers>()?
+        .without(disabled_servers);
+    (!servers.is_empty()).then(|| Arc::new(servers))
+}
+
+/// The system prompt section naming the resources of the session's MCP
+/// servers (see [`session_resource_servers`]), or `None` without any or
+/// where `scope` offers no `read_files` to read them with.
+pub fn resources_prompt_section(
+    registry: &ToolRegistry,
+    scope: crate::tools::core::ToolScope,
+    disabled_servers: &[String],
+) -> Option<String> {
+    if !registry.tool_has_capability("read_files", scope.tag()) {
+        return None;
+    }
+    let servers = session_resource_servers(registry, disabled_servers)?;
+    let mut out = String::from("# MCP Resources\n\n");
+    out.push_str(
+        "These MCP servers expose resources (documents, records, files, …). Read one with \
+         `read_files`, passing `:mcp:<server>` as the project and the resource URI as the path \
+         (a line range like `<uri>:10-20` works for text). For a template, fill in its \
+         {placeholders}. `list_files` with the same project and the path `.` lists a server's \
+         current resources; a URI prefix as the path narrows the list.\n",
+    );
+    for (name, server) in servers.iter() {
+        out.push_str(&format!("\n## :mcp:{name}\n\n"));
+        let more_hint = format!("list them with `list_files` in `:mcp:{name}`");
+        match server.catalog.render_summary(&more_hint) {
+            Some(summary) => out.push_str(&summary),
+            None => out.push_str(&format!(
+                "(no resources listed when the session started: {more_hint})"
+            )),
+        }
+        out.push('\n');
+    }
+    Some(out)
 }
 
 #[cfg(test)]
