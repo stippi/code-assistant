@@ -1,14 +1,16 @@
-//! Isolated workspaces for writing sub-agents.
+//! Isolated workspaces for sub-agents.
 //!
-//! A writing sub-agent in a git project runs in its own worktree, started
-//! from a snapshot of the parent's tree (uncommitted work included). Its
-//! edits, formatter runs, builds and git commands stay there, so several
-//! writers can run at once. When it finishes, its changes are merged into
+//! A sub-agent in a git project runs in its own worktree, started from a
+//! snapshot of the parent's tree (uncommitted work included). Its edits,
+//! formatter runs, builds and git commands stay there, so several agents can
+//! write at once. When it finishes, its changes are merged into
 //! the parent's working tree all-or-nothing; on a conflict nothing is
 //! applied and the changes stay on a branch for the parent to resolve.
 
 use anyhow::{Context, Result};
-use git::isolation::{MergeConflict, changed_paths, merge_into_working_tree, snapshot_working_tree};
+use git::isolation::{
+    MergeConflict, changed_paths, merge_into_working_tree, snapshot_working_tree,
+};
 use git::{GitBinary, GitRepository, worktree};
 use std::path::{Path, PathBuf};
 
@@ -38,31 +40,6 @@ pub(crate) enum MergeOutcome {
     },
 }
 
-/// Whether writing sub-agents for `project` get their own worktree.
-pub(crate) fn can_isolate(project: Option<&Path>) -> bool {
-    project.is_some_and(GitRepository::is_repo)
-}
-
-/// Taken by a writing sub-agent that has to share the project tree (no git
-/// repository), so such sub-agents still write one at a time.
-pub(crate) async fn shared_tree_writer(project: Option<&Path>) -> tokio::sync::OwnedMutexGuard<()> {
-    use std::collections::HashMap;
-    use std::sync::{Arc, Mutex, OnceLock};
-    type Slots = Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>;
-    static SLOTS: OnceLock<Slots> = OnceLock::new();
-    let key = project
-        .map(|p| p.canonicalize().unwrap_or_else(|_| p.to_path_buf()))
-        .unwrap_or_default();
-    let slot = SLOTS
-        .get_or_init(Default::default)
-        .lock()
-        .unwrap()
-        .entry(key)
-        .or_default()
-        .clone();
-    slot.lock_owned().await
-}
-
 impl ChildWorkspace {
     /// Create a worktree for the sub-agent of `tool_id`. `None` when the
     /// project is not inside a git repository.
@@ -83,7 +60,13 @@ impl ChildWorkspace {
             snapshot_working_tree(&git, &repo_root, "code-assistant: sub-agent base").await?;
         let id: String = tool_id
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '-'
+                }
+            })
             .collect();
         let branch = format!("code-assistant/sub-agent/{id}-{}", &base[..8]);
         let path = worktree::suggest_worktree_path(&repo_root, &branch);
@@ -157,9 +140,11 @@ impl ChildWorkspace {
     /// made any.
     pub async fn abandon(self) -> Option<String> {
         let kept = match self.collect().await {
-            Ok((changes, paths)) if !paths.is_empty() => {
-                self.keep_branch_at(&changes).await.ok().map(|()| self.branch.clone())
-            }
+            Ok((changes, paths)) if !paths.is_empty() => self
+                .keep_branch_at(&changes)
+                .await
+                .ok()
+                .map(|()| self.branch.clone()),
             _ => None,
         };
         self.remove(kept.is_some()).await;
@@ -265,7 +250,10 @@ mod tests {
             .unwrap();
         let project = ws.project_dir();
         assert!(project.ends_with("sub"));
-        assert_eq!(std::fs::read_to_string(project.join("draft.txt")).unwrap(), "draft\n");
+        assert_eq!(
+            std::fs::read_to_string(project.join("draft.txt")).unwrap(),
+            "draft\n"
+        );
         std::fs::write(project.join("a.txt"), "ONE\ntwo\nthree\n").unwrap();
         let worktree = ws.root().to_path_buf();
 
@@ -289,8 +277,14 @@ mod tests {
     async fn two_children_editing_one_file_both_land() {
         let dir = repo();
         let repo = dir.path().join("repo");
-        let first = ChildWorkspace::create(&repo, "tool_a").await.unwrap().unwrap();
-        let second = ChildWorkspace::create(&repo, "tool_b").await.unwrap().unwrap();
+        let first = ChildWorkspace::create(&repo, "tool_a")
+            .await
+            .unwrap()
+            .unwrap();
+        let second = ChildWorkspace::create(&repo, "tool_b")
+            .await
+            .unwrap()
+            .unwrap();
         std::fs::write(first.project_dir().join("sub/a.txt"), "ONE\ntwo\nthree\n").unwrap();
         std::fs::write(second.project_dir().join("sub/a.txt"), "one\ntwo\nTHREE\n").unwrap();
 
@@ -308,7 +302,10 @@ mod tests {
     async fn a_conflict_keeps_the_branch_and_applies_nothing() {
         let dir = repo();
         let repo = dir.path().join("repo");
-        let ws = ChildWorkspace::create(&repo, "tool_c").await.unwrap().unwrap();
+        let ws = ChildWorkspace::create(&repo, "tool_c")
+            .await
+            .unwrap()
+            .unwrap();
         std::fs::write(ws.project_dir().join("sub/a.txt"), "uno\ntwo\nthree\n").unwrap();
         std::fs::write(repo.join("sub/a.txt"), "eins\ntwo\nthree\n").unwrap();
 
@@ -334,11 +331,17 @@ mod tests {
         let dir = repo();
         let repo = dir.path().join("repo");
 
-        let untouched = ChildWorkspace::create(&repo, "tool_d").await.unwrap().unwrap();
+        let untouched = ChildWorkspace::create(&repo, "tool_d")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(untouched.abandon().await, None);
         assert_eq!(branches(&repo), "");
 
-        let partial = ChildWorkspace::create(&repo, "tool_e").await.unwrap().unwrap();
+        let partial = ChildWorkspace::create(&repo, "tool_e")
+            .await
+            .unwrap()
+            .unwrap();
         std::fs::write(partial.project_dir().join("sub/a.txt"), "half\n").unwrap();
         let kept = partial.abandon().await.unwrap();
         assert_eq!(
@@ -351,7 +354,6 @@ mod tests {
     #[tokio::test]
     async fn no_workspace_outside_git() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(!can_isolate(Some(dir.path())));
         assert!(
             ChildWorkspace::create(dir.path(), "tool_f")
                 .await
