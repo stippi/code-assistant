@@ -39,7 +39,10 @@ async fn run_env(
     for (key, value) in envs {
         cmd.env(key, value);
     }
-    let output = cmd.output().await.context("Failed to execute git command")?;
+    let output = cmd
+        .output()
+        .await
+        .context("Failed to execute git command")?;
     if !output.status.success() {
         bail!(
             "git {} failed: {}",
@@ -47,7 +50,9 @@ async fn run_env(
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim_end().to_string())
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .trim_end()
+        .to_string())
 }
 
 async fn git_path(git: &GitBinary, workdir: &Path, name: &str) -> Result<PathBuf> {
@@ -161,7 +166,10 @@ async fn tree_entry(
     path: &str,
 ) -> Result<Option<TreeEntry>> {
     let output = git
-        .run(workdir, &["ls-tree", "-z", "--full-tree", commit, "--", path])
+        .run(
+            workdir,
+            &["ls-tree", "-z", "--full-tree", commit, "--", path],
+        )
         .await?;
     let Some((meta, _)) = output.split_once('\t') else {
         return Ok(None);
@@ -241,7 +249,9 @@ pub async fn merge_into_working_tree(
             .flatten()
             .any(|entry| !entry.is_plain_file())
         {
-            conflicts.push(conflict("symlinks and submodules are not merged automatically"));
+            conflicts.push(conflict(
+                "symlinks and submodules are not merged automatically",
+            ));
             continue;
         }
         let ours = working_oid(git, workdir, &path).await?;
@@ -323,7 +333,10 @@ async fn merge_file(
         let base_file = scratch.join("base");
         let theirs_file = scratch.join("theirs");
         std::fs::write(&base_file, checkout_bytes(git, workdir, base, path).await?)?;
-        std::fs::write(&theirs_file, checkout_bytes(git, workdir, changes, path).await?)?;
+        std::fs::write(
+            &theirs_file,
+            checkout_bytes(git, workdir, changes, path).await?,
+        )?;
         let mut cmd = git.command(workdir);
         cmd.arg("merge-file")
             .arg("-p")
@@ -401,7 +414,9 @@ mod tests {
         init_repo_with_commit(dir.path());
         commit_file(dir.path(), "a.txt", "one\ntwo\nthree\nfour\nfive\n");
         let git = GitBinary::new().unwrap();
-        let base = snapshot_working_tree(&git, dir.path(), "base").await.unwrap();
+        let base = snapshot_working_tree(&git, dir.path(), "base")
+            .await
+            .unwrap();
         (dir, git, base)
     }
 
@@ -435,7 +450,9 @@ mod tests {
         std::fs::write(dir.path().join(".gitignore"), "ignored.txt\n").unwrap();
         std::fs::write(dir.path().join("ignored.txt"), "x\n").unwrap();
 
-        let snapshot = snapshot_working_tree(&git, dir.path(), "snap").await.unwrap();
+        let snapshot = snapshot_working_tree(&git, dir.path(), "snap")
+            .await
+            .unwrap();
 
         let files = git_cmd(dir.path(), &["ls-tree", "--name-only", &snapshot]);
         assert!(files.contains("new.txt"));
@@ -445,7 +462,10 @@ mod tests {
             "edited"
         );
         // Nothing was staged and HEAD did not move.
-        assert_eq!(git_cmd(dir.path(), &["diff", "--cached", "--name-only"]), "");
+        assert_eq!(
+            git_cmd(dir.path(), &["diff", "--cached", "--name-only"]),
+            ""
+        );
         assert_eq!(
             git_cmd(dir.path(), &["rev-parse", &format!("{snapshot}^")]),
             git_cmd(dir.path(), &["rev-parse", "HEAD"])
@@ -459,7 +479,10 @@ mod tests {
             &git,
             dir.path(),
             &base,
-            &[("a.txt", Some("ONE\ntwo\nthree\nfour\nfive\n")), ("b.txt", Some("b\n"))],
+            &[
+                ("a.txt", Some("ONE\ntwo\nthree\nfour\nfive\n")),
+                ("b.txt", Some("b\n")),
+            ],
         )
         .await;
 
@@ -473,8 +496,14 @@ mod tests {
             std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
             "ONE\ntwo\nthree\nfour\nfive\n"
         );
-        assert_eq!(std::fs::read_to_string(dir.path().join("b.txt")).unwrap(), "b\n");
-        assert_eq!(git_cmd(dir.path(), &["diff", "--cached", "--name-only"]), "");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("b.txt")).unwrap(),
+            "b\n"
+        );
+        assert_eq!(
+            git_cmd(dir.path(), &["diff", "--cached", "--name-only"]),
+            ""
+        );
     }
 
     #[tokio::test]
