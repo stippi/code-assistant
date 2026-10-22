@@ -99,8 +99,21 @@ impl ResourceCatalog {
         })
     }
 
+    /// Whether the server listed a resource with this URI.
+    pub fn lists(&self, uri: &str) -> bool {
+        self.resources.iter().any(|resource| resource.uri == uri)
+    }
+
+    /// Whether `uri` fits one of the server's templates: their literal parts
+    /// in order, anything in place of the `{expressions}`.
+    pub fn matches_template(&self, uri: &str) -> bool {
+        self.templates
+            .iter()
+            .any(|template| template_matches(&template.uri_template, uri))
+    }
+
     /// Every resource whose URI starts with `prefix` (all for an empty one),
-    /// and every template, one per line.
+    /// and every template that can produce such a URI, one per line.
     pub fn render_listing(&self, prefix: &str) -> String {
         let resources: Vec<&Resource> = self
             .resources
@@ -114,11 +127,19 @@ impl ResourceCatalog {
                 text.push_str(&format!("- {}\n", describe_resource(resource)));
             }
         }
-        if !self.templates.is_empty() {
+        let templates: Vec<&ResourceTemplate> = self
+            .templates
+            .iter()
+            .filter(|template| {
+                let fixed = literal_prefix(&template.uri_template);
+                fixed.starts_with(prefix) || prefix.starts_with(fixed)
+            })
+            .collect();
+        if !templates.is_empty() {
             text.push_str(
                 "Resource templates (fill in the {placeholders} to get a readable URI):\n",
             );
-            for template in &self.templates {
+            for template in templates {
                 text.push_str(&format!("- {}\n", describe_template(template)));
             }
         }
@@ -197,6 +218,40 @@ fn priority(resource: &Resource) -> f32 {
         .unwrap_or(0.5)
 }
 
+/// The part of a URI template before its first expression.
+fn literal_prefix(uri_template: &str) -> &str {
+    uri_template
+        .split_once('{')
+        .map_or(uri_template, |(prefix, _)| prefix)
+}
+
+/// Whether `uri` fits `uri_template` (RFC 6570): its literal parts in order,
+/// anything in place of an expression.
+fn template_matches(uri_template: &str, uri: &str) -> bool {
+    let mut parts = uri_template.split('{');
+    let first = parts.next().unwrap_or_default();
+    let Some(mut rest) = uri.strip_prefix(first) else {
+        return false;
+    };
+    let mut literals = Vec::new();
+    for part in parts {
+        let Some((_expression, literal)) = part.split_once('}') else {
+            return false;
+        };
+        literals.push(literal);
+    }
+    let Some(last) = literals.pop() else {
+        return rest.is_empty();
+    };
+    for literal in literals {
+        match rest.find(literal) {
+            Some(at) => rest = &rest[at + literal.len()..],
+            None => return false,
+        }
+    }
+    rest.ends_with(last)
+}
+
 fn describe_template(template: &ResourceTemplate) -> String {
     let mut line = format!(
         "{} — {}",
@@ -221,4 +276,60 @@ fn truncate(line: &str) -> String {
         "{}…",
         line.chars().take(SUMMARY_LINE_CHARS).collect::<String>()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn catalog(resources: &[&str], templates: &[&str]) -> ResourceCatalog {
+        ResourceCatalog {
+            resources: resources
+                .iter()
+                .map(|uri| Resource::new(*uri, *uri))
+                .collect(),
+            templates: templates
+                .iter()
+                .map(|uri_template| {
+                    serde_json::from_value(serde_json::json!({
+                        "uriTemplate": uri_template,
+                        "name": uri_template,
+                    }))
+                    .unwrap()
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn lists_names_listed_uris_only() {
+        let catalog = catalog(&["docs://guide.md"], &["notes://{id}"]);
+        assert!(catalog.lists("docs://guide.md"));
+        assert!(!catalog.lists("docs://guide.md:2"));
+        assert!(!catalog.lists("notes://1"));
+    }
+
+    #[test]
+    fn uris_match_templates_by_their_literal_parts() {
+        let catalog = catalog(&[], &["log://app:{month}", "repo://{owner}/{name}/issues"]);
+        assert!(catalog.matches_template("log://app:2024-10"));
+        assert!(!catalog.matches_template("log://app"));
+        assert!(catalog.matches_template("repo://stippi/code-assistant/issues"));
+        assert!(!catalog.matches_template("repo://stippi/code-assistant/pulls"));
+        assert!(!catalog.matches_template("other://x"));
+    }
+
+    #[test]
+    fn listings_narrow_templates_by_the_prefix_too() {
+        let catalog = catalog(&["docs://guide.md"], &["notes://{id}"]);
+        let notes = catalog.render_listing("notes://12");
+        assert!(notes.contains("notes://{id}"), "{notes}");
+        assert!(!notes.contains("docs://guide.md"), "{notes}");
+
+        let jira = catalog.render_listing("jira://");
+        assert_eq!(
+            jira,
+            "The server lists no resources starting with 'jira://'."
+        );
+    }
 }

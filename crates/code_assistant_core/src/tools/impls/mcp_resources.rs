@@ -3,7 +3,7 @@
 
 use crate::tools::ToolServicesAccess;
 use crate::tools::core::ToolContext;
-use mcp_client::ResourceServer;
+use mcp_client::{ResourceCatalog, ResourceServer};
 
 /// The server an `:mcp:<server>` scope names, as offered to this session.
 pub(crate) fn resource_server<'c>(
@@ -43,30 +43,34 @@ impl<'a> ResourceRequest<'a> {
     /// URI. Only when what remains still has a scheme: `file:///a.md:10-20`
     /// is lines 10–20 of `file:///a.md`, while `issue:123` stays a URI.
     ///
-    /// `listed` tells the URIs the server listed: a listed whole stays whole,
-    /// a listed remainder takes the range. Otherwise a bare number right
-    /// after an authority (`http://host:8080`) is taken for a port.
-    pub fn parse(path: &'a str, listed: impl Fn(&str) -> bool) -> Self {
-        let whole = Self {
-            uri: path,
-            start_line: None,
-            end_line: None,
-        };
+    /// What the server offers decides doubtful cases: a listed whole stays
+    /// whole, a listed remainder takes the range, and so does a URI only one
+    /// of the server's templates produces whole (`log://app:{month}`).
+    /// Otherwise a bare number right after an authority (`http://host:8080`)
+    /// is taken for a port.
+    pub fn parse(path: &'a str, catalog: &ResourceCatalog) -> Self {
+        let whole = Self::whole(path);
         let Some((uri, range)) = path.rsplit_once(':') else {
             return whole;
         };
-        let looks_like_port = !range.contains('-')
-            && uri
-                .split_once("://")
-                .is_some_and(|(_, rest)| !rest.contains('/'));
-        if listed(path) || (looks_like_port && !listed(uri)) {
-            return whole;
-        }
-        if !uri.contains(':')
+        if catalog.lists(path)
+            || !uri.contains(':')
             || !range.chars().any(|c| c.is_ascii_digit())
             || !range.chars().all(|c| c.is_ascii_digit() || c == '-')
         {
             return whole;
+        }
+        if !catalog.lists(uri) {
+            if catalog.matches_template(path) && !catalog.matches_template(uri) {
+                return whole;
+            }
+            let looks_like_port = !range.contains('-')
+                && uri
+                    .split_once("://")
+                    .is_some_and(|(_, rest)| !rest.contains('/'));
+            if looks_like_port {
+                return whole;
+            }
         }
         let number = |part: &str| -> Result<Option<usize>, ()> {
             if part.is_empty() {
@@ -86,6 +90,15 @@ impl<'a> ResourceRequest<'a> {
                 end_line,
             },
             Err(()) => whole,
+        }
+    }
+
+    /// The whole resource at `uri`.
+    pub fn whole(uri: &'a str) -> Self {
+        Self {
+            uri,
+            start_line: None,
+            end_line: None,
         }
     }
 
@@ -130,49 +143,67 @@ mod tests {
         }
     }
 
-    fn unlisted(_uri: &str) -> bool {
-        false
+    /// A catalog listing `resources` and offering `templates`.
+    fn catalog(resources: &[&str], templates: &[&str]) -> ResourceCatalog {
+        ResourceCatalog {
+            resources: resources
+                .iter()
+                .map(|uri| rmcp::model::Resource::new(*uri, *uri))
+                .collect(),
+            templates: templates
+                .iter()
+                .map(|uri_template| {
+                    serde_json::from_value(serde_json::json!({
+                        "uriTemplate": uri_template,
+                        "name": uri_template,
+                    }))
+                    .unwrap()
+                })
+                .collect(),
+        }
     }
 
     #[test]
     fn line_ranges_split_off_uris_with_a_scheme() {
+        let empty = catalog(&[], &[]);
         assert_eq!(
-            ResourceRequest::parse("file:///a.md:10-20", unlisted),
+            ResourceRequest::parse("file:///a.md:10-20", &empty),
             request("file:///a.md", Some(10), Some(20))
         );
         assert_eq!(
-            ResourceRequest::parse("file:///a.md:10-", unlisted),
+            ResourceRequest::parse("file:///a.md:10-", &empty),
             request("file:///a.md", Some(10), None)
         );
         assert_eq!(
-            ResourceRequest::parse("file:///a.md:-20", unlisted),
+            ResourceRequest::parse("file:///a.md:-20", &empty),
             request("file:///a.md", None, Some(20))
         );
         assert_eq!(
-            ResourceRequest::parse("file:///a.md:15", unlisted),
+            ResourceRequest::parse("file:///a.md:15", &empty),
             request("file:///a.md", Some(15), Some(15))
         );
         // Without a path, a range is still a range…
         assert_eq!(
-            ResourceRequest::parse("docs://guide.md:2-3", unlisted),
+            ResourceRequest::parse("docs://guide.md:2-3", &empty),
             request("docs://guide.md", Some(2), Some(3))
         );
         // …and a single line one when the server listed what precedes it.
         assert_eq!(
-            ResourceRequest::parse("docs://guide.md:2", |uri| uri == "docs://guide.md"),
+            ResourceRequest::parse("docs://guide.md:2", &catalog(&["docs://guide.md"], &[])),
             request("docs://guide.md", Some(2), Some(2))
         );
     }
 
     #[test]
     fn uris_without_a_range_stay_whole() {
+        let empty = catalog(&[], &[]);
         for uri in [
             "file:///a.md",
             "issue:123",
             "jira://PROJ-123",
             "http://host:8080",
         ] {
-            let parsed = ResourceRequest::parse(uri, unlisted);
+            let parsed = ResourceRequest::parse(uri, &empty);
             assert_eq!(parsed.uri, uri, "{uri}");
             assert!(!parsed.has_line_range(), "{uri}");
         }
@@ -180,9 +211,23 @@ mod tests {
 
     #[test]
     fn listed_uris_stay_whole() {
-        let parsed = ResourceRequest::parse("file:///a.md:15", |uri| uri == "file:///a.md:15");
+        let parsed = ResourceRequest::parse("file:///a.md:15", &catalog(&["file:///a.md:15"], &[]));
         assert_eq!(parsed.uri, "file:///a.md:15");
         assert!(!parsed.has_line_range());
+    }
+
+    #[test]
+    fn uris_only_a_template_produces_whole_stay_whole() {
+        let logs = catalog(&[], &["log://app:{month}"]);
+        let parsed = ResourceRequest::parse("log://app:2024-10", &logs);
+        assert_eq!(parsed.uri, "log://app:2024-10");
+        assert!(!parsed.has_line_range());
+
+        // A template producing both readings leaves the range a range.
+        assert_eq!(
+            ResourceRequest::parse("docs://guide.md:2-3", &catalog(&[], &["docs://{name}"])),
+            request("docs://guide.md", Some(2), Some(3))
+        );
     }
 
     #[test]
@@ -245,6 +290,8 @@ mod tests {
                     "docs://guide.md" => {
                         vec![ResourceContents::text("one\ntwo\nthree", "docs://guide.md")]
                     }
+                    // Not listed, and its tail looks like a line range.
+                    "urn:docs:42" => vec![ResourceContents::text("answer", "urn:docs:42")],
                     "docs://logo.png" => vec![ResourceContents::BlobResourceContents {
                         uri: "docs://logo.png".into(),
                         mime_type: Some("image/png".into()),
@@ -341,6 +388,21 @@ mod tests {
             .await;
             assert!(!ok);
             assert!(text.contains("no resource docs://missing"), "{text}");
+        }
+
+        #[tokio::test]
+        async fn an_unlisted_uri_misread_as_a_range_is_read_whole() {
+            let (ok, text, _) = invoke(
+                "read_files",
+                docs_servers().await,
+                json!({ "project": ":mcp:docs", "paths": ["urn:docs:42"] }),
+            )
+            .await;
+            assert!(ok, "{text}");
+            assert!(
+                text.contains(">>>>> FILE: urn:docs:42\nanswer\n<<<<< END FILE"),
+                "{text}"
+            );
         }
 
         #[tokio::test]

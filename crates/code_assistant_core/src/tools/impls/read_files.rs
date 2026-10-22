@@ -507,14 +507,17 @@ async fn read_mcp_resources(
     };
 
     for path in &input.paths {
-        let request = ResourceRequest::parse(path, |uri| {
-            server
-                .catalog
-                .resources
-                .iter()
-                .any(|resource| resource.uri == uri)
-        });
-        let result = match server.connection.read_resource(request.uri).await {
+        let mut request = ResourceRequest::parse(path, &server.catalog);
+        let mut result = server.connection.read_resource(request.uri).await;
+        // A range cut off an unlisted URI may have been part of it.
+        if result.is_err() && request.has_line_range() && !server.catalog.lists(request.uri) {
+            let whole = ResourceRequest::whole(path);
+            if let Ok(whole_result) = server.connection.read_resource(whole.uri).await {
+                request = whole;
+                result = Ok(whole_result);
+            }
+        }
+        let result = match result {
             Ok(result) => result,
             Err(error) => {
                 output
