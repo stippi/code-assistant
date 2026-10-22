@@ -236,7 +236,6 @@ impl Tool for GetSessionContentTool {
                 capabilities::READ_ONLY,
                 capabilities::SCOPE_AGENT,
                 capabilities::SCOPE_AGENT_DIFF,
-                capabilities::SCOPE_SUBAGENT_READ_ONLY,
                 capabilities::SCOPE_SUBAGENT_DEFAULT,
                 capabilities::SCOPE_SUBAGENT_DEFAULT_DIFF,
             ]),
@@ -486,7 +485,6 @@ mod tests {
         let spec = GetSessionContentTool.spec();
         assert!(spec.has_capability(capabilities::READ_ONLY));
         assert!(spec.has_capability(capabilities::SCOPE_AGENT));
-        assert!(spec.has_capability(capabilities::SCOPE_SUBAGENT_READ_ONLY));
         assert!(spec.has_capability(capabilities::SCOPE_SUBAGENT_DEFAULT));
         assert!(!spec.has_capability(capabilities::SCOPE_MCP));
     }

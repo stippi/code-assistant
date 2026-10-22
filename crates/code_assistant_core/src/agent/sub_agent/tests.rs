@@ -38,11 +38,7 @@ async fn parked_child(
 ) -> tokio::task::JoinHandle<Result<SubAgentResult>> {
     let task = tokio::spawn({
         let runner = runner.clone();
-        async move {
-            runner
-                .run("child", "inspect".into(), SubAgentMode::ReadOnly, false)
-                .await
-        }
+        async move { runner.run("child", "inspect".into(), false).await }
     });
     tokio::time::timeout(Duration::from_secs(2), entered.notified())
         .await
@@ -67,9 +63,7 @@ async fn assert_ends_cancelled(mut task: tokio::task::JoinHandle<Result<SubAgent
 #[tokio::test]
 async fn sub_agent_failure_unregisters_and_publishes_terminal_output() {
     let (runner, ui) = runner(failing_provider());
-    let result = runner
-        .run("child", "inspect".into(), SubAgentMode::ReadOnly, false)
-        .await;
+    let result = runner.run("child", "inspect".into(), false).await;
     assert!(result.is_err());
     assert!(
         !runner.cancellation_registry.cancel("child"),
@@ -92,12 +86,7 @@ async fn sub_agent_failure_unregisters_and_publishes_terminal_output() {
 #[tokio::test]
 async fn sub_agent_construction_failure_unregisters() {
     let (runner, _) = runner(Arc::new(|_| anyhow::bail!("constructor failed")));
-    assert!(
-        runner
-            .run("child", "inspect".into(), SubAgentMode::ReadOnly, false)
-            .await
-            .is_err()
-    );
+    assert!(runner.run("child", "inspect".into(), false).await.is_err());
     assert!(!runner.cancellation_registry.cancel("child"));
 }
 
@@ -167,7 +156,6 @@ async fn sub_agent_tool_retains_structured_failure_output() {
     let mut input = SpawnAgentInput {
         instructions: "inspect".into(),
         require_file_references: false,
-        mode: "read_only".into(),
         background: false,
     };
     let output = SpawnAgentTool
@@ -217,7 +205,7 @@ impl tools_core::Tool for Probe {
             description: "test".into(),
             parameters_schema: serde_json::json!({"type":"object"}),
             annotations: None,
-            capabilities: tools_core::ToolSpec::capabilities(&[ToolScope::SubAgentReadOnly.tag()]),
+            capabilities: tools_core::ToolSpec::capabilities(&[ToolScope::SubAgentDefault.tag()]),
             multiline_params: &[],
             hidden: false,
             title_template: None,
@@ -260,7 +248,7 @@ async fn sub_agent_keeps_completed_child_evidence_when_later_request_fails() {
     Arc::get_mut(&mut runner).unwrap().tool_registry = Arc::new(registry);
 
     let error = runner
-        .run("child", "inspect".into(), SubAgentMode::ReadOnly, false)
+        .run("child", "inspect".into(), false)
         .await
         .unwrap_err();
     let failure = error.downcast_ref::<SubAgentFailure>().unwrap();
@@ -282,7 +270,7 @@ async fn sub_agent_keeps_completed_child_evidence_when_later_request_fails() {
 async fn sub_agent_factory_panic_is_a_terminal_failure() {
     let (runner, ui) = runner(Arc::new(|_| panic!("factory panicked")));
     let error = runner
-        .run("child", "inspect".into(), SubAgentMode::ReadOnly, false)
+        .run("child", "inspect".into(), false)
         .await
         .unwrap_err();
     assert!(error.downcast_ref::<SubAgentFailure>().is_some());
@@ -418,12 +406,7 @@ async fn background_sub_agent_delivers_its_answer_later() {
     let bg = background_runner(answering_provider("Found it in parser.rs"));
     let started = bg
         .runner
-        .start_background(
-            "tool-1",
-            "Find the parser".into(),
-            SubAgentMode::ReadOnly,
-            false,
-        )
+        .start_background("tool-1", "Find the parser".into(), false)
         .await
         .unwrap();
     assert_eq!(started.agent_id, 1);
@@ -461,7 +444,7 @@ async fn background_sub_agent_outlives_the_parent_run() {
     let entered = provider.entered.clone();
     let bg = background_runner(provider.into_factory());
     bg.runner
-        .start_background("tool-1", "inspect".into(), SubAgentMode::ReadOnly, false)
+        .start_background("tool-1", "inspect".into(), false)
         .await
         .unwrap();
     tokio::time::timeout(Duration::from_secs(2), entered.notified())
@@ -492,7 +475,7 @@ async fn background_sub_agents_end_with_the_session() {
     let bg = background_runner(provider.into_factory());
     for tool_id in ["tool-1", "tool-2"] {
         bg.runner
-            .start_background(tool_id, "inspect".into(), SubAgentMode::ReadOnly, false)
+            .start_background(tool_id, "inspect".into(), false)
             .await
             .unwrap();
         tokio::time::timeout(Duration::from_secs(2), entered.notified())
@@ -517,7 +500,7 @@ async fn background_sub_agents_end_with_the_session() {
 async fn background_failure_is_delivered_as_failed() {
     let bg = background_runner(failing_provider());
     bg.runner
-        .start_background("tool-1", "inspect".into(), SubAgentMode::ReadOnly, false)
+        .start_background("tool-1", "inspect".into(), false)
         .await
         .unwrap();
     let (_, finished) = bg.sink.next().await;
@@ -529,23 +512,11 @@ async fn background_failure_is_delivered_as_failed() {
 }
 
 #[tokio::test]
-async fn writing_sub_agents_cannot_run_in_the_background() {
-    let bg = background_runner(answering_provider("done"));
-    let error = bg
-        .runner
-        .start_background("tool-1", "edit".into(), SubAgentMode::Default, false)
-        .await
-        .unwrap_err();
-    assert!(error.to_string().contains("read-only"));
-    assert!(bg.running.list().is_empty());
-}
-
-#[tokio::test]
 async fn background_needs_a_session_to_report_to() {
     let (runner, _) = runner(answering_provider("done"));
     assert!(
         runner
-            .start_background("tool-1", "inspect".into(), SubAgentMode::ReadOnly, false)
+            .start_background("tool-1", "inspect".into(), false)
             .await
             .is_err()
     );
@@ -556,7 +527,7 @@ async fn foreground_sub_agents_are_listed_while_they_run() {
     let bg = background_runner(answering_provider("done"));
     let result = bg
         .runner
-        .run("tool-1", "inspect".into(), SubAgentMode::ReadOnly, false)
+        .run("tool-1", "inspect".into(), false)
         .await
         .unwrap();
     assert_eq!(result.answer, "done");

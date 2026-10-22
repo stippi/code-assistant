@@ -7,7 +7,6 @@ impl SubAgentRunner for DefaultSubAgentRunner {
         &self,
         parent_tool_id: &str,
         instructions: String,
-        mode: SubAgentMode,
         require_file_references: bool,
     ) -> Result<SubAgentResult> {
         let listing = self.listing(parent_tool_id, &instructions, false);
@@ -15,7 +14,6 @@ impl SubAgentRunner for DefaultSubAgentRunner {
             .run_child(
                 parent_tool_id,
                 instructions,
-                mode,
                 require_file_references,
                 &self.parent_cancellation,
                 self.ui.clone(),
@@ -30,7 +28,6 @@ impl SubAgentRunner for DefaultSubAgentRunner {
         &self,
         parent_tool_id: &str,
         instructions: String,
-        mode: SubAgentMode,
         require_file_references: bool,
     ) -> Result<BackgroundStart> {
         let Some(background) = self.background.clone() else {
@@ -38,13 +35,6 @@ impl SubAgentRunner for DefaultSubAgentRunner {
                 "Background sub-agents are not available here; spawn it without `background`."
             );
         };
-        // A writing sub-agent only runs alongside the parent when it gets its
-        // own worktree; in a shared tree it must finish inside the turn.
-        anyhow::ensure!(
-            mode == SubAgentMode::ReadOnly
-                || workspace::can_isolate(self.session_config.effective_project_path().map(|p| p.as_path())),
-            "Writing sub-agents can only run in the background in a git project; spawn it without `background`."
-        );
         let listing = self
             .listing(parent_tool_id, &instructions, true)
             .ok_or_else(|| anyhow::anyhow!("Background sub-agents need a session to report to."))?;
@@ -61,7 +51,6 @@ impl SubAgentRunner for DefaultSubAgentRunner {
                 .run_child(
                     &tool_id,
                     instructions,
-                    mode,
                     require_file_references,
                     &background.cancellation,
                     background.ui.clone(),
@@ -150,7 +139,6 @@ impl DefaultSubAgentRunner {
         &self,
         parent_tool_id: &str,
         instructions: String,
-        mode: SubAgentMode,
         require_file_references: bool,
         parent_cancellation: &tools_core::RunCancellation,
         ui: Arc<dyn UserInterface>,
@@ -214,21 +202,21 @@ impl DefaultSubAgentRunner {
         let transcript_ui = transcript.as_ref().map(|(_, _, ui)| ui.clone());
         let agent_transcript = transcript.map(|(id, persistence, _)| (id, persistence));
 
-        // A writing sub-agent in a git project works in its own worktree, so
-        // it can run alongside other writers; its changes are merged back
-        // when it finishes. Elsewhere, writing sub-agents take turns.
+        // In a git project a sub-agent works in its own worktree, so it can
+        // run alongside the parent and other sub-agents; its changes are
+        // merged back when it finishes. Elsewhere it shares the parent's
+        // tree, where the per-file write locks keep edits from being lost.
         let parent_project = self.session_config.effective_project_path().cloned();
-        let workspace = match (mode, &parent_project) {
-            (SubAgentMode::Default, Some(project)) => {
-                match workspace::ChildWorkspace::create(project, parent_tool_id).await {
-                    Ok(workspace) => workspace,
-                    Err(e) => {
-                        tracing::warn!("Sub-agent runs in the shared tree: {e:#}");
-                        None
-                    }
+        let workspace = match &parent_project {
+            Some(project) => match workspace::ChildWorkspace::create(project, parent_tool_id).await
+            {
+                Ok(workspace) => workspace,
+                Err(e) => {
+                    tracing::warn!("Sub-agent runs in the shared tree: {e:#}");
+                    None
                 }
-            }
-            _ => None,
+            },
+            None => None,
         };
         if let Some(workspace) = &workspace {
             let _ = self.sandbox_context.register_root(workspace.root());
@@ -240,27 +228,16 @@ impl DefaultSubAgentRunner {
 
         let work = async {
             cancellation.check()?;
-            let _shared_writer = if mode == SubAgentMode::Default && workspace.is_none() {
-                tokio::select! {
-                    biased;
-                    _ = cancellation.cancelled() => return Err(tools_core::Cancelled.into()),
-                    guard = workspace::shared_tree_writer(parent_project.as_deref()) => Some(guard),
-                }
-            } else {
-                None
-            };
             let mut agent = tokio::select! {
                 biased;
                 _ = cancellation.cancelled() => return Err(tools_core::Cancelled.into()),
                 agent = self.build_agent(parent_tool_id, sub_ui.clone(), self.permission_handler.clone(), browsers.clone(), project_path.clone(), agent_transcript) => agent?,
             };
             agent.set_cancellation(cancellation.clone());
-            let scope = match mode {
-                SubAgentMode::ReadOnly => ToolScope::SubAgentReadOnly,
-                SubAgentMode::Default if self.session_config.use_diff_blocks => {
-                    ToolScope::SubAgentDefaultWithDiffBlocks
-                }
-                SubAgentMode::Default => ToolScope::SubAgentDefault,
+            let scope = if self.session_config.use_diff_blocks {
+                ToolScope::SubAgentDefaultWithDiffBlocks
+            } else {
+                ToolScope::SubAgentDefault
             };
             agent.set_tool_scope(scope);
             agent.append_message(Message::new_user(instructions))?;

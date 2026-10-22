@@ -375,8 +375,7 @@ impl ToolResult for BrowserOutput {
     }
 }
 
-/// Build a browser tool's spec. `read_only` tools are also offered to
-/// read-only sub-agents.
+/// Build a browser tool's spec. `read_only` tools carry the read-only tag.
 pub(crate) fn spec(
     name: &'static str,
     description: &'static str,
@@ -393,7 +392,6 @@ pub(crate) fn spec(
     ];
     if read_only {
         caps.push(capabilities::READ_ONLY);
-        caps.push(capabilities::SCOPE_SUBAGENT_READ_ONLY);
     }
     ToolSpec {
         name: name.into(),

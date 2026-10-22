@@ -16,9 +16,9 @@ pub use mcp_client::{
 };
 
 /// Scope tags every MCP tool carries in code-assistant: offered to the main
-/// agent and to writing sub-agents (both dialect variants each), not through
-/// the MCP server mode. Sub-agents share the parent's registry and session
-/// config, so they see the same servers the session has switched on.
+/// agent and to sub-agents (both dialect variants each), not through the MCP
+/// server mode. Sub-agents share the parent's registry and session config, so
+/// they see the same servers the session has switched on.
 pub const MCP_TOOL_SCOPES: &[&str] = &[
     capabilities::SCOPE_AGENT,
     capabilities::SCOPE_AGENT_DIFF,
@@ -535,7 +535,7 @@ mod tests {
     }
 
     #[test]
-    fn mcp_tools_reach_the_main_agent_and_writing_sub_agents() {
+    fn mcp_tools_reach_the_main_agent_and_sub_agents() {
         use crate::tools::scope::ToolScope;
         for scope in [
             ToolScope::Agent,
@@ -545,9 +545,7 @@ mod tests {
         ] {
             assert!(MCP_TOOL_SCOPES.contains(&scope.tag()), "{scope:?}");
         }
-        for scope in [ToolScope::SubAgentReadOnly, ToolScope::McpServer] {
-            assert!(!MCP_TOOL_SCOPES.contains(&scope.tag()), "{scope:?}");
-        }
+        assert!(!MCP_TOOL_SCOPES.contains(&ToolScope::McpServer.tag()));
     }
 
     #[test]

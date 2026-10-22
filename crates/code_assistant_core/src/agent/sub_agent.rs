@@ -297,15 +297,6 @@ pub trait SubAgentTranscripts: Send + Sync {
     fn create(&self, agent_id: u64, title: &str) -> Result<SubAgentTranscript>;
 }
 
-/// Execution mode for a sub-agent, selected by the `spawn_agent` tool input.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SubAgentMode {
-    /// Only read-only tools are available.
-    ReadOnly,
-    /// The sub-agent may also edit files and run commands.
-    Default,
-}
-
 /// Runs sub-agents with isolated history and streams a compact progress view into the parent tool UI.
 #[async_trait::async_trait]
 pub trait SubAgentRunner: Send + Sync {
@@ -313,7 +304,6 @@ pub trait SubAgentRunner: Send + Sync {
         &self,
         parent_tool_id: &str,
         instructions: String,
-        mode: SubAgentMode,
         require_file_references: bool,
     ) -> Result<SubAgentResult>;
 
@@ -323,7 +313,6 @@ pub trait SubAgentRunner: Send + Sync {
         &self,
         _parent_tool_id: &str,
         _instructions: String,
-        _mode: SubAgentMode,
         _require_file_references: bool,
     ) -> Result<BackgroundStart> {
         anyhow::bail!(
@@ -600,7 +589,7 @@ impl DefaultSubAgentRunner {
 
 fn tool_scope_for_subagent() -> ToolScope {
     // default; actual scope is set by caller via Agent::set_tool_scope
-    ToolScope::SubAgentReadOnly
+    ToolScope::SubAgentDefault
 }
 
 /// Compute aggregated token usage from a sub-agent's message history.

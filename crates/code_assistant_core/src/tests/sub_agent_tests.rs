@@ -1,6 +1,5 @@
 //! Tests for the sub-agent feature (spawn_agent tool).
 
-use crate::agent::SubAgentMode;
 use crate::agent::sub_agent::{SubAgentResult, SubAgentRunner};
 use crate::tools::core::ToolScope;
 use crate::tools::impls::spawn_agent::{SpawnAgentInput, SpawnAgentOutput};
@@ -43,7 +42,6 @@ impl SubAgentRunner for MockSubAgentRunner {
         &self,
         _parent_tool_id: &str,
         _instructions: String,
-        _mode: SubAgentMode,
         _require_file_references: bool,
     ) -> Result<SubAgentResult> {
         // Track concurrent executions
@@ -157,13 +155,13 @@ fn test_spawn_agent_input_parsing() {
     let json = serde_json::json!({
         "instructions": "Find all TODO comments",
         "require_file_references": true,
+        // Sessions saved before the mode split was removed still parse.
         "mode": "read_only"
     });
 
     let input: SpawnAgentInput = serde_json::from_value(json).unwrap();
     assert_eq!(input.instructions, "Find all TODO comments");
     assert!(input.require_file_references);
-    assert_eq!(input.mode, "read_only");
 
     // Test with defaults
     let json = serde_json::json!({
@@ -173,16 +171,13 @@ fn test_spawn_agent_input_parsing() {
     let input: SpawnAgentInput = serde_json::from_value(json).unwrap();
     assert_eq!(input.instructions, "Search for patterns");
     assert!(!input.require_file_references);
-    assert_eq!(input.mode, "read_only"); // default
 }
 
 #[tokio::test]
 async fn test_mock_sub_agent_runner() {
     let runner = MockSubAgentRunner::new(10, "Test response");
 
-    let result = runner
-        .run("tool-1", "test".to_string(), SubAgentMode::ReadOnly, false)
-        .await;
+    let result = runner.run("tool-1", "test".to_string(), false).await;
 
     assert!(result.is_ok());
     assert_eq!(result.unwrap().answer, "Test response");
@@ -201,12 +196,7 @@ async fn test_parallel_sub_agent_execution() {
             let runner = runner.clone();
             async move {
                 runner
-                    .run(
-                        &format!("tool-{i}"),
-                        format!("Task {i}"),
-                        SubAgentMode::ReadOnly,
-                        false,
-                    )
+                    .run(&format!("tool-{i}"), format!("Task {i}"), false)
                     .await
             }
         })
@@ -250,34 +240,19 @@ fn test_tool_scope_for_sub_agent() {
     };
 
     // Check spawn_agent is NOT available in sub-agent scope
-    let available = get_tools_for_scope(ToolScope::SubAgentReadOnly);
-    assert!(
-        !available.contains(&"spawn_agent".to_string()),
-        "spawn_agent should not be available in SubAgentReadOnly scope"
-    );
-
     let available = get_tools_for_scope(ToolScope::SubAgentDefault);
     assert!(
         !available.contains(&"spawn_agent".to_string()),
         "spawn_agent should not be available in SubAgentDefault scope"
     );
 
-    // Check read-only tools are available in SubAgentReadOnly scope
-    let available = get_tools_for_scope(ToolScope::SubAgentReadOnly);
+    // Check read tools are available in SubAgentDefault scope
     assert!(available.contains(&"search_files".to_string()));
     assert!(available.contains(&"read_files".to_string()));
     assert!(available.contains(&"list_files".to_string()));
     assert!(available.contains(&"glob_files".to_string()));
     assert!(available.contains(&"web_fetch".to_string()));
     assert!(available.contains(&"web_search".to_string()));
-    // Note: perplexity_ask is only available if PERPLEXITY_API_KEY is configured in tools.json
-    // So we don't assert its presence here - it depends on runtime configuration
-
-    // Check write tools are NOT available in SubAgentReadOnly scope
-    assert!(!available.contains(&"write_file".to_string()));
-    assert!(!available.contains(&"edit".to_string()));
-    assert!(!available.contains(&"delete_files".to_string()));
-    assert!(!available.contains(&"execute_command".to_string()));
 
     // Check write tools ARE available in SubAgentDefault scope
     let available = get_tools_for_scope(ToolScope::SubAgentDefault);

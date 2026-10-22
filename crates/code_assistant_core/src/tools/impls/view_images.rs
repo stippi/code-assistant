@@ -212,7 +212,6 @@ impl Tool for ViewImagesTool {
                 capabilities::SCOPE_MCP,
                 capabilities::SCOPE_AGENT,
                 capabilities::SCOPE_AGENT_DIFF,
-                capabilities::SCOPE_SUBAGENT_READ_ONLY,
                 capabilities::SCOPE_SUBAGENT_DEFAULT,
                 capabilities::SCOPE_SUBAGENT_DEFAULT_DIFF,
             ]),

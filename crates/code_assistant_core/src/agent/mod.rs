@@ -7,6 +7,4 @@ pub mod sub_agent;
 
 pub use crate::types::ToolSyntax;
 pub use runner::{Agent, AgentComponents};
-pub use sub_agent::{
-    DefaultSubAgentRunner, SubAgentCancellationRegistry, SubAgentMode, SubAgentRunner,
-};
+pub use sub_agent::{DefaultSubAgentRunner, SubAgentCancellationRegistry, SubAgentRunner};
