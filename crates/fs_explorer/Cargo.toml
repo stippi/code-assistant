@@ -22,8 +22,9 @@ tracing = "0.1.40"
 path-clean = "1.0.1"
 walkdir = "2.5"
 notify = { version = "7", features = ["macos_fsevent"] }
+tokio = { version = "1.40.0", features = ["sync"] }
 transmutation = { version = "0.3", features = ["office"], optional = true }
 
 [dev-dependencies]
 tempfile = "3.13.0"
-tokio = { version = "1.40.0", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.40.0", features = ["macros", "rt-multi-thread", "time"] }

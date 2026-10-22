@@ -4,6 +4,7 @@ pub mod document_search;
 pub mod encoding;
 mod explorer;
 pub mod file_updater;
+pub mod locks;
 pub mod types;
 pub mod watch;
 

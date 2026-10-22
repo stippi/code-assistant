@@ -144,8 +144,38 @@ pub fn write_file_with_encoding(path: &Path, content: &str, encoding: &FileEncod
     };
 
     let (bytes, _, _) = encoding.encode(content);
-    std::fs::write(path, &bytes)?;
+    write_atomic(path, &bytes)?;
     Ok(())
+}
+
+/// Replace `path` with `bytes` so readers see either the old or the new
+/// content, never a truncated file: write a sibling temp file, then rename it
+/// over the target. A symlink is written through to its target, and an
+/// existing file keeps its permissions.
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let (Some(dir), Some(name)) = (target.parent(), target.file_name()) else {
+        return std::fs::write(path, bytes);
+    };
+    let tmp = dir.join(format!(
+        ".{}.{}-{}.tmp",
+        name.to_string_lossy(),
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    let result = std::fs::write(&tmp, bytes)
+        .and_then(|()| match std::fs::metadata(&target) {
+            Ok(meta) => std::fs::set_permissions(&tmp, meta.permissions()),
+            Err(_) => Ok(()),
+        })
+        .and_then(|()| std::fs::rename(&tmp, &target));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 /// Detects the line ending used in a string
@@ -254,6 +284,51 @@ pub fn write_file_with_format(path: &Path, content: &str, format: &FileFormat) -
 mod tests {
     use super::*;
     use crate::types::{FileFormat, LineEnding};
+
+    #[test]
+    fn atomic_write_replaces_content_and_keeps_permissions() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("script.sh");
+        std::fs::write(&file, "old").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        write_atomic(&file, b"new").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "new");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o755);
+        }
+        // No temp file is left behind.
+        let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+        assert_eq!(names.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_goes_through_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real.txt");
+        let link = dir.path().join("link.txt");
+        std::fs::write(&real, "old").unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        write_atomic(&link, b"new").unwrap();
+
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "new");
+    }
 
     #[test]
     fn test_iso_8859_1_not_detected_as_utf16() {
