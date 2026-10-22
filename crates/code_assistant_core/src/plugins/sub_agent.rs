@@ -1,5 +1,7 @@
-//! Dispatch policy for the `spawn_agent` tool: multiple read-only sub-agents
-//! of the same turn run concurrently.
+//! Dispatch policy for the `spawn_agent` tool: multiple sub-agents of the
+//! same turn run concurrently. Writing sub-agents are safe to start together:
+//! in a git project each gets its own worktree, elsewhere they take turns
+//! inside the runner (see `agent::sub_agent::workspace`).
 
 use crate::tools::ToolRequest;
 use agent_core::hooks::ToolDispatchPolicy;
@@ -8,12 +10,7 @@ pub struct SpawnAgentParallelPolicy;
 
 impl SpawnAgentParallelPolicy {
     fn can_run_in_parallel(request: &ToolRequest) -> bool {
-        if request.name != "spawn_agent" {
-            return false;
-        }
-        // Check if mode is read_only (default if not specified)
-        let mode = request.input["mode"].as_str().unwrap_or("read_only");
-        mode == "read_only"
+        request.name == "spawn_agent"
     }
 }
 
@@ -47,14 +44,14 @@ mod tests {
     }
 
     #[test]
-    fn read_only_spawn_agents_run_in_parallel() {
+    fn read_only_and_writing_spawn_agents_run_in_parallel() {
         let requests = vec![
             spawn_agent_request("1", Some("read_only")),
             spawn_agent_request("2", None), // mode defaults to read_only
             spawn_agent_request("3", Some("default")),
         ];
         let indices = SpawnAgentParallelPolicy.parallel_indices(&requests);
-        assert_eq!(indices, vec![0, 1]);
+        assert_eq!(indices, vec![0, 1, 2]);
     }
 
     #[test]

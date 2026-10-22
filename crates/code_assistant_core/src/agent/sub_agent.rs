@@ -2,6 +2,7 @@ mod run;
 pub mod running;
 #[cfg(test)]
 mod tests;
+mod workspace;
 
 pub use running::{RunningSubAgentInfo, RunningSubAgents, highest_sub_agent_id};
 
@@ -17,6 +18,7 @@ use command_executor::{CommandExecutor, DefaultCommandExecutor, SandboxedCommand
 use llm::Message;
 use sandbox::{SandboxContext, SandboxPolicy};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tools_core::permissions::{PermissionMediator, ToolPermissions};
 
@@ -495,6 +497,7 @@ impl DefaultSubAgentRunner {
         ui: Arc<dyn UserInterface>,
         permission_handler: Option<Arc<dyn PermissionMediator>>,
         browser_sessions: Arc<web::BrowserSessionManager>,
+        project_path: Option<PathBuf>,
         transcript: Option<(
             String,
             Box<dyn crate::agent::persistence::AgentStatePersistence>,
@@ -529,10 +532,11 @@ impl DefaultSubAgentRunner {
             }
         };
 
-        // Create a fresh project manager, copying init_path if set.
+        // Create a fresh project manager on the parent's project, or on the
+        // sub-agent's own worktree.
         let project_manager: Arc<dyn crate::config::ProjectManager> =
             Arc::from((self.project_manager_factory)());
-        if let Some(path) = self.session_config.effective_project_path().cloned() {
+        if let Some(path) = project_path {
             let _ = project_manager.add_temporary_project(path);
         }
 

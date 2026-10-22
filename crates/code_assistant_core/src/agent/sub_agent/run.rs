@@ -38,11 +38,12 @@ impl SubAgentRunner for DefaultSubAgentRunner {
                 "Background sub-agents are not available here; spawn it without `background`."
             );
         };
-        // Writes are only safe while writing sub-agents run one at a time,
-        // inside the parent's turn.
+        // A writing sub-agent only runs alongside the parent when it gets its
+        // own worktree; in a shared tree it must finish inside the turn.
         anyhow::ensure!(
-            mode == SubAgentMode::ReadOnly,
-            "Only read-only sub-agents can run in the background; spawn writing sub-agents without `background`."
+            mode == SubAgentMode::ReadOnly
+                || workspace::can_isolate(self.session_config.effective_project_path().map(|p| p.as_path())),
+            "Writing sub-agents can only run in the background in a git project; spawn it without `background`."
         );
         let listing = self
             .listing(parent_tool_id, &instructions, true)
@@ -213,12 +214,45 @@ impl DefaultSubAgentRunner {
         let transcript_ui = transcript.as_ref().map(|(_, _, ui)| ui.clone());
         let agent_transcript = transcript.map(|(id, persistence, _)| (id, persistence));
 
+        // A writing sub-agent in a git project works in its own worktree, so
+        // it can run alongside other writers; its changes are merged back
+        // when it finishes. Elsewhere, writing sub-agents take turns.
+        let parent_project = self.session_config.effective_project_path().cloned();
+        let workspace = match (mode, &parent_project) {
+            (SubAgentMode::Default, Some(project)) => {
+                match workspace::ChildWorkspace::create(project, parent_tool_id).await {
+                    Ok(workspace) => workspace,
+                    Err(e) => {
+                        tracing::warn!("Sub-agent runs in the shared tree: {e:#}");
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
+        if let Some(workspace) = &workspace {
+            let _ = self.sandbox_context.register_root(workspace.root());
+        }
+        let project_path = workspace
+            .as_ref()
+            .map(|w| w.project_dir())
+            .or_else(|| parent_project.clone());
+
         let work = async {
             cancellation.check()?;
+            let _shared_writer = if mode == SubAgentMode::Default && workspace.is_none() {
+                tokio::select! {
+                    biased;
+                    _ = cancellation.cancelled() => return Err(tools_core::Cancelled.into()),
+                    guard = workspace::shared_tree_writer(parent_project.as_deref()) => Some(guard),
+                }
+            } else {
+                None
+            };
             let mut agent = tokio::select! {
                 biased;
                 _ = cancellation.cancelled() => return Err(tools_core::Cancelled.into()),
-                agent = self.build_agent(parent_tool_id, sub_ui.clone(), self.permission_handler.clone(), browsers.clone(), agent_transcript) => agent?,
+                agent = self.build_agent(parent_tool_id, sub_ui.clone(), self.permission_handler.clone(), browsers.clone(), project_path.clone(), agent_transcript) => agent?,
             };
             agent.set_cancellation(cancellation.clone());
             let scope = match mode {
@@ -280,7 +314,20 @@ impl DefaultSubAgentRunner {
         }
 
         match result {
-            Ok(answer) if !cancellation.is_cancelled() => {
+            Ok(mut answer) if !cancellation.is_cancelled() => {
+                if let Some(workspace) = workspace {
+                    let location = workspace.root().display().to_string();
+                    let report = match workspace.finish().await {
+                        Ok(outcome) => outcome.report(),
+                        Err(e) => Some(format!(
+                            "The sub-agent's changes could not be merged into your working tree: {e:#}. Its worktree is left at {location}."
+                        )),
+                    };
+                    if let Some(report) = report {
+                        answer.push_str("\n\n---\n");
+                        answer.push_str(&report);
+                    }
+                }
                 sub_ui.set_response(answer.clone());
                 sub_ui.send_output_update().await;
                 Ok(SubAgentResult {
@@ -290,13 +337,25 @@ impl DefaultSubAgentRunner {
             }
             result => {
                 let cancelled = cancellation.is_cancelled();
+                let side_effects = match workspace {
+                    Some(workspace) => match workspace.abandon().await {
+                        Some(branch) => format!(
+                            "Nothing was applied to your working tree; its partial changes are on branch `{branch}`."
+                        ),
+                        None => "It made no changes.".to_string(),
+                    },
+                    None => {
+                        "Partial work may have occurred; verify side effects before restarting."
+                            .to_string()
+                    }
+                };
                 let message = if cancelled {
-                    "Sub-agent cancelled. Partial work may have occurred; verify side effects before restarting.".to_string()
+                    format!("Sub-agent cancelled. {side_effects}")
                 } else {
-                    format!(
-                        "{:#}. Partial work may have occurred; verify side effects before restarting.",
-                        result.unwrap_err()
-                    )
+                    match result {
+                        Err(e) => format!("{e:#}. {side_effects}"),
+                        Ok(_) => format!("Sub-agent cancelled. {side_effects}"),
+                    }
                 };
                 if cancelled {
                     sub_ui.set_cancelled();
