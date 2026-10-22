@@ -10,12 +10,13 @@ use crate::client::McpServerConnection;
 use crate::config::{McpServerConfig, McpServersConfig};
 use crate::resources::{McpResourceServers, ResourceCatalog, ResourceServer};
 use crate::tool::McpTool;
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use futures::future::join_all;
 use rmcp::model::Tool as McpToolDescriptor;
 use std::borrow::Cow;
 use std::sync::Arc;
+use std::time::Duration;
 use tools_core::registry::ToolRegistry;
 
 /// Supplies (and typically caches) live [`McpServerConnection`]s for
@@ -101,25 +102,32 @@ struct Discovered {
     resources: Option<ResourceCatalog>,
 }
 
+/// How long registration waits for a server's resource listing. The catalog
+/// only feeds the system prompt; without it the resources are still
+/// readable, and `list_files` lists them again (with the full timeout).
+const CATALOG_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// List a server's tools and, alongside, its resources.
 async fn discover(connection: Arc<McpServerConnection>) -> Result<Discovered> {
-    let descriptors = connection.list_tools().await?;
-    let resources = if connection.supports_resources() {
+    let catalog = async {
+        if !connection.supports_resources() {
+            return None;
+        }
         // A failed listing still offers the server's resources: reading may
         // work, and listing again reports the error when the model asks.
-        Some(
-            ResourceCatalog::discover(&connection)
-                .await
-                .inspect_err(|error| {
-                    tracing::warn!(server = connection.name(), "listing resources: {error:#}")
-                })
-                .unwrap_or_default(),
-        )
-    } else {
-        None
+        let catalog = tokio::time::timeout(CATALOG_TIMEOUT, ResourceCatalog::discover(&connection))
+            .await
+            .unwrap_or_else(|_elapsed| Err(anyhow!("no answer within {CATALOG_TIMEOUT:?}")))
+            .inspect_err(|error| {
+                tracing::warn!(server = connection.name(), "listing resources: {error:#}")
+            })
+            .unwrap_or_default();
+        Some(catalog)
     };
+    let (descriptors, resources) = tokio::join!(connection.list_tools(), catalog);
     Ok(Discovered {
+        descriptors: descriptors?,
         connection,
-        descriptors,
         resources,
     })
 }

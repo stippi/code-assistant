@@ -78,13 +78,14 @@ pub struct ResourceCatalog {
 }
 
 impl ResourceCatalog {
-    /// List a server's resources and templates. Templates are optional for
-    /// a server: failing to list them leaves them out.
+    /// List a server's resources and templates, both at once. Templates are
+    /// optional for a server: failing to list them leaves them out.
     pub async fn discover(connection: &McpServerConnection) -> Result<Self> {
-        let resources = connection.list_resources().await?;
-        let templates = connection
-            .list_resource_templates()
-            .await
+        let (resources, templates) = tokio::join!(
+            connection.list_resources(),
+            connection.list_resource_templates()
+        );
+        let templates = templates
             .inspect_err(|error| {
                 tracing::debug!(
                     server = connection.name(),
@@ -93,7 +94,7 @@ impl ResourceCatalog {
             })
             .unwrap_or_default();
         Ok(Self {
-            resources,
+            resources: resources?,
             templates,
         })
     }
