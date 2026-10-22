@@ -101,6 +101,11 @@ const ALL_COMMANDS: &[SlashCommand] = &[
         description: "Use a skill: /<skill-name> <request> (or pick from the list)",
     },
     SlashCommand {
+        name: "agents",
+        aliases: &[],
+        description: "List running sub-agents, or cancel one: /agents cancel <id|all>",
+    },
+    SlashCommand {
         name: "sessions",
         aliases: &["resume"],
         description: "Switch to another session (pick from the list)",
@@ -167,6 +172,8 @@ pub enum CommandResult {
     /// Cancel the `/new` / `/handoff` waiting for its target (Esc on the
     /// prompt): stops the run.
     CancelNewContext,
+    /// List or cancel running sub-agents (`/agents`).
+    Agents(crate::sub_agents::AgentsCommand),
 }
 
 /// Process slash commands in terminal UI
@@ -261,6 +268,10 @@ impl CommandProcessor {
             },
             // Both `/sessions` and `/resume` open the session picker; any
             // trailing text is ignored (selection happens in the picker).
+            "agents" => match crate::sub_agents::AgentsCommand::parse(&parts[1..]) {
+                Ok(command) => CommandResult::Agents(command),
+                Err(error) => CommandResult::InvalidCommand(error),
+            },
             "sessions" | "resume" => CommandResult::OpenSessionPicker,
             // A skill trigger: the core adds the skill's instructions.
             _ if self.is_skill(parts[0]) => CommandResult::Continue,

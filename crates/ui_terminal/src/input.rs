@@ -65,6 +65,8 @@ pub enum KeyEventResult {
     /// `None` means the current line no longer starts with `/` (close the
     /// popup if it was open).
     SlashPrefixChanged(Option<String>),
+    /// List or cancel running sub-agents.
+    Agents(crate::sub_agents::AgentsCommand),
     /// The user typed (or backspaced) while a popup was already open.
     /// The string is the entire current composer line, used as the query
     /// for the top-of-stack popup (no leading slash strip).
@@ -225,6 +227,7 @@ impl InputManager {
                                 attachments,
                             },
                             CommandResult::Goal { args } => KeyEventResult::Goal { args },
+                            CommandResult::Agents(command) => KeyEventResult::Agents(command),
                             CommandResult::InsertInputTemplate(template) => {
                                 self.textarea.insert_str(&template);
                                 KeyEventResult::Continue

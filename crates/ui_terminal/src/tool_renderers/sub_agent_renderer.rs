@@ -174,6 +174,8 @@ mod tests {
             error,
             response,
             usage: None,
+            agent_id: None,
+            background: false,
         }
         .to_json()
     }
