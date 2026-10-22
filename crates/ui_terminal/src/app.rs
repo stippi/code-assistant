@@ -183,6 +183,21 @@ impl Actions {
         });
     }
 
+    fn cancel_sub_agents(&self, session_id: String, tool_ids: Vec<String>) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            for tool_id in tool_ids {
+                if let Err(e) = this
+                    .service
+                    .cancel_sub_agent(session_id.clone(), tool_id)
+                    .await
+                {
+                    this.display_error(format!("Failed to cancel sub-agent: {e:#}"));
+                }
+            }
+        });
+    }
+
     fn switch_model(&self, session_id: String, model_name: String) {
         let this = self.clone();
         tokio::spawn(async move {
@@ -584,6 +599,28 @@ async fn handle_command_result(
             let session_id = app_state.lock().await.current_session_id.clone();
             if let Some(session_id) = session_id {
                 actions.set_effort(session_id, effort);
+            }
+        }
+        CommandResult::Agents(command) => {
+            use crate::sub_agents::AgentsCommand;
+            let mut state = app_state.lock().await;
+            match command {
+                AgentsCommand::List => {
+                    let listing = crate::sub_agents::listing(&state.running_sub_agents);
+                    state.set_info_message(Some(listing));
+                }
+                AgentsCommand::Cancel(target) => {
+                    match (
+                        state.current_session_id.clone(),
+                        AgentsCommand::cancel_targets(target, &state.running_sub_agents),
+                    ) {
+                        (Some(session_id), Ok(tool_ids)) => {
+                            actions.cancel_sub_agents(session_id, tool_ids);
+                        }
+                        (None, _) => state.set_info_message(Some("No active session".into())),
+                        (_, Err(error)) => state.set_info_message(Some(error)),
+                    }
+                }
             }
         }
         CommandResult::ShowPermissionTier => {
@@ -1034,6 +1071,15 @@ async fn event_loop(
                                     // command-result handler to open the picker.
                                     handle_command_result(
                                         crate::commands::CommandResult::OpenSkillPicker,
+                                        &app_state,
+                                        &renderer,
+                                        &actions,
+                                    )
+                                    .await;
+                                }
+                                KeyEventResult::Agents(command) => {
+                                    handle_command_result(
+                                        crate::commands::CommandResult::Agents(command),
                                         &app_state,
                                         &renderer,
                                         &actions,

@@ -329,6 +329,19 @@ impl TerminalUI {
                     }
                 }
             }
+            UiEvent::UpdateRunningSubAgents { session_id, agents } => {
+                {
+                    let mut state = self.app_state.lock().await;
+                    if state.current_session_id.as_deref() != Some(session_id.as_str()) {
+                        return Ok(());
+                    }
+                    state.running_sub_agents = agents.clone();
+                }
+                if let Some(renderer) = self.renderer.lock().await.as_ref() {
+                    let mut renderer_guard = renderer.lock().await;
+                    renderer_guard.set_running_sub_agents(agents);
+                }
+            }
             UiEvent::UpdatePendingMessage { message } => {
                 debug!("Updating pending message: {:?}", message);
                 {
