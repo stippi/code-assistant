@@ -18,9 +18,7 @@ pub enum ToolScope {
     Agent,
     /// Tool can be used in the agent when configured for diff blocks format
     AgentWithDiffBlocks,
-    /// Tool scope for sub-agents running in a restricted, read-only mode
-    SubAgentReadOnly,
-    /// Tool scope for sub-agents running with broader permissions
+    /// Tool scope for sub-agents
     SubAgentDefault,
     /// Same as `SubAgentDefault` but with the diff-format edit tool
     /// (`replace_in_file`) instead of the simple `edit` tool. Selected by
@@ -41,7 +39,6 @@ impl ToolScope {
             ToolScope::McpServer => capabilities::SCOPE_MCP,
             ToolScope::Agent => capabilities::SCOPE_AGENT,
             ToolScope::AgentWithDiffBlocks => capabilities::SCOPE_AGENT_DIFF,
-            ToolScope::SubAgentReadOnly => capabilities::SCOPE_SUBAGENT_READ_ONLY,
             ToolScope::SubAgentDefault => capabilities::SCOPE_SUBAGENT_DEFAULT,
             ToolScope::SubAgentDefaultWithDiffBlocks => capabilities::SCOPE_SUBAGENT_DEFAULT_DIFF,
             ToolScope::Custom(tag) => tag,
@@ -58,7 +55,6 @@ pub mod capabilities {
     pub const SCOPE_MCP: &str = "scope:mcp";
     pub const SCOPE_AGENT: &str = "scope:agent";
     pub const SCOPE_AGENT_DIFF: &str = "scope:agent-diff";
-    pub const SCOPE_SUBAGENT_READ_ONLY: &str = "scope:subagent-read-only";
     pub const SCOPE_SUBAGENT_DEFAULT: &str = "scope:subagent-default";
     pub const SCOPE_SUBAGENT_DEFAULT_DIFF: &str = "scope:subagent-default-diff";
 }
