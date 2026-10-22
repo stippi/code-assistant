@@ -1091,6 +1091,10 @@ impl MainScreen {
             let current_activity_state =
                 gpui.current_session_activity_state.lock().unwrap().clone();
 
+            if code_assistant_core::persistence::layout::sub_agent_parent(session_id).is_some() {
+                tracing::warn!("MainScreen: Cannot send message — {session_id} is a transcript");
+                return;
+            }
             if current_activity_state
                 .as_ref()
                 .is_some_and(|s| s.is_running_externally())
@@ -1951,8 +1955,13 @@ impl Render for MainScreen {
             })
         });
 
+        let sub_agent_transcript = current_session_id.as_deref().and_then(|id| {
+            code_assistant_core::persistence::layout::sub_agent_parent(id)
+                .map(|(parent, agent_id)| (parent.to_string(), agent_id))
+        });
         self.input_area.update(cx, |input_area, _cx| {
             input_area.set_agent_state(agent_is_running, cancel_enabled, externally_locked);
+            input_area.set_sub_agent_transcript(sub_agent_transcript);
             input_area.set_context_usage(context_usage);
             input_area.set_context_total_usage(context_total_usage);
         });

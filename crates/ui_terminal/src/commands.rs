@@ -103,7 +103,7 @@ const ALL_COMMANDS: &[SlashCommand] = &[
     SlashCommand {
         name: "agents",
         aliases: &[],
-        description: "List running sub-agents, or cancel one: /agents cancel <id|all>",
+        description: "List running sub-agents: /agents [open <id>|back|cancel <id|all>]",
     },
     SlashCommand {
         name: "sessions",

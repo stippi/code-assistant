@@ -1120,6 +1120,10 @@ impl FileSessionPersistence {
     /// concurrent processes don't lose each other's changes. Nothing is
     /// written when the entry is unchanged.
     fn store_metadata(&self, metadata: ChatMetadata) -> Result<()> {
+        // Sub-agent transcripts are reached through their parent only.
+        if layout::sub_agent_parent(&metadata.id).is_some() {
+            return Ok(());
+        }
         let _lock = lock_exclusive(&self.metadata_lock_path()?)?;
         let metadata_path = self.metadata_file_path()?;
         let mut metadata_list: Vec<ChatMetadata> = if metadata_path.exists() {

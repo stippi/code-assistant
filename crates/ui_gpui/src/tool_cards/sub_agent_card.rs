@@ -215,6 +215,31 @@ impl ToolBlockRenderer for SubAgentCardRenderer {
             }
         }
 
+        // Transcript link, once the sub-agent has one
+        if let Some(session_id) = parsed.as_ref().and_then(|p| p.session_id.clone()) {
+            header_right = header_right.child(
+                div()
+                    .id(SharedString::from(format!("transcript-sa-{}", tool.id)))
+                    .px_2()
+                    .py(px(1.))
+                    .rounded(px(4.))
+                    .text_size(rems(0.6875))
+                    .text_color(theme.muted_foreground)
+                    .cursor_pointer()
+                    .hover(|s| {
+                        s.bg(theme.accent.opacity(0.25))
+                            .text_color(theme.foreground)
+                    })
+                    .on_click(cx.listener(move |_view, _event: &ClickEvent, _window, cx| {
+                        cx.stop_propagation();
+                        if let Some(gpui) = cx.try_global::<crate::Gpui>() {
+                            gpui.cmd_load_session(session_id.clone(), None);
+                        }
+                    }))
+                    .child("Transcript"),
+            );
+        }
+
         // Cancel button (while running)
         if is_running {
             let tool_id_cancel = tool.id.clone();

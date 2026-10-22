@@ -179,6 +179,43 @@ async fn background_result_starts_a_turn_in_the_idle_session() {
     assert_eq!(card.activity, Some(SubAgentActivity::Completed));
     let snapshot = service.load_session(id.clone(), None).await.unwrap();
     assert!(snapshot.running_sub_agents.is_empty());
+
+    // Its conversation is a read-only session of its own, inside the
+    // parent's and left out of the listings.
+    let transcript_id = card.session_id.clone().unwrap();
+    assert_eq!(transcript_id, format!("{id}/sub-agents/1"));
+    assert_eq!(running.session_id.as_ref(), Some(&transcript_id));
+    let transcript = service
+        .load_session(transcript_id.clone(), None)
+        .await
+        .unwrap();
+    let texts: Vec<(crate::ui::ui_events::MessageRole, String)> = transcript
+        .messages
+        .iter()
+        .map(|m| (m.role.clone(), text_of(m)))
+        .collect();
+    assert_eq!(
+        texts,
+        vec![
+            (
+                crate::ui::ui_events::MessageRole::User,
+                "Find the parser".to_string()
+            ),
+            (
+                crate::ui::ui_events::MessageRole::Assistant,
+                "The parser lives in parser.rs.".to_string()
+            ),
+        ]
+    );
+    assert!(
+        service
+            .send_user_message(transcript_id.clone(), "hi".into(), vec![], None)
+            .await
+            .is_err()
+    );
+    let listed = manager.lock().await.list_all_sessions().unwrap();
+    assert!(listed.iter().all(|m| m.id != transcript_id));
+    assert!(listed.iter().any(|m| m.id == id));
 }
 
 fn stored_spawn(tool_id: &str) -> agent_core::SerializedToolExecution {
