@@ -265,10 +265,24 @@ impl Render for ReadFilesOutput {
             })
             .collect();
 
+        // The images themselves reach the UI with the tool result; these name
+        // them.
+        let images: Vec<serde_json::Value> = self
+            .images
+            .iter()
+            .map(|image| {
+                json!({
+                    "path": image.path.to_string_lossy(),
+                    "media_type": image.media_type,
+                })
+            })
+            .collect();
+
         json!({
             "kind": "read_files",
             "files": files,
             "errors": errors,
+            "images": images,
         })
         .to_string()
     }

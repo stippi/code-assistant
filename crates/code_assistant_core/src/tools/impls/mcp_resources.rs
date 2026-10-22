@@ -365,6 +365,26 @@ mod tests {
             )
         }
 
+        /// What `read_files` hands the UI.
+        async fn ui_json(
+            servers: Arc<McpResourceServers>,
+            mut params: serde_json::Value,
+        ) -> serde_json::Value {
+            let registry = crate::tools::test_registry();
+            let mut fixture = ToolTestFixture::new().with_mcp_resources(servers);
+            let mut context = fixture.context();
+            let output = registry
+                .get("read_files")
+                .unwrap()
+                .invoke(&mut context, &mut params)
+                .await
+                .unwrap();
+            let ui = output
+                .as_render()
+                .render_for_ui(&mut ResourcesTracker::new());
+            serde_json::from_str(&ui).unwrap()
+        }
+
         #[tokio::test]
         async fn read_files_reads_resources_with_line_ranges_and_images() {
             let servers = docs_servers().await;
@@ -389,6 +409,15 @@ mod tests {
             .await;
             assert!(ok, "{text}");
             assert_eq!(images, 1);
+            let ui = ui_json(
+                servers.clone(),
+                json!({ "project": ":mcp:docs", "paths": ["docs://logo.png"] }),
+            )
+            .await;
+            assert_eq!(
+                ui["images"],
+                json!([{ "path": "docs://logo.png", "media_type": "image/png" }])
+            );
 
             let (ok, text, _) = invoke(
                 "read_files",
