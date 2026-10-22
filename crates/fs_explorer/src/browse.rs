@@ -1,6 +1,7 @@
-//! Read-only browsing of a project for a file viewer: one directory level at
-//! a time, a single file's text, and the flat list of files for a name
-//! filter. Every path is relative to a root and may not leave it.
+//! Browsing a project for a file viewer: one directory level at a time, a
+//! single file's text, and the flat list of files for a name filter; plus
+//! saving and deleting a file. Every path is relative to a root and may not
+//! leave it.
 
 use crate::encoding::{read_file_with_encoding, write_file_with_encoding};
 use anyhow::{Result, anyhow, bail};
@@ -146,6 +147,17 @@ pub fn write_file(root: &Path, rel: &Path, text: &str) -> Result<()> {
     write_file_with_encoding(&path, text, &encoding)
 }
 
+/// Delete the file `rel` (the user deleting it in a file viewer).
+/// Directories are refused.
+pub fn delete_file(root: &Path, rel: &Path) -> Result<()> {
+    let path = resolve_inside(root, rel)?;
+    if !path.symlink_metadata()?.is_file() {
+        bail!("{} is not a file", rel.display());
+    }
+    std::fs::remove_file(&path)?;
+    Ok(())
+}
+
 /// Every file under `root` that gitignore keeps, as `/`-separated relative
 /// paths in walk order, at most [`MAX_LISTED_FILES`]. The flag tells whether
 /// the list was cut.
@@ -289,5 +301,15 @@ mod tests {
             files,
             vec![".gitignore", "README.md", "src/lib.rs", "src/nested/b.rs"]
         );
+    }
+
+    #[test]
+    fn deletes_files_but_not_directories() {
+        let dir = project();
+        delete_file(dir.path(), Path::new("src/lib.rs")).unwrap();
+        assert!(!dir.path().join("src/lib.rs").exists());
+        assert!(delete_file(dir.path(), Path::new("src/nested")).is_err());
+        assert!(delete_file(dir.path(), Path::new("src/missing.rs")).is_err());
+        assert!(delete_file(dir.path(), Path::new("../x")).is_err());
     }
 }
