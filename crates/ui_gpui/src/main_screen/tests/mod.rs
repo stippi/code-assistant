@@ -6,4 +6,5 @@ mod composer;
 mod end_to_end;
 mod sidebar;
 mod stored_outputs;
+mod sub_agents;
 mod wakeups;

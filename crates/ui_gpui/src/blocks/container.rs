@@ -28,6 +28,16 @@ pub enum HiddenToolBlockType {
     Thinking,
 }
 
+/// A delivered background sub-agent result (see
+/// [`MessageContainer::sub_agent_results`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubAgentResultLine {
+    pub agent_id: u64,
+    /// `finished`, `failed` or `cancelled`.
+    pub outcome: String,
+    pub body: String,
+}
+
 /// A user message the wakeup scheduler injected (`[scheduled wakeup #3] …`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct WakeupMessage {
@@ -204,6 +214,13 @@ impl MessageContainer {
         if let Some(wakeup) = self.wakeup() {
             return format!("wakeup: {}", wakeup.prompt);
         }
+        if let Some(results) = self.sub_agent_results(cx) {
+            let lines: Vec<String> = results
+                .iter()
+                .map(|r| format!("sub-agent #{} {}: {}", r.agent_id, r.outcome, r.body))
+                .collect();
+            return lines.join(" | ");
+        }
         let role = match self.role {
             MessageRole::User => "user",
             MessageRole::Assistant => "assistant",
@@ -235,6 +252,32 @@ impl MessageContainer {
 
     pub fn wakeup(&self) -> Option<WakeupMessage> {
         self.wakeup.lock().unwrap().clone()
+    }
+
+    /// The background sub-agent results this user message delivers, if it
+    /// consists of nothing else (results arriving together share a message).
+    pub fn sub_agent_results(&self, cx: &gpui_kit::App) -> Option<Vec<SubAgentResultLine>> {
+        if !self.is_user_message() {
+            return None;
+        }
+        let mut texts = Vec::new();
+        for element in self.elements() {
+            let BlockData::TextBlock(text) = element.read(cx).block.as_ref() else {
+                return None;
+            };
+            texts.push(text.content.clone());
+        }
+        let joined = texts.join("\n\n");
+        let results: Vec<SubAgentResultLine> =
+            code_assistant_core::agent::sub_agent::parse_sub_agent_messages(&joined)?
+                .into_iter()
+                .map(|parsed| SubAgentResultLine {
+                    agent_id: parsed.agent_id,
+                    outcome: parsed.outcome.to_string(),
+                    body: parsed.body.to_string(),
+                })
+                .collect();
+        (!results.is_empty()).then_some(results)
     }
 
     /// The wakeup, not yet linked, if this is a user message the wakeup

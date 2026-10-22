@@ -571,3 +571,45 @@ async fn foreground_sub_agents_are_listed_while_they_run() {
     );
     assert!(listed.last().is_some_and(Vec::is_empty));
 }
+
+#[test]
+fn delivered_messages_parse_back() {
+    let finished = |outcome| FinishedSubAgent {
+        agent_id: 12,
+        tool_id: "t".into(),
+        outcome,
+        ui_output: String::new(),
+    };
+    let message = finished(FinishedOutcome::Completed {
+        answer: "It is in a.rs: see below".into(),
+    })
+    .message();
+    let parsed = parse_sub_agent_message(&message).unwrap();
+    assert_eq!(parsed.agent_id, 12);
+    assert_eq!(parsed.outcome, "finished");
+    assert_eq!(parsed.body, "It is in a.rs: see below");
+
+    let message = finished(FinishedOutcome::Failed {
+        error: "boom".into(),
+    })
+    .message();
+    let parsed = parse_sub_agent_message(&message).unwrap();
+    assert_eq!((parsed.outcome, parsed.body), ("failed", "boom"));
+
+    let both = format!(
+        "{}\n\n{message}",
+        finished(FinishedOutcome::Completed {
+            answer: "first\n\nsecond paragraph".into(),
+        })
+        .message()
+    );
+    let parsed = parse_sub_agent_messages(&both).unwrap();
+    assert_eq!(parsed.len(), 2);
+    assert_eq!(parsed[0].body, "first\n\nsecond paragraph");
+    assert_eq!((parsed[1].outcome, parsed[1].body), ("failed", "boom"));
+    assert!(parse_sub_agent_messages(&format!("hi\n\n{message}")).is_none());
+
+    assert!(parse_sub_agent_message("[sub-agent #x] finished: no").is_none());
+    assert!(parse_sub_agent_message("[sub-agent #1] other: no").is_none());
+    assert!(parse_sub_agent_message("hello").is_none());
+}

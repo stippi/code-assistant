@@ -6,6 +6,7 @@ mod scroll;
 use crate::Gpui;
 use crate::shared::frame_profile;
 
+use code_assistant_core::agent::sub_agent::RunningSubAgentInfo;
 use code_assistant_core::session::instance::SessionActivityState;
 use code_assistant_core::session::wakeup::ArmedWakeupInfo;
 
@@ -105,6 +106,11 @@ pub struct MessagesView {
     armed_wakeups: Vec<ArmedWakeupInfo>,
     /// Renders the wakeup countdown again when its text changes.
     wakeup_refresh_task: Option<Task<()>>,
+    /// The viewed session's running sub-agents, oldest first; shown below
+    /// the transcript.
+    running_sub_agents: Vec<RunningSubAgentInfo>,
+    /// Advances their spinners and elapsed times.
+    sub_agents_refresh_task: Option<Task<()>>,
 
     // -- Edge auto-scroll state (drag-to-select near a viewport edge) --
     /// Bounds of the message list viewport in window coordinates, captured
@@ -202,6 +208,8 @@ impl MessagesView {
             _spinner_task: Some(spinner_task),
             armed_wakeups: Vec::new(),
             wakeup_refresh_task: None,
+            running_sub_agents: Vec::new(),
+            sub_agents_refresh_task: None,
             list_bounds: Rc::new(Cell::new(Bounds::default())),
             edge_scroll_velocity: Rc::new(Cell::new(0.0)),
             edge_drag_active: Rc::new(Cell::new(false)),
@@ -907,6 +915,21 @@ impl MessagesView {
         &self.armed_wakeups
     }
 
+    pub fn set_running_sub_agents(
+        &mut self,
+        agents: Vec<RunningSubAgentInfo>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.running_sub_agents != agents {
+            self.running_sub_agents = agents;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn running_sub_agents(&self) -> &[RunningSubAgentInfo] {
+        &self.running_sub_agents
+    }
+
     pub fn set_is_resumable(&self, is_resumable: bool) {
         self.is_resumable.set(is_resumable);
     }
@@ -997,10 +1020,27 @@ impl Render for MessagesView {
             }));
         }
 
+        // Running sub-agents, background ones included: the session goes on
+        // without its agent running.
+        let has_sub_agents = !self.running_sub_agents.is_empty();
+        if has_sub_agents && self.sub_agents_refresh_task.is_none() {
+            let next_frame = Duration::from_millis(
+                (WAKEUP_SPINNER_FRAME_MS - wall_clock_millis() % WAKEUP_SPINNER_FRAME_MS) as u64,
+            );
+            self.sub_agents_refresh_task = Some(cx.spawn(async move |view, cx| {
+                cx.background_executor().timer(next_frame).await;
+                let _ = view.update(cx, |view, cx| {
+                    view.sub_agents_refresh_task = None;
+                    cx.notify();
+                });
+            }));
+        }
+
         let pending_index = total_items;
         let activity_index = total_items + if has_pending { 1 } else { 0 };
         let wakeups_index = activity_index + if has_activity { 1 } else { 0 };
-        let item_count = wakeups_index + if has_wakeups { 1 } else { 0 };
+        let sub_agents_index = wakeups_index + if has_wakeups { 1 } else { 0 };
+        let item_count = sub_agents_index + if has_sub_agents { 1 } else { 0 };
 
         // Build the virtualized list. The render callback is only invoked for
         // items that are within the visible viewport + overdraw zone.
@@ -1018,6 +1058,8 @@ impl Render for MessagesView {
                     activity_indicator::render_pending_message(this, cx)
                 } else if index == wakeups_index && has_wakeups {
                     activity_indicator::render_armed_wakeups(this, cx)
+                } else if index == sub_agents_index && has_sub_agents {
+                    activity_indicator::render_running_sub_agents(this, cx)
                 } else {
                     // Activity indicator (last item)
                     activity_indicator::render_activity_indicator(this, cx)

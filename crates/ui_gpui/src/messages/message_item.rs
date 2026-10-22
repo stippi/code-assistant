@@ -42,6 +42,21 @@ pub fn render_message(
             .into_any_element();
     }
 
+    // Background sub-agent results are not the user's either: they read
+    // like the sub-agent's tool line, with its answer below.
+    if let Some(results) = msg.read(cx).sub_agent_results(cx) {
+        return div()
+            .id(("message-item", msg.entity_id()))
+            .w_full()
+            .children(
+                results
+                    .iter()
+                    .enumerate()
+                    .map(|(i, result)| render_sub_agent_result(msg.entity_id(), i, result, cx)),
+            )
+            .into_any_element();
+    }
+
     let is_user_message = msg.read(cx).is_user_message();
     let node_id = msg.read(cx).node_id();
     let branch_info = msg.read(cx).branch_info();
@@ -225,6 +240,72 @@ fn render_wakeup_message(prompt: &str, cx: &Context<MessagesView>) -> gpui_kit::
                 .text_color(theme.muted_foreground)
                 .child(prompt.to_string()),
         )
+        .into_any_element()
+}
+
+/// A delivered background sub-agent result: laid out like an expanded
+/// inline tool block.
+fn render_sub_agent_result(
+    message: gpui_kit::EntityId,
+    index: usize,
+    result: &super::super::blocks::SubAgentResultLine,
+    cx: &Context<MessagesView>,
+) -> gpui_kit::AnyElement {
+    use super::super::shared::file_icons;
+    let theme = cx.theme();
+    let (label, color) = match result.outcome.as_str() {
+        "finished" => (
+            format!("Sub-agent #{} finished", result.agent_id),
+            theme.muted_foreground,
+        ),
+        "cancelled" => (
+            format!("Sub-agent #{} cancelled", result.agent_id),
+            theme.muted_foreground,
+        ),
+        _ => (
+            format!("Sub-agent #{} failed", result.agent_id),
+            theme.danger,
+        ),
+    };
+    div()
+        .px_3()
+        .pb_1()
+        .mt_0p5()
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1p5()
+                .py_1p5()
+                .px_3()
+                .child(file_icons::render_icon_container(
+                    &file_icons::get().get_type_icon(file_icons::TOOL_SPAWN_AGENT),
+                    14.0,
+                    color,
+                    "↻",
+                ))
+                .child(div().text_size(rems(0.8125)).text_color(color).child(label)),
+        )
+        .when(!result.body.is_empty(), |el| {
+            el.child(
+                div()
+                    .pl(px(8.))
+                    .ml(px(8.))
+                    .border_l_2()
+                    .border_color(theme.border)
+                    .py(px(4.))
+                    .text_size(rems(0.8125))
+                    .text_color(theme.foreground.opacity(0.85))
+                    .child(
+                        gpui_kit::component::text::TextView::markdown(
+                            SharedString::from(format!("sub-agent-result-{message}-{index}")),
+                            result.body.clone(),
+                        )
+                        .selectable(true),
+                    ),
+            )
+        })
         .into_any_element()
 }
 

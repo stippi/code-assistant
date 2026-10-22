@@ -179,3 +179,170 @@ pub fn render_armed_wakeups(
         )
         .into_any_element()
 }
+
+/// What a running sub-agent is doing, in a few words.
+pub(crate) fn sub_agent_activity_text(
+    agent: &code_assistant_core::agent::sub_agent::RunningSubAgentInfo,
+) -> String {
+    use code_assistant_core::agent::sub_agent::SubAgentActivity;
+    if let Some(tool) = &agent.current_tool {
+        return tool.clone();
+    }
+    match agent.activity {
+        Some(SubAgentActivity::Streaming) => "Responding…".into(),
+        Some(SubAgentActivity::ExecutingTools) => "Running tools…".into(),
+        _ => "Thinking…".into(),
+    }
+}
+
+/// `42s`, `3m 05s`, `1h 02m`.
+pub(crate) fn elapsed_text(started_at: chrono::DateTime<chrono::Utc>) -> String {
+    let seconds = (chrono::Utc::now() - started_at).num_seconds().max(0);
+    match seconds {
+        s if s < 60 => format!("{s}s"),
+        s if s < 3600 => format!("{}m {:02}s", s / 60, s % 60),
+        s => format!("{}h {:02}m", s / 3600, (s % 3600) / 60),
+    }
+}
+
+/// Render the sub-agents running in the viewed session, one row each with
+/// what it is doing and a Cancel button. Background agents keep running
+/// after the turn that started them, so without this list an idle session
+/// would look finished.
+pub fn render_running_sub_agents(
+    view: &MessagesView,
+    cx: &mut Context<MessagesView>,
+) -> gpui_kit::AnyElement {
+    use gpui_kit::{ClickEvent, SharedString, px};
+
+    let agents = view.running_sub_agents().to_vec();
+    if agents.is_empty() {
+        return div().into_any_element();
+    }
+    let theme = cx.theme();
+    let muted = theme.muted_foreground;
+    let foreground = theme.foreground;
+    let danger = theme.danger;
+    let frame = (wall_clock_millis() / WAKEUP_SPINNER_FRAME_MS) as usize % BRAILLE_FRAMES.len();
+    let header = match agents.len() {
+        1 => "1 sub-agent running".to_string(),
+        n => format!("{n} sub-agents running"),
+    };
+
+    let rows = agents.into_iter().map(|agent| {
+        let tool_id = agent.tool_id.clone();
+        div()
+            .id(SharedString::from(format!(
+                "running-sub-agent-{}",
+                agent.tool_id
+            )))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1p5()
+            .py_0p5()
+            .px_3()
+            .child(
+                div()
+                    .w(px(14.))
+                    .flex()
+                    .justify_center()
+                    .text_size(rems(0.875))
+                    .text_color(muted)
+                    .child(BRAILLE_FRAMES[frame]),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(rems(0.8125))
+                    .text_color(muted)
+                    .child(format!("#{}", agent.id)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .whitespace_nowrap()
+                    .text_size(rems(0.8125))
+                    .text_color(foreground)
+                    .child(agent.title.clone()),
+            )
+            .when(agent.background, |row| {
+                row.child(
+                    div()
+                        .flex_none()
+                        .px_1p5()
+                        .rounded(px(4.))
+                        .border_1()
+                        .border_color(muted.opacity(0.4))
+                        .text_size(rems(0.6875))
+                        .text_color(muted)
+                        .child("background"),
+                )
+            })
+            .child(
+                div()
+                    .flex_none()
+                    .max_w(px(220.))
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .whitespace_nowrap()
+                    .text_size(rems(0.75))
+                    .text_color(muted)
+                    .child(sub_agent_activity_text(&agent)),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(rems(0.75))
+                    .text_color(muted)
+                    .child(elapsed_text(agent.started_at)),
+            )
+            .child(
+                div()
+                    .id(SharedString::from(format!(
+                        "cancel-running-{}",
+                        agent.tool_id
+                    )))
+                    .flex_none()
+                    .px_2()
+                    .py(px(1.))
+                    .rounded(px(4.))
+                    .text_size(rems(0.6875))
+                    .text_color(muted)
+                    .cursor_pointer()
+                    .hover(|s| s.bg(danger.opacity(0.15)).text_color(danger))
+                    .on_click(cx.listener(move |_view, _event: &ClickEvent, _window, cx| {
+                        cx.stop_propagation();
+                        if let Some(gpui) = cx.try_global::<crate::Gpui>() {
+                            gpui.cmd_cancel_sub_agent(tool_id.clone());
+                        }
+                    }))
+                    .child("Cancel"),
+            )
+    });
+
+    div()
+        .id("running-sub-agents")
+        .w_full()
+        .px_3()
+        .pb_1()
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .py_1()
+                .child(
+                    div()
+                        .px_3()
+                        .py_0p5()
+                        .text_size(rems(0.75))
+                        .text_color(muted)
+                        .child(header),
+                )
+                .children(rows),
+        )
+        .into_any_element()
+}
