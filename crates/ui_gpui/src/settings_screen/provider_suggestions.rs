@@ -7,7 +7,8 @@
 #![allow(dead_code)] // Fields are part of the public API, used by UI code
 
 use code_assistant_core::session::default_model::DefaultModelConfig;
-use serde_json::{Map, Value, json};
+use llm::provider_config::ModelConfig;
+use serde_json::{Map, Value};
 use std::process::Command;
 
 /// A suggested provider + model configuration that can be applied with minimal user input.
@@ -26,8 +27,8 @@ pub struct ProviderSuggestion {
     /// The provider entry to write to providers.json (template with placeholders).
     pub provider_key: &'static str,
     pub provider_config: ProviderTemplate,
-    /// Model entries to write to models.json.
-    pub models: Vec<ModelTemplate>,
+    /// IDs of the provider's models to offer in the picker right away.
+    pub models: Vec<&'static str>,
     /// Whether this suggestion requires a specific user context (e.g. SAP user).
     pub context_requirement: ContextRequirement,
 }
@@ -51,15 +52,6 @@ pub struct ProviderTemplate {
     pub provider_type: &'static str,
     /// Static config fields (base_url, etc.). Does NOT include user-provided fields.
     pub static_config: Map<String, Value>,
-}
-
-/// Template for a model entry in models.json.
-#[derive(Clone, Debug)]
-pub struct ModelTemplate {
-    pub display_name: &'static str,
-    pub model_id: &'static str,
-    pub context_token_limit: u32,
-    pub config: Value,
 }
 
 /// What environment context is needed to show this suggestion.
@@ -190,34 +182,7 @@ fn hai_proxy_suggestion() -> ProviderSuggestion {
             provider_type: "anthropic",
             static_config,
         },
-        models: vec![
-            ModelTemplate {
-                display_name: "Claude Sonnet 4.6 (HAI Proxy)",
-                model_id: "anthropic--claude-4.6-sonnet",
-                context_token_limit: 200000,
-                config: json!({
-                    "max_tokens": 64000,
-                    "temperature": 1.0,
-                    "thinking": {
-                        "type": "enabled",
-                        "budget_tokens": 16384
-                    }
-                }),
-            },
-            ModelTemplate {
-                display_name: "Claude Opus 4.6 (HAI Proxy)",
-                model_id: "anthropic--claude-4.6-opus",
-                context_token_limit: 200000,
-                config: json!({
-                    "max_tokens": 64000,
-                    "temperature": 1.0,
-                    "thinking": {
-                        "type": "enabled",
-                        "budget_tokens": 16384
-                    }
-                }),
-            },
-        ],
+        models: vec!["anthropic--claude-4.8-opus", "anthropic--claude-4.6-sonnet"],
         context_requirement: ContextRequirement::SapUser,
     }
 }
@@ -247,19 +212,7 @@ fn anthropic_suggestion() -> ProviderSuggestion {
             provider_type: "anthropic",
             static_config,
         },
-        models: vec![ModelTemplate {
-            display_name: "Claude Sonnet 4.6 (Anthropic)",
-            model_id: "claude-sonnet-4-6-20250610",
-            context_token_limit: 200000,
-            config: json!({
-                "max_tokens": 64000,
-                "temperature": 1.0,
-                "thinking": {
-                    "type": "enabled",
-                    "budget_tokens": 16384
-                }
-            }),
-        }],
+        models: vec!["claude-opus-5-5", "claude-sonnet-5-5"],
         context_requirement: ContextRequirement::None,
     }
 }
@@ -289,17 +242,7 @@ fn openai_suggestion() -> ProviderSuggestion {
             provider_type: "openai-responses",
             static_config,
         },
-        models: vec![ModelTemplate {
-            display_name: "GPT-4.1 (OpenAI)",
-            model_id: "gpt-4.1",
-            context_token_limit: 1047576,
-            config: json!({
-                "reasoning": {
-                    "effort": "medium",
-                    "summary": "auto"
-                }
-            }),
-        }],
+        models: vec!["gpt-5.6"],
         context_requirement: ContextRequirement::None,
     }
 }
@@ -321,17 +264,7 @@ fn chatgpt_subscription_suggestion() -> ProviderSuggestion {
                 m
             },
         },
-        models: vec![ModelTemplate {
-            display_name: "GPT-4.1 (ChatGPT)",
-            model_id: "gpt-4.1",
-            context_token_limit: 1047576,
-            config: json!({
-                "reasoning": {
-                    "effort": "medium",
-                    "summary": "auto"
-                }
-            }),
-        }],
+        models: vec!["gpt-6.1-sol"],
         context_requirement: ContextRequirement::None,
     }
 }
@@ -385,43 +318,19 @@ pub fn apply_suggestion(
     let providers_json = serde_json::to_string_pretty(&providers_map)?;
     std::fs::write(&providers_path, providers_json)?;
 
-    // Write models to models.json
-    let models_path = llm::provider_config::ConfigurationSystem::models_config_path();
-    let mut models_map: Map<String, Value> = if models_path.exists() {
-        let content = std::fs::read_to_string(&models_path)?;
-        serde_json::from_str(&content).unwrap_or_default()
-    } else {
-        Map::new()
-    };
-
-    for model in &suggestion.models {
-        let mut model_entry = Map::new();
-        model_entry.insert(
-            "provider".to_string(),
-            Value::String(suggestion.provider_key.to_string()),
-        );
-        model_entry.insert("id".to_string(), Value::String(model.model_id.to_string()));
-        model_entry.insert(
-            "context_token_limit".to_string(),
-            Value::Number(model.context_token_limit.into()),
-        );
-        model_entry.insert("config".to_string(), model.config.clone());
-
-        models_map.insert(model.display_name.to_string(), Value::Object(model_entry));
+    // Offer the suggested models in the picker
+    let mut selection = llm::model_selection::ModelSelection::load_or_import()?;
+    for model_id in &suggestion.models {
+        selection.set_enabled(suggestion.provider_key, model_id, true);
     }
-
-    if let Some(parent) = models_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let models_json = serde_json::to_string_pretty(&models_map)?;
-    std::fs::write(&models_path, models_json)?;
+    selection.save()?;
 
     // Set the first model as default if no default is configured yet
     let mut default_model = DefaultModelConfig::load();
     if default_model.model.is_none()
         && let Some(first_model) = suggestion.models.first()
     {
-        default_model.model = Some(first_model.display_name.to_string());
+        default_model.model = Some(ModelConfig::key_for(suggestion.provider_key, first_model));
         default_model.save()?;
     }
 

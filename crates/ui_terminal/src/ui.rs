@@ -562,6 +562,9 @@ impl TerminalUI {
                     renderer_guard.clear_error();
                 }
             }
+            UiEvent::UpdateEffort { choice } => {
+                self.app_state.lock().await.current_effort = choice;
+            }
             UiEvent::UpdatePermissionTier { tier } => {
                 let mut state = self.app_state.lock().await;
                 state.update_permission_tier(Some(tier));

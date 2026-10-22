@@ -208,7 +208,8 @@ fn is_watched_config_change(file_name: &str) -> bool {
     matches!(
         file_name,
         "providers.json"
-            | "models.json"
+            | "model-selection.json"
+            | "model-discovery.json"
             | "tools.json"
             | "mcp-servers.json"
             | "skills.json"
@@ -382,7 +383,8 @@ mod tests {
     #[test]
     fn watched_config_changes_cover_skills() {
         assert!(is_watched_config_change("providers.json"));
-        assert!(is_watched_config_change("models.json"));
+        assert!(is_watched_config_change("model-selection.json"));
+        assert!(is_watched_config_change("model-discovery.json"));
         assert!(is_watched_config_change("tools.json"));
         assert!(is_watched_config_change("mcp-servers.json"));
         assert!(is_watched_config_change("skills.json"));

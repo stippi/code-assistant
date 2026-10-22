@@ -52,6 +52,21 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
 
 ## Configuration
 
+### Models & Reasoning Effort
+- Providers in `providers.json`; the models the picker offers in
+  `model-selection.json`, keyed `provider/id` with optional overrides
+  (`llm::model_selection`; while it is missing, an old `models.json` is
+  imported in memory)
+- What a model can do (context, output limit, edit format, effort levels and
+  how to request them) comes from `llm::capabilities` — a hand-kept catalog
+  (`catalog.json`), the provider's model listing (`llm::discovery`, cached in
+  `model-discovery.json`) and fallback rules per API family
+- Effort is chosen per session (`SessionModelConfig::effort`,
+  `SessionService::set_effort`, `UiEvent::UpdateEffort`); the factory turns
+  it into request fields, clients send no reasoning defaults of their own
+- Model `config` blocks are JSON Merge Patches; see
+  `docs/model-configuration.md`
+
 ### MCP Client Mode
 - Connects to MCP servers configured in `<config_dir>/mcp-servers.json`
   (stdio or HTTP, via the `rmcp` SDK) and registers their tools in the

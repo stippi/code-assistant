@@ -1,0 +1,176 @@
+[
+  {
+    "id": "claude-fable-5-1",
+    "name": "Claude Fable 5.1",
+    "context_window": 1000000,
+    "max_output": 128000,
+    "reasoning": { "style": "anthropic-adaptive", "levels": ["low", "medium", "high", "xhigh", "max"], "default": "high" }
+  },
+  {
+    "id": "claude-fable-5",
+    "name": "Claude Fable 5",
+    "context_window": 1000000,
+    "max_output": 128000,
+    "reasoning": { "style": "anthropic-adaptive", "levels": ["low", "medium", "high", "xhigh", "max"], "default": "high" }
+  },
+  {
+    "id": "claude-opus-5-5",
+    "name": "Claude Opus 5.5",
+    "context_window": 1000000,
+    "max_output": 128000,
+    "reasoning": { "style": "anthropic-adaptive", "levels": ["low", "medium", "high", "xhigh", "max"], "default": "medium" }
+  },
+  {
+    "id": "claude-opus-5",
+    "name": "Claude Opus 5",
+    "context_window": 1000000,
+    "max_output": 128000,
+    "reasoning": { "style": "anthropic-adaptive", "levels": ["off", "low", "medium", "high", "xhigh", "max"], "default": "high" }
+  },
+  {
+    "id": "claude-opus-4-8",
+    "name": "Claude Opus 4.8",
+    "aliases": ["anthropic--claude-4.8-opus"],
+    "context_window": 1000000,
+    "max_output": 128000,
+    "reasoning": { "style": "anthropic-adaptive", "levels": ["off", "low", "medium", "high", "xhigh", "max"], "default": "high" }
+  },
+  {
+    "id": "claude-opus-4-7",
+    "name": "Claude Opus 4.7",
+    "aliases": ["anthropic--claude-4.7-opus"],
+    "context_window": 1000000,
+    "max_output": 128000,
+    "reasoning": { "style": "anthropic-adaptive", "levels": ["off", "low", "medium", "high", "xhigh", "max"], "default": "high" }
+  },
+  {
+    "id": "claude-opus-4-6",
+    "name": "Claude Opus 4.6",
+    "aliases": ["anthropic--claude-4.6-opus"],
+    "context_window": 1000000,
+    "max_output": 128000,
+    "reasoning": { "style": "anthropic-adaptive", "levels": ["off", "low", "medium", "high", "max"], "default": "high" }
+  },
+  {
+    "id": "claude-sonnet-5-5",
+    "name": "Claude Sonnet 5.5",
+    "context_window": 1000000,
+    "max_output": 128000,
+    "reasoning": { "style": "anthropic-adaptive", "levels": ["low", "medium", "high", "xhigh", "max"], "default": "high" }
+  },
+  {
+    "id": "claude-sonnet-5",
+    "name": "Claude Sonnet 5",
+    "context_window": 1000000,
+    "max_output": 128000,
+    "reasoning": { "style": "anthropic-adaptive", "levels": ["off", "low", "medium", "high", "xhigh", "max"], "default": "high" }
+  },
+  {
+    "id": "claude-sonnet-4-6",
+    "name": "Claude Sonnet 4.6",
+    "aliases": ["anthropic--claude-4.6-sonnet"],
+    "context_window": 1000000,
+    "max_output": 128000,
+    "reasoning": { "style": "anthropic-adaptive", "levels": ["off", "low", "medium", "high", "max"], "default": "high" }
+  },
+  {
+    "id": "claude-sonnet-4-5",
+    "name": "Claude Sonnet 4.5",
+    "aliases": ["anthropic--claude-4.5-sonnet"],
+    "context_window": 200000,
+    "max_output": 64000,
+    "reasoning": { "style": "anthropic-budget", "levels": ["off", "low", "medium", "high"], "default": "high" }
+  },
+  {
+    "id": "claude-haiku-5-5",
+    "name": "Claude Haiku 5.5",
+    "context_window": 1000000,
+    "max_output": 128000,
+    "reasoning": { "style": "anthropic-adaptive", "levels": ["off", "low", "medium", "high", "xhigh", "max"], "default": "medium" }
+  },
+  {
+    "id": "claude-haiku-4-5",
+    "name": "Claude Haiku 4.5",
+    "aliases": ["anthropic--claude-4.5-haiku"],
+    "context_window": 200000,
+    "max_output": 64000,
+    "reasoning": { "style": "anthropic-budget", "levels": ["off", "low", "medium", "high"], "default": "medium" }
+  },
+  {
+    "id": "gpt-6.1-sol",
+    "name": "GPT-6.1 Sol",
+    "context_window": 272000,
+    "edit_format": "diff",
+    "reasoning": { "style": "openai-responses", "levels": ["low", "medium", "high", "xhigh"], "default": "high" }
+  },
+  {
+    "id": "gpt-6-astra",
+    "name": "GPT-6 Astra",
+    "context_window": 272000,
+    "edit_format": "diff",
+    "reasoning": { "style": "openai-responses", "levels": ["low", "medium", "high", "xhigh"], "default": "high" }
+  },
+  {
+    "id": "gpt-5.6-sol",
+    "name": "GPT-5.6 Sol",
+    "context_window": 272000,
+    "edit_format": "diff",
+    "reasoning": { "style": "openai-responses", "levels": ["low", "medium", "high", "xhigh"], "default": "high" }
+  },
+  {
+    "id": "gpt-5.6-lunar",
+    "name": "GPT-5.6 Lunar",
+    "context_window": 272000,
+    "edit_format": "diff",
+    "reasoning": { "style": "openai-responses", "levels": ["low", "medium", "high", "xhigh"], "default": "high" }
+  },
+  {
+    "id": "gpt-5.6",
+    "name": "GPT-5.6",
+    "context_window": 272000,
+    "edit_format": "diff",
+    "reasoning": { "style": "openai-responses", "levels": ["low", "medium", "high", "xhigh"], "default": "high" }
+  },
+  {
+    "id": "gpt-5.5",
+    "name": "GPT-5.5",
+    "context_window": 272000,
+    "edit_format": "diff",
+    "reasoning": { "style": "openai-responses", "levels": ["low", "medium", "high", "xhigh"], "default": "high" }
+  },
+  {
+    "id": "gpt-oss-120b",
+    "name": "GPT OSS 120B",
+    "aliases": ["openai/gpt-oss-120b"],
+    "context_window": 131072,
+    "reasoning": { "style": "chat-completions-effort", "levels": ["low", "medium", "high"], "default": "low" }
+  },
+  {
+    "id": "gemini-3.5-pro-preview",
+    "name": "Gemini 3.5 Pro",
+    "aliases": ["gemini-3.5-pro"],
+    "context_window": 1048576,
+    "max_output": 65536,
+    "reasoning": { "style": "gemini", "levels": ["low", "high"], "default": "high" }
+  },
+  {
+    "id": "gemini-3.5-flash",
+    "name": "Gemini 3.5 Flash",
+    "context_window": 1048576,
+    "max_output": 65536,
+    "reasoning": { "style": "gemini", "levels": ["minimal", "low", "medium", "high"], "default": "high" }
+  },
+  {
+    "id": "gemini-3.8-flash",
+    "name": "Gemini 3.8 Flash",
+    "context_window": 1048576,
+    "max_output": 65536,
+    "reasoning": { "style": "gemini", "levels": ["minimal", "low", "medium", "high"], "default": "high" }
+  },
+  {
+    "id": "kimi-k3",
+    "name": "Kimi K3",
+    "context_window": 1000000,
+    "reasoning": { "style": "chat-completions-effort", "levels": ["low", "medium", "high"], "default": "high" }
+  }
+]

@@ -306,11 +306,11 @@ impl Agent {
             state.context_limit_override = None;
         }
         if let Some(model_config) = self.app_state().model_config.clone() {
-            // Resolve the model identifier (provider/id) from the display name
-            // This is used for system prompt selection based on model ID matching
+            // The model's key (provider/id), also for sessions that refer to
+            // it by name. Used for system prompt selection by model ID.
             let model_hint = llm::provider_config::ConfigurationSystem::load()
                 .ok()
-                .and_then(|config| config.model_identifier(&model_config.model_name))
+                .and_then(|config| config.resolve_key(&model_config.model_name))
                 .or_else(|| Some(model_config.model_name.clone()));
             self.set_model_hint(model_hint);
         }

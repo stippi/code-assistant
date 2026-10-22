@@ -1,0 +1,32 @@
+{
+  "models": [
+    {
+      "provider": "anthropic-main",
+      "id": "claude-opus-5-5"
+    },
+    {
+      "provider": "anthropic-main",
+      "id": "claude-sonnet-5-5",
+      "default_effort": "medium"
+    },
+    {
+      "provider": "openai-chatgpt",
+      "id": "gpt-6.1-sol",
+      "config": {
+        "reasoning": { "summary": "concise" }
+      }
+    },
+    {
+      "provider": "ai-core-dev",
+      "id": "anthropic--claude-4.8-opus",
+      "name": "Claude Opus 4.8 (AI Core)",
+      "behaves_like": "claude-opus-4-8"
+    },
+    {
+      "provider": "ollama-local",
+      "id": "qwen3.8:27b-mlx",
+      "context_token_limit": 128000,
+      "config": { "temperature": 0.7 }
+    }
+  ]
+}

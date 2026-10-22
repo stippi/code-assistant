@@ -243,7 +243,7 @@ impl OllamaClient {
 
         // Apply custom model configuration if present
         if let Some(ref custom_config) = self.custom_config {
-            request_json = crate::config_merge::merge_json(request_json, custom_config.clone());
+            request_json = crate::config_merge::merge_patch(request_json, custom_config.clone());
         }
 
         debug!("Sending request to Ollama: '{}'", request_json);
@@ -317,7 +317,7 @@ impl OllamaClient {
 
         // Apply custom model configuration if present
         if let Some(ref custom_config) = self.custom_config {
-            request_json = crate::config_merge::merge_json(request_json, custom_config.clone());
+            request_json = crate::config_merge::merge_patch(request_json, custom_config.clone());
         }
 
         debug!("Sending request to Ollama: '{}'", request_json);

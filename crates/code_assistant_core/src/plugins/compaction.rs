@@ -36,11 +36,11 @@ impl CompactionPolicy for TokenRatioCompaction {
             // An agent can legitimately run with a model the configuration
             // does not know: playback mode and injected LLM factories (tests,
             // fault-injection harnesses) bypass client construction from
-            // models.json. An unknown limit disables automatic compaction for
-            // the run; it must not fail the turn.
+            // the configuration. An unknown limit disables automatic
+            // compaction for the run; it must not fail the turn.
             let known_limit = llm::provider_config::ConfigurationSystem::load()
                 .ok()
-                .and_then(|config| config.get_model(&model_name).map(|m| m.context_token_limit));
+                .and_then(|config| config.context_limit(&model_name));
             match known_limit {
                 Some(limit) => limit,
                 None => {

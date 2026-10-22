@@ -13,6 +13,7 @@ use tools_core::permissions::PermissionTier;
 // New session management architecture
 pub mod browsers;
 pub mod default_model;
+pub mod effort;
 pub mod event_stream;
 pub mod idle_handoff;
 pub mod instance;
@@ -61,6 +62,7 @@ pub struct SessionSnapshot {
     /// Text summary of a queued (pending) user message, if any.
     pub pending_message: Option<String>,
     pub current_model: String,
+    pub effort: effort::EffortChoice,
     pub allowed_models: Vec<String>,
     pub sandbox_policy: SandboxPolicy,
     pub permission_tier: PermissionTier,
@@ -121,6 +123,9 @@ impl SessionSnapshot {
         });
         events.push(UiEvent::UpdateCurrentModel {
             model_name: self.current_model.clone(),
+        });
+        events.push(UiEvent::UpdateEffort {
+            choice: self.effort.clone(),
         });
         events.push(UiEvent::UpdateSandboxPolicy {
             policy: self.sandbox_policy.clone(),

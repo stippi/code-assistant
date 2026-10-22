@@ -6,7 +6,7 @@ use std::time::Duration;
 fn runner(factory: LlmClientFactory) -> (Arc<DefaultSubAgentRunner>, Arc<MockUI>) {
     let ui = Arc::new(MockUI::default());
     let runner = DefaultSubAgentRunner::new(
-        "test-sub-agent".into(),
+        SessionModelConfig::new("test-sub-agent".into()),
         SessionConfig::default(),
         Arc::default(),
         Arc::default(),

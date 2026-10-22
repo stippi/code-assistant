@@ -173,8 +173,14 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
             let goal_service = service.clone();
             let goal_model = config.model.clone();
             tokio::spawn(async move {
-                match llm::factory::create_llm_client_from_model(&goal_model, None, false, None)
-                    .await
+                match llm::factory::create_llm_client_from_model(
+                    &goal_model,
+                    None,
+                    None,
+                    false,
+                    None,
+                )
+                .await
                 {
                     Ok(provider) => {
                         code_assistant_core::goals::spawn_goal_controller(

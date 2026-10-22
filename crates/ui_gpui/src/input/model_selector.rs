@@ -15,21 +15,42 @@ pub enum ModelSelectorEvent {
     ModelChanged { model_name: String },
 }
 
-/// Model item for the dropdown
+/// Model item for model dropdowns: shows the model's name, selects its key
 #[derive(Clone, Debug)]
 pub struct ModelItem {
+    key: String,
     name: String,
     provider_label: String,
     icon_path: Option<String>,
 }
 
 impl ModelItem {
-    pub fn new(name: String, provider_label: String, icon_path: Option<String>) -> Self {
-        Self {
-            name,
-            provider_label,
-            icon_path,
-        }
+    /// The items for the offered models (all, or those in `allowed`),
+    /// ordered by provider label and name.
+    pub fn for_models(
+        config: &ConfigurationSystem,
+        allowed: Option<&HashSet<String>>,
+    ) -> Vec<Self> {
+        let mut items: Vec<Self> = config
+            .list_models()
+            .into_iter()
+            .filter(|key| allowed.is_none_or(|allowed| allowed.contains(key)))
+            .filter_map(|key| {
+                let provider_config = config.providers.get(&config.models[&key].provider)?;
+                Some(Self {
+                    name: config.display_name(&key),
+                    provider_label: provider_config.label.clone(),
+                    icon_path: provider_icon_path(&provider_config.provider).map(str::to_string),
+                    key,
+                })
+            })
+            .collect();
+        items.sort_by(|a, b| {
+            a.provider_label
+                .cmp(&b.provider_label)
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        items
     }
 }
 
@@ -63,7 +84,7 @@ impl SelectItem for ModelItem {
     }
 
     fn value(&self) -> &Self::Value {
-        &self.name
+        &self.key
     }
 }
 
@@ -154,37 +175,10 @@ impl ModelSelector {
             .and_then(|gpui| gpui.get_allowed_models())
             .map(|models| models.into_iter().collect());
 
-        let model_items = if let Some(ref config) = config {
-            let mut items: Vec<ModelItem> = config
-                .models
-                .iter()
-                .filter(|(model_name, _)| {
-                    allowed_models
-                        .as_ref()
-                        .is_none_or(|allowed| allowed.contains(*model_name))
-                })
-                .filter_map(|(model_name, model_config)| {
-                    let provider_config = config.providers.get(&model_config.provider)?;
-                    let icon_path =
-                        provider_icon_path(&provider_config.provider).map(|path| path.to_string());
-                    Some(ModelItem::new(
-                        model_name.clone(),
-                        provider_config.label.clone(),
-                        icon_path,
-                    ))
-                })
-                .collect();
-
-            items.sort_by(|a, b| {
-                a.provider_label
-                    .cmp(&b.provider_label)
-                    .then_with(|| a.name.cmp(&b.name))
-            });
-
-            items
-        } else {
-            Vec::new()
-        };
+        let model_items = config
+            .as_ref()
+            .map(|config| ModelItem::for_models(config, allowed_models.as_ref()))
+            .unwrap_or_default();
 
         // Determine which model should be selected: keep the existing
         // selection if there is one, otherwise fall back to the Gpui global.
