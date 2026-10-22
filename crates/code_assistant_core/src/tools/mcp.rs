@@ -16,9 +16,15 @@ pub use mcp_client::{
 };
 
 /// Scope tags every MCP tool carries in code-assistant: offered to the main
-/// agent (both dialect variants), not to sub-agents and not through the MCP
-/// server mode.
-pub const MCP_TOOL_SCOPES: &[&str] = &[capabilities::SCOPE_AGENT, capabilities::SCOPE_AGENT_DIFF];
+/// agent and to writing sub-agents (both dialect variants each), not through
+/// the MCP server mode. Sub-agents share the parent's registry and session
+/// config, so they see the same servers the session has switched on.
+pub const MCP_TOOL_SCOPES: &[&str] = &[
+    capabilities::SCOPE_AGENT,
+    capabilities::SCOPE_AGENT_DIFF,
+    capabilities::SCOPE_SUBAGENT_DEFAULT,
+    capabilities::SCOPE_SUBAGENT_DEFAULT_DIFF,
+];
 
 /// Path of the MCP servers configuration file.
 pub fn mcp_servers_config_path() -> PathBuf {
@@ -526,6 +532,22 @@ mod tests {
         assert!(!definitions.iter().any(
             |tool| tool.name.starts_with("mcp__self__") && tool.name != "mcp__self__read_files"
         ));
+    }
+
+    #[test]
+    fn mcp_tools_reach_the_main_agent_and_writing_sub_agents() {
+        use crate::tools::scope::ToolScope;
+        for scope in [
+            ToolScope::Agent,
+            ToolScope::AgentWithDiffBlocks,
+            ToolScope::SubAgentDefault,
+            ToolScope::SubAgentDefaultWithDiffBlocks,
+        ] {
+            assert!(MCP_TOOL_SCOPES.contains(&scope.tag()), "{scope:?}");
+        }
+        for scope in [ToolScope::SubAgentReadOnly, ToolScope::McpServer] {
+            assert!(!MCP_TOOL_SCOPES.contains(&scope.tag()), "{scope:?}");
+        }
     }
 
     #[test]
