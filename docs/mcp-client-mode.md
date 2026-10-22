@@ -267,7 +267,9 @@ How it is wired:
 - **Registration** (`mcp_client::register_*`) leaves every server declaring
   the `resources` capability, with what it listed, in the registry's
   `McpResourceServers` extension (`ToolRegistry::extension`) — no tools are
-  added.
+  added. Resources and templates are listed alongside the tools and waited
+  for at most 5 s; a server that does not answer in time is offered with an
+  empty catalog.
 - **`Agent::new`** takes them from the registry minus the servers the
   session switched off (`tools::mcp::session_resource_servers`) and puts
   them into `ToolServices::mcp_resources`. Sub-agents get the same set;
@@ -279,17 +281,26 @@ How it is wired:
   ordered by `priority`.
 - **Line ranges**: a trailing `:N`, `:N-M`, `:N-`, `:-M` is a line range
   when what precedes it still has a scheme. A URI the server listed is
-  taken whole; a bare number right after an authority (`http://host:8080`)
-  of an unlisted URI is taken for a port.
+  taken whole, a listed remainder takes the range; so is a URI that only
+  one of the server's templates produces whole (`log://app:{month}`). A
+  bare number right after an authority (`http://host:8080`) of an unlisted
+  URI is taken for a port. When the shortened URI of an unlisted one cannot
+  be read, the path is read whole (`urn:docs:42`). A read returning several
+  contents gives one file per content, named by its URI plus the range,
+  which applies to each.
 
 Contents become what the model can use (`mcp_client::ResourcePart`): text
 as text, PNG/JPEG/GIF/WebP blobs as images, other blobs as text when they
 decode to UTF-8 (JSON, SVG, …), anything else fails that path with a
 reason. Tool results get the same treatment for embedded resources, and a
 resource link becomes a line naming its URI. Reads go through the same
-reconnect/re-authorization path as tool calls. Subscriptions and
-`list_changed` notifications are not used: the registry, and with it the
-catalog, is rebuilt at the start of every run anyway.
+reconnect/re-authorization path as tool calls; listings and reads, which
+have no side effects, are sent again after any reconnect. Subscriptions and
+`list_changed` notifications are not used, so the catalog is what the
+server listed when the registry was built — and `ConfigToolRegistry` reuses
+a registry while its configuration is unchanged and something still holds
+it. The prompt may therefore name resources that are gone or miss new
+ones; `list_files` always asks the server, and `read_files` reads any URI.
 
 Still open from this note: additive scope selection (step 1),
 read-only/outward classification and the outward-confirmation
