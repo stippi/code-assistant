@@ -720,6 +720,7 @@ impl SessionService {
         attachments: Vec<DraftAttachment>,
         edited_node_id: Option<NodeId>,
     ) -> Result<()> {
+        ensure_not_a_transcript(&session_id)?;
         if let Some(command) = NewContextCommand::parse(&message) {
             return self
                 .start_new_context(session_id, message, command, attachments, edited_node_id)
@@ -862,6 +863,7 @@ impl SessionService {
         message: String,
         attachments: Vec<DraftAttachment>,
     ) -> Result<Option<String>> {
+        ensure_not_a_transcript(&session_id)?;
         ensure!(
             NewContextCommand::parse(&message).is_none(),
             "/new and /handoff can't be queued; wait for the agent to finish or stop it"
@@ -2173,6 +2175,15 @@ async fn inject_wakeup_impl(
         Err(e) => warn!("Failed to record that wakeup {wakeup_id} fired: {e}"),
     }
     send_or_queue_user_message_impl(ctx, session_id, message, &[]).await
+}
+
+/// Sub-agent transcripts are written by their sub-agent only.
+fn ensure_not_a_transcript(session_id: &str) -> Result<()> {
+    ensure!(
+        crate::persistence::layout::sub_agent_parent(session_id).is_none(),
+        "This is a sub-agent's transcript; it is read-only"
+    );
+    Ok(())
 }
 
 /// How often, and how long apart, a background result is offered to a

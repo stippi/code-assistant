@@ -422,6 +422,10 @@ impl SessionManager {
         session_id: &str,
         cancellation: tools_core::RunCancellation,
     ) -> Result<()> {
+        anyhow::ensure!(
+            crate::persistence::layout::sub_agent_parent(session_id).is_none(),
+            "A sub-agent's transcript is read-only"
+        );
         self.ensure_session_loaded(session_id)?;
         let instance = self.active_sessions.get_mut(session_id).unwrap();
         anyhow::ensure!(
@@ -1405,7 +1409,17 @@ impl SessionManager {
                     sink: self.sub_agent_sink.clone()?,
                 })
             }))
-            .with_llm_client_factory_if(sub_agent_llm),
+            .with_llm_client_factory_if(sub_agent_llm)
+            .with_transcripts(Some(Arc::new(
+                crate::session::sub_agent_transcripts::SessionTranscripts {
+                    parent_session_id: session_id.to_string(),
+                    persistence: self.persistence.clone(),
+                    events: self.events.clone(),
+                    tool_registry: self.tool_registry.clone(),
+                    config: session_config.clone(),
+                    model: session_state.model_config.clone(),
+                },
+            ))),
         );
 
         let components = AgentComponents {

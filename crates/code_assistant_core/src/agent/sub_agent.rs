@@ -279,6 +279,22 @@ pub struct BackgroundSupport {
     pub sink: Arc<dyn SubAgentSink>,
 }
 
+/// Where a sub-agent's conversation is kept, so it can be read like a
+/// session.
+pub struct SubAgentTranscript {
+    pub session_id: String,
+    /// Receives the sub-agent's checkpoints.
+    pub persistence: Box<dyn crate::agent::persistence::AgentStatePersistence>,
+    /// Receives everything the sub-agent shows.
+    pub ui: Arc<dyn UserInterface>,
+}
+
+/// Creates the transcripts of a session's sub-agents (see
+/// [`crate::session::sub_agent_transcripts`]).
+pub trait SubAgentTranscripts: Send + Sync {
+    fn create(&self, agent_id: u64, title: &str) -> Result<SubAgentTranscript>;
+}
+
 /// Execution mode for a sub-agent, selected by the `spawn_agent` tool input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubAgentMode {
@@ -346,6 +362,7 @@ pub struct DefaultSubAgentRunner {
     /// Where running sub-agents are listed, with the session they belong to.
     running: Option<(String, Arc<RunningSubAgents>)>,
     background: Option<BackgroundSupport>,
+    transcripts: Option<Arc<dyn SubAgentTranscripts>>,
 }
 
 impl DefaultSubAgentRunner {
@@ -381,7 +398,14 @@ impl DefaultSubAgentRunner {
             session_browsers: None,
             running: None,
             background: None,
+            transcripts: None,
         }
+    }
+
+    /// Keep each listed sub-agent's conversation as a transcript.
+    pub fn with_transcripts(mut self, transcripts: Option<Arc<dyn SubAgentTranscripts>>) -> Self {
+        self.transcripts = transcripts;
+        self
     }
 
     /// List running sub-agents in `running`, published for `session_id`.
@@ -471,7 +495,21 @@ impl DefaultSubAgentRunner {
         ui: Arc<dyn UserInterface>,
         permission_handler: Option<Arc<dyn PermissionMediator>>,
         browser_sessions: Arc<web::BrowserSessionManager>,
+        transcript: Option<(
+            String,
+            Box<dyn crate::agent::persistence::AgentStatePersistence>,
+        )>,
     ) -> Result<Agent> {
+        let (session_id, state_persistence): (
+            String,
+            Box<dyn crate::agent::persistence::AgentStatePersistence>,
+        ) = match transcript {
+            Some((session_id, persistence)) => (session_id, persistence),
+            None => (
+                format!("sub-agent:{parent_tool_id}"),
+                Box::new(NoOpStatePersistence),
+            ),
+        };
         // Create a fresh LLM provider (avoid requiring Clone).
         let llm_provider = match &self.llm_client_factory {
             Some(factory) => {
@@ -517,7 +555,7 @@ impl DefaultSubAgentRunner {
             project_manager,
             command_executor: Arc::from(command_executor),
             ui,
-            state_persistence: Box::new(NoOpStatePersistence),
+            state_persistence,
             permission_handler,
             permissions: self.permissions.clone(),
             tool_registry: self.tool_registry.clone(),
@@ -545,8 +583,9 @@ impl DefaultSubAgentRunner {
         // Ensure it uses the same model name for prompt selection.
         agent.set_session_model_config(self.model.clone());
 
-        // Provide a stable session id so UI components that key off it don't break.
-        agent.set_session_identity(format!("sub-agent:{parent_tool_id}"), String::new());
+        // The transcript's id, or a stable one so UI components that key off
+        // it don't break.
+        agent.set_session_identity(session_id, String::new());
 
         // Initialize project trees, etc.
         agent.init_project_context()?;
@@ -705,6 +744,9 @@ pub struct SubAgentOutput {
     /// Started in the background: the parent did not wait for it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub background: bool,
+    /// The session holding the sub-agent's transcript.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 impl SubAgentOutput {
@@ -718,6 +760,7 @@ impl SubAgentOutput {
             usage: None,
             agent_id: None,
             background: false,
+            session_id: None,
         }
     }
 
@@ -761,6 +804,8 @@ struct SubAgentUiAdapter {
     parent_tool_id: String,
     cancellation: tools_core::RunCancellation,
     listing: Option<SubAgentListing>,
+    /// The sub-agent's own transcript, which sees everything.
+    transcript: Mutex<Option<Arc<dyn UserInterface>>>,
     output: Mutex<SubAgentOutput>,
     /// Map from tool_id to index in output.tools for fast lookup
     tool_id_to_index: Mutex<std::collections::HashMap<String, usize>>,
@@ -781,6 +826,7 @@ impl SubAgentUiAdapter {
             parent_tool_id,
             cancellation,
             listing,
+            transcript: Mutex::new(None),
             output: Mutex::new(SubAgentOutput::new()),
             tool_id_to_index: Mutex::new(std::collections::HashMap::new()),
             tool_registry,
@@ -791,6 +837,15 @@ impl SubAgentUiAdapter {
         let mut output = self.output.lock().unwrap();
         output.agent_id = Some(agent_id);
         output.background = background;
+    }
+
+    fn set_transcript(&self, session_id: String, ui: Arc<dyn UserInterface>) {
+        self.output.lock().unwrap().session_id = Some(session_id);
+        *self.transcript.lock().unwrap() = Some(ui);
+    }
+
+    fn transcript(&self) -> Option<Arc<dyn UserInterface>> {
+        self.transcript.lock().unwrap().clone()
     }
 
     async fn send_output_update(&self) {
@@ -994,6 +1049,9 @@ impl SubAgentUiAdapter {
 #[async_trait::async_trait]
 impl UserInterface for SubAgentUiAdapter {
     async fn send_event(&self, event: UiEvent) -> Result<(), crate::ui::UIError> {
+        if let Some(transcript) = self.transcript() {
+            let _ = transcript.send_event(event.clone()).await;
+        }
         match &event {
             UiEvent::UpdateToolStatus {
                 tool_id,
@@ -1054,6 +1112,9 @@ impl UserInterface for SubAgentUiAdapter {
     ) -> Result<(), crate::ui::UIError> {
         use crate::ui::DisplayFragment;
 
+        if let Some(transcript) = self.transcript() {
+            let _ = transcript.display_fragment(fragment);
+        }
         match fragment {
             DisplayFragment::ToolName { name, id, .. } => {
                 // A sub-agent tool is starting - capture it in our internal state.

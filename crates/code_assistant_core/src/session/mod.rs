@@ -25,6 +25,7 @@ pub mod pull_request;
 pub mod questions;
 pub mod service;
 pub mod sleep_inhibitor;
+pub mod sub_agent_transcripts;
 pub mod turn;
 pub mod wakeup;
 pub mod watcher;

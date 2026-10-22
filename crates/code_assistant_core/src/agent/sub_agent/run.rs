@@ -176,8 +176,26 @@ impl DefaultSubAgentRunner {
             cancellation.clone(),
             listing,
         );
+        // The sub-agent's conversation becomes a transcript session; without
+        // one it still runs.
+        let mut transcript = None;
         if let Some((id, background)) = identity {
             sub_ui.set_identity(id, background);
+            if let Some(transcripts) = &self.transcripts {
+                let title = sub_ui
+                    .listing
+                    .as_ref()
+                    .and_then(|l| l.running.list().into_iter().find(|a| a.id == id))
+                    .map(|a| a.title)
+                    .unwrap_or_default();
+                match transcripts.create(id, &title) {
+                    Ok(created) => {
+                        sub_ui.set_transcript(created.session_id.clone(), created.ui.clone());
+                        transcript = Some((created.session_id, created.persistence, created.ui));
+                    }
+                    Err(e) => tracing::warn!("No transcript for sub-agent #{id}: {e:#}"),
+                }
+            }
             sub_ui.send_output_update().await;
             if let Some(listing) = &sub_ui.listing {
                 listing.publish(sub_ui.parent.as_ref()).await;
@@ -192,12 +210,15 @@ impl DefaultSubAgentRunner {
             .as_ref()
             .map(|session| session.register_sub_agent(parent_tool_id, browsers.clone()));
 
+        let transcript_ui = transcript.as_ref().map(|(_, _, ui)| ui.clone());
+        let agent_transcript = transcript.map(|(id, persistence, _)| (id, persistence));
+
         let work = async {
             cancellation.check()?;
             let mut agent = tokio::select! {
                 biased;
                 _ = cancellation.cancelled() => return Err(tools_core::Cancelled.into()),
-                agent = self.build_agent(parent_tool_id, sub_ui.clone(), self.permission_handler.clone(), browsers.clone()) => agent?,
+                agent = self.build_agent(parent_tool_id, sub_ui.clone(), self.permission_handler.clone(), browsers.clone(), agent_transcript) => agent?,
             };
             agent.set_cancellation(cancellation.clone());
             let scope = match mode {
@@ -248,6 +269,15 @@ impl DefaultSubAgentRunner {
             });
         // Unregister before publishing the terminal child status.
         drop(registration);
+        let transcript_id = sub_ui.output.lock().unwrap().session_id.clone();
+        if let (Some(ui), Some(session_id)) = (&transcript_ui, transcript_id) {
+            let _ = ui
+                .send_event(UiEvent::UpdateSessionActivityState {
+                    session_id,
+                    activity_state: crate::session::instance::SessionActivityState::Idle,
+                })
+                .await;
+        }
 
         match result {
             Ok(answer) if !cancellation.is_cancelled() => {

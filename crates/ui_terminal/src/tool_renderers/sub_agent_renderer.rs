@@ -176,6 +176,7 @@ mod tests {
             usage: None,
             agent_id: None,
             background: false,
+            session_id: None,
         }
         .to_json()
     }

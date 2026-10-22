@@ -20,6 +20,7 @@ fn running(id: u64, tool_id: &str, background: bool) -> RunningSubAgentInfo {
         activity: Some(SubAgentActivity::WaitingForLlm),
         tool_count: 0,
         current_tool: None,
+        session_id: None,
     }
 }
 
@@ -110,4 +111,37 @@ fn delivered_results_show_as_the_sub_agents_line(cx: &mut TestAppContext) {
         test.transcript().last().map(String::as_str),
         Some("sub-agent #1 finished: It is in a.rs | sub-agent #2 failed: boom")
     );
+}
+
+#[gpui_kit::test]
+fn a_sub_agent_transcript_opens_read_only(cx: &mut TestAppContext) {
+    let core = TestCore::new(MockLLMProvider::new(Vec::new()).into_factory());
+    let parent = core.create_session();
+    let transcript_id = code_assistant_core::persistence::layout::sub_agent_session_id(&parent, 1);
+    let mut transcript = code_assistant_core::persistence::ChatSession::new_empty(
+        transcript_id.clone(),
+        "Sub-agent #1: look".into(),
+        Default::default(),
+        None,
+    );
+    transcript.add_message(Message::new_user("Find the parser"));
+    transcript.add_message(Message::new_assistant("It is in parser.rs"));
+    core.store().create_chat_session(&transcript).unwrap();
+
+    let mut test = MainScreenTest::with_core(cx, core);
+    test.gpui.cmd_load_session(transcript_id, None);
+    test.wait_until("the transcript is shown", |test| {
+        test.transcript().len() == 2
+    });
+    assert_eq!(
+        test.transcript(),
+        vec!["user: Find the parser", "assistant: It is in parser.rs"]
+    );
+    let input_area = test
+        .main_screen
+        .read_with(&test.cx, |screen, _| screen.input_area.clone());
+    let marked = test
+        .cx
+        .update(|_, cx| input_area.read(cx).sub_agent_transcript().cloned());
+    assert_eq!(marked, Some((parent, 1)));
 }

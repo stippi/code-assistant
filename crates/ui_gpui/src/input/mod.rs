@@ -143,6 +143,9 @@ pub struct InputArea {
     agent_is_running: bool,
     cancel_enabled: bool,
     externally_locked: bool,
+    /// The parent session and sub-agent id when the viewed session is a
+    /// sub-agent's transcript, which is read-only.
+    sub_agent_transcript: Option<(String, u64)>,
 
     // Context usage of the last API request (drives the ring + breakdown tooltip)
     context_usage: Option<ContextUsage>,
@@ -223,6 +226,7 @@ impl InputArea {
             agent_is_running: false,
             cancel_enabled: false,
             externally_locked: false,
+            sub_agent_transcript: None,
             context_usage: None,
             context_total_usage: None,
 
@@ -437,6 +441,16 @@ impl InputArea {
         self.agent_is_running = agent_is_running;
         self.cancel_enabled = cancel_enabled;
         self.externally_locked = externally_locked;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sub_agent_transcript(&self) -> Option<&(String, u64)> {
+        self.sub_agent_transcript.as_ref()
+    }
+
+    /// Mark the viewed session as a sub-agent's transcript (or not).
+    pub fn set_sub_agent_transcript(&mut self, transcript: Option<(String, u64)>) {
+        self.sub_agent_transcript = transcript;
     }
 
     /// Update the context usage of the last API request (drives the ring and
@@ -1012,6 +1026,56 @@ impl InputArea {
                         ),
                 )
             })
+            // Sub-agent transcript banner
+            .when_some(
+                self.sub_agent_transcript.clone(),
+                |parent, (parent_id, agent_id)| {
+                    parent.child(
+                        div()
+                            .px_3()
+                            .py_2()
+                            .bg(cx.theme().muted)
+                            .border_b_1()
+                            .border_color(cx.theme().border)
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                Icon::default()
+                                    .path(SharedString::from("icons/lock.svg"))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .size(px(14.)),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(format!(
+                                        "Transcript of sub-agent #{agent_id} (read-only)"
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .id("back-to-parent-session")
+                                    .px_2()
+                                    .py(px(1.))
+                                    .rounded(px(4.))
+                                    .text_sm()
+                                    .text_color(cx.theme().foreground)
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(cx.theme().accent.opacity(0.25)))
+                                    .on_click(move |_event, _window, cx| {
+                                        if let Some(gpui) = cx.try_global::<crate::Gpui>() {
+                                            gpui.cmd_load_session(parent_id.clone(), None);
+                                        }
+                                    })
+                                    .child("Back to parent"),
+                            ),
+                    )
+                },
+            )
             // Externally locked banner
             .when(self.externally_locked, |parent| {
                 parent.child(
@@ -1064,7 +1128,10 @@ impl InputArea {
                     .items_start()
                     .p_2()
                     .gap_2()
-                    .when(self.externally_locked, |el| el.opacity(0.45))
+                    .when(
+                        self.externally_locked || self.sub_agent_transcript.is_some(),
+                        |el| el.opacity(0.45),
+                    )
                     // Left column: text field + selector row (share same width).
                     // `min_w_0` lets it shrink below its content so the buttons
                     // on the right always stay visible.
@@ -1105,7 +1172,9 @@ impl InputArea {
 
                                 // Send button - enabled when there is text or an attachment
                                 // (e.g. review comments) and not externally locked
-                                let send_enabled = has_sendable_content && !self.externally_locked;
+                                let send_enabled = has_sendable_content
+                                    && !self.externally_locked
+                                    && self.sub_agent_transcript.is_none();
 
                                 let mut send_button = div()
                                     .id("send-btn")

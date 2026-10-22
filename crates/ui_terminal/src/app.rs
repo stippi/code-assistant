@@ -621,6 +621,25 @@ async fn handle_command_result(
                         (_, Err(error)) => state.set_info_message(Some(error)),
                     }
                 }
+                navigation @ (AgentsCommand::Open(_) | AgentsCommand::Back) => {
+                    let Some(current) = state.current_session_id.clone() else {
+                        state.set_info_message(Some("No active session".into()));
+                        return;
+                    };
+                    match navigation.target_session(&current) {
+                        Ok(session_id) => {
+                            if matches!(navigation, AgentsCommand::Open(_)) {
+                                state.set_info_message(Some(
+                                    "Sub-agent transcript (read-only). /agents back returns."
+                                        .into(),
+                                ));
+                            }
+                            drop(state);
+                            actions.switch_session(session_id);
+                        }
+                        Err(error) => state.set_info_message(Some(error)),
+                    }
+                }
             }
         }
         CommandResult::ShowPermissionTier => {

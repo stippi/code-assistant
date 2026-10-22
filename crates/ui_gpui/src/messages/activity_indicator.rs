@@ -300,6 +300,30 @@ pub fn render_running_sub_agents(
                     .text_color(muted)
                     .child(elapsed_text(agent.started_at)),
             )
+            .when_some(agent.session_id.clone(), |row, session_id| {
+                row.child(
+                    div()
+                        .id(SharedString::from(format!(
+                            "open-running-{}",
+                            agent.tool_id
+                        )))
+                        .flex_none()
+                        .px_2()
+                        .py(px(1.))
+                        .rounded(px(4.))
+                        .text_size(rems(0.6875))
+                        .text_color(muted)
+                        .cursor_pointer()
+                        .hover(|s| s.bg(foreground.opacity(0.1)).text_color(foreground))
+                        .on_click(cx.listener(move |_view, _event: &ClickEvent, _window, cx| {
+                            cx.stop_propagation();
+                            if let Some(gpui) = cx.try_global::<crate::Gpui>() {
+                                gpui.cmd_load_session(session_id.clone(), None);
+                            }
+                        }))
+                        .child("Open"),
+                )
+            })
             .child(
                 div()
                     .id(SharedString::from(format!(

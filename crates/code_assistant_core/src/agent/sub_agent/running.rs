@@ -24,6 +24,9 @@ pub struct RunningSubAgentInfo {
     pub tool_count: usize,
     /// The title (or name) of the tool running right now, if any.
     pub current_tool: Option<String>,
+    /// The session holding its transcript, once there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 struct Entry {
@@ -68,6 +71,7 @@ impl RunningSubAgents {
                 activity: Some(SubAgentActivity::WaitingForLlm),
                 tool_count: 0,
                 current_tool: None,
+                session_id: None,
             },
             live_result: None,
         });
@@ -88,7 +92,9 @@ impl RunningSubAgents {
             .map(|t| t.title.clone().unwrap_or_else(|| t.name.clone()));
         let changed = entry.info.activity != output.activity
             || entry.info.tool_count != output.tools.len()
-            || entry.info.current_tool != current_tool;
+            || entry.info.current_tool != current_tool
+            || entry.info.session_id != output.session_id;
+        entry.info.session_id = output.session_id.clone();
         entry.info.activity = output.activity;
         entry.info.tool_count = output.tools.len();
         entry.info.current_tool = current_tool;

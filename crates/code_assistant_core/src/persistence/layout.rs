@@ -34,6 +34,24 @@ const UI_STATE_FILE: &str = "ui_state.json";
 const DRAFT_FILE: &str = "draft.json";
 const BLOBS_DIR: &str = "blobs";
 
+/// The folder inside a session holding its sub-agents' transcripts.
+const SUB_AGENTS_DIR: &str = "sub-agents";
+
+/// The ID of the transcript of sub-agent `#agent_id` of session `parent`: a
+/// folder inside the parent's, so it goes with the parent and stays out of
+/// the session listings.
+pub fn sub_agent_session_id(parent: &str, agent_id: u64) -> String {
+    format!("{parent}/{SUB_AGENTS_DIR}/{agent_id}")
+}
+
+/// The parent session and sub-agent id of a sub-agent transcript's ID;
+/// `None` for any other session.
+pub fn sub_agent_parent(session_id: &str) -> Option<(&str, u64)> {
+    let (rest, agent_id) = session_id.rsplit_once('/')?;
+    let parent = rest.strip_suffix(SUB_AGENTS_DIR)?.strip_suffix('/')?;
+    Some((parent, agent_id.parse().ok()?))
+}
+
 /// What a changed path below the sessions directory means.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionPath {
@@ -211,10 +229,12 @@ pub fn project_slug(project_root: Option<&Path>) -> String {
 }
 
 /// Session IDs become paths, so they must stay inside the sessions
-/// directory: one or two `/`-separated plain components, no `.` or `..`,
-/// nothing absolute, no backslashes.
+/// directory: one or two `/`-separated plain components (plus the
+/// `sub-agents/<n>` of a sub-agent transcript), no `.` or `..`, nothing
+/// absolute, no backslashes.
 pub fn validate_session_id(session_id: &str) -> Result<()> {
-    let components: Vec<&str> = session_id.split('/').collect();
+    let own_id = sub_agent_parent(session_id).map_or(session_id, |(parent, _)| parent);
+    let components: Vec<&str> = own_id.split('/').collect();
     let plain = |part: &&str| {
         !part.is_empty()
             && !part.contains('\\')
@@ -236,6 +256,16 @@ mod tests {
 
     fn day(d: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 10, d).unwrap()
+    }
+
+    #[test]
+    fn sub_agent_transcripts_live_inside_their_parent() {
+        let id = sub_agent_session_id("proj/2026-10-22-001", 3);
+        assert_eq!(id, "proj/2026-10-22-001/sub-agents/3");
+        assert!(validate_session_id(&id).is_ok());
+        assert_eq!(sub_agent_parent(&id), Some(("proj/2026-10-22-001", 3)));
+        assert_eq!(sub_agent_parent("proj/2026-10-22-001"), None);
+        assert_eq!(sub_agent_parent("proj/sub-agents/x"), None);
     }
 
     #[test]

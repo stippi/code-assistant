@@ -10,6 +10,10 @@ pub enum AgentsCommand {
     List,
     /// Cancel one sub-agent by its `#id`, or all of them (`None`).
     Cancel(Option<u64>),
+    /// Show the transcript of sub-agent `#id` (read-only).
+    Open(u64),
+    /// Leave a transcript for the session that ran the sub-agent.
+    Back,
 }
 
 impl AgentsCommand {
@@ -18,12 +22,25 @@ impl AgentsCommand {
         match args {
             [] | ["list"] => Ok(Self::List),
             ["cancel", "all"] => Ok(Self::Cancel(None)),
-            ["cancel", id] => id
-                .trim_start_matches('#')
-                .parse()
-                .map(|id| Self::Cancel(Some(id)))
-                .map_err(|_| format!("Not a sub-agent id: {id}")),
-            _ => Err("Usage: /agents [cancel <id>|cancel all]".to_string()),
+            ["cancel", id] => parse_id(id).map(|id| Self::Cancel(Some(id))),
+            ["open", id] => parse_id(id).map(Self::Open),
+            ["back"] => Ok(Self::Back),
+            _ => Err("Usage: /agents [cancel <id>|cancel all|open <id>|back]".to_string()),
+        }
+    }
+
+    /// The session `/agents open <id>` or `/agents back` switches to from
+    /// `current`, or what is wrong.
+    pub fn target_session(&self, current: &str) -> Result<String, String> {
+        use code_assistant_core::persistence::layout::{sub_agent_parent, sub_agent_session_id};
+        // A transcript's sub-agents are its parent's.
+        let parent = sub_agent_parent(current).map(|(parent, _)| parent);
+        match self {
+            Self::Open(id) => Ok(sub_agent_session_id(parent.unwrap_or(current), *id)),
+            Self::Back => parent
+                .map(str::to_string)
+                .ok_or_else(|| "This is not a sub-agent's transcript".to_string()),
+            _ => Err("Not a navigation command".to_string()),
         }
     }
 
@@ -43,6 +60,12 @@ impl AgentsCommand {
             (None, true) => Err("No sub-agents are running".to_string()),
         }
     }
+}
+
+fn parse_id(id: &str) -> Result<u64, String> {
+    id.trim_start_matches('#')
+        .parse()
+        .map_err(|_| format!("Not a sub-agent id: {id}"))
 }
 
 /// What a running sub-agent is doing, in a few words.
@@ -85,7 +108,9 @@ pub fn running_lines(agents: &[RunningSubAgentInfo]) -> Option<String> {
 pub fn listing(agents: &[RunningSubAgentInfo]) -> String {
     match running_lines(agents) {
         Some(lines) => {
-            format!("Running sub-agents:  \n{lines}  \nCancel one with /agents cancel <id>.")
+            format!(
+                "Running sub-agents:  \n{lines}  \nOpen one with /agents open <id>, cancel it with /agents cancel <id>."
+            )
         }
         None => "No sub-agents are running.".to_string(),
     }
@@ -105,6 +130,7 @@ mod tests {
             activity: Some(SubAgentActivity::ExecutingTools),
             tool_count: 1,
             current_tool: (id == 2).then(|| "Reading main.rs".to_string()),
+            session_id: None,
         }
     }
 
@@ -120,8 +146,32 @@ mod tests {
             AgentsCommand::parse(&["cancel", "all"]),
             Ok(AgentsCommand::Cancel(None))
         );
+        assert_eq!(
+            AgentsCommand::parse(&["open", "2"]),
+            Ok(AgentsCommand::Open(2))
+        );
+        assert_eq!(AgentsCommand::parse(&["back"]), Ok(AgentsCommand::Back));
         assert!(AgentsCommand::parse(&["cancel", "x"]).is_err());
         assert!(AgentsCommand::parse(&["stop"]).is_err());
+    }
+
+    #[test]
+    fn navigates_between_a_session_and_its_transcripts() {
+        let open = AgentsCommand::Open(2);
+        assert_eq!(
+            open.target_session("p/1"),
+            Ok("p/1/sub-agents/2".to_string())
+        );
+        // From one transcript to a sibling.
+        assert_eq!(
+            open.target_session("p/1/sub-agents/1"),
+            Ok("p/1/sub-agents/2".to_string())
+        );
+        assert_eq!(
+            AgentsCommand::Back.target_session("p/1/sub-agents/1"),
+            Ok("p/1".to_string())
+        );
+        assert!(AgentsCommand::Back.target_session("p/1").is_err());
     }
 
     #[test]
