@@ -213,6 +213,52 @@ impl FinishedSubAgent {
 /// the transcript can tell it from a human message: `[sub-agent #3] finished: …`.
 pub const SUB_AGENT_FRAME: &str = "[sub-agent";
 
+/// A delivered background result, parsed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedSubAgentMessage<'a> {
+    pub agent_id: u64,
+    /// `finished`, `failed` or `cancelled`.
+    pub outcome: &'a str,
+    /// The answer, or what went wrong.
+    pub body: &'a str,
+}
+
+/// Parse a message rendered by [`FinishedSubAgent::message`]; `None` for any
+/// other message.
+pub fn parse_sub_agent_message(message: &str) -> Option<ParsedSubAgentMessage<'_>> {
+    let rest = message.strip_prefix(SUB_AGENT_FRAME)?.strip_prefix(" #")?;
+    let (id, rest) = rest.split_once("] ")?;
+    let (outcome, body) = rest.split_once(':')?;
+    if !matches!(outcome, "finished" | "failed" | "cancelled") {
+        return None;
+    }
+    Some(ParsedSubAgentMessage {
+        agent_id: id.parse().ok()?,
+        outcome,
+        body: body.trim(),
+    })
+}
+
+/// Parse a message holding one or more delivered results, as queued results
+/// arrive together (frontends may join their blocks with blank lines);
+/// `None` unless all of it is results.
+pub fn parse_sub_agent_messages(message: &str) -> Option<Vec<ParsedSubAgentMessage<'_>>> {
+    let separator = format!("\n\n{SUB_AGENT_FRAME} #");
+    let mut starts = vec![0];
+    starts.extend(
+        message
+            .match_indices(&separator)
+            .map(|(i, _)| i + 2)
+            .filter(|&i| parse_sub_agent_message(&message[i..]).is_some()),
+    );
+    let mut parsed = Vec::new();
+    for (n, &start) in starts.iter().enumerate() {
+        let end = starts.get(n + 1).map_or(message.len(), |&next| next);
+        parsed.push(parse_sub_agent_message(message[start..end].trim_end())?);
+    }
+    Some(parsed)
+}
+
 /// Receives the results of background sub-agents. The production
 /// implementation is [`crate::session::SessionService`], which records the
 /// result and delivers it into the parent session; tests substitute a
