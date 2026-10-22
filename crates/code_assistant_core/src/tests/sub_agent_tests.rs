@@ -335,7 +335,6 @@ fn test_can_run_in_parallel_logic() {
     let mode = request.input["mode"].as_str().unwrap_or("read_only");
     assert_eq!(mode, "read_only");
 
-    // spawn_agent with non-read_only mode should NOT be parallelizable
     let request = ToolRequest {
         id: "test-3".to_string(),
         name: "spawn_agent".to_string(),
@@ -347,9 +346,11 @@ fn test_can_run_in_parallel_logic() {
         end_offset: None,
     };
 
+    // spawn_agent in default (writing) mode is parallelizable too: each
+    // writer gets its own worktree, or the runner serializes them.
     let mode = request.input["mode"].as_str().unwrap_or("read_only");
     assert_eq!(mode, "default");
-    assert!(!(request.name == "spawn_agent" && mode == "read_only"));
+    assert_eq!(request.name, "spawn_agent");
 
     // Other tools should NOT be parallelizable
     let request = ToolRequest {
