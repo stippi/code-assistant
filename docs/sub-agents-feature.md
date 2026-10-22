@@ -73,7 +73,31 @@
   - Falls back to raw output if JSON parsing fails
   - Located in `build_content()` method, triggered when tool_name is "spawn_agent"
 
+### Completed (phase 7: one kind of sub-agent, background runs, transcripts)
+- [x] **One kind of sub-agent**: the `read_only` / `default` mode split is gone (`SubAgentMode`,
+  `ToolScope::SubAgentReadOnly`). Every sub-agent gets the sub-agent scopes, which include the
+  editing tools and the session's MCP tools. An old `mode` field in stored input is ignored.
+  The design notes below still describe the earlier split.
+- [x] **Parallel writing**: every `spawn_agent` call of a turn runs concurrently
+  (`SpawnAgentParallelPolicy`). In a git project each sub-agent works in its own worktree,
+  started from a snapshot of the parent's tree, and its changes are merged back all-or-nothing
+  when it finishes (`agent/sub_agent/workspace.rs`, `git::isolation`). On a conflict nothing is
+  applied; the changes stay on a branch and the parent is told how to resolve it. Outside git,
+  sub-agents share the tree and `fs_explorer`'s per-path locks and atomic writes keep edits from
+  being lost.
+- [x] **Background sub-agents**: `background: true` returns right away; the answer arrives
+  later as a user message `[sub-agent #N] finished: …` (or `failed` / `cancelled`), which starts
+  a turn when the session is idle and is queued otherwise (`SubAgentSink`,
+  `SessionService::deliver_sub_agent_result`). Background agents end with the session.
+- [x] **Running sub-agents view**: `UiEvent::UpdateRunningSubAgents` lists the running agents
+  (`#id`, title, activity, elapsed). GPUI shows them under the messages with Open and Cancel;
+  the terminal UI shows status lines and the `/agents [cancel <id>|cancel all|open <id>|back]`
+  command.
+- [x] **Transcripts**: each sub-agent's conversation is stored as a read-only session
+  `<parent>/sub-agents/<N>`, left out of the session listings and openable from both UIs.
+
 ### Pending
+- [ ] **Steering input**: send messages into a running sub-agent from its transcript
 - [ ] **Permission attribution**: Show permission requests as originating from sub-agent context (inline or popover)
 
 ### Notes
