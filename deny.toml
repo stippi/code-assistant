@@ -1,0 +1,112 @@
+# cargo-deny configuration: supply-chain checks for the whole workspace.
+#
+#   cargo deny check              # everything
+#   cargo deny check advisories   # one section
+#
+# Runs in CI (`.github/workflows/deny.yml`) on every push and pull request
+# and once a week, so new RustSec advisories surface even without a code
+# change. Reference: https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+# The binary is built with every feature in CI (`--all-features`), so the
+# dependency graph is checked the same way. Targets stay at the default (all),
+# because the workspace is built for Linux, macOS and Windows.
+all-features = true
+
+[output]
+feature-depth = 1
+
+# ---------------------------------------------------------------------------
+# Advisories (RustSec database)
+# ---------------------------------------------------------------------------
+[advisories]
+yanked = "warn"
+# Only unmaintained crates the workspace depends on *directly* fail the check.
+# gpui and friends pull in a long tail of unmaintained transitive crates
+# (bincode 1, paste, instant, rustybuzz, ttf-parser, zbus_*, ...) we cannot
+# replace from here.
+unmaintained = "workspace"
+ignore = [
+    # All of the following come in through the document converters used by
+    # `fs_explorer`/`code_assistant_core` (our `transmutation` fork and its
+    # dependencies docx-rs, umya-spreadsheet, pdf-extract). Fixing them means
+    # bumping those crates to new major versions inside the fork.
+    { id = "RUSTSEC-2026-0187", reason = "lopdf stack overflow on deeply nested PDFs; fix needs lopdf >= 0.42 in transmutation/pdf-extract" },
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml quadratic attribute check; fix needs quick-xml >= 0.41 in transmutation, docx-rs, umya-spreadsheet, plist" },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml NsReader memory exhaustion; same upgrade path as RUSTSEC-2026-0194" },
+    { id = "RUSTSEC-2026-0367", reason = "zip extract() keeps SUID/SGID bits; the converters read archives in memory and never extract to disk" },
+    { id = "RUSTSEC-2026-0368", reason = "zip extract() follows symlinks out of the target dir; not reachable, see RUSTSEC-2026-0367" },
+    { id = "RUSTSEC-2026-0369", reason = "zip extract() applies permissions through symlinks; not reachable, see RUSTSEC-2026-0367" },
+]
+
+# ---------------------------------------------------------------------------
+# Licenses
+# ---------------------------------------------------------------------------
+[licenses]
+# The project itself is MIT (the `terminal*` crates are Apache-2.0, derived
+# from Zed). Everything the binary links must be permissive; a crate whose
+# license is not in this list fails the check.
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "BSL-1.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "CC0-1.0",
+    # Weak, file-level copyleft (cssparser, selectors, dwrote, option-ext, ...):
+    # fine as long as those crates are used unmodified.
+    "MPL-2.0",
+    # Mozilla root certificate bundle (webpki-roots).
+    "CDLA-Permissive-2.0",
+    # libfuzzer-sys: (MIT OR Apache-2.0) AND NCSA
+    "NCSA",
+    # libbz2-rs-sys
+    "bzip2-1.0.6",
+]
+# `r-efi` (MIT OR Apache-2.0 OR LGPL-2.1-or-later) and `self_cell`
+# (Apache-2.0 OR GPL-2.0-only) are OR-expressions and pass through their
+# permissive alternative; nothing copyleft-only is allowed.
+confidence-threshold = 0.8
+exceptions = []
+
+[licenses.private]
+ignore = true
+
+# ---------------------------------------------------------------------------
+# Bans
+# ---------------------------------------------------------------------------
+[bans]
+# The gpui dependency tree alone carries dozens of duplicated crate versions;
+# warning about them would only drown the output. Use `cargo tree -d` when
+# hunting duplicates by hand.
+multiple-versions = "allow"
+wildcards = "allow"
+highlight = "all"
+deny = []
+skip = []
+skip-tree = []
+
+# ---------------------------------------------------------------------------
+# Sources
+# ---------------------------------------------------------------------------
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# Every git dependency must be listed here; see the `[patch.crates-io]`
+# section in `Cargo.toml` for why each fork exists.
+allow-git = [
+    "https://github.com/stippi/transmutation",
+    "https://github.com/stippi/gpui-component",
+    "https://github.com/nornagon/crossterm",
+    "https://github.com/nornagon/ratatui",
+    # alacritty_terminal, via the `terminal` crate
+    "https://github.com/zed-industries/alacritty",
+]

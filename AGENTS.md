@@ -11,6 +11,7 @@ Additional documentation is available in the `docs` folder if needed.
 - `cargo test --package <crate>` - Test a single crate (names in Crate Layers below)
 - `cargo fmt --all -- --check` - Check code formatting
 - `cargo clippy --all-targets --all-features -- -D warnings` - Run linter
+- `cargo deny check` - Check dependencies for advisories, licenses and sources (policy in `deny.toml`; `cargo install cargo-deny` once)
 
 ## Architecture Overview
 

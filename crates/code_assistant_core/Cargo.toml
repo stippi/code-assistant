@@ -2,6 +2,7 @@
 name = "code_assistant_core"
 version = "0.2.17"
 edition = "2024"
+license = "MIT"
 
 [features]
 default = ["document-conversion"]
