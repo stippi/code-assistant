@@ -27,14 +27,11 @@ yanked = "warn"
 # replace from here.
 unmaintained = "workspace"
 ignore = [
-    # All of the following come in through the document converters used by
-    # `fs_explorer`/`code_assistant_core` (our `transmutation` fork and its
-    # dependencies docx-rs, umya-spreadsheet, pdf-extract). Fixing them means
-    # bumping those crates to new major versions inside the fork.
-    { id = "RUSTSEC-2026-0187", reason = "lopdf stack overflow on deeply nested PDFs; fix needs lopdf >= 0.42 in transmutation/pdf-extract" },
-    { id = "RUSTSEC-2026-0194", reason = "quick-xml quadratic attribute check; fix needs quick-xml >= 0.41 in transmutation, docx-rs, umya-spreadsheet, plist" },
-    { id = "RUSTSEC-2026-0195", reason = "quick-xml NsReader memory exhaustion; same upgrade path as RUSTSEC-2026-0194" },
-    { id = "RUSTSEC-2026-0367", reason = "zip extract() keeps SUID/SGID bits; the converters read archives in memory and never extract to disk" },
+    # zip 8.x comes in through transmutation's office converters (docx-rs,
+    # umya-spreadsheet), which do not support zip 9 yet. The advisories only
+    # concern `extract()` to the file system; the converters read archives in
+    # memory. Drop these once docx-rs and umya-spreadsheet move to zip >= 9.
+    { id = "RUSTSEC-2026-0367", reason = "zip extract() keeps SUID/SGID bits; not reachable, archives are read in memory" },
     { id = "RUSTSEC-2026-0368", reason = "zip extract() follows symlinks out of the target dir; not reachable, see RUSTSEC-2026-0367" },
     { id = "RUSTSEC-2026-0369", reason = "zip extract() applies permissions through symlinks; not reachable, see RUSTSEC-2026-0367" },
 ]
@@ -58,6 +55,7 @@ allow = [
     "0BSD",
     "BSL-1.0",
     "Unicode-3.0",
+    "Unicode-DFS-2016",
     "Unlicense",
     "CC0-1.0",
     # Weak, file-level copyleft (cssparser, selectors, dwrote, option-ext, ...):
@@ -103,7 +101,6 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # Every git dependency must be listed here; see the `[patch.crates-io]`
 # section in `Cargo.toml` for why each fork exists.
 allow-git = [
-    "https://github.com/stippi/transmutation",
     "https://github.com/stippi/gpui-component",
     "https://github.com/nornagon/crossterm",
     "https://github.com/nornagon/ratatui",
