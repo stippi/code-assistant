@@ -303,7 +303,7 @@ impl FileViewer {
         for comment in self
             .comments
             .iter()
-            .filter(|c| !c.in_diff && c.file == file)
+            .filter(|c| !c.in_diff && !c.on_component && c.file == file)
         {
             let Some((start, end)) = line_comments::locate(&lines, comment) else {
                 continue;
@@ -352,7 +352,13 @@ impl FileViewer {
         let file = self.file()?;
         self.comments
             .iter()
-            .find(|c| !c.in_diff && c.file == file && c.start_line <= end && start <= c.end_line)
+            .find(|c| {
+                !c.in_diff
+                    && !c.on_component
+                    && c.file == file
+                    && c.start_line <= end
+                    && start <= c.end_line
+            })
             .cloned()
     }
 
@@ -374,6 +380,7 @@ impl FileViewer {
                     old_side: false,
                     in_diff: false,
                     on_message: false,
+                    on_component: false,
                     excerpt,
                     text: String::new(),
                 }

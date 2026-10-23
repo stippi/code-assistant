@@ -883,6 +883,15 @@ impl BlockView {
     }
 }
 
+/// A commented component's name: the last part of its path (absolute
+/// while the message is shown before the core echoes it back).
+fn component_name(path: &str) -> &str {
+    path.trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or(path)
+}
+
 impl BlockView {
     /// A user message's line comments: one line saying how many, which
     /// expands to each comment with its file, lines, code and text.
@@ -895,8 +904,12 @@ impl BlockView {
         let expanded = self.comments_expanded;
         let label = match comments {
             [c] if c.on_message => "1 comment on a message".to_owned(),
+            [c] if c.on_component => format!("1 comment on component {}", component_name(&c.path)),
             [c] => format!("1 comment on {}:{}", c.path, c.lines),
-            _ => format!("{} line comments", comments.len()),
+            _ if comments.iter().all(|c| !c.on_message && !c.on_component) => {
+                format!("{} line comments", comments.len())
+            }
+            _ => format!("{} comments", comments.len()),
         };
         let header = div()
             .id(SharedString::from(format!(
@@ -943,6 +956,8 @@ impl BlockView {
                     .child(div().text_xs().text_color(theme.muted_foreground).child(
                         if c.on_message {
                             "on a message".to_owned()
+                        } else if c.on_component {
+                            format!("on component {}", component_name(&c.path))
                         } else {
                             format!("{}:{}", c.path, c.lines)
                         },

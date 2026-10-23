@@ -1,6 +1,7 @@
 //! Behaviour of the main screen, driven through
 //! [`MainScreenTest`](crate::test_support::MainScreenTest).
 
+mod architecture;
 mod comments;
 mod composer;
 mod end_to_end;

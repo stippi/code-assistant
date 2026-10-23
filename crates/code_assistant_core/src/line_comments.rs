@@ -1,5 +1,6 @@
-//! Comments the user attaches to lines of a file, or to a passage of a chat
-//! message, before sending a message.
+//! Comments the user attaches to lines of a file, to a passage of a chat
+//! message, or to a component of the architecture overview, before sending a
+//! message.
 //!
 //! The composer collects them as one [`DraftAttachment::LineComments`]
 //! (crate::persistence::DraftAttachment). On send they become a single text
@@ -41,6 +42,12 @@ pub struct LineComment {
     /// quoted passage; `file` and the lines are unused.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub on_message: bool,
+    /// On a component of the architecture overview rather than on lines:
+    /// `file` is the component's folder or file (the project root for the
+    /// project itself), `excerpt` what the overview said about it; the lines
+    /// are unused.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub on_component: bool,
     /// The selected lines as shown when the comment was made.
     pub excerpt: String,
     pub text: String,
@@ -56,11 +63,14 @@ impl LineComment {
         }
     }
 
-    /// Where the comment is, for compact labels: `lib.rs:12-15`, or
-    /// `message` for a comment on a chat message.
+    /// Where the comment is, for compact labels: `lib.rs:12-15`,
+    /// `message` for a comment on a chat message, `component llm` for one on
+    /// an architecture component.
     pub fn location_label(&self) -> String {
         if self.on_message {
             "message".to_owned()
+        } else if self.on_component {
+            format!("component {}", self.file_name())
         } else {
             format!("{}:{}", self.file_name(), self.lines_label())
         }
@@ -76,7 +86,25 @@ impl LineComment {
             old_side: false,
             in_diff: false,
             on_message: true,
+            on_component: false,
             excerpt: quote.into(),
+            text: String::new(),
+        }
+    }
+
+    /// A comment on the architecture component at `path` (absolute), which
+    /// the overview described as `description`.
+    pub fn on_component(path: impl Into<PathBuf>, description: impl Into<String>) -> Self {
+        Self {
+            id: 0,
+            file: path.into(),
+            start_line: 0,
+            end_line: 0,
+            old_side: false,
+            in_diff: false,
+            on_message: false,
+            on_component: true,
+            excerpt: description.into(),
             text: String::new(),
         }
     }
@@ -113,6 +141,16 @@ pub fn render(comments: &[LineComment]) -> String {
         if c.on_message {
             out.push_str(&format!(
                 "<comment on=\"message\">\n<quote>\n{}\n</quote>\n{}\n</comment>\n",
+                cap_excerpt(&c.excerpt),
+                c.text.trim(),
+            ));
+            continue;
+        }
+        if c.on_component {
+            let path = c.file.display().to_string();
+            out.push_str(&format!(
+                "<comment on=\"component\" path=\"{}\">\n<component>\n{}\n</component>\n{}\n</comment>\n",
+                if path.is_empty() { "." } else { &path },
                 cap_excerpt(&c.excerpt),
                 c.text.trim(),
             ));
@@ -176,12 +214,14 @@ pub fn locate(lines: &[&str], comment: &LineComment) -> Option<(usize, usize)> {
 pub struct ParsedComment {
     /// Empty for a comment on a message.
     pub path: String,
-    /// Empty for a comment on a message.
+    /// Empty for a comment on a message or a component.
     pub lines: String,
-    /// The commented lines, or the quoted passage of a message.
+    /// The commented lines, the quoted passage of a message, or what the
+    /// overview said about a component.
     pub code: String,
     pub text: String,
     pub on_message: bool,
+    pub on_component: bool,
 }
 
 /// Read a block produced by [`render`]; `None` for any other text.
@@ -199,8 +239,16 @@ pub fn parse(block: &str) -> Option<Vec<ParsedComment>> {
         let inner_and_rest = &after[head_end + 1..];
         let end = inner_and_rest.find("</comment>")?;
         let inner = &inner_and_rest[..end];
-        let on_message = attribute(head, "on").as_deref() == Some("message");
-        let tag = if on_message { "quote" } else { "code" };
+        let on = attribute(head, "on");
+        let on_message = on.as_deref() == Some("message");
+        let on_component = on.as_deref() == Some("component");
+        let tag = if on_message {
+            "quote"
+        } else if on_component {
+            "component"
+        } else {
+            "code"
+        };
         let (open, close) = (format!("<{tag}>\n"), format!("\n</{tag}>"));
         let code_start = inner.find(&open)? + open.len();
         let code_end = inner.find(&close)?;
@@ -210,7 +258,7 @@ pub fn parse(block: &str) -> Option<Vec<ParsedComment>> {
             } else {
                 attribute(head, "path")?
             },
-            lines: if on_message {
+            lines: if on_message || on_component {
                 String::new()
             } else {
                 attribute(head, "lines")?
@@ -218,6 +266,7 @@ pub fn parse(block: &str) -> Option<Vec<ParsedComment>> {
             code: inner[code_start..code_end].to_owned(),
             text: inner[code_end + close.len()..].trim().to_owned(),
             on_message,
+            on_component,
         });
         rest = &inner_and_rest[end + "</comment>".len()..];
     }
@@ -243,6 +292,7 @@ mod tests {
             old_side: false,
             in_diff: false,
             on_message: false,
+            on_component: false,
             excerpt: excerpt.to_owned(),
             text: text.to_owned(),
         }
@@ -317,6 +367,26 @@ mod tests {
         assert_eq!(parsed[0].text, "why not both?");
         assert!(!parsed[1].on_message);
         assert_eq!(c.location_label(), "message");
+    }
+
+    #[test]
+    fn component_comments_carry_the_overview_and_parse_back() {
+        let mut c = LineComment::on_component("/p/crates/llm", "llm (package)\nTalks to models.");
+        c.text = "split providers out".into();
+        let mut root = LineComment::on_component("/p", "demo (project)");
+        root.text = "too many crates".into();
+        let block = render(&relative_to(&[c.clone(), root], Path::new("/p")));
+        assert!(block.contains(
+            "<comment on=\"component\" path=\"crates/llm\">\n<component>\nllm (package)\nTalks to models.\n</component>\nsplit providers out\n</comment>"
+        ));
+        assert!(block.contains("<comment on=\"component\" path=\".\">"));
+        let parsed = parse(&block).unwrap();
+        assert!(parsed[0].on_component && !parsed[0].on_message);
+        assert_eq!(parsed[0].path, "crates/llm");
+        assert_eq!(parsed[0].code, "llm (package)\nTalks to models.");
+        assert_eq!(parsed[0].text, "split providers out");
+        assert_eq!(parsed[1].path, ".");
+        assert_eq!(c.location_label(), "component llm");
     }
 
     #[test]

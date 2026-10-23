@@ -19,6 +19,7 @@ fn comment(file: &str, lines: (usize, usize), text: &str) -> LineComment {
         old_side: false,
         in_diff: false,
         on_message: false,
+        on_component: false,
         excerpt: "let x = y.unwrap();".into(),
         text: text.into(),
     }

@@ -12,6 +12,7 @@
 pub use fs_explorer;
 
 pub mod agent;
+pub mod architecture;
 pub mod config;
 pub mod config_dir;
 pub mod goal_commands;

@@ -143,12 +143,14 @@ impl Render for CommentEditor {
                             })),
                     )
                     .child(
-                        Button::new("comment-save")
-                            .label(if existing { "Update" } else { "Add comment" })
-                            .xsmall()
-                            .primary()
-                            .tooltip("⌘↵")
-                            .on_click(cx.listener(|this, _, _, cx| this.save(cx))),
+                        div().debug_selector(|| "comment-save".into()).child(
+                            Button::new("comment-save")
+                                .label(if existing { "Update" } else { "Add comment" })
+                                .xsmall()
+                                .primary()
+                                .tooltip("⌘↵")
+                                .on_click(cx.listener(|this, _, _, cx| this.save(cx))),
+                        ),
                     ),
             )
     }

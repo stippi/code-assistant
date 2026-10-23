@@ -128,6 +128,7 @@ impl ReviewView {
             old_side,
             in_diff: true,
             on_message: false,
+            on_component: false,
             excerpt,
             text: String::new(),
         })
@@ -326,6 +327,7 @@ mod tests {
             old_side,
             in_diff: true,
             on_message: false,
+            on_component: false,
             excerpt: String::new(),
             text: String::new(),
         }
