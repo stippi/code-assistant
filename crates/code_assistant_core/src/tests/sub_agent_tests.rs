@@ -1,6 +1,6 @@
 //! Tests for the sub-agent feature (spawn_agent tool).
 
-use crate::agent::sub_agent::{SubAgentResult, SubAgentRunner};
+use crate::agent::sub_agent::{SubAgentOptions, SubAgentResult, SubAgentRunner};
 use crate::tools::core::ToolScope;
 use crate::tools::impls::spawn_agent::{SpawnAgentInput, SpawnAgentOutput};
 use anyhow::Result;
@@ -42,7 +42,7 @@ impl SubAgentRunner for MockSubAgentRunner {
         &self,
         _parent_tool_id: &str,
         _instructions: String,
-        _require_file_references: bool,
+        _options: SubAgentOptions,
     ) -> Result<SubAgentResult> {
         // Track concurrent executions
         let current = self.concurrent_count.fetch_add(1, Ordering::SeqCst) + 1;
@@ -177,7 +177,9 @@ fn test_spawn_agent_input_parsing() {
 async fn test_mock_sub_agent_runner() {
     let runner = MockSubAgentRunner::new(10, "Test response");
 
-    let result = runner.run("tool-1", "test".to_string(), false).await;
+    let result = runner
+        .run("tool-1", "test".to_string(), SubAgentOptions::default())
+        .await;
 
     assert!(result.is_ok());
     assert_eq!(result.unwrap().answer, "Test response");
@@ -196,7 +198,11 @@ async fn test_parallel_sub_agent_execution() {
             let runner = runner.clone();
             async move {
                 runner
-                    .run(&format!("tool-{i}"), format!("Task {i}"), false)
+                    .run(
+                        &format!("tool-{i}"),
+                        format!("Task {i}"),
+                        SubAgentOptions::default(),
+                    )
                     .await
             }
         })
