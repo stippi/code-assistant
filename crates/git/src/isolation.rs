@@ -157,6 +157,24 @@ impl TreeEntry {
     fn is_plain_file(&self) -> bool {
         self.mode == "100644" || self.mode == "100755"
     }
+
+    fn is_executable(&self) -> bool {
+        self.mode == "100755"
+    }
+
+    fn state(&self) -> FileState {
+        FileState {
+            oid: self.oid.clone(),
+            executable: self.is_executable(),
+        }
+    }
+}
+
+/// What a path holds, as far as the merge cares: content and executable bit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileState {
+    oid: String,
+    executable: bool,
 }
 
 async fn tree_entry(
@@ -184,19 +202,41 @@ async fn tree_entry(
     }
 }
 
-/// The blob id the file at `path` would get if it were added now
-/// (clean filters and line-ending conversion applied).
-async fn working_oid(git: &GitBinary, workdir: &Path, path: &str) -> Result<Option<String>> {
+/// The state the file at `path` would get if it were added now (clean
+/// filters and line-ending conversion applied). Without an executable bit in
+/// the file system, it keeps the one of `fallback`.
+async fn working_state(
+    git: &GitBinary,
+    workdir: &Path,
+    path: &str,
+    fallback: Option<&TreeEntry>,
+) -> Result<Option<FileState>> {
     let full = workdir.join(path);
-    match std::fs::symlink_metadata(&full) {
-        Ok(meta) if meta.is_file() => {}
-        Ok(_) => return Ok(Some("<not a regular file>".to_string())),
+    let meta = match std::fs::symlink_metadata(&full) {
+        Ok(meta) if meta.is_file() => meta,
+        Ok(_) => {
+            return Ok(Some(FileState {
+                oid: "<not a regular file>".to_string(),
+                executable: false,
+            }));
+        }
         Err(_) => return Ok(None),
-    }
-    Ok(Some(
-        git.run(workdir, &["hash-object", "--path", path, "--", path])
-            .await?,
-    ))
+    };
+    #[cfg(unix)]
+    let executable = {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fallback;
+        meta.permissions().mode() & 0o111 != 0
+    };
+    #[cfg(not(unix))]
+    let executable = {
+        let _ = meta;
+        fallback.is_some_and(TreeEntry::is_executable)
+    };
+    let oid = git
+        .run(workdir, &["hash-object", "--path", path, "--", path])
+        .await?;
+    Ok(Some(FileState { oid, executable }))
 }
 
 /// A blob's content as it would be checked out (smudge filters applied).
@@ -254,25 +294,25 @@ pub async fn merge_into_working_tree(
             ));
             continue;
         }
-        let ours = working_oid(git, workdir, &path).await?;
-        let base_oid = base_entry.as_ref().map(|e| e.oid.clone());
-        let theirs_oid = theirs.as_ref().map(|e| e.oid.clone());
+        let ours = working_state(git, workdir, &path, base_entry.as_ref()).await?;
+        let base_state = base_entry.as_ref().map(TreeEntry::state);
+        let theirs_state = theirs.as_ref().map(TreeEntry::state);
 
-        if ours == theirs_oid {
+        if ours == theirs_state {
             continue;
         }
-        if ours == base_oid {
+        if ours == base_state {
             let plan = match &theirs {
                 Some(entry) => Plan::Write {
                     bytes: checkout_bytes(git, workdir, changes, &path).await?,
-                    executable: entry.mode == "100755",
+                    executable: entry.is_executable(),
                 },
                 None => Plan::Delete,
             };
             plans.push((path, plan));
             continue;
         }
-        let (Some(_), Some(entry)) = (&base_entry, &theirs) else {
+        let (Some(base_entry), Some(entry), Some(ours)) = (&base_entry, &theirs, &ours) else {
             conflicts.push(conflict(match (&base_entry, &ours, &theirs) {
                 (None, _, _) => "added on both sides with different content",
                 (_, None, _) => "deleted here but changed by the sub-agent",
@@ -280,14 +320,14 @@ pub async fn merge_into_working_tree(
             }));
             continue;
         };
+        // A side that changed the executable bit wins over one that did not.
+        let executable = if entry.is_executable() != base_entry.is_executable() {
+            entry.is_executable()
+        } else {
+            ours.executable
+        };
         match merge_file(git, workdir, base, changes, &path).await? {
-            Some(bytes) => plans.push((
-                path,
-                Plan::Write {
-                    bytes,
-                    executable: entry.mode == "100755",
-                },
-            )),
+            Some(bytes) => plans.push((path, Plan::Write { bytes, executable })),
             None => conflicts.push(conflict("overlapping edits")),
         }
     }
@@ -558,6 +598,67 @@ mod tests {
             std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
             "eins\ntwo\nthree\nfour\nfive\n"
         );
+    }
+
+    #[cfg(unix)]
+    fn is_executable(path: &Path) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o111 != 0
+    }
+
+    #[cfg(unix)]
+    fn set_executable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_changed_executable_bit_alone_is_applied() {
+        let (dir, git, base) = repo_with_base().await;
+        let wt = dir.path().join("wt-exec");
+        let wt_str = wt.to_str().unwrap().to_string();
+        git_cmd(
+            dir.path(),
+            &["worktree", "add", "-q", "--detach", &wt_str, &base],
+        );
+        set_executable(&wt.join("a.txt"));
+        let changes = snapshot_working_tree(&git, &wt, "changes").await.unwrap();
+        git_cmd(dir.path(), &["worktree", "remove", "--force", &wt_str]);
+
+        let result = merge_into_working_tree(&git, dir.path(), &base, &changes)
+            .await
+            .unwrap();
+
+        assert_eq!(result.applied, vec!["a.txt"]);
+        assert!(is_executable(&dir.path().join("a.txt")));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn merging_content_keeps_an_executable_bit_set_here() {
+        let (dir, git, base) = repo_with_base().await;
+        let changes = changes_on(
+            &git,
+            dir.path(),
+            &base,
+            &[("a.txt", Some("ONE\ntwo\nthree\nfour\nfive\n"))],
+        )
+        .await;
+        let file = dir.path().join("a.txt");
+        std::fs::write(&file, "one\ntwo\nthree\nfour\nFIVE\n").unwrap();
+        set_executable(&file);
+
+        let result = merge_into_working_tree(&git, dir.path(), &base, &changes)
+            .await
+            .unwrap();
+
+        assert!(result.conflicts.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "ONE\ntwo\nthree\nfour\nFIVE\n"
+        );
+        assert!(is_executable(&file));
     }
 
     #[tokio::test]
