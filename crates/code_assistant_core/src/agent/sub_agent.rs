@@ -297,6 +297,16 @@ pub trait SubAgentTranscripts: Send + Sync {
     fn create(&self, agent_id: u64, title: &str) -> Result<SubAgentTranscript>;
 }
 
+/// How a sub-agent runs, as asked for in the `spawn_agent` input.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SubAgentOptions {
+    /// Insist on file references with line ranges in the answer.
+    pub require_file_references: bool,
+    /// In a git project, work in a worktree of its own and merge the changes
+    /// back when done. Otherwise the sub-agent shares the parent's tree.
+    pub worktree: bool,
+}
+
 /// Runs sub-agents with isolated history and streams a compact progress view into the parent tool UI.
 #[async_trait::async_trait]
 pub trait SubAgentRunner: Send + Sync {
@@ -304,7 +314,7 @@ pub trait SubAgentRunner: Send + Sync {
         &self,
         parent_tool_id: &str,
         instructions: String,
-        require_file_references: bool,
+        options: SubAgentOptions,
     ) -> Result<SubAgentResult>;
 
     /// Start a sub-agent without waiting for it; its result is delivered to
@@ -313,7 +323,7 @@ pub trait SubAgentRunner: Send + Sync {
         &self,
         _parent_tool_id: &str,
         _instructions: String,
-        _require_file_references: bool,
+        _options: SubAgentOptions,
     ) -> Result<BackgroundStart> {
         anyhow::bail!(
             "Background sub-agents are not available here; spawn it without `background`."

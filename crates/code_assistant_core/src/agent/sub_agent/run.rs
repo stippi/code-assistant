@@ -7,14 +7,14 @@ impl SubAgentRunner for DefaultSubAgentRunner {
         &self,
         parent_tool_id: &str,
         instructions: String,
-        require_file_references: bool,
+        options: SubAgentOptions,
     ) -> Result<SubAgentResult> {
         let listing = self.listing(parent_tool_id, &instructions, false);
         let result = self
             .run_child(
                 parent_tool_id,
                 instructions,
-                require_file_references,
+                options,
                 &self.parent_cancellation,
                 self.ui.clone(),
                 listing,
@@ -28,7 +28,7 @@ impl SubAgentRunner for DefaultSubAgentRunner {
         &self,
         parent_tool_id: &str,
         instructions: String,
-        require_file_references: bool,
+        options: SubAgentOptions,
     ) -> Result<BackgroundStart> {
         let Some(background) = self.background.clone() else {
             anyhow::bail!(
@@ -51,7 +51,7 @@ impl SubAgentRunner for DefaultSubAgentRunner {
                 .run_child(
                     &tool_id,
                     instructions,
-                    require_file_references,
+                    options,
                     &background.cancellation,
                     background.ui.clone(),
                     Some(listing),
@@ -139,7 +139,7 @@ impl DefaultSubAgentRunner {
         &self,
         parent_tool_id: &str,
         instructions: String,
-        require_file_references: bool,
+        options: SubAgentOptions,
         parent_cancellation: &tools_core::RunCancellation,
         ui: Arc<dyn UserInterface>,
         listing: Option<(SubAgentListing, u64)>,
@@ -202,12 +202,13 @@ impl DefaultSubAgentRunner {
         let transcript_ui = transcript.as_ref().map(|(_, _, ui)| ui.clone());
         let agent_transcript = transcript.map(|(id, persistence, _)| (id, persistence));
 
-        // In a git project a sub-agent works in its own worktree, so it can
-        // run alongside the parent and other sub-agents; its changes are
-        // merged back when it finishes. Elsewhere it shares the parent's
-        // tree, where the per-file write locks keep edits from being lost.
+        // Asked for and in a git project, a sub-agent works in its own
+        // worktree, so it can run alongside the parent and other sub-agents;
+        // its changes are merged back when it finishes. Otherwise it shares
+        // the parent's tree, where the per-file write locks keep edits from
+        // being lost.
         let parent_project = self.session_config.effective_project_path().cloned();
-        let workspace = match &parent_project {
+        let workspace = match parent_project.as_ref().filter(|_| options.worktree) {
             Some(project) => match workspace::ChildWorkspace::create(project, parent_tool_id).await
             {
                 Ok(workspace) => workspace,
@@ -255,7 +256,8 @@ impl DefaultSubAgentRunner {
                 iteration?;
                 cancellation.check()?;
                 answer = extract_last_assistant_text(&agent.message_history()).unwrap_or_default();
-                if !require_file_references || has_file_references_with_line_ranges(&answer) {
+                if !options.require_file_references || has_file_references_with_line_ranges(&answer)
+                {
                     break;
                 }
                 if attempt == 2 {

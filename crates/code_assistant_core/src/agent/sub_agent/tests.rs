@@ -38,7 +38,11 @@ async fn parked_child(
 ) -> tokio::task::JoinHandle<Result<SubAgentResult>> {
     let task = tokio::spawn({
         let runner = runner.clone();
-        async move { runner.run("child", "inspect".into(), false).await }
+        async move {
+            runner
+                .run("child", "inspect".into(), SubAgentOptions::default())
+                .await
+        }
     });
     tokio::time::timeout(Duration::from_secs(2), entered.notified())
         .await
@@ -63,7 +67,9 @@ async fn assert_ends_cancelled(mut task: tokio::task::JoinHandle<Result<SubAgent
 #[tokio::test]
 async fn sub_agent_failure_unregisters_and_publishes_terminal_output() {
     let (runner, ui) = runner(failing_provider());
-    let result = runner.run("child", "inspect".into(), false).await;
+    let result = runner
+        .run("child", "inspect".into(), SubAgentOptions::default())
+        .await;
     assert!(result.is_err());
     assert!(
         !runner.cancellation_registry.cancel("child"),
@@ -86,7 +92,12 @@ async fn sub_agent_failure_unregisters_and_publishes_terminal_output() {
 #[tokio::test]
 async fn sub_agent_construction_failure_unregisters() {
     let (runner, _) = runner(Arc::new(|_| anyhow::bail!("constructor failed")));
-    assert!(runner.run("child", "inspect".into(), false).await.is_err());
+    assert!(
+        runner
+            .run("child", "inspect".into(), SubAgentOptions::default())
+            .await
+            .is_err()
+    );
     assert!(!runner.cancellation_registry.cancel("child"));
 }
 
@@ -157,6 +168,7 @@ async fn sub_agent_tool_retains_structured_failure_output() {
         instructions: "inspect".into(),
         require_file_references: false,
         background: false,
+        worktree: false,
     };
     let output = SpawnAgentTool
         .execute(&mut context, &mut input)
@@ -248,7 +260,7 @@ async fn sub_agent_keeps_completed_child_evidence_when_later_request_fails() {
     Arc::get_mut(&mut runner).unwrap().tool_registry = Arc::new(registry);
 
     let error = runner
-        .run("child", "inspect".into(), false)
+        .run("child", "inspect".into(), SubAgentOptions::default())
         .await
         .unwrap_err();
     let failure = error.downcast_ref::<SubAgentFailure>().unwrap();
@@ -270,7 +282,7 @@ async fn sub_agent_keeps_completed_child_evidence_when_later_request_fails() {
 async fn sub_agent_factory_panic_is_a_terminal_failure() {
     let (runner, ui) = runner(Arc::new(|_| panic!("factory panicked")));
     let error = runner
-        .run("child", "inspect".into(), false)
+        .run("child", "inspect".into(), SubAgentOptions::default())
         .await
         .unwrap_err();
     assert!(error.downcast_ref::<SubAgentFailure>().is_some());
@@ -406,7 +418,11 @@ async fn background_sub_agent_delivers_its_answer_later() {
     let bg = background_runner(answering_provider("Found it in parser.rs"));
     let started = bg
         .runner
-        .start_background("tool-1", "Find the parser".into(), false)
+        .start_background(
+            "tool-1",
+            "Find the parser".into(),
+            SubAgentOptions::default(),
+        )
         .await
         .unwrap();
     assert_eq!(started.agent_id, 1);
@@ -444,7 +460,7 @@ async fn background_sub_agent_outlives_the_parent_run() {
     let entered = provider.entered.clone();
     let bg = background_runner(provider.into_factory());
     bg.runner
-        .start_background("tool-1", "inspect".into(), false)
+        .start_background("tool-1", "inspect".into(), SubAgentOptions::default())
         .await
         .unwrap();
     tokio::time::timeout(Duration::from_secs(2), entered.notified())
@@ -475,7 +491,7 @@ async fn background_sub_agents_end_with_the_session() {
     let bg = background_runner(provider.into_factory());
     for tool_id in ["tool-1", "tool-2"] {
         bg.runner
-            .start_background(tool_id, "inspect".into(), false)
+            .start_background(tool_id, "inspect".into(), SubAgentOptions::default())
             .await
             .unwrap();
         tokio::time::timeout(Duration::from_secs(2), entered.notified())
@@ -500,7 +516,7 @@ async fn background_sub_agents_end_with_the_session() {
 async fn background_failure_is_delivered_as_failed() {
     let bg = background_runner(failing_provider());
     bg.runner
-        .start_background("tool-1", "inspect".into(), false)
+        .start_background("tool-1", "inspect".into(), SubAgentOptions::default())
         .await
         .unwrap();
     let (_, finished) = bg.sink.next().await;
@@ -516,7 +532,7 @@ async fn background_needs_a_session_to_report_to() {
     let (runner, _) = runner(answering_provider("done"));
     assert!(
         runner
-            .start_background("tool-1", "inspect".into(), false)
+            .start_background("tool-1", "inspect".into(), SubAgentOptions::default())
             .await
             .is_err()
     );
@@ -527,7 +543,7 @@ async fn foreground_sub_agents_are_listed_while_they_run() {
     let bg = background_runner(answering_provider("done"));
     let result = bg
         .runner
-        .run("tool-1", "inspect".into(), false)
+        .run("tool-1", "inspect".into(), SubAgentOptions::default())
         .await
         .unwrap();
     assert_eq!(result.answer, "done");
@@ -583,4 +599,82 @@ fn delivered_messages_parse_back() {
     assert!(parse_sub_agent_message("[sub-agent #x] finished: no").is_none());
     assert!(parse_sub_agent_message("[sub-agent #1] other: no").is_none());
     assert!(parse_sub_agent_message("hello").is_none());
+}
+
+/// A git repository with one commit, inside a temp dir that also holds the
+/// `.worktrees` folder sub-agent worktrees are created in.
+fn git_project() -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    for args in [
+        &["init", "-q"][..],
+        &["config", "user.email", "t@t"],
+        &["config", "user.name", "t"],
+        &["config", "commit.gpgsign", "false"],
+        &["commit", "-q", "--allow-empty", "-m", "init"],
+    ] {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    }
+    (dir, repo)
+}
+
+/// Run a sub-agent in `repo` and report whether it worked in a worktree.
+async fn ran_in_worktree(repo: &std::path::Path, options: SubAgentOptions) -> bool {
+    let worktrees = repo.parent().unwrap().join(".worktrees");
+    let seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let factory: LlmClientFactory = Arc::new({
+        let seen = seen.clone();
+        move |_| {
+            // The client is built once the workspace is set up.
+            seen.store(
+                std::fs::read_dir(&worktrees).is_ok_and(|mut d| d.next().is_some()),
+                std::sync::atomic::Ordering::SeqCst,
+            );
+            Ok(Box::new(MockLLMProvider::new(vec![Ok(
+                crate::mocks::create_test_response_text("done"),
+            )])))
+        }
+    });
+    let config = SessionConfig {
+        init_path: Some(repo.to_path_buf()),
+        ..SessionConfig::default()
+    };
+    let runner = DefaultSubAgentRunner::new(
+        SessionModelConfig::new("test-sub-agent".into()),
+        config,
+        Arc::default(),
+        Arc::default(),
+        Arc::new(MockUI::default()),
+        None,
+        ToolPermissions::default(),
+        crate::tools::test_registry(),
+        None,
+        None,
+    )
+    .with_llm_client_factory(factory)
+    .with_project_manager_factory(Arc::new(|| Box::new(MockProjectManager::new())));
+    let result = runner
+        .run("tool-1", "inspect".into(), options)
+        .await
+        .unwrap();
+    assert_eq!(result.answer, "done");
+    seen.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[tokio::test]
+async fn sub_agents_share_the_tree_unless_a_worktree_is_asked_for() {
+    let (_dir, repo) = git_project();
+    assert!(!ran_in_worktree(&repo, SubAgentOptions::default()).await);
+
+    let isolated = SubAgentOptions {
+        worktree: true,
+        ..SubAgentOptions::default()
+    };
+    assert!(ran_in_worktree(&repo, isolated).await);
 }
