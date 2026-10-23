@@ -192,8 +192,8 @@ pub enum SessionStatus {
     RateLimited,
     /// The LLM request failed and is sent again.
     Retrying,
-    /// The agent stopped, but a wakeup it scheduled will continue the
-    /// session; nothing to do for the user.
+    /// The agent stopped, but a wakeup it scheduled (or a monitor it
+    /// started) will continue the session; nothing to do for the user.
     Scheduled,
     /// The agent stopped with an error.
     Failed,
@@ -205,7 +205,8 @@ pub enum SessionStatus {
 }
 
 impl SessionStatus {
-    /// `wakeup_armed`: a wakeup is still to fire in the session.
+    /// `wakeup_armed`: a wakeup is still to fire in the session, or a
+    /// monitor runs that may continue it.
     pub fn resolve(
         activity: &SessionActivityState,
         awaiting: Option<AwaitingUser>,

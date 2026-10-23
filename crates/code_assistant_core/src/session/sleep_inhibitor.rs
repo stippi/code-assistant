@@ -87,6 +87,27 @@ impl SleepInhibitor {
         debug!("Wakeups disarmed, wake lock released");
     }
 
+    /// Called while at least one monitor runs (see
+    /// [`crate::session::monitor`]) — a sleeping machine watches nothing.
+    /// Shares the refcount with running agents.
+    pub fn monitors_started(&self) {
+        let prev = self.running_count.fetch_add(1, Ordering::SeqCst);
+        if prev == 0 {
+            self.acquire_lock();
+        }
+        debug!("Monitors running, holding wake lock");
+    }
+
+    /// Counterpart of [`Self::monitors_started`]: the last monitor ended.
+    pub fn monitors_stopped(&self) {
+        let prev = self.running_count.fetch_sub(1, Ordering::SeqCst);
+        debug_assert!(prev > 0, "monitors_stopped without monitors_started");
+        if prev == 1 {
+            self.release_lock();
+        }
+        debug!("Monitors ended, wake lock released");
+    }
+
     fn acquire_lock(&self) {
         let result = keepawake::Builder::default()
             .idle(true)

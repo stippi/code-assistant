@@ -132,50 +132,82 @@ pub fn render_activity_indicator(
         .into_any_element()
 }
 
-/// Render the wakeups still to fire in the viewed session, with a slow
-/// spinner: without it, an idle session that goes on later would look
-/// finished once its `schedule_wakeup` block scrolled out of view.
+/// Render the wakeups still to fire and the monitors running in the viewed
+/// session, with a slow spinner: without it, an idle session that goes on
+/// later would look finished once its `schedule_wakeup` / `monitor` block
+/// scrolled out of view.
 pub fn render_armed_wakeups(
     view: &MessagesView,
     cx: &mut Context<MessagesView>,
 ) -> gpui_kit::AnyElement {
     use crate::tool_cards::wakeup_renderer::countdown;
 
-    let wakeups = view.armed_wakeups();
-    let Some(next) = wakeups.first() else {
-        return div().into_any_element();
-    };
-    let now = chrono::Local::now();
-    let countdown = countdown(next.fires_at.with_timezone(&chrono::Local), now);
-    let text = match wakeups.len() {
-        1 => format!("Wakeup {countdown}"),
-        n => format!("{n} wakeups · next {countdown}"),
-    };
     let color = cx.theme().muted_foreground;
     let frame = (wall_clock_millis() / WAKEUP_SPINNER_FRAME_MS) as usize % BRAILLE_FRAMES.len();
+    let line = |id: gpui_kit::ElementId, text: String| {
+        div()
+            .id(id)
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1p5()
+            .py_1p5()
+            .px_3()
+            .child(
+                div()
+                    .w(gpui_kit::px(14.))
+                    .flex()
+                    .justify_center()
+                    .text_size(rems(0.875))
+                    .text_color(color)
+                    .child(BRAILLE_FRAMES[frame]),
+            )
+            .child(div().text_size(rems(0.8125)).text_color(color).child(text))
+    };
+
+    let mut lines = Vec::new();
+    let wakeups = view.armed_wakeups();
+    if let Some(next) = wakeups.first() {
+        let now = chrono::Local::now();
+        let countdown = countdown(next.fires_at.with_timezone(&chrono::Local), now);
+        let text = match wakeups.len() {
+            1 => format!("Wakeup {countdown}"),
+            n => format!("{n} wakeups · next {countdown}"),
+        };
+        lines.push(line("armed-wakeup".into(), text).into_any_element());
+    }
+    for monitor in view.active_monitors() {
+        let monitor_id = monitor.id;
+        let stop = div()
+            .id(("stop-monitor", monitor_id as usize))
+            .text_size(rems(0.75))
+            .text_color(color)
+            .cursor_pointer()
+            .hover(|style| style.text_color(cx.theme().foreground))
+            .child("Stop")
+            .on_click(move |_event, _window, cx| {
+                cx.stop_propagation();
+                if let Some(gpui) = cx.try_global::<crate::Gpui>().cloned()
+                    && let Some(session_id) = gpui.get_current_session_id()
+                {
+                    gpui.cmd_stop_monitor(session_id, monitor_id);
+                }
+            });
+        lines.push(
+            line(
+                ("active-monitor", monitor_id as usize).into(),
+                format!("Monitor #{monitor_id} · {}", monitor.description),
+            )
+            .child(stop)
+            .into_any_element(),
+        );
+    }
+
     div()
         .id("armed-wakeups")
         .w_full()
         .px_3()
         .pb_1()
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap_1p5()
-                .py_1p5()
-                .px_3()
-                .child(
-                    div()
-                        .w(gpui_kit::px(14.))
-                        .flex()
-                        .justify_center()
-                        .text_size(rems(0.875))
-                        .text_color(color)
-                        .child(BRAILLE_FRAMES[frame]),
-                )
-                .child(div().text_size(rems(0.8125)).text_color(color).child(text)),
-        )
+        .children(lines)
         .into_any_element()
 }

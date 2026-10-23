@@ -150,6 +150,7 @@ async fn sub_agent_tool_retains_structured_failure_output() {
         ui: Some(ui),
         sub_agent_runner: Some(runner),
         wakeups: None,
+        monitors: None,
         pty_sessions: None,
         terminal_interrupts: None,
         browser_sessions: None,

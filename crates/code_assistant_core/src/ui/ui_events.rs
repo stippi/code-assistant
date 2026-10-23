@@ -296,6 +296,12 @@ pub enum UiEvent {
         session_id: String,
         wakeups: Vec<crate::session::wakeup::ArmedWakeupInfo>,
     },
+    /// The monitors running in a session changed (oldest first). Relevant
+    /// for every view's sidebar, not only the session's own.
+    UpdateActiveMonitors {
+        session_id: String,
+        monitors: Vec<crate::session::monitor::ActiveMonitorInfo>,
+    },
     /// Update pending message display
     UpdatePendingMessage { message: Option<String> },
     /// Display an error message to the user

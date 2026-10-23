@@ -1241,6 +1241,29 @@ impl ToolTestFixture {
         self
     }
 
+    /// Attach a monitor handle recording what it delivers (session
+    /// `test-session`); returns the recorder.
+    pub fn with_recorded_monitors(self) -> (Self, RecordingMonitorSink) {
+        let sink = RecordingMonitorSink::default();
+        (self.with_monitors(sink.clone()), sink)
+    }
+
+    /// Attach a monitor handle delivering into `sink` (session
+    /// `test-session`).
+    pub fn with_monitors(mut self, sink: impl crate::session::monitor::MonitorSink) -> Self {
+        self.services.monitors = Some(crate::session::monitor::SessionMonitors {
+            handle: crate::session::monitor::MonitorHandle::new(sink, None),
+            session_id: "test-session".to_string(),
+            used_ids: 0,
+        });
+        self
+    }
+
+    /// The monitor handle, for assertions.
+    pub fn monitors(&self) -> Option<&crate::session::monitor::SessionMonitors> {
+        self.services.monitors.as_ref()
+    }
+
     /// Attach a PTY session registry, as agent sessions have one.
     pub fn with_pty_sessions(mut self) -> Self {
         self.services.pty_sessions = Some(Arc::new(pty_session::PtySessionManager::default()));
@@ -1381,5 +1404,37 @@ impl crate::persistence::DraftStore for MockDraftStore {
         Self::check(&self.write_error)?;
         self.drafts.lock().unwrap().remove(session_id);
         Ok(())
+    }
+}
+
+/// Records the notifications a [`crate::session::monitor::MonitorHandle`]
+/// delivers.
+#[derive(Clone, Default)]
+pub struct RecordingMonitorSink {
+    delivered: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl RecordingMonitorSink {
+    pub fn delivered(&self) -> Vec<String> {
+        self.delivered.lock().unwrap().clone()
+    }
+
+    /// Wait (up to 10 s) until at least `count` messages were delivered.
+    pub async fn wait_for(&self, count: usize) -> Vec<String> {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let delivered = self.delivered();
+            if delivered.len() >= count || tokio::time::Instant::now() >= deadline {
+                return delivered;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::session::monitor::MonitorSink for RecordingMonitorSink {
+    async fn deliver(&self, _session_id: &str, message: &str) {
+        self.delivered.lock().unwrap().push(message.to_string());
     }
 }

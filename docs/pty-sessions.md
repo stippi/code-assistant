@@ -25,6 +25,11 @@ interacting through the `write_stdin` tool. The design follows Codex's
   `chars` polls without writing (default yield 10 s, max 300 s — for
   watching slow builds/servers). `"\u0003"` interrupts (Ctrl-C), which
   also works for pipe sessions (SIGINT to the process group).
+- When a background process exits, the agent is told with a
+  `[background job <id> exited]` message (a turn starts if it is idle),
+  unless a `write_stdin` call saw the exit first; it then reads the rest of
+  the output with `write_stdin` if it wants. See
+  `docs/background-monitors.md`.
 
 ## Implementation
 

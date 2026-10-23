@@ -8,6 +8,7 @@
 
 use crate::agent::SubAgentRunner;
 use crate::config::ProjectManager;
+use crate::session::monitor::SessionMonitors;
 use crate::session::wakeup::SessionWakeups;
 use crate::tools::core::ToolContext;
 use crate::tools::terminal_interrupts::TerminalInterrupts;
@@ -33,6 +34,10 @@ pub struct ToolServices {
     /// Optional session-bound wakeup handle for the `schedule_wakeup` /
     /// `cancel_wakeup` tools
     pub wakeups: Option<SessionWakeups>,
+    /// Optional session-bound monitor handle for the `monitor` /
+    /// `stop_monitor` tools; also tells the session when a background job
+    /// of `execute_command` exits
+    pub monitors: Option<SessionMonitors>,
     /// Optional registry of live PTY sessions for `execute_command`'s
     /// session mode and the `write_stdin` tool. Lives on the session
     /// instance so sessions survive across agent runs.
@@ -64,6 +69,7 @@ impl ToolServices {
             ui: None,
             sub_agent_runner: None,
             wakeups: None,
+            monitors: None,
             pty_sessions: None,
             terminal_interrupts: None,
             browser_sessions: None,

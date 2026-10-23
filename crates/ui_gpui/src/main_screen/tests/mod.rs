@@ -4,6 +4,7 @@
 mod comments;
 mod composer;
 mod end_to_end;
+mod monitors;
 mod sidebar;
 mod stored_outputs;
 mod wakeups;

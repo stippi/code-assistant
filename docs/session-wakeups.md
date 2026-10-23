@@ -136,14 +136,12 @@ session never settles automatically.
 - **Stop-requested / errored sessions**: firing into an errored session
   behaves like a user message would (it may un-stick it); no special case.
 
-### Future: condition-based monitors
+### Condition-based monitors
 
-A monitor is just another producer of the same fire path: a background
-watcher evaluates a condition and, when it holds, injects a framed message
-and starts a turn. Candidates: background-command exit, file-change
-patterns (reusing the `notify` machinery from `SessionWatcher`), log
-markers. Out of scope for v1; the fire path and cancellation semantics
-above are the contract they will reuse.
+Implemented as another producer of the same inject-or-queue path: the
+`monitor` tool (a command whose output lines are events) and exit
+notifications for background `execute_command` jobs. See
+`docs/background-monitors.md`.
 
 ## Downstream: pal's durable scheduler (for context)
 

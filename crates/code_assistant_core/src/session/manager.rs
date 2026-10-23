@@ -183,6 +183,11 @@ pub struct SessionManager {
     /// `schedule_wakeup` / `cancel_wakeup` tools bound to their session.
     wakeup_handle: Option<crate::session::wakeup::WakeupHandle>,
 
+    /// Handle to the process' monitors; when set, agents get the `monitor`
+    /// / `stop_monitor` tools bound to their session, and are told when a
+    /// background job exits.
+    monitor_handle: Option<crate::session::monitor::MonitorHandle>,
+
     /// Timers preparing a handoff for long sessions left idle; armed when a
     /// run ends.
     idle_handoff: Option<crate::session::idle_handoff::IdleHandoffTimers>,
@@ -230,6 +235,7 @@ impl SessionManager {
             mcp_server_control: None,
             hooks_factory: None,
             wakeup_handle: None,
+            monitor_handle: None,
             idle_handoff: None,
             permission_timeout: None,
             events,
@@ -248,6 +254,22 @@ impl SessionManager {
     /// without the wakeup tools.
     pub fn set_wakeup_handle(&mut self, handle: crate::session::wakeup::WakeupHandle) {
         self.wakeup_handle = Some(handle);
+    }
+
+    /// Install the monitor handle (see [`crate::session::monitor`]). Wiring
+    /// layers set this right after constructing the service; without it,
+    /// agents run without the monitor tools and background jobs exit
+    /// unannounced.
+    pub fn set_monitor_handle(&mut self, handle: crate::session::monitor::MonitorHandle) {
+        self.monitor_handle = Some(handle);
+    }
+
+    /// Stop a monitor of a session without a notification. Returns whether
+    /// it was still running.
+    pub fn stop_monitor(&self, session_id: &str, monitor_id: u64) -> bool {
+        self.monitor_handle
+            .as_ref()
+            .is_some_and(|handle| handle.stop(session_id, monitor_id))
     }
 
     /// Install the idle handoff timers (see
@@ -789,6 +811,11 @@ impl SessionManager {
             .wakeup_handle
             .as_ref()
             .map(|handle| handle.armed(&session_id))
+            .unwrap_or_default();
+        snapshot.active_monitors = self
+            .monitor_handle
+            .as_ref()
+            .map(|handle| handle.active(&session_id))
             .unwrap_or_default();
         snapshot.allowed_models = self
             .allowed_models_for_session(&session_id)
@@ -1406,6 +1433,21 @@ impl SessionManager {
                         .unwrap_or(0),
                 }
             }),
+            monitors: self.monitor_handle.clone().map(|handle| {
+                crate::session::monitor::SessionMonitors {
+                    handle,
+                    session_id: session_id.to_string(),
+                    used_ids: self
+                        .active_sessions
+                        .get(session_id)
+                        .map(|instance| {
+                            crate::session::monitor::highest_monitor_id(
+                                &instance.session.tool_executions,
+                            )
+                        })
+                        .unwrap_or(0),
+                }
+            }),
             pty_sessions: self
                 .active_sessions
                 .get(session_id)
@@ -1655,6 +1697,9 @@ impl SessionManager {
         // A deleted session's armed wakeups must never fire
         if let Some(handle) = &self.wakeup_handle {
             handle.cancel_session(session_id.to_string());
+        }
+        if let Some(handle) = &self.monitor_handle {
+            handle.stop_session(session_id);
         }
         if let Some(timers) = &self.idle_handoff {
             timers.disarm(session_id);
@@ -2330,13 +2375,20 @@ impl SessionManager {
                 .active_sessions
                 .get(&metadata.id)
                 .is_some_and(|instance| !instance.get_activity_state().is_terminal());
-            // A wakeup still to fire continues the session.
+            // A wakeup still to fire or a running monitor continues the
+            // session.
             let wakeup_armed = self
                 .wakeup_handle
                 .as_ref()
                 .is_some_and(|handle| !handle.armed(&metadata.id).is_empty());
-            let busy =
-                running_here || wakeup_armed || self.is_agent_locked_externally(&metadata.id);
+            let monitored = self
+                .monitor_handle
+                .as_ref()
+                .is_some_and(|handle| !handle.active(&metadata.id).is_empty());
+            let busy = running_here
+                || wakeup_armed
+                || monitored
+                || self.is_agent_locked_externally(&metadata.id);
             let repo_root = metadata
                 .branch
                 .as_ref()

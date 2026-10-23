@@ -346,6 +346,9 @@ impl DefaultSubAgentRunner {
             // Sub-agents run to completion inside the parent's turn; a
             // wakeup for "their" session would wake the parent instead.
             wakeups: None,
+            // Likewise for monitors and background-job notifications: the
+            // sub-agent would be gone by the time they arrive.
+            monitors: None,
             // Sub-agents get their own registries: dropping them when the
             // sub-agent finishes terminates any PTY sessions and browsers it
             // left behind.
