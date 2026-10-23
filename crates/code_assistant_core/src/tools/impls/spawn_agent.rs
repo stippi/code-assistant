@@ -17,6 +17,9 @@ pub struct SpawnAgentInput {
     /// If true, return right away; the result arrives as a message later.
     #[serde(default, skip_serializing_if = "is_false")]
     pub background: bool,
+    /// If true, work in a git worktree of its own and merge back when done.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub worktree: bool,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -127,10 +130,16 @@ impl Tool for SpawnAgentTool {
             "Instead read those files directly yourself. The most effective way of using sub-agents is when you are unsure which files to explore.\n\n",
             "The sub-agent has the same tools as you: it can read, search, edit files and run commands. ",
             "Multiple sub-agents spawned in one response run in parallel. ",
-            "In a git project, each sub-agent works in its own git worktree, started from your current files; ",
-            "when it finishes, its changes are merged into your working tree and the result says which files changed. ",
+            "By default a sub-agent works in your working tree: its edits land there right away, ",
+            "and edits to the same file by several agents are serialized, so none is lost.\n\n",
+            "Set `worktree: true` when a sub-agent will change files while you or other sub-agents change files too, ",
+            "typically for background or parallel work. In a git project it then works in its own git worktree, ",
+            "started from your current files; when it finishes, its changes are merged into your working tree ",
+            "and the result says which files changed. Files ignored by git are not merged back. ",
             "If its changes conflict with edits made meanwhile, nothing is applied and the result names a branch holding them: ",
-            "you then resolve the conflict yourself. Give parallel sub-agents separate parts of the code to keep conflicts rare.\n\n",
+            "you then resolve the conflict yourself. Give parallel sub-agents separate parts of the code to keep conflicts rare. ",
+            "A worktree is a fresh checkout without build outputs, so builds there start from scratch: ",
+            "don't use one for research or other read-only work.\n\n",
             "Set `background: true` to not wait for a sub-agent: the tool returns right away and the ",
             "sub-agent's answer arrives later as a message starting with `[sub-agent #<id>]`. ",
             "Meanwhile continue with other work, or end your turn if there is nothing else to do: ",
@@ -156,6 +165,11 @@ impl Tool for SpawnAgentTool {
                         "type": "boolean",
                         "default": false,
                         "description": "If true, don't wait for the sub-agent: its answer arrives later as a message."
+                    },
+                    "worktree": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "If true, the sub-agent works in a git worktree of its own and its changes are merged back when it finishes. Use it when it will change files while others do too."
                     }
                 },
                 "required": ["instructions"]
@@ -198,9 +212,13 @@ impl Tool for SpawnAgentTool {
             );
         }
 
+        let options = crate::agent::sub_agent::SubAgentOptions {
+            require_file_references: input.require_file_references,
+            worktree: input.worktree,
+        };
         if input.background {
             let started = sub_agent_runner
-                .start_background(&tool_id, final_instructions, input.require_file_references)
+                .start_background(&tool_id, final_instructions, options)
                 .await?;
             return Ok(SpawnAgentOutput::background_started(
                 started.agent_id,
@@ -210,7 +228,7 @@ impl Tool for SpawnAgentTool {
 
         // Run the sub-agent
         let result = sub_agent_runner
-            .run(&tool_id, final_instructions, input.require_file_references)
+            .run(&tool_id, final_instructions, options)
             .await;
 
         match result {
