@@ -9,8 +9,9 @@ Configuration lives in `~/.config/code-assistant/`.
 
 ## Providers and models
 
-Two JSON files manage LLM access. The Settings screen writes these for you; you
-can also edit them by hand.
+Providers hold credentials and endpoints; which of their models you can pick,
+and how hard a model thinks, is mostly worked out by the app. The Settings
+screen writes both files for you; you can also edit them by hand.
 
 ### `providers.json` — credentials and endpoints
 
@@ -35,56 +36,61 @@ can also edit them by hand.
 ```
 
 Use `${VAR_NAME}` to reference environment variables for API keys. Each entry's
-top-level key (e.g. `anthropic-main`) is an alias that models reference via their
-`provider` field.
+top-level key (e.g. `anthropic-main`) is the provider ID models refer to.
 
-### `models.json` — available models
+### Which models the picker offers — `model-selection.json`
+
+*Settings → Models* lists, per provider, the models the provider offers (its
+`/models` listing, cached in `model-discovery.json` and refreshed daily or on
+demand). Switch a model on to offer it in the model picker. A model is
+referred to by its key, `<provider-id>/<model-id>`.
+
+Everything else comes from a small built-in catalog and the provider's
+listing: the context window, the output limit, the preferred edit format and
+the **reasoning effort levels** the model supports, including how the provider
+wants them in a request (`thinking`/`output_config.effort` for Anthropic,
+`reasoning.effort` for the Responses API, `thinking_level` for Gemini, ...).
+The effort is chosen per session next to the model picker (`/effort` in the
+terminal UI, a *thought level* option in ACP clients).
+
+An entry only holds what you override:
 
 ```json
 {
-  "Claude Opus 4.8": {
-    "provider": "anthropic-main",
-    "id": "claude-opus-4-7",
-    "context_token_limit": 200000,
-    "edit_format": "diff",
-    "config": {
-      "max_tokens": 64000,
-      "thinking": { "type": "adaptive", "display": "summarized" },
-      "output_config": { "effort": "medium" }
+  "models": [
+    { "provider": "anthropic-main", "id": "claude-opus-5-5" },
+    { "provider": "anthropic-main", "id": "claude-sonnet-5-5", "default_effort": "medium" },
+    {
+      "provider": "ai-core-dev",
+      "id": "anthropic--claude-4.8-opus",
+      "name": "Claude Opus 4.8 (AI Core)",
+      "behaves_like": "claude-opus-4-8"
+    },
+    {
+      "provider": "ollama-local",
+      "id": "qwen3.8:27b-mlx",
+      "context_token_limit": 128000,
+      "config": { "temperature": 0.7 }
     }
-  },
-  "Claude Fable 5": {
-    "provider": "anthropic-main",
-    "id": "claude-fable-5",
-    "context_token_limit": 1000000,
-    "edit_format": "diff",
-    "config": {
-      "max_tokens": 64000,
-      "thinking": { "type": "adaptive", "display": "summarized" },
-      "output_config": { "effort": "high" }
-    }
-  },
-  "GPT-5.5 (ChatGPT)": {
-    "provider": "openai-chatgpt",
-    "id": "gpt-5.5",
-    "context_token_limit": 400000,
-    "config": {
-      "temperature": 1.0,
-      "reasoning": { "context": "all_turns", "effort": "high", "summary": "concise" }
-    }
-  }
+  ]
 }
 ```
 
-Common per-model fields: `context_token_limit` sizes the context window,
-`edit_format` selects the file-editing format (e.g. `diff`), and the `config`
-block carries provider-specific options such as `thinking` / `output_config`
-(Anthropic) or `reasoning` (OpenAI).
+- `name` — display name (default: the catalog's or provider's name)
+- `behaves_like` — catalog model to take capabilities from, for IDs the catalog
+  does not know (e.g. a proxy's name for a known model)
+- `context_token_limit`, `edit_format` (`simple`/`diff`) — overrides
+- `default_effort` — effort for sessions that did not choose one
+- `config` — extra request fields, merged into every request as a JSON Merge
+  Patch (objects merge, `null` removes a field the client sends)
 
-**Full examples** for every supported provider (Anthropic, OpenAI, Ollama,
-SAP AI Core, Vertex AI, Groq, Cerebras, Mistral, OpenRouter) live in
-[`providers.example.json`](../providers.example.json) and
-[`models.example.json`](../models.example.json).
+As long as there is no `model-selection.json`, the entries of an old
+`models.json` are imported: their names stay (sessions refer to them), their
+reasoning settings become the `default_effort`. The new file is written with
+your first change in *Settings → Models*; the old file is left as it is.
+
+See [`providers.example.json`](../providers.example.json) and
+[`model-selection.example.json`](../model-selection.example.json).
 
 **List what is configured:**
 
@@ -204,7 +210,7 @@ code-assistant --playback session.json --fast-playback
 <details>
 <summary>Other flags</summary>
 
-- `--model <name>` — pick a model from `models.json` (`--list-models` to see them)
+- `--model <name>` — pick a model by name or key (`--list-models` to see them)
 - `--task <text>` — start with an initial task
 - `--tui` — terminal interface
 - `--continue-task` — resume from previous session state

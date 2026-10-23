@@ -1055,7 +1055,7 @@ impl VertexClient {
 
         // Apply custom model configuration if present.
         if let Some(ref custom_config) = self.custom_config {
-            request_json = crate::config_merge::merge_json(request_json, custom_config.clone());
+            request_json = crate::config_merge::merge_patch(request_json, custom_config.clone());
         }
 
         // Allow request customizer to modify the request
@@ -1202,7 +1202,7 @@ impl VertexClient {
         // shallow at the top level, a custom `tool_config` completely replaces
         // the injected one above.
         if let Some(ref custom_config) = self.custom_config {
-            request_json = crate::config_merge::merge_json(request_json, custom_config.clone());
+            request_json = crate::config_merge::merge_patch(request_json, custom_config.clone());
         }
 
         // Allow request customizer to modify the request
@@ -1797,13 +1797,14 @@ mod tests {
             json!(true)
         );
 
-        // A model config that sets `tool_config` is shallow-merged and fully
-        // replaces the injected one — so the experimental flag is no longer
-        // sent. This is the seam models like gemini-3.5-flash use to opt out.
+        // A model config removes the injected flag with `null` (JSON Merge
+        // Patch). This is the seam models like gemini-3.5-flash use to opt out.
         let custom = json!({
-            "tool_config": { "function_calling_config": { "mode": "AUTO" } }
+            "tool_config": {
+                "function_calling_config": { "mode": "AUTO", "stream_function_call_arguments": null }
+            }
         });
-        let merged = crate::config_merge::merge_json(request, custom);
+        let merged = crate::config_merge::merge_patch(request, custom);
 
         assert_eq!(
             merged["tool_config"]["function_calling_config"],

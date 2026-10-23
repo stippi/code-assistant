@@ -1,63 +1,50 @@
-/// Utilities for merging JSON configurations
-///
-/// This module provides functionality to merge custom model configurations
-/// with base API request payloads using shallow (top-level only) merging.
+//! Merging configuration overlays into API request payloads.
+//!
+//! Overlays (the request settings a model's reasoning effort implies, and the
+//! user's per-model `config` block) are applied as a JSON Merge Patch
+//! (RFC 7386): objects merge recursively, `null` removes a key, and any other
+//! value replaces what was there. A user can therefore add a single nested
+//! field (e.g. `generation_config.temperature`) without dropping its
+//! siblings, and remove a field the client sends with `null`.
 use serde_json::Value;
 
-/// Shallow merge two JSON values at the top level only.
-///
-/// The merge behavior is:
-/// - For objects: merge only at top level - custom values completely replace base values
-/// - For arrays and primitives: `custom` replaces `base`
-/// - Keys that only exist in `base` are preserved
-///
-/// This approach requires custom configs to specify complete sub-objects when overriding
-/// nested structures, which is more explicit and avoids unexpected partial merges.
-///
-/// # Examples
+/// Apply `patch` to `target` as a JSON Merge Patch (RFC 7386).
 ///
 /// ```
 /// use serde_json::json;
-/// use llm::config_merge::merge_json;
+/// use llm::config_merge::merge_patch;
 ///
-/// let base = json!({
-///     "temperature": 0.7,
-///     "thinking": {
-///         "type": "enabled",
-///         "budget_tokens": 8192
-///     }
+/// let request = json!({
+///     "generation_config": { "temperature": 1.0, "max_output_tokens": 65536 },
+///     "text": { "verbosity": "medium" }
+/// });
+/// let patch = json!({
+///     "generation_config": { "temperature": 0.7 },
+///     "text": null
 /// });
 ///
-/// // To disable thinking, provide the complete thinking object
-/// let custom = json!({
-///     "temperature": 0.9,
-///     "thinking": {
-///         "type": "disabled"
-///     }
-/// });
-///
-/// let result = merge_json(base, custom);
-///
-/// assert_eq!(result, json!({
-///     "temperature": 0.9,  // overridden
-///     "thinking": {
-///         "type": "disabled"  // completely replaced (no budget_tokens)
-///     }
-/// }));
+/// assert_eq!(
+///     merge_patch(request, patch),
+///     json!({ "generation_config": { "temperature": 0.7, "max_output_tokens": 65536 } })
+/// );
 /// ```
-pub fn merge_json(mut base: Value, custom: Value) -> Value {
-    match (&mut base, custom) {
-        // Both are objects: shallow merge at top level only
-        (Value::Object(base_map), Value::Object(custom_map)) => {
-            for (key, custom_value) in custom_map {
-                // Always replace - no recursive merging
-                base_map.insert(key, custom_value);
-            }
-            base
+pub fn merge_patch(target: Value, patch: Value) -> Value {
+    let Value::Object(patch_map) = patch else {
+        return patch;
+    };
+    let mut target_map = match target {
+        Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+    for (key, patch_value) in patch_map {
+        if patch_value.is_null() {
+            target_map.remove(&key);
+        } else {
+            let current = target_map.remove(&key).unwrap_or(Value::Null);
+            target_map.insert(key, merge_patch(current, patch_value));
         }
-        // For any other combination, custom replaces base
-        (_, custom) => custom,
     }
+    Value::Object(target_map)
 }
 
 #[cfg(test)]
@@ -66,175 +53,60 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_merge_primitives() {
-        assert_eq!(merge_json(json!(5), json!(10)), json!(10));
-        assert_eq!(merge_json(json!("hello"), json!("world")), json!("world"));
-        assert_eq!(merge_json(json!(true), json!(false)), json!(false));
+    fn primitives_and_arrays_are_replaced() {
+        assert_eq!(merge_patch(json!(5), json!(10)), json!(10));
+        assert_eq!(merge_patch(json!([1, 2, 3]), json!([4, 5])), json!([4, 5]));
+        assert_eq!(
+            merge_patch(
+                json!({"key": {"nested": "object"}}),
+                json!({"key": "string"})
+            ),
+            json!({"key": "string"})
+        );
     }
 
     #[test]
-    fn test_merge_arrays() {
-        // Arrays are replaced, not merged
-        assert_eq!(merge_json(json!([1, 2, 3]), json!([4, 5])), json!([4, 5]));
-    }
-
-    #[test]
-    fn test_merge_simple_objects() {
-        let base = json!({
-            "a": 1,
-            "b": 2
-        });
-        let custom = json!({
-            "b": 20,
-            "c": 3
-        });
-        let expected = json!({
-            "a": 1,   // preserved from base
-            "b": 20,  // overridden
-            "c": 3    // added from custom
-        });
-        assert_eq!(merge_json(base, custom), expected);
-    }
-
-    #[test]
-    fn test_shallow_merge_nested_objects() {
-        // Shallow merge: nested objects are completely replaced, not recursively merged
-        let base = json!({
-            "outer": {
-                "inner1": "value1",
-                "inner2": "value2"
-            },
+    fn nested_objects_merge_recursively() {
+        let target = json!({
+            "level1": { "level2": { "keep": "this", "override": "old" } },
             "other": "data"
         });
-        let custom = json!({
-            "outer": {
-                "inner2": "overridden",
-                "inner3": "new"
-            }
+        let patch = json!({
+            "level1": { "level2": { "override": "new", "add": "value" } }
         });
-        let expected = json!({
-            "outer": {
-                // inner1 is NOT preserved - entire "outer" object was replaced
-                "inner2": "overridden",
-                "inner3": "new"
-            },
-            "other": "data"  // preserved (not in custom)
-        });
-        assert_eq!(merge_json(base, custom), expected);
+        assert_eq!(
+            merge_patch(target, patch),
+            json!({
+                "level1": { "level2": { "keep": "this", "override": "new", "add": "value" } },
+                "other": "data"
+            })
+        );
     }
 
     #[test]
-    fn test_anthropic_thinking_disabled() {
-        // Key use case: disabling thinking without leftover budget_tokens
-        let base = json!({
-            "model": "claude-sonnet-4",
-            "temperature": 0.7,
-            "thinking": {
-                "type": "enabled",
-                "budget_tokens": 8192
-            }
+    fn null_removes_a_key() {
+        let target = json!({
+            "thinking": { "type": "enabled", "budget_tokens": 8192 },
+            "temperature": 0.7
         });
-        let custom = json!({
-            "thinking": {
-                "type": "disabled"
-            }
-        });
-        let expected = json!({
-            "model": "claude-sonnet-4",
-            "temperature": 0.7,
-            "thinking": {
-                "type": "disabled"
-                // No budget_tokens - entire thinking object was replaced
-            }
-        });
-        assert_eq!(merge_json(base, custom), expected);
+        let patch = json!({ "thinking": { "budget_tokens": null, "type": "disabled" } });
+        assert_eq!(
+            merge_patch(target, patch),
+            json!({ "thinking": { "type": "disabled" }, "temperature": 0.7 })
+        );
     }
 
     #[test]
-    fn test_anthropic_thinking_custom_budget() {
-        // To customize budget, provide the complete thinking object
-        let base = json!({
-            "model": "claude-sonnet-4",
-            "temperature": 0.7,
-            "thinking": {
-                "type": "enabled",
-                "budget_tokens": 8192
-            }
-        });
-        let custom = json!({
-            "thinking": {
-                "type": "enabled",
-                "budget_tokens": 16384
-            }
-        });
-        let expected = json!({
-            "model": "claude-sonnet-4",
-            "temperature": 0.7,
-            "thinking": {
-                "type": "enabled",
-                "budget_tokens": 16384
-            }
-        });
-        assert_eq!(merge_json(base, custom), expected);
+    fn object_patch_replaces_a_non_object_target() {
+        assert_eq!(
+            merge_patch(json!({"a": 1}), json!({"a": {"b": 2, "c": null}})),
+            json!({"a": {"b": 2}})
+        );
     }
 
     #[test]
-    fn test_empty_custom_config() {
-        let base = json!({"a": 1, "b": 2});
-        let custom = json!({});
-        assert_eq!(merge_json(base.clone(), custom), base);
-    }
-
-    #[test]
-    fn test_empty_base_config() {
-        let base = json!({});
-        let custom = json!({"a": 1, "b": 2});
-        assert_eq!(merge_json(base, custom.clone()), custom);
-    }
-
-    #[test]
-    fn test_shallow_replaces_deeply_nested() {
-        // Shallow merge: entire top-level key is replaced
-        let base = json!({
-            "level1": {
-                "level2": {
-                    "level3": {
-                        "keep": "this",
-                        "override": "old"
-                    }
-                }
-            }
-        });
-        let custom = json!({
-            "level1": {
-                "level2": {
-                    "level3": {
-                        "override": "new",
-                        "add": "value"
-                    }
-                }
-            }
-        });
-        // The entire "level1" object is replaced
-        let expected = json!({
-            "level1": {
-                "level2": {
-                    "level3": {
-                        // "keep" is NOT preserved
-                        "override": "new",
-                        "add": "value"
-                    }
-                }
-            }
-        });
-        assert_eq!(merge_json(base, custom), expected);
-    }
-
-    #[test]
-    fn test_type_replacement() {
-        // When types differ, custom replaces base
-        let base = json!({"key": {"nested": "object"}});
-        let custom = json!({"key": "string"});
-        assert_eq!(merge_json(base, custom.clone()), custom);
+    fn empty_patch_keeps_target() {
+        let target = json!({"a": 1, "b": 2});
+        assert_eq!(merge_patch(target.clone(), json!({})), target);
     }
 }

@@ -112,7 +112,7 @@ impl SettingsScreen {
                 self.providers_section.update(cx, |s, _cx| s.reload());
             }
             SettingsSection::Models => {
-                self.models_section.update(cx, |s, _cx| s.reload());
+                self.models_section.update(cx, |s, cx| s.reload(window, cx));
             }
             SettingsSection::Skills => {
                 self.skills_section.update(cx, |s, _cx| s.reload());

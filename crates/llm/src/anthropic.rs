@@ -14,6 +14,9 @@ use std::str::{self};
 use std::time::{Duration, SystemTime};
 use tracing::{debug, warn};
 
+/// Output limit when the model's request overlay does not set one.
+const DEFAULT_MAX_TOKENS: u32 = 8192;
+
 /// Trait for providing authentication headers
 #[async_trait]
 pub trait AuthProvider: Send + Sync {
@@ -402,13 +405,6 @@ struct AnthropicMessage {
     content: Vec<AnthropicContentBlock>,
 }
 
-#[derive(Debug, Serialize)]
-struct ThinkingConfiguration {
-    #[serde(rename = "type")]
-    thinking_type: String,
-    budget_tokens: usize,
-}
-
 /// Response structure for Anthropic API responses
 #[derive(Debug, Deserialize)]
 struct AnthropicResponse {
@@ -553,65 +549,7 @@ pub struct AnthropicClient {
     custom_config: Option<serde_json::Value>,
 }
 
-/// Thinking strategy used for a given Claude model.
-///
-/// See: https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ThinkingMode {
-    /// Manual extended thinking via `thinking: {type: "enabled", budget_tokens: N}`.
-    /// Supported on Claude Sonnet 4.x, Claude 3.7 Sonnet, and Claude Opus 4.x up to 4.6.
-    Manual,
-    /// Adaptive thinking via `thinking: {type: "adaptive"}` combined with
-    /// `output_config: {effort: "..."}`. Required on Claude Opus 4.7 and later
-    /// (manual thinking returns a 400 error on these models).
-    Adaptive,
-    /// Model does not support extended thinking.
-    None,
-}
-
 impl AnthropicClient {
-    /// Substrings of model IDs that require adaptive thinking.
-    ///
-    /// Manual extended thinking (`type: "enabled"` with `budget_tokens`) is rejected
-    /// with a 400 error on these models. They must use `type: "adaptive"` together
-    /// with the `output_config.effort` parameter.
-    fn adaptive_thinking_model_substrings() -> &'static [&'static str] {
-        &[
-            "claude-opus-4-7",
-            "claude-opus-4-8",
-            // Anthropic alias that currently points to the latest Opus release,
-            // which uses adaptive thinking. Some proxies expose this alias too.
-            "claude-opus-latest",
-        ]
-    }
-
-    /// Substrings of model IDs that support manual extended thinking.
-    fn manual_thinking_model_substrings() -> &'static [&'static str] {
-        &["claude-sonnet-4", "claude-3-7-sonnet", "claude-opus-4"]
-    }
-
-    /// Returns the thinking mode that should be used for the current model.
-    fn thinking_mode(&self) -> ThinkingMode {
-        if Self::adaptive_thinking_model_substrings()
-            .iter()
-            .any(|substr| self.model.contains(substr))
-        {
-            return ThinkingMode::Adaptive;
-        }
-        if Self::manual_thinking_model_substrings()
-            .iter()
-            .any(|substr| self.model.contains(substr))
-        {
-            return ThinkingMode::Manual;
-        }
-        ThinkingMode::None
-    }
-
-    /// Returns true if the current model should have thinking mode enabled
-    fn supports_thinking(&self) -> bool {
-        !matches!(self.thinking_mode(), ThinkingMode::None)
-    }
-
     pub fn default_base_url() -> String {
         "https://api.anthropic.com/v1".to_string()
     }
@@ -813,12 +751,11 @@ impl AnthropicClient {
             request_builder = request_builder.header(key, value);
         }
 
-        // Add model-specific headers for thinking-enabled models
-        if self.supports_thinking() {
-            request_builder = request_builder.header(
-                "anthropic-beta",
-                "output-128k-2025-02-19,interleaved-thinking-2025-05-14",
-            );
+        // Budget-based thinking interleaves with tool calls only behind a
+        // beta header; adaptive thinking does so by default.
+        if request["thinking"]["type"] == "enabled" {
+            request_builder =
+                request_builder.header("anthropic-beta", "interleaved-thinking-2025-05-14");
         }
 
         let response =
@@ -1345,42 +1282,17 @@ impl LLMProvider for AnthropicClient {
             tools_json
         });
 
-        // Configure thinking mode and max_tokens based on model
-        let thinking_mode = self.thinking_mode();
-        let max_tokens = if matches!(thinking_mode, ThinkingMode::None) {
-            8192
-        } else {
-            64000
-        };
-
         // Convert messages using the message converter
         let converted_messages = self.message_converter.convert_messages(request.messages)?;
         let messages_json = converted_messages.into_iter().next().unwrap_or_default();
 
         let mut anthropic_request = serde_json::json!({
             "model": self.model,
-            "max_tokens": max_tokens,
+            "max_tokens": DEFAULT_MAX_TOKENS,
             "system": system,
             "stream": streaming_callback.is_some(),
             "messages": messages_json,
         });
-
-        match thinking_mode {
-            ThinkingMode::Manual => {
-                anthropic_request["thinking"] = serde_json::to_value(ThinkingConfiguration {
-                    thinking_type: "enabled".to_string(),
-                    budget_tokens: 16000,
-                })?;
-            }
-            ThinkingMode::Adaptive => {
-                // Opus 4.7+ require adaptive thinking; depth is controlled via
-                // `output_config.effort`. Users can override either via the model's
-                // `config` block (shallow-merged below).
-                anthropic_request["thinking"] = serde_json::json!({ "type": "adaptive" });
-                anthropic_request["output_config"] = serde_json::json!({ "effort": "high" });
-            }
-            ThinkingMode::None => {}
-        }
 
         if let Some(tool_choice) = tool_choice {
             anthropic_request["tool_choice"] = tool_choice;
@@ -1390,10 +1302,10 @@ impl LLMProvider for AnthropicClient {
             anthropic_request["tools"] = serde_json::to_value(tools)?;
         }
 
-        // Apply custom model configuration if present
+        // Apply the model's request overlay (reasoning, output limit, user config)
         if let Some(ref custom_config) = self.custom_config {
             anthropic_request =
-                crate::config_merge::merge_json(anthropic_request, custom_config.clone());
+                crate::config_merge::merge_patch(anthropic_request, custom_config.clone());
         }
 
         // Allow request customizer to modify the request
@@ -1970,56 +1882,6 @@ mod tests {
             assert_eq!(*is_error, Some(true));
         } else {
             panic!("Expected ToolResult content");
-        }
-    }
-
-    fn make_client(model: &str) -> AnthropicClient {
-        AnthropicClient::new(
-            "test-key".to_string(),
-            model.to_string(),
-            AnthropicClient::default_base_url(),
-        )
-    }
-
-    #[test]
-    fn test_thinking_mode_detection() {
-        // Adaptive-only models (Opus 4.7+).
-        for id in [
-            "claude-opus-4-7",
-            "claude-opus-4-8",
-            "claude-opus-latest",
-            "vendor-prefix/claude-opus-4-7",
-        ] {
-            assert_eq!(
-                make_client(id).thinking_mode(),
-                ThinkingMode::Adaptive,
-                "expected adaptive for {id}",
-            );
-        }
-
-        // Manual extended thinking models.
-        for id in [
-            "claude-sonnet-4-6",
-            "claude-sonnet-4-5",
-            "claude-3-7-sonnet",
-            "claude-opus-4",
-            "claude-opus-4-5",
-            "claude-opus-4-6",
-        ] {
-            assert_eq!(
-                make_client(id).thinking_mode(),
-                ThinkingMode::Manual,
-                "expected manual for {id}",
-            );
-        }
-
-        // Models that don't support extended thinking.
-        for id in ["claude-3-5-sonnet", "claude-haiku-4-5", "gpt-4o"] {
-            assert_eq!(
-                make_client(id).thinking_mode(),
-                ThinkingMode::None,
-                "expected none for {id}",
-            );
         }
     }
 }

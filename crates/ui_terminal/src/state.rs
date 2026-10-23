@@ -39,6 +39,8 @@ pub struct AppState {
     pub info_message: Option<InfoMessage>,
     pub current_sandbox_policy: Option<SandboxPolicy>,
     pub current_permission_tier: Option<PermissionTier>,
+    /// Effort levels of the session's model and the one it runs at.
+    pub current_effort: code_assistant_core::session::effort::EffortChoice,
     /// Tool permission requests awaiting a decision (FIFO; `/allow`,
     /// `/always` and `/deny` answer the oldest).
     pub pending_permission_requests: Vec<ToolPermissionRequestData>,
@@ -73,6 +75,7 @@ impl AppState {
             info_message: None,
             current_sandbox_policy: None,
             current_permission_tier: None,
+            current_effort: Default::default(),
             pending_permission_requests: Vec::new(),
             skills: Vec::new(),
             prepared_handoff: None,

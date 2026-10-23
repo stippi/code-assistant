@@ -438,6 +438,7 @@ mod tests {
     ) -> SessionSnapshot {
         let now = std::time::SystemTime::now();
         SessionSnapshot {
+            effort: Default::default(),
             session_id: session_id.to_string(),
             messages: Vec::new(),
             tool_results: Vec::new(),

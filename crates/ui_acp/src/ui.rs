@@ -971,6 +971,7 @@ impl UserInterface for ACPUserUI {
             | UiEvent::UpdatePendingMessage { .. }
             | UiEvent::ClearError
             | UiEvent::UpdateCurrentModel { .. }
+            | UiEvent::UpdateEffort { .. }
             | UiEvent::UpdateSandboxPolicy { .. }
             | UiEvent::UpdatePermissionTier { .. }
             | UiEvent::UpdateMcpServers { .. }

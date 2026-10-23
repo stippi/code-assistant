@@ -18,6 +18,7 @@ use crate::config::{DefaultProjectManager, ProjectManager, save_project};
 use crate::injection::without_injections;
 use crate::persistence::{ChatMetadata, DraftAttachment, MessageEdit, NodeId, SessionModelConfig};
 use crate::session::SessionManager;
+use crate::session::effort::EffortChoice;
 use crate::session::event_stream::EventStream;
 use crate::session::manager::RunTask;
 use crate::session::new_context::{NewContextCommand, NewContextRun};
@@ -30,6 +31,7 @@ use crate::ui::ui_events::{MessageData, ToolResultData};
 use crate::utils::content::content_blocks_from;
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use command_executor::CommandExecutor;
+use llm::capabilities::Effort;
 use llm::factory::create_llm_client_from_model;
 use llm::provider_config::ConfigurationSystem;
 use sandbox::SandboxPolicy;
@@ -999,16 +1001,23 @@ impl SessionService {
         self.call_session(session_id.clone(), move |ctx| async move {
             let config_system =
                 ConfigurationSystem::load().context("Failed to load model configuration")?;
-            if config_system.get_model(&model_name).is_none() {
+            // Sessions refer to models by key; callers may pass a name.
+            let Some(model_name) = config_system.resolve_key(&model_name) else {
                 bail!("Model '{model_name}' not found in configuration.");
-            }
+            };
 
-            let outcome = {
+            // The chosen effort carries over; the new model runs it at its
+            // closest supported level.
+            let (outcome, effort) = {
                 let mut manager = ctx.manager.lock().await;
-                manager.set_session_model_config(
+                let effort = manager
+                    .get_session_model_config(&session_id)?
+                    .and_then(|config| config.effort);
+                let outcome = manager.set_session_model_config(
                     &session_id,
-                    Some(SessionModelConfig::new(model_name.clone())),
-                )?
+                    Some(SessionModelConfig::new(model_name.clone()).with_effort(effort)),
+                )?;
+                (outcome, effort)
             };
             if let Some(warning) = &outcome.warning {
                 warn!("{}", warning);
@@ -1023,7 +1032,9 @@ impl SessionService {
 
             // Fan out the change so every view of this session updates; the
             // warning stays caller-only (it belongs to the interaction).
+            let choice = EffortChoice::for_model(&model_name, effort);
             ctx.notify_session(&session_id, UiEvent::UpdateCurrentModel { model_name });
+            ctx.notify_session(&session_id, UiEvent::UpdateEffort { choice });
             ctx.notify_session(
                 &session_id,
                 UiEvent::UpdateAllowedModels {
@@ -1035,6 +1046,22 @@ impl SessionService {
                 warning: outcome.warning,
                 allowed_models,
             })
+        })
+        .await
+    }
+
+    /// Choose the reasoning effort for the session's next runs (`None`: the
+    /// model's default).
+    pub async fn set_effort(&self, session_id: String, effort: Option<Effort>) -> Result<()> {
+        self.call_session(session_id.clone(), move |ctx| async move {
+            let model_config = {
+                let mut manager = ctx.manager.lock().await;
+                manager.set_session_effort(&session_id, effort)?
+            };
+            info!("Set effort for session {session_id} to {effort:?}");
+            let choice = EffortChoice::for_model(&model_config.model_name, model_config.effort);
+            ctx.notify_session(&session_id, UiEvent::UpdateEffort { choice });
+            Ok(())
         })
         .await
     }
@@ -2177,25 +2204,26 @@ async fn resume_session_impl(ctx: &ServiceCtx, session_id: &str) -> Result<()> {
 }
 
 /// Start the agent loop for a session against its current message history.
-/// The model config an agent run will use: the session's own — unless it
-/// records a model unknown to the current configuration (models.json
-/// changed since the session last ran), then the default model. Without
+/// The model config an agent run will use: the session's own, referring to
+/// the model by key (sessions from before model keys name it by display
+/// name) — unless it records a model the configuration no longer offers,
+/// then the default model. Without
 /// the fallback such a session is permanently undispatchable, which
 /// headless channels (no model picker) cannot recover from. The caller
 /// persists the result, so the session heals.
 fn runnable_model_config(
     session_config: SessionModelConfig,
     default_model_name: &str,
-    model_exists: impl Fn(&str) -> bool,
+    resolve_key: impl Fn(&str) -> Option<String>,
 ) -> SessionModelConfig {
-    if model_exists(&session_config.model_name) {
-        return session_config;
+    if let Some(key) = resolve_key(&session_config.model_name) {
+        return SessionModelConfig::new(key).with_effort(session_config.effort);
     }
     warn!(
         "Session records unknown model '{}'; falling back to '{default_model_name}'",
         session_config.model_name
     );
-    SessionModelConfig::new(default_model_name.to_string())
+    SessionModelConfig::new(default_model_name.to_string()).with_effort(session_config.effort)
 }
 
 async fn start_agent_impl(ctx: &ServiceCtx, session_id: &str, options: RunOptions) -> Result<()> {
@@ -2268,7 +2296,7 @@ fn schedule_agent_impl(
             if let Ok(config) = ConfigurationSystem::load() {
                 session_config =
                     runnable_model_config(session_config, &default_model_name, |model| {
-                        config.get_model(model).is_some()
+                        config.resolve_key(model)
                     });
             }
             let llm_client = match &runtime.llm_client_factory {
@@ -2281,6 +2309,7 @@ fn schedule_agent_impl(
                 None => {
                     create_llm_client_from_model(
                         &session_config.model_name,
+                        session_config.effort,
                         runtime.playback_path.clone(),
                         runtime.fast_playback,
                         runtime.record_path.clone(),
@@ -2839,6 +2868,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn set_effort_persists_for_the_next_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (service, manager) = test_service_with_manager(tmp.path());
+        let id = service.create_session(None, None).await.unwrap();
+
+        service
+            .set_effort(id.clone(), Some(llm::capabilities::Effort::Low))
+            .await
+            .unwrap();
+
+        let config = manager
+            .lock()
+            .await
+            .get_session_model_config(&id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(config.model_name, "test-model");
+        assert_eq!(config.effort, Some(llm::capabilities::Effort::Low));
+    }
+
+    #[tokio::test]
     async fn load_session_returns_snapshot() {
         let tmp = tempfile::tempdir().unwrap();
         let service = test_service(tmp.path());
@@ -3203,18 +3253,33 @@ mod tests {
     #[test]
     fn runnable_model_config_falls_back_when_the_model_vanished() {
         let kept = runnable_model_config(
-            SessionModelConfig::new("known".to_string()),
+            SessionModelConfig::new("provider/known".to_string()),
             "default",
-            |model| model == "known",
+            |model| (model == "provider/known").then(|| model.to_string()),
         );
-        assert_eq!(kept.model_name, "known");
+        assert_eq!(kept.model_name, "provider/known");
+
+        let by_name = runnable_model_config(
+            SessionModelConfig::new("Known Model".to_string()),
+            "default",
+            |model| (model == "Known Model").then(|| "provider/known".to_string()),
+        );
+        assert_eq!(
+            by_name.model_name, "provider/known",
+            "named models heal to their key"
+        );
 
         let replaced = runnable_model_config(
-            SessionModelConfig::new("vanished".to_string()),
+            SessionModelConfig::new("vanished".to_string()).with_effort(Some(Effort::Max)),
             "default",
-            |_| false,
+            |_| None,
         );
         assert_eq!(replaced.model_name, "default");
+        assert_eq!(
+            replaced.effort,
+            Some(Effort::Max),
+            "the effort carries over"
+        );
     }
 
     #[tokio::test]

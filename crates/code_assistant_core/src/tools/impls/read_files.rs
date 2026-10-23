@@ -132,17 +132,28 @@ pub struct ReadFilesOutput {
     /// If true, prefix each line with its line number when rendering
     #[serde(default)]
     pub prefix_line_numbers: bool,
+    /// Images read from an MCP server's resources (`:mcp:<server>` scope).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<LoadedImage>,
+}
+
+/// An image resource, sent to the model as an image.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct LoadedImage {
+    pub path: PathBuf,
+    pub media_type: String,
+    pub base64_data: String,
 }
 
 // Render implementation for output formatting
 impl Render for ReadFilesOutput {
     fn status(&self) -> String {
+        let loaded = self.loaded_files.len() + self.images.len();
         if self.failed_files.is_empty() {
-            format!("Successfully loaded {} file(s)", self.loaded_files.len())
+            format!("Successfully loaded {loaded} file(s)")
         } else {
             format!(
-                "Loaded {} file(s), failed to load {} file(s)",
-                self.loaded_files.len(),
+                "Loaded {loaded} file(s), failed to load {} file(s)",
                 self.failed_files.len()
             )
         }
@@ -162,8 +173,16 @@ impl Render for ReadFilesOutput {
         }
 
         // Format loaded files, checking for redundancy
-        if !self.loaded_files.is_empty() {
+        if !self.loaded_files.is_empty() || !self.images.is_empty() {
             formatted.push_str("Successfully loaded the following file(s):\n");
+
+            for image in &self.images {
+                formatted.push_str(&format!(
+                    ">>>>> FILE: {} ({}, attached as an image)\n<<<<< END FILE\n",
+                    image.path.display(),
+                    image.media_type
+                ));
+            }
 
             for (path, file_content) in &self.loaded_files {
                 // Generate a unique resource ID for this file with content hash
@@ -199,6 +218,27 @@ impl Render for ReadFilesOutput {
         formatted
     }
 
+    fn render_images(&self) -> Vec<tools_core::render::ImageData> {
+        self.images
+            .iter()
+            .map(|image| tools_core::render::ImageData {
+                media_type: image.media_type.clone(),
+                base64_data: image.base64_data.clone(),
+            })
+            .collect()
+    }
+
+    fn cap_images(&mut self, max_edge: u32) {
+        for image in &mut self.images {
+            if let Some((media_type, base64_data)) =
+                tools_core::cap_base64_image(&image.media_type, &image.base64_data, max_edge)
+            {
+                image.media_type = media_type;
+                image.base64_data = base64_data;
+            }
+        }
+    }
+
     fn render_for_ui(&self, _tracker: &mut ResourcesTracker) -> String {
         // Emit structured JSON for the UI renderer to display with line numbers.
         // Each file entry contains path, content, and start_line.
@@ -225,10 +265,24 @@ impl Render for ReadFilesOutput {
             })
             .collect();
 
+        // The images themselves reach the UI with the tool result; these name
+        // them.
+        let images: Vec<serde_json::Value> = self
+            .images
+            .iter()
+            .map(|image| {
+                json!({
+                    "path": image.path.to_string_lossy(),
+                    "media_type": image.media_type,
+                })
+            })
+            .collect();
+
         json!({
             "kind": "read_files",
             "files": files,
             "errors": errors,
+            "images": images,
         })
         .to_string()
     }
@@ -237,7 +291,7 @@ impl Render for ReadFilesOutput {
 // ToolResult implementation
 impl ToolResult for ReadFilesOutput {
     fn is_success(&self) -> bool {
-        !self.loaded_files.is_empty() && self.failed_files.is_empty()
+        (!self.loaded_files.is_empty() || !self.images.is_empty()) && self.failed_files.is_empty()
     }
 }
 
@@ -269,7 +323,7 @@ impl Tool for ReadFilesTool {
                     "project": {
                         "examples": ["project-name"],
                         "type": "string",
-                        "description": "Name of the project containing the files. The reserved values `:config:` and `:system:` instead address the shared user and bundled skill directories (used to read skill resources)."
+                        "description": "Name of the project containing the files. The reserved values `:config:` and `:system:` instead address the shared user and bundled skill directories (used to read skill resources); `:mcp:<server>` addresses an MCP server's resources, whose paths are resource URIs."
                     },
                     "paths": {
                         "examples": ["File path here"],
@@ -316,6 +370,10 @@ impl Tool for ReadFilesTool {
         context: &mut ToolContext<'a>,
         input: &mut Self::Input,
     ) -> Result<Self::Output> {
+        if let Some(server) = crate::config::mcp_scope_server(&input.project) {
+            return Ok(read_mcp_resources(context, server, input).await);
+        }
+
         // Resolve the scope (a project name, or a reserved skills-scope token
         // such as `:config:` / `:system:`) to a sandboxed explorer.
         let explorer = crate::config::explorer_for_scope(context.project_manager(), &input.project)
@@ -428,8 +486,126 @@ impl Tool for ReadFilesTool {
             loaded_files,
             failed_files,
             prefix_line_numbers: input.prefix_line_numbers,
+            images: Vec::new(),
         })
     }
+}
+
+/// The requested lines of a resource's `text`, or why they are not read.
+fn resource_text(
+    request: &super::mcp_resources::ResourceRequest,
+    text: &str,
+    ignore_size_limit: bool,
+) -> Result<String, String> {
+    let content = request.select_lines(text)?;
+    if !ignore_size_limit && !request.has_line_range() && content.len() > MAX_FILE_SIZE {
+        return Err(format!(
+            "Resource is too large to read in full ({}KB, {} lines). Read a line range, \
+             e.g. {}:1-200, or set ignore_size_limit to true",
+            content.len() / 1024,
+            content.lines().count(),
+            request.uri
+        ));
+    }
+    Ok(content)
+}
+
+/// Read resources of the MCP server an `:mcp:<server>` scope names: each
+/// path is a resource URI, optionally with a line range.
+async fn read_mcp_resources(
+    context: &mut ToolContext<'_>,
+    server: &str,
+    input: &ReadFilesInput,
+) -> ReadFilesOutput {
+    use super::mcp_resources::{ResourceRequest, resource_server};
+    use mcp_client::ResourcePart;
+
+    let mut output = ReadFilesOutput {
+        project: input.project.clone(),
+        loaded_files: HashMap::new(),
+        failed_files: Vec::new(),
+        prefix_line_numbers: input.prefix_line_numbers,
+        images: Vec::new(),
+    };
+    let server = match resource_server(context, server) {
+        Ok(server) => server,
+        Err(error) => {
+            for path in &input.paths {
+                output
+                    .failed_files
+                    .push((PathBuf::from(path), error.clone()));
+            }
+            return output;
+        }
+    };
+
+    for path in &input.paths {
+        let mut request = ResourceRequest::parse(path, &server.catalog);
+        let mut result = server.connection.read_resource(request.uri).await;
+        // A range cut off an unlisted URI may have been part of it.
+        if result.is_err() && request.has_line_range() && !server.catalog.lists(request.uri) {
+            let whole = ResourceRequest::whole(path);
+            if let Ok(whole_result) = server.connection.read_resource(whole.uri).await {
+                request = whole;
+                result = Ok(whole_result);
+            }
+        }
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => {
+                output
+                    .failed_files
+                    .push((PathBuf::from(path), format!("{error:#}")));
+                continue;
+            }
+        };
+        let parts: Vec<ResourcePart> = result
+            .contents
+            .iter()
+            .map(ResourcePart::from_contents)
+            .collect();
+        // Several parts become one file each, named by their own URI with the
+        // requested range, which applies to each of them.
+        let range = &path[request.uri.len()..];
+        let single = parts.len() == 1;
+        for part in parts {
+            let name = if single || part.uri().is_empty() {
+                path.clone()
+            } else {
+                format!("{}{range}", part.uri())
+            };
+            match part {
+                ResourcePart::Text { text, .. } => {
+                    match resource_text(&request, &text, input.ignore_size_limit) {
+                        Ok(content) => {
+                            output.loaded_files.insert(
+                                PathBuf::from(name),
+                                LoadedFileContent {
+                                    content,
+                                    start_line: request.start_line.unwrap_or(1),
+                                },
+                            );
+                        }
+                        Err(error) => output.failed_files.push((PathBuf::from(name), error)),
+                    }
+                }
+                ResourcePart::Image {
+                    media_type,
+                    base64_data,
+                    ..
+                } => output.images.push(LoadedImage {
+                    path: PathBuf::from(name),
+                    media_type,
+                    base64_data,
+                }),
+                unusable => {
+                    let reason = unusable.unusable_reason().unwrap_or_default();
+                    output.failed_files.push((PathBuf::from(path), reason));
+                }
+            }
+        }
+    }
+    output
 }
 
 #[cfg(test)]
@@ -501,6 +677,7 @@ mod tests {
             loaded_files,
             failed_files,
             prefix_line_numbers: false,
+            images: Vec::new(),
         };
 
         let mut tracker = ResourcesTracker::new();
@@ -737,6 +914,7 @@ mod tests {
             loaded_files,
             failed_files: vec![],
             prefix_line_numbers: true,
+            images: Vec::new(),
         };
 
         let mut tracker = ResourcesTracker::new();
@@ -766,6 +944,7 @@ mod tests {
             loaded_files,
             failed_files: vec![],
             prefix_line_numbers: true,
+            images: Vec::new(),
         };
 
         let mut tracker = ResourcesTracker::new();

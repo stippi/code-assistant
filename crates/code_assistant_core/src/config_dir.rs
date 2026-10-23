@@ -1,6 +1,6 @@
 //! Central configuration directory resolution.
 //!
-//! All config files (models.json, providers.json, tools.json, projects.json,
+//! All config files (providers.json, model-selection.json, tools.json, projects.json,
 //! ui-settings.json) live in a single directory determined by the following
 //! priority:
 //!

@@ -9,6 +9,7 @@ pub mod glob_files;
 pub mod list_files;
 pub mod list_projects;
 pub mod list_skills;
+mod mcp_resources;
 pub mod name_session;
 pub mod perplexity_ask;
 pub mod read_files;

@@ -6,7 +6,7 @@ use std::time::Duration;
 fn runner(factory: LlmClientFactory) -> (Arc<DefaultSubAgentRunner>, Arc<MockUI>) {
     let ui = Arc::new(MockUI::default());
     let runner = DefaultSubAgentRunner::new(
-        "test-sub-agent".into(),
+        SessionModelConfig::new("test-sub-agent".into()),
         SessionConfig::default(),
         Arc::default(),
         Arc::default(),
@@ -154,6 +154,7 @@ async fn sub_agent_tool_retains_structured_failure_output() {
         terminal_interrupts: None,
         browser_sessions: None,
         session_source: None,
+        mcp_resources: None,
     };
     let executor = command_executor::DefaultCommandExecutor;
     let mut context = tools_core::ToolContext {

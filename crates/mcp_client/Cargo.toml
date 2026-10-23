@@ -2,6 +2,7 @@
 name = "mcp_client"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
 
 [dependencies]
 tools_core = { path = "../tools_core" }
@@ -15,6 +16,7 @@ rmcp = { version = "3.3", default-features = false, features = [
 ] }
 anyhow = "1.0"
 async-trait = "0.1"
+base64 = "0.22"
 futures = "0.3"
 http = "1"
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
@@ -37,4 +39,5 @@ rmcp = { version = "3.3", default-features = false, features = [
     "reqwest",
 ] }
 axum = "0.8"
-tokio = { version = "1.48", features = ["full"] }
+# test-util enables the paused clock (`start_paused`) for timeout tests
+tokio = { version = "1.48", features = ["full", "test-util"] }

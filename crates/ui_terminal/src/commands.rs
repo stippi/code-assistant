@@ -30,6 +30,11 @@ const ALL_COMMANDS: &[SlashCommand] = &[
         description: "List available models or switch to one: /model <name>",
     },
     SlashCommand {
+        name: "effort",
+        aliases: &["e"],
+        description: "Show the reasoning effort or set it: /effort <level>",
+    },
+    SlashCommand {
         name: "provider",
         aliases: &["p"],
         description: "List available LLM providers",
@@ -117,6 +122,10 @@ pub enum CommandResult {
     SwitchModel(String),
     /// Display current model information
     ShowCurrentModel,
+    /// Show the session's reasoning effort and the model's levels
+    ShowEffort,
+    /// Set the session's reasoning effort
+    SetEffort(llm::capabilities::Effort),
     /// Invalid command
     InvalidCommand(String),
     /// Toggle plan rendering mode
@@ -207,6 +216,7 @@ impl CommandProcessor {
             "model" | "m" => self.process_model_command(&parts[1..]),
             "provider" | "p" => self.process_provider_command(&parts[1..]),
             "current" | "c" => CommandResult::ShowCurrentModel,
+            "effort" | "e" => Self::process_effort_command(&parts[1..]),
             "plan" => CommandResult::TogglePlan,
             "clear" => CommandResult::ClearContext,
             // `/new`, `/handoff`, `/compact`: sent as messages; the core
@@ -265,13 +275,28 @@ impl CommandProcessor {
 
         let model_name = args.join(" ");
 
-        // Check if the model exists
-        if self.config.models.contains_key(&model_name) {
-            CommandResult::SwitchModel(model_name)
+        // Models are switched to by name or key
+        if let Some(key) = self.config.resolve_key(&model_name) {
+            CommandResult::SwitchModel(key)
         } else {
             CommandResult::InvalidCommand(format!(
                 "Model '{model_name}' not found. Use '/model' to list available models.",
             ))
+        }
+    }
+
+    fn process_effort_command(args: &[&str]) -> CommandResult {
+        use llm::capabilities::Effort;
+        match args {
+            [] => CommandResult::ShowEffort,
+            [level] => match Effort::parse(level) {
+                Some(effort) => CommandResult::SetEffort(effort),
+                None => CommandResult::InvalidCommand(format!(
+                    "Unknown effort '{level}'. Use one of: {}.",
+                    Effort::ALL.map(Effort::as_str).join(", ")
+                )),
+            },
+            _ => CommandResult::InvalidCommand("Usage: /effort [level]".to_string()),
         }
     }
 
@@ -334,15 +359,15 @@ impl CommandProcessor {
 
     /// Get formatted list of available models
     pub fn get_models_list(&self) -> String {
-        let mut models: Vec<_> = self.config.models.keys().cloned().collect();
-        models.sort();
-
         let mut output = String::from("Available models:\n");
-        for model_name in models {
-            if let Ok((_model_config, provider_config)) =
-                self.config.get_model_with_provider(&model_name)
+        for key in self.config.list_models() {
+            if let Ok((_model_config, provider_config)) = self.config.get_model_with_provider(&key)
             {
-                output.push_str(&format!("  {} ({})\n", model_name, provider_config.label));
+                output.push_str(&format!(
+                    "  {} ({}) — {key}\n",
+                    self.config.display_name(&key),
+                    provider_config.label
+                ));
             }
         }
         output
@@ -371,10 +396,7 @@ mod tests {
     /// session/routing commands don't read config, and `new()`'s disk load
     /// would fail in CI (no `providers.json`).
     fn test_processor() -> CommandProcessor {
-        let config = ConfigurationSystem {
-            providers: Default::default(),
-            models: Default::default(),
-        };
+        let config = ConfigurationSystem::default();
         CommandProcessor {
             config,
             skill_names: Vec::new(),
@@ -385,6 +407,24 @@ mod tests {
         let mut processor = test_processor();
         processor.set_skill_names(names.iter().map(|n| n.to_string()).collect());
         processor
+    }
+
+    #[test]
+    fn effort_command_shows_or_sets_the_level() {
+        use llm::capabilities::Effort;
+        let processor = test_processor();
+        assert!(matches!(
+            processor.process_command("/effort"),
+            CommandResult::ShowEffort
+        ));
+        assert!(matches!(
+            processor.process_command("/effort xhigh"),
+            CommandResult::SetEffort(Effort::XHigh)
+        ));
+        assert!(matches!(
+            processor.process_command("/e extreme"),
+            CommandResult::InvalidCommand(_)
+        ));
     }
 
     #[test]

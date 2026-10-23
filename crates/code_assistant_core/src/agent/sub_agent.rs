@@ -180,7 +180,8 @@ pub trait SubAgentRunner: Send + Sync {
 }
 
 pub struct DefaultSubAgentRunner {
-    model_name: String,
+    /// The parent session's model and reasoning effort.
+    model: SessionModelConfig,
     session_config: SessionConfig,
     sandbox_policy: SandboxPolicy,
     sandbox_context: Arc<SandboxContext>,
@@ -211,7 +212,7 @@ pub struct DefaultSubAgentRunner {
 impl DefaultSubAgentRunner {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        model_name: String,
+        model: SessionModelConfig,
         session_config: SessionConfig,
         sandbox_context: Arc<SandboxContext>,
         cancellation_registry: Arc<SubAgentCancellationRegistry>,
@@ -224,7 +225,7 @@ impl DefaultSubAgentRunner {
     ) -> Self {
         let sandbox_policy = session_config.sandbox_policy.clone();
         Self {
-            model_name,
+            model,
             session_config,
             sandbox_policy,
             sandbox_context,
@@ -296,12 +297,18 @@ impl DefaultSubAgentRunner {
         let llm_provider = match &self.llm_client_factory {
             Some(factory) => {
                 let factory = factory.clone();
-                let model = self.model_name.clone();
+                let model = self.model.model_name.clone();
                 tokio::task::spawn_blocking(move || factory(&model)).await??
             }
             None => {
-                llm::factory::create_llm_client_from_model(&self.model_name, None, false, None)
-                    .await?
+                llm::factory::create_llm_client_from_model(
+                    &self.model.model_name,
+                    self.model.effort,
+                    None,
+                    false,
+                    None,
+                )
+                .await?
             }
         };
 
@@ -357,7 +364,7 @@ impl DefaultSubAgentRunner {
         agent.set_tool_scope(tool_scope_for_subagent());
 
         // Ensure it uses the same model name for prompt selection.
-        agent.set_session_model_config(SessionModelConfig::new(self.model_name.clone()));
+        agent.set_session_model_config(self.model.clone());
 
         // Provide a stable session id so UI components that key off it don't break.
         agent.set_session_identity(format!("sub-agent:{parent_tool_id}"), String::new());
@@ -396,11 +403,9 @@ fn compute_sub_agent_usage(messages: &[Message], model_name: &str) -> SubAgentUs
     }
 
     // Resolve the model's context token limit
-    if let Ok(config_system) = llm::provider_config::ConfigurationSystem::load()
-        && let Some(model) = config_system.get_model(model_name)
-    {
-        total.context_limit = Some(model.context_token_limit);
-    }
+    total.context_limit = llm::provider_config::ConfigurationSystem::load()
+        .ok()
+        .and_then(|config| config.context_limit(model_name));
 
     total
 }

@@ -12,8 +12,9 @@ described in `docs/handoff.md`.
   with which prompt. The domain implementation is `TokenRatioCompaction`
   (`crates/code_assistant_core/src/plugins/compaction.rs`): it compacts once
   the last assistant turn's usage (input + cache write + cache read +
-  output) reaches 80% of the model's `context_token_limit` from
-  `models.json`. An unknown limit disables compaction for the run.
+  output) reaches 80% of the model's context window (catalog, provider
+  listing or the `context_token_limit` override; see the configuration
+  guide). An unknown limit disables compaction for the run.
 - The check runs at the top of every loop iteration in
   `AgentRuntime::run_until_complete` (`crates/agent_core/src/runtime.rs`),
   **before** a pending user message is appended. A request that arrives

@@ -60,7 +60,7 @@ pub enum Mode {
         #[arg(long, default_value = ".")]
         path: PathBuf,
 
-        /// Model to use from models.json configuration
+        /// Model to use: its name or key (`provider/model-id`)
         #[arg(short = 'm', long)]
         model: Option<String>,
 
@@ -89,7 +89,7 @@ pub struct Args {
     #[command(subcommand)]
     pub mode: Option<Mode>,
 
-    /// Override configuration directory (where models.json, providers.json, etc. live)
+    /// Override configuration directory (where providers.json, model-selection.json, etc. live)
     #[arg(long)]
     pub config_dir: Option<PathBuf>,
 
@@ -113,7 +113,7 @@ pub struct Args {
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub verbose: u8,
 
-    /// Model to use from models.json configuration
+    /// Model to use: its name or key (`provider/model-id`)
     #[arg(short = 'm', long)]
     pub model: Option<String>,
 
@@ -174,7 +174,7 @@ impl Args {
     /// Resolution order:
     /// 1. Explicit `--model` CLI argument
     /// 2. The configured default model (`default-model.json`)
-    /// 3. First model alphabetically from models.json
+    /// 3. The first offered model by name
     pub fn resolve_model_name(model: Option<String>) -> anyhow::Result<String> {
         let config = ConfigurationSystem::load()?;
 
@@ -186,8 +186,8 @@ impl Args {
                 );
             }
 
-            if config.get_model(trimmed).is_some() {
-                return Ok(trimmed.to_string());
+            if let Some(key) = config.resolve_key(trimmed) {
+                return Ok(key);
             }
 
             anyhow::bail!(
@@ -195,15 +195,14 @@ impl Args {
             );
         }
 
-        let mut models = config.list_models();
+        let models = config.list_models();
 
         if models.is_empty() {
             anyhow::bail!(
                 "No models configured. Please:\n\
-                1. Copy models.example.json to models.json\n\
-                2. Copy providers.example.json to providers.json\n\
-                3. Configure your API keys\n\
-                4. Specify a model with --model <name> or use --list-models to see available options"
+                1. Copy providers.example.json to providers.json and configure your API keys\n\
+                2. Choose models in the GPUI settings, or list them in model-selection.json\n\
+                3. Specify a model with --model <name> or use --list-models to see available options"
             );
         }
 
@@ -214,8 +213,7 @@ impl Args {
             return Ok(default_model);
         }
 
-        // Fallback: first model alphabetically
-        models.sort();
+        // Fallback: the first model by name
         Ok(models
             .first()
             .expect("models vector is non-empty due to earlier check")
@@ -229,15 +227,12 @@ impl Args {
 
             if self.list_models {
                 println!("Available models:");
-                let mut models: Vec<_> = config.list_models();
-                models.sort();
-                for model in models {
-                    if let Ok((model_config, provider_config)) =
-                        config.get_model_with_provider(&model)
-                    {
+                for key in config.list_models() {
+                    if let Ok((_, provider_config)) = config.get_model_with_provider(&key) {
                         println!(
-                            "  {} (provider: {}, id: {})",
-                            model, provider_config.label, model_config.id
+                            "  {} (provider: {}, key: {key})",
+                            config.display_name(&key),
+                            provider_config.label
                         );
                     }
                 }

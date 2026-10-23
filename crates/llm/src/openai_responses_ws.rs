@@ -67,7 +67,8 @@ use tracing::{debug, info, warn};
 
 // Re-export types shared with the HTTP provider
 use crate::openai_responses::{
-    PromptCacheBreakpoint, Verbosity, function_tool, model_supports_explicit_cache,
+    PromptCacheBreakpoint, function_tool, model_supports_explicit_cache,
+    request_encrypted_reasoning,
 };
 
 // ============================================================================
@@ -97,34 +98,12 @@ struct WsResponseCreateRequest {
     tool_choice: Option<String>,
     #[serde(default)]
     parallel_tool_calls: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reasoning: Option<ReasoningConfig>,
     #[serde(default)]
     store: bool,
     #[serde(default)]
     stream: bool,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    include: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     prompt_cache_key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    text: Option<TextControls>,
-}
-
-/// Reasoning configuration for the request.
-#[derive(Debug, Serialize, Clone)]
-struct ReasoningConfig {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    effort: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    summary: Option<String>,
-}
-
-/// Text controls for the Responses API.
-#[derive(Debug, Serialize, Clone)]
-struct TextControls {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    verbosity: Option<Verbosity>,
 }
 
 // ---------------------------------------------------------------------------
@@ -390,80 +369,6 @@ impl WsResponsesUsage {
             output_tokens: self.output_tokens,
             cache_creation_input_tokens: cache_write,
             cache_read_input_tokens: cache_read,
-        }
-    }
-}
-
-// ============================================================================
-// Model capabilities (shared logic, duplicated to stay self-contained)
-// ============================================================================
-
-#[derive(Debug, Clone)]
-struct ModelCapabilities {
-    supports_reasoning: bool,
-    default_effort: Option<String>,
-    default_summary: Option<String>,
-    supports_verbosity: bool,
-    default_verbosity: Option<Verbosity>,
-    /// Whether the model supports explicit prompt cache breakpoints
-    /// (`prompt_cache_breakpoint`, GPT-5.6 and later; older models reject the field)
-    supports_explicit_cache: bool,
-}
-
-impl ModelCapabilities {
-    fn for_model(model: &str) -> Self {
-        let m = model.to_lowercase();
-        let supports_explicit_cache = model_supports_explicit_cache(&m);
-
-        if m.contains("gpt-5") || m.starts_with("gpt5") {
-            return Self {
-                supports_reasoning: true,
-                default_effort: Some("medium".into()),
-                default_summary: Some("auto".into()),
-                supports_verbosity: true,
-                default_verbosity: Some(Verbosity::Medium),
-                supports_explicit_cache,
-            };
-        }
-        if m.starts_with("o3") || m.starts_with("o4") {
-            return Self {
-                supports_reasoning: true,
-                default_effort: Some("medium".into()),
-                default_summary: Some("auto".into()),
-                supports_verbosity: false,
-                default_verbosity: None,
-                supports_explicit_cache,
-            };
-        }
-        if m.starts_with("o1") {
-            return Self {
-                supports_reasoning: true,
-                default_effort: Some("low".into()),
-                default_summary: Some("auto".into()),
-                supports_verbosity: false,
-                default_verbosity: None,
-                supports_explicit_cache,
-            };
-        }
-        if m.contains("gpt-4o") || m.contains("gpt4o") || m.contains("gpt-4") || m.contains("gpt4")
-        {
-            return Self {
-                supports_reasoning: false,
-                default_effort: None,
-                default_summary: None,
-                supports_verbosity: false,
-                default_verbosity: None,
-                supports_explicit_cache,
-            };
-        }
-        // Default: assume reasoning support with conservative defaults
-        Self {
-            supports_reasoning: true,
-            default_effort: Some("low".into()),
-            default_summary: Some("auto".into()),
-            supports_verbosity: false,
-            default_verbosity: None,
-            supports_explicit_cache,
         }
     }
 }
@@ -957,8 +862,6 @@ impl OpenAIResponsesWsClient {
         request: LLMRequest,
         streaming_callback: Option<CallbackRef<'_>>,
     ) -> Result<LLMResponse> {
-        let capabilities = ModelCapabilities::for_model(&self.model);
-
         // Explicit cache breakpoints are only sent to models that support
         // them (older models reject the field) and only when the client
         // allows them (some backends reject the field for every model). The
@@ -966,7 +869,8 @@ impl OpenAIResponsesWsClient {
         // breakpoint possible); a marker on a history message still caches
         // instructions and tools, since a breakpoint covers everything
         // rendered before it.
-        let explicit_cache = capabilities.supports_explicit_cache && self.explicit_cache_enabled;
+        let explicit_cache = model_supports_explicit_cache(&self.model.to_lowercase())
+            && self.explicit_cache_enabled;
         let input = self.convert_messages_with_cache(request.messages, explicit_cache);
 
         // Add system prompt as the top-level `instructions` field (WebSocket style)
@@ -979,30 +883,8 @@ impl OpenAIResponsesWsClient {
 
         let tools = request
             .tools
+            .filter(|tools| !tools.is_empty())
             .map(|tools| tools.into_iter().map(function_tool).collect());
-
-        let reasoning = if capabilities.supports_reasoning {
-            Some(ReasoningConfig {
-                effort: capabilities.default_effort,
-                summary: capabilities.default_summary,
-            })
-        } else {
-            None
-        };
-
-        let include = if reasoning.is_some() {
-            vec!["reasoning.encrypted_content".to_string()]
-        } else {
-            vec![]
-        };
-
-        let text = if capabilities.supports_verbosity {
-            capabilities
-                .default_verbosity
-                .map(|v| TextControls { verbosity: Some(v) })
-        } else {
-            None
-        };
 
         // Ensure the connection is live BEFORE computing the incremental
         // delta: a stale connection is dropped here, which clears
@@ -1030,23 +912,22 @@ impl OpenAIResponsesWsClient {
             instructions,
             previous_response_id,
             input: send_input,
+            // The API rejects a tool choice for a request without tools.
+            tool_choice: tools.as_ref().map(|_| "auto".to_string()),
             tools,
-            tool_choice: Some("auto".to_string()),
             parallel_tool_calls: false,
-            reasoning,
             store: false,
             stream: true, // Always stream over WebSocket
-            include,
             prompt_cache_key: Some(crate::prompt_caching::prompt_cache_key(&request.session_id)),
-            text,
         };
 
         // Apply custom config if present
         let mut request_json = serde_json::to_value(WsRequest::ResponseCreate(ws_request))?;
         if let Some(ref custom_config) = self.custom_config {
             // Merge custom config into the request (not the envelope `type` field)
-            request_json = crate::config_merge::merge_json(request_json, custom_config.clone());
+            request_json = crate::config_merge::merge_patch(request_json, custom_config.clone());
         }
+        request_encrypted_reasoning(&mut request_json);
         self.request_customizer
             .customize_request(&mut request_json)?;
 
@@ -1924,12 +1805,9 @@ mod tests {
             tools: None,
             tool_choice: Some("auto".to_string()),
             parallel_tool_calls: false,
-            reasoning: None,
             store: false,
             stream: true,
-            include: vec![],
             prompt_cache_key: None,
-            text: None,
         });
 
         let json = serde_json::to_value(&req).unwrap();
@@ -1954,32 +1832,14 @@ mod tests {
             tools: None,
             tool_choice: None,
             parallel_tool_calls: false,
-            reasoning: None,
             store: false,
             stream: true,
-            include: vec![],
             prompt_cache_key: None,
-            text: None,
         });
 
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["type"], "response.create");
         assert_eq!(json["previous_response_id"], "resp_abc123");
-    }
-
-    #[test]
-    fn test_model_capabilities() {
-        let gpt5 = ModelCapabilities::for_model("gpt-5");
-        assert!(gpt5.supports_reasoning);
-        assert!(gpt5.supports_verbosity);
-
-        let o3 = ModelCapabilities::for_model("o3-mini");
-        assert!(o3.supports_reasoning);
-        assert!(!o3.supports_verbosity);
-
-        let gpt4o = ModelCapabilities::for_model("gpt-4o");
-        assert!(!gpt4o.supports_reasoning);
-        assert!(!gpt4o.supports_verbosity);
     }
 
     #[test]

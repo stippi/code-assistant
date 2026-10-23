@@ -2,6 +2,7 @@
 name = "mcp_server"
 version = "0.2.17"
 edition = "2024"
+license = "MIT"
 
 [dependencies]
 code_assistant_core = { path = "../code_assistant_core", default-features = false }

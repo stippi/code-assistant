@@ -407,6 +407,19 @@ impl Gpui {
         });
     }
 
+    pub(crate) fn cmd_set_effort(&self, session_id: String, effort: llm::capabilities::Effort) {
+        let Some(service) = self.session_service() else {
+            return;
+        };
+        let gpui = self.clone();
+        self.dispatch(async move {
+            // The UpdateEffort notification arrives via the stream.
+            if let Err(e) = service.set_effort(session_id, Some(effort)).await {
+                gpui.display_error(format!("{e:#}"));
+            }
+        });
+    }
+
     pub(crate) fn cmd_change_sandbox_policy(
         &self,
         session_id: String,

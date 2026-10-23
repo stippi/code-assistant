@@ -692,6 +692,7 @@ impl SessionInstance {
             pending_message,
             // Filled in by the SessionManager, which owns model resolution.
             current_model: String::new(),
+            effort: Default::default(),
             allowed_models: Vec::new(),
             sandbox_policy: self.session.config.sandbox_policy.clone(),
             permission_tier: self.session.config.permission_tier,
