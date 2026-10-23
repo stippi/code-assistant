@@ -374,7 +374,9 @@ impl Summarizer for LlmSummarizer {
         };
         let mut client = match &self.factory {
             Some(factory) => factory(&model)?,
-            None => llm::factory::create_llm_client_from_model(&model, None, false, None).await?,
+            None => {
+                llm::factory::create_llm_client_from_model(&model, None, None, false, None).await?
+            }
         };
         let request = llm::LLMRequest {
             messages: vec![llm::Message::new_user(digest.to_owned())],
