@@ -77,10 +77,14 @@ impl Tool for MonitorTool {
         let description = concat!(
             "Run a command in the background and get notified about its output: every line it prints ",
             "(stdout and stderr) is an event that reaches you as a message, starting a new turn when you are idle. ",
-            "Use it to wait for something external without polling — e.g. a loop that checks a pull request's CI ",
-            "status every minute and prints a line only when the status changes, `tail -f` filtered with grep, ",
-            "or a file watcher. Print only meaningful changes: every line costs a turn, and a monitor printing ",
-            "too often is stopped. The command runs until it exits, its timeout, or stop_monitor. ",
+            "Use it only for events you will have to act on: something you are waiting for has completed ",
+            "(e.g. a pull request's CI finished, a deployment is done), or something changed into an unexpected ",
+            "or failed state (e.g. an error in a log, a crashed service). Do not use it for status or progress you ",
+            "would merely take note of — heartbeats, \"still running\", every log line, or other FYI output: every ",
+            "line costs a turn, and a monitor printing too often is stopped. Write the command so that it stays ",
+            "silent until such an event happens — e.g. a loop that checks a pull request's CI every minute and ",
+            "prints a line only when the checks pass or fail, or `tail -f` filtered with grep for errors. ",
+            "The command runs until it exits, its timeout, or stop_monitor. ",
             "For a single long-running command whose end you want to know about, prefer execute_command's ",
             "session mode instead: you are told when it exits."
         );
@@ -96,7 +100,7 @@ impl Tool for MonitorTool {
                     },
                     "command_line": {
                         "type": "string",
-                        "description": "The command or shell script to run. Each line it prints is an event; redirect noise away (e.g. 2>/dev/null)."
+                        "description": "The command or shell script to run. Each line it prints is an event you will have to act on: print nothing else, and redirect noise away (e.g. 2>/dev/null)."
                     },
                     "description": {
                         "type": "string",

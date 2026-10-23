@@ -17,14 +17,16 @@ delivery), `tools::impls::monitor` (tools), `tools::impls::execute_command`
 
 `monitor(project, command_line, description, working_dir?, timeout_seconds?,
 ask_user_approval?)` runs a command (sandboxed like `execute_command`, plain
-pipes, stdin closed). **Every line it prints is an event.** Typical uses:
+pipes, stdin closed). **Every line it prints is an event.** The tool
+description limits it to events the agent has to act on — something it
+waits for completed, or something changed into an unexpected or failed
+state — and rules out FYI output (heartbeats, progress, every log line),
+since each message may start a turn. Typical uses:
 
 ```sh
-# Tell me when the CI status of PR 42 changes
-prev=""; while true; do
-  s=$(gh pr checks 42 2>/dev/null | awk '{print $2}' | sort | uniq -c | tr '\n' ' ')
-  [ "$s" != "$prev" ] && echo "checks: $s"; prev="$s"; sleep 60
-done
+# Tell me when the checks of PR 42 are done (gh exits with 8 while pending)
+while gh pr checks 42 >/dev/null 2>&1; [ $? -eq 8 ]; do sleep 60; done
+echo "checks: $(gh pr checks 42 2>/dev/null | awk '{print $2}' | sort | uniq -c | tr '\n' ' ')"
 ```
 
 ```sh
