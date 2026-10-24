@@ -705,6 +705,7 @@ impl SessionInstance {
             pending_questions: self.pending_questions.snapshot(),
             // Filled in by the SessionManager, which holds the scheduler.
             armed_wakeups: Vec::new(),
+            active_monitors: Vec::new(),
         })
     }
 

@@ -698,6 +698,19 @@ impl Gpui {
                     });
                 }
             }
+            UiEvent::UpdateActiveMonitors {
+                session_id,
+                monitors,
+            } => {
+                self.update_project_sidebar(cx, |sidebar, cx| {
+                    sidebar.update_session_monitored(session_id.clone(), !monitors.is_empty(), cx);
+                });
+                if self.is_current_session(&session_id) {
+                    self.update_messages_view(cx, |view, cx| {
+                        view.set_active_monitors(monitors, cx);
+                    });
+                }
+            }
             UiEvent::UpdateSessionActivityState {
                 session_id,
                 activity_state,

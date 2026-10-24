@@ -928,6 +928,46 @@ impl SessionService {
         .await
     }
 
+    /// Tell frontends which monitors run in `session_id`.
+    pub(crate) fn publish_active_monitors(
+        &self,
+        session_id: &str,
+        monitors: Vec<crate::session::monitor::ActiveMonitorInfo>,
+    ) {
+        self.events.publish_ui(
+            session_id,
+            UiEvent::UpdateActiveMonitors {
+                session_id: session_id.to_string(),
+                monitors,
+            },
+        );
+    }
+
+    /// Deliver a background notification (see [`crate::session::monitor`]):
+    /// like a wakeup, `message` starts a turn when the session is idle and
+    /// is queued as the pending message while an agent runs. A session that
+    /// no longer exists swallows it silently.
+    pub async fn inject_notification(&self, session_id: String, message: String) -> Result<()> {
+        self.call_session(session_id.clone(), move |ctx| async move {
+            if ctx.manager.lock().await.get_session(&session_id).is_none() {
+                debug!("Notification for unknown session {session_id} dropped");
+                return Ok(());
+            }
+            send_or_queue_user_message_impl(&ctx, &session_id, &message, &[]).await
+        })
+        .await
+    }
+
+    /// Stop a monitor of `session_id` without a notification (the user's
+    /// stop button). Returns whether it was still running.
+    pub async fn stop_monitor(&self, session_id: String, monitor_id: u64) -> Result<bool> {
+        self.call_control(move |ctx| async move {
+            let manager = ctx.manager.lock().await;
+            Ok(manager.stop_monitor(&session_id, monitor_id))
+        })
+        .await
+    }
+
     /// Cancel a running sub-agent by its tool id. Returns `true` if a
     /// sub-agent was actually cancelled, `false` if it had already finished.
     pub async fn cancel_sub_agent(&self, session_id: String, tool_id: String) -> Result<bool> {
@@ -2955,6 +2995,81 @@ mod tests {
             pending.as_deref(),
             Some(wakeup_message(1, "check").as_str())
         );
+    }
+
+    #[tokio::test]
+    async fn notifications_queue_while_running_and_vanish_for_unknown_sessions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (service, manager) = test_service_with_manager(tmp.path());
+        service
+            .inject_notification("gone".to_string(), "[monitor #1] x\ny".to_string())
+            .await
+            .unwrap();
+
+        let id = service.create_session(None, None).await.unwrap();
+        manager
+            .lock()
+            .await
+            .get_session_mut(&id)
+            .unwrap()
+            .set_activity_state(crate::session::instance::SessionActivityState::AgentRunning);
+        let first = crate::session::monitor::monitor_event_message(1, "ci", &["red".into()], 0);
+        let second = crate::session::monitor::job_exited_message(7, "make", Some(0));
+        service
+            .inject_notification(id.clone(), first.clone())
+            .await
+            .unwrap();
+        service
+            .inject_notification(id.clone(), second.clone())
+            .await
+            .unwrap();
+
+        let pending = service.take_pending_message(id).await.unwrap().unwrap();
+        assert!(
+            pending.contains(&first) && pending.contains(&second),
+            "{pending}"
+        );
+        let parsed = crate::session::monitor::parse_notification_messages(&pending).unwrap();
+        assert_eq!(parsed.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn snapshot_lists_the_running_monitors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (service, manager) = test_service_with_manager(tmp.path());
+        let handle = crate::session::monitor::MonitorHandle::new(
+            crate::mocks::RecordingMonitorSink::default(),
+            None,
+        );
+        manager.lock().await.set_monitor_handle(handle.clone());
+        let id = service.create_session(None, None).await.unwrap();
+
+        let (output_sink, output) = crate::session::monitor::monitor_output();
+        let mut config = pty_session::PtySpawnConfig::shell_command("sleep 30");
+        config.tty = false;
+        config.output_sink = Some(output_sink);
+        handle.start(
+            id.clone(),
+            0,
+            crate::session::monitor::MonitorStart {
+                description: "ci".into(),
+                command_line: "sleep 30".into(),
+                timeout: std::time::Duration::from_secs(60),
+                process: std::sync::Arc::new(pty_session::PtySession::spawn(config).unwrap()),
+                output,
+            },
+        );
+
+        let snapshot = service.load_session(id.clone(), None).await.unwrap();
+        assert_eq!(snapshot.active_monitors.len(), 1);
+        assert_eq!(snapshot.active_monitors[0].description, "ci");
+        assert!(snapshot.connect_events().iter().any(|event| matches!(
+            event,
+            UiEvent::UpdateActiveMonitors { monitors, .. } if monitors.len() == 1
+        )));
+
+        assert!(service.stop_monitor(id.clone(), 1).await.unwrap());
+        assert!(!service.stop_monitor(id, 1).await.unwrap());
     }
 
     /// A stored `schedule_wakeup` result for wakeup `wakeup_id`, armed by

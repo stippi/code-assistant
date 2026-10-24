@@ -213,6 +213,18 @@ impl Gpui {
         });
     }
 
+    /// Stop a monitor the agent started (no notification follows).
+    pub(crate) fn cmd_stop_monitor(&self, session_id: String, monitor_id: u64) {
+        let Some(service) = self.session_service() else {
+            return;
+        };
+        self.dispatch(async move {
+            if let Err(e) = service.stop_monitor(session_id, monitor_id).await {
+                debug!("Failed to stop monitor: {e:#}");
+            }
+        });
+    }
+
     /// Delete a session. The caller is responsible for disconnecting the
     /// messages view first if the session is currently shown (see the
     /// sidebar delete handler in `main_screen`).

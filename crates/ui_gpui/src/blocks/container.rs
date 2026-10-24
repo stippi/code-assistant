@@ -40,6 +40,14 @@ pub struct WakeupMessage {
     pub linked: bool,
 }
 
+/// A notification injected by a monitor or a finished background job
+/// (`[monitor #3] …`, `[background job 123 exited] …`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct NotificationMessage {
+    pub label: String,
+    pub body: String,
+}
+
 /// Outcome of looking for the `schedule_wakeup` block a wakeup answers.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum WakeupLink {
@@ -204,6 +212,10 @@ impl MessageContainer {
         if let Some(wakeup) = self.wakeup() {
             return format!("wakeup: {}", wakeup.prompt);
         }
+        if let Some(notifications) = self.notifications(cx) {
+            let labels: Vec<String> = notifications.into_iter().map(|n| n.label).collect();
+            return format!("notification: {}", labels.join(" | "));
+        }
         let role = match self.role {
             MessageRole::User => "user",
             MessageRole::Assistant => "assistant",
@@ -235,6 +247,42 @@ impl MessageContainer {
 
     pub fn wakeup(&self) -> Option<WakeupMessage> {
         self.wakeup.lock().unwrap().clone()
+    }
+
+    /// The notifications this user message consists of, if it is nothing
+    /// but injected notifications.
+    pub fn notifications(&self, cx: &gpui_kit::App) -> Option<Vec<NotificationMessage>> {
+        use code_assistant_core::session::monitor::{
+            NotificationKind, parse_notification_messages,
+        };
+        if !self.is_user_message() {
+            return None;
+        }
+        let mut texts = Vec::new();
+        for block in self.elements() {
+            let BlockData::TextBlock(text) = block.read(cx).block.as_ref() else {
+                return None;
+            };
+            texts.push(text.content.clone());
+        }
+        let text = texts.join("\n\n");
+        let parsed = parse_notification_messages(&text)?;
+        Some(
+            parsed
+                .into_iter()
+                .map(|notification| {
+                    let label = match notification.kind {
+                        NotificationKind::MonitorEvent { id } => format!("Monitor #{id}"),
+                        NotificationKind::MonitorEnded { id } => format!("Monitor #{id} ended"),
+                        NotificationKind::JobExited { .. } => "Background job finished".into(),
+                    };
+                    NotificationMessage {
+                        label: format!("{label} · {}", notification.title),
+                        body: notification.body.trim().to_string(),
+                    }
+                })
+                .collect(),
+        )
     }
 
     /// The wakeup, not yet linked, if this is a user message the wakeup

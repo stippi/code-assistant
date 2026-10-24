@@ -127,6 +127,17 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
   the `audio` crate (macOS voice-processing I/O with echo cancellation,
   `cpal` half-duplex elsewhere); see `docs/voice-mode.md`
 
+### Background Monitors
+- `monitor` tool: a command whose output lines are events; each (batched)
+  reaches the agent as a `[monitor #N] …` message that starts a turn when
+  the session is idle or is queued while one runs — like a wakeup;
+  `stop_monitor` ends it silently
+- Background `execute_command` jobs (session mode) announce their exit with
+  `[background job <id> exited] …` unless `write_stdin` saw it first
+- `code_assistant_core::session::monitor` (`MonitorHandle`, installed with
+  `SessionManager::set_monitor_handle`; `UiEvent::UpdateActiveMonitors`);
+  see `docs/background-monitors.md`
+
 ### Session Storage
 - One folder per session below `sessions/`, the ID is its path:
   `<project-slug>/<YYYY-MM-DD>-<NNN>` (`persistence::layout`)

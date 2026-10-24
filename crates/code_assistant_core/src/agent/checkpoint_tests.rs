@@ -128,6 +128,7 @@ async fn formatted_roundtrip(syntax: ToolSyntax) -> Result<()> {
         tool_registry: registry.clone(),
         sub_agent_runner: None,
         wakeups: None,
+        monitors: None,
         pty_sessions: None,
         browser_sessions: None,
         terminal_interrupts: None,

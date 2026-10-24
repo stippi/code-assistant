@@ -1320,6 +1320,12 @@ impl TerminalTuiApp {
             let sleep_inhibitor = manager.sleep_inhibitor();
             manager.set_wakeup_handle(code_assistant_core::session::spawn_wakeup_scheduler(
                 service.clone(),
+                Some(sleep_inhibitor.clone()),
+            ));
+            // Monitors and background-job notifications: agents are told
+            // when something they started in the background has news.
+            manager.set_monitor_handle(code_assistant_core::session::MonitorHandle::new(
+                service.clone(),
                 Some(sleep_inhibitor),
             ));
             // Idle handoff: long sessions left idle get a prepared

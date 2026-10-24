@@ -42,6 +42,19 @@ pub fn render_message(
             .into_any_element();
     }
 
+    // Likewise for monitor and background-job notifications.
+    if let Some(notifications) = msg.read(cx).notifications(cx) {
+        return div()
+            .id(("message-item", msg.entity_id()))
+            .w_full()
+            .children(
+                notifications
+                    .into_iter()
+                    .map(|notification| render_notification(&notification, cx)),
+            )
+            .into_any_element();
+    }
+
     let is_user_message = msg.read(cx).is_user_message();
     let node_id = msg.read(cx).node_id();
     let branch_info = msg.read(cx).branch_info();
@@ -225,6 +238,59 @@ fn render_wakeup_message(prompt: &str, cx: &Context<MessagesView>) -> gpui_kit::
                 .text_color(theme.muted_foreground)
                 .child(prompt.to_string()),
         )
+        .into_any_element()
+}
+
+/// A monitor or background-job notification: laid out like a wakeup message.
+fn render_notification(
+    notification: &super::super::blocks::NotificationMessage,
+    cx: &Context<MessagesView>,
+) -> gpui_kit::AnyElement {
+    use super::super::shared::file_icons;
+    let theme = cx.theme();
+    div()
+        .px_3()
+        .pb_1()
+        .mt_0p5()
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1p5()
+                .py_1p5()
+                .px_3()
+                .child(file_icons::render_icon_container(
+                    &file_icons::get().get_type_icon(file_icons::TOOL_EXECUTE_COMMAND),
+                    14.0,
+                    theme.muted_foreground,
+                    ">",
+                ))
+                .child(
+                    div()
+                        .text_size(rems(0.8125))
+                        .text_color(theme.muted_foreground)
+                        .child(notification.label.clone()),
+                ),
+        )
+        .when(!notification.body.is_empty(), |container| {
+            container.child(
+                div()
+                    .pl(px(8.))
+                    .ml(px(8.))
+                    .border_l_2()
+                    .border_color(theme.border)
+                    .py(px(4.))
+                    .text_size(rems(0.8125))
+                    .text_color(theme.muted_foreground)
+                    .children(
+                        notification
+                            .body
+                            .lines()
+                            .map(|line| div().child(line.to_string())),
+                    ),
+            )
+        })
         .into_any_element()
 }
 

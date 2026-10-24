@@ -14,6 +14,7 @@ Defined in `code_assistant_core::tools::builtin_selection::GROUPS`:
 | `terminal`        | `execute_command`, `write_stdin`                   |
 | `sub_agents`      | `spawn_agent`                                      |
 | `wakeups`         | `schedule_wakeup`, `cancel_wakeup`                 |
+| `monitors`        | `monitor`, `stop_monitor`                          |
 | `session_history` | `search_sessions`, `get_session_content`           |
 
 All other tools (files, plan, skills, …) are always on.

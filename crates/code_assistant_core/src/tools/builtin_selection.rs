@@ -70,6 +70,12 @@ pub const GROUPS: &[ToolGroup] = &[
         contains: |name| matches!(name, "schedule_wakeup" | "cancel_wakeup"),
     },
     ToolGroup {
+        id: "monitors",
+        label: "Monitors",
+        description: "Watch a command's output in the background and get notified (monitor, stop_monitor)",
+        contains: |name| matches!(name, "monitor" | "stop_monitor"),
+    },
+    ToolGroup {
         id: "session_history",
         label: "Session history",
         description: "Search and read other sessions (search_sessions, get_session_content)",

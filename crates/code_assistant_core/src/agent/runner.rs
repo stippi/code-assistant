@@ -39,6 +39,10 @@ pub struct AgentComponents {
     /// Optional session-bound wakeup handle for the wakeup tools.
     pub wakeups: Option<crate::session::wakeup::SessionWakeups>,
 
+    /// Optional session-bound monitor handle for the monitor tools and
+    /// background-job exit notifications.
+    pub monitors: Option<crate::session::monitor::SessionMonitors>,
+
     /// Optional PTY session registry, shared with the owning session
     /// instance so interactive sessions survive across agent runs.
     pub pty_sessions: Option<Arc<pty_session::PtySessionManager>>,
@@ -87,6 +91,7 @@ impl Agent {
 
             sub_agent_runner,
             wakeups,
+            monitors,
             pty_sessions,
             terminal_interrupts,
             browser_sessions,
@@ -119,6 +124,7 @@ impl Agent {
 
             sub_agent_runner,
             wakeups,
+            monitors,
             pty_sessions,
             terminal_interrupts,
             browser_sessions,
