@@ -77,6 +77,15 @@ Decisions taken while building:
 - **Watching** uses a new `fs_explorer::watch::TreeWatcher` (the git
   `ChangeWatcher` only covers repositories and does not say which paths
   changed).
+- **Entry menu.** A right click on a tree entry or filter match opens a
+  menu: *Copy Path* (absolute), *Copy Relative Path*, and for files
+  *Comment on File…* and *Delete File…* (confirmed in the menu,
+  `SessionService::delete_project_file`; folders are not deleted).
+- **Comments on a whole file** (`LineComment::on_file`) have no lines or
+  excerpt and go to the model as `<comment on="file" path="…">`. Their card
+  floats under the viewer's path header, which also has a button for it
+  (tinted while the file has such a comment); the composer chip reveals
+  them there.
 
 Where the code lives: `fs_explorer::browse` and `fs_explorer::watch`;
 `code_assistant_core::line_comments` and `session/service/files.rs`; in
