@@ -106,12 +106,12 @@ impl CommandExecutor for DefaultCommandExecutor {
 
         let mut child = cmd.spawn()?;
 
-        let stdout = child.stdout.take().unwrap();
-        let stderr = child.stderr.take().unwrap();
-
         let mut accumulated_output = String::new();
 
         if let Some(callback) = callback {
+            let stdout = child.stdout.take().unwrap();
+            let stderr = child.stderr.take().unwrap();
+
             // Stream stdout and stderr concurrently
             let stdout_reader = BufReader::new(stdout);
             let stderr_reader = BufReader::new(stderr);
@@ -184,6 +184,7 @@ mod tests {
             .await?;
         assert!(!result.success);
         assert_eq!(result.exit_code, Some(3));
+        assert!(result.output.contains("warn"));
         Ok(())
     }
 }
