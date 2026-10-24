@@ -163,6 +163,7 @@ async fn test_edit_tool_parameter_update_after_formatting() -> Result<()> {
     // Mock command executor that formats the file (adds spaces)
     let command_responses = vec![Ok(CommandOutput {
         success: true,
+        exit_code: Some(0),
         output: "test.js\n".to_string(),
     })];
 
@@ -245,6 +246,7 @@ async fn test_write_file_with_format_on_save() -> Result<()> {
     // Mock command executor that simulates formatting
     let command_responses = vec![Ok(CommandOutput {
         success: true,
+        exit_code: Some(0),
         output: String::new(),
     })];
 
@@ -309,6 +311,7 @@ async fn test_replace_in_file_with_format_on_save() -> Result<()> {
     // Mock command executor for TOML formatting (success)
     let command_responses = vec![Ok(CommandOutput {
         success: true,
+        exit_code: Some(0),
         output: String::new(),
     })];
 
@@ -463,10 +466,12 @@ async fn test_format_on_save_multiple_patterns() -> Result<()> {
     let command_responses = vec![
         Ok(CommandOutput {
             success: true,
+            exit_code: Some(0),
             output: "test.js\n".to_string(),
         }),
         Ok(CommandOutput {
             success: true,
+            exit_code: Some(0),
             output: "test.ts\n".to_string(),
         }),
     ];
@@ -564,10 +569,12 @@ async fn test_format_on_save_glob_patterns() -> Result<()> {
     let command_responses = vec![
         Ok(CommandOutput {
             success: true,
+            exit_code: Some(0),
             output: String::new(),
         }),
         Ok(CommandOutput {
             success: true,
+            exit_code: Some(0),
             output: String::new(),
         }),
     ];
@@ -659,6 +666,7 @@ async fn test_format_on_save_with_conflicting_matches() -> Result<()> {
     // Add a mock response for the format command
     let command_responses = vec![Ok(CommandOutput {
         success: true,
+        exit_code: Some(0),
         output: String::new(),
     })];
     let command_executor = MockCommandExecutor::new(command_responses);

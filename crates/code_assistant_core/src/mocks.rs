@@ -257,6 +257,7 @@ impl CommandExecutor for MockCommandExecutor {
 pub fn create_command_executor_mock() -> MockCommandExecutor {
     MockCommandExecutor::new(vec![Ok(CommandOutput {
         success: true,
+        exit_code: Some(0),
         output: "Command output".to_string(),
     })])
 }
@@ -266,6 +267,7 @@ pub fn create_command_executor_mock() -> MockCommandExecutor {
 pub fn create_failed_command_executor_mock() -> MockCommandExecutor {
     MockCommandExecutor::new(vec![Ok(CommandOutput {
         success: false,
+        exit_code: Some(1),
         output: "Command failed: permission denied".to_string(),
     })])
 }

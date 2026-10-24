@@ -382,7 +382,7 @@ impl Tool for ExecuteCommandTool {
             output: result.output,
             success: result.success,
             pty_session_id: None,
-            exit_code: None,
+            exit_code: result.exit_code,
             running: false,
         })
     }
@@ -615,6 +615,7 @@ mod tests {
         // Create test fixture with command executor and UI
         let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
             success: true,
+            exit_code: Some(0),
             output: "Command output".to_string(),
         })])
         .with_ui()
@@ -654,6 +655,7 @@ mod tests {
         // Create test fixture with failing command executor and UI
         let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
             success: false,
+            exit_code: Some(1),
             output: "Command failed: permission denied".to_string(),
         })])
         .with_ui()
@@ -689,10 +691,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_execute_command_reports_exit_code() -> Result<()> {
+        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
+            success: false,
+            exit_code: Some(3),
+            output: "2 warnings".to_string(),
+        })]);
+        let mut context = fixture.context();
+
+        let mut input = ExecuteCommandInput {
+            project: "test".to_string(),
+            command_line: "python3 check.py".to_string(),
+            working_dir: None,
+            ask_user_approval: false,
+            tty: None,
+            yield_time_ms: None,
+        };
+
+        let result = ExecuteCommandTool.execute(&mut context, &mut input).await?;
+
+        assert_eq!(result.exit_code, Some(3));
+        let rendered = result.render(&mut ResourcesTracker::new());
+        assert!(rendered.contains("Status: Failed\nExit code: 3\n"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_execute_command_streaming() -> Result<()> {
         // Create test fixture with multi-line output and UI for streaming
         let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
             success: true,
+            exit_code: Some(0),
             output: "Line 1\nLine 2\nLine 3\n".to_string(),
         })])
         .with_ui()
@@ -735,6 +765,7 @@ mod tests {
         let mediator = Arc::new(TestPermissionMediator::new(PermissionDecision::GrantedOnce));
         let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
             success: true,
+            exit_code: Some(0),
             output: "Command output".to_string(),
         })])
         .with_permission_handler(mediator.clone())
@@ -768,6 +799,7 @@ mod tests {
         let mediator = Arc::new(TestPermissionMediator::new(PermissionDecision::Denied));
         let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
             success: true,
+            exit_code: Some(0),
             output: "Command output".to_string(),
         })])
         .with_permission_handler(mediator.clone())
@@ -795,6 +827,7 @@ mod tests {
         let mediator = Arc::new(TestPermissionMediator::new(PermissionDecision::GrantedOnce));
         let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
             success: true,
+            exit_code: Some(0),
             output: "Command output".to_string(),
         })])
         .with_permission_handler(mediator.clone())

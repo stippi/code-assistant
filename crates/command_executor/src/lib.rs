@@ -11,6 +11,9 @@ pub use sandboxed_executor::SandboxedCommandExecutor;
 #[derive(Clone)]
 pub struct CommandOutput {
     pub success: bool,
+    /// The process's exit code; `None` when it was killed by a signal,
+    /// interrupted, or the backend reports no code.
+    pub exit_code: Option<i32>,
     pub output: String,
 }
 

@@ -55,6 +55,7 @@ impl CommandExecutor for DefaultCommandExecutor {
 
         Ok(CommandOutput {
             success: output.status.success(),
+            exit_code: output.status.code(),
             output: String::from_utf8_lossy(&output.stdout).into_owned(),
         })
     }
@@ -156,6 +157,7 @@ impl CommandExecutor for DefaultCommandExecutor {
 
             return Ok(CommandOutput {
                 success: output.status.success(),
+                exit_code: output.status.code(),
                 output: accumulated_output,
             });
         }
@@ -165,7 +167,23 @@ impl CommandExecutor for DefaultCommandExecutor {
 
         Ok(CommandOutput {
             success: status.success(),
+            exit_code: status.code(),
             output: accumulated_output,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn nonzero_exit_reports_exit_code() -> Result<()> {
+        let result = DefaultCommandExecutor
+            .execute_streaming("echo warn; exit 3", None, None, None)
+            .await?;
+        assert!(!result.success);
+        assert_eq!(result.exit_code, Some(3));
+        Ok(())
     }
 }

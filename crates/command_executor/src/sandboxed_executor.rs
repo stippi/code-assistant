@@ -278,6 +278,7 @@ impl SandboxedCommandExecutor {
 
         Ok(CommandOutput {
             success: output.status.success(),
+            exit_code: output.status.code(),
             output: combined,
         })
     }

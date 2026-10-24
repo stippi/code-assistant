@@ -361,6 +361,7 @@ async fn test_execute_command_tool() -> Result<()> {
     // Create test fixture with command response
     let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
         success: true,
+        exit_code: Some(0),
         output: "Command output\nLine 2\nWarning message".to_string(),
     })]);
     let mut context = fixture.context();
@@ -399,6 +400,7 @@ async fn test_execute_command_tool() -> Result<()> {
         // Create new fixture with failing command
         let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
             success: false,
+            exit_code: Some(1),
             output: "Some output\nError: command failed".to_string(),
         })]);
         let mut context = fixture.context();
