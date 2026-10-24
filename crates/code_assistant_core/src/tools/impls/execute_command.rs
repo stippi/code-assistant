@@ -41,8 +41,8 @@ pub struct ExecuteCommandOutput {
     /// Session mode: id under which the still-running process is tracked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pty_session_id: Option<u32>,
-    /// Session mode: exit code, when the process exited within the yield
-    /// window and reported one.
+    /// Exit code, when the process exited (in session mode: within the
+    /// yield window) and reported one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
     /// Session mode: the process was still running when the yield window
