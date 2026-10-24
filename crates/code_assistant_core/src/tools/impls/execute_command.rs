@@ -613,11 +613,9 @@ mod tests {
     #[tokio::test]
     async fn test_execute_command_success() -> Result<()> {
         // Create test fixture with command executor and UI
-        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
-            success: true,
-            exit_code: Some(0),
-            output: "Command output".to_string(),
-        })])
+        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(
+            CommandOutput::success("Command output"),
+        )])
         .with_ui()
         .with_tool_id("test-tool-1".to_string());
         let mut context = fixture.context();
@@ -653,11 +651,10 @@ mod tests {
     #[tokio::test]
     async fn test_execute_command_failure() -> Result<()> {
         // Create test fixture with failing command executor and UI
-        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
-            success: false,
-            exit_code: Some(1),
-            output: "Command failed: permission denied".to_string(),
-        })])
+        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput::exited(
+            Some(1),
+            "Command failed: permission denied",
+        ))])
         .with_ui()
         .with_tool_id("test-tool-2".to_string());
         let mut context = fixture.context();
@@ -692,11 +689,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_command_reports_exit_code() -> Result<()> {
-        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
-            success: false,
-            exit_code: Some(3),
-            output: "2 warnings".to_string(),
-        })]);
+        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput::exited(
+            Some(3),
+            "2 warnings",
+        ))]);
         let mut context = fixture.context();
 
         let mut input = ExecuteCommandInput {
@@ -720,11 +716,9 @@ mod tests {
     #[tokio::test]
     async fn test_execute_command_streaming() -> Result<()> {
         // Create test fixture with multi-line output and UI for streaming
-        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
-            success: true,
-            exit_code: Some(0),
-            output: "Line 1\nLine 2\nLine 3\n".to_string(),
-        })])
+        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(
+            CommandOutput::success("Line 1\nLine 2\nLine 3\n"),
+        )])
         .with_ui()
         .with_tool_id("test-streaming-tool".to_string());
         let mut context = fixture.context();
@@ -763,11 +757,9 @@ mod tests {
     #[tokio::test]
     async fn test_execute_command_without_permission_flag_does_not_prompt() -> Result<()> {
         let mediator = Arc::new(TestPermissionMediator::new(PermissionDecision::GrantedOnce));
-        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
-            success: true,
-            exit_code: Some(0),
-            output: "Command output".to_string(),
-        })])
+        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(
+            CommandOutput::success("Command output"),
+        )])
         .with_permission_handler(mediator.clone())
         .with_ui()
         .with_tool_id("test-tool-permission-free".to_string());
@@ -797,11 +789,9 @@ mod tests {
     #[tokio::test]
     async fn test_execute_command_permission_denied() {
         let mediator = Arc::new(TestPermissionMediator::new(PermissionDecision::Denied));
-        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
-            success: true,
-            exit_code: Some(0),
-            output: "Command output".to_string(),
-        })])
+        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(
+            CommandOutput::success("Command output"),
+        )])
         .with_permission_handler(mediator.clone())
         .with_ui()
         .with_tool_id("test-tool-permission-denied".to_string());
@@ -825,11 +815,9 @@ mod tests {
     #[tokio::test]
     async fn test_execute_command_permission_bypasses_sandbox() -> Result<()> {
         let mediator = Arc::new(TestPermissionMediator::new(PermissionDecision::GrantedOnce));
-        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
-            success: true,
-            exit_code: Some(0),
-            output: "Command output".to_string(),
-        })])
+        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(
+            CommandOutput::success("Command output"),
+        )])
         .with_permission_handler(mediator.clone())
         .with_ui()
         .with_tool_id("test-tool-permission-bypass".to_string());

@@ -136,11 +136,7 @@ pub(crate) async fn run_pty_streaming(
                 if let Some(callback) = callback {
                     let _ = callback.on_terminal_exit(code);
                 }
-                return Ok(CommandOutput {
-                    success: code == Some(0),
-                    exit_code: code,
-                    output,
-                });
+                return Ok(CommandOutput::exited(code, output));
             }
             PtySessionStatus::Running => {
                 if tokio::time::Instant::now() >= deadline {

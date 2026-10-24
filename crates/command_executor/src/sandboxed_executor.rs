@@ -276,11 +276,7 @@ impl SandboxedCommandExecutor {
             combined.push_str(&String::from_utf8_lossy(&output.stderr));
         }
 
-        Ok(CommandOutput {
-            success: output.status.success(),
-            exit_code: output.status.code(),
-            output: combined,
-        })
+        Ok(CommandOutput::exited(output.status.code(), combined))
     }
 }
 

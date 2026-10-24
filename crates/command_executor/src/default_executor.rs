@@ -53,11 +53,10 @@ impl CommandExecutor for DefaultCommandExecutor {
         // takes time (e.g. `cargo fmt` during format-on-save).
         let output = cmd.output().await?;
 
-        Ok(CommandOutput {
-            success: output.status.success(),
-            exit_code: output.status.code(),
-            output: String::from_utf8_lossy(&output.stdout).into_owned(),
-        })
+        Ok(CommandOutput::exited(
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+        ))
     }
 
     async fn execute_streaming(
@@ -155,21 +154,16 @@ impl CommandExecutor for DefaultCommandExecutor {
                 accumulated_output.push_str(&stderr_output);
             }
 
-            return Ok(CommandOutput {
-                success: output.status.success(),
-                exit_code: output.status.code(),
-                output: accumulated_output,
-            });
+            return Ok(CommandOutput::exited(
+                output.status.code(),
+                accumulated_output,
+            ));
         }
 
         // Wait for the process to complete
         let status = child.wait().await?;
 
-        Ok(CommandOutput {
-            success: status.success(),
-            exit_code: status.code(),
-            output: accumulated_output,
-        })
+        Ok(CommandOutput::exited(status.code(), accumulated_output))
     }
 }
 
