@@ -255,19 +255,16 @@ impl CommandExecutor for MockCommandExecutor {
 
 // Create a mock with successful execution
 pub fn create_command_executor_mock() -> MockCommandExecutor {
-    MockCommandExecutor::new(vec![Ok(CommandOutput {
-        success: true,
-        output: "Command output".to_string(),
-    })])
+    MockCommandExecutor::new(vec![Ok(CommandOutput::success("Command output"))])
 }
 
 // Create a mock with failed execution
 #[allow(dead_code)]
 pub fn create_failed_command_executor_mock() -> MockCommandExecutor {
-    MockCommandExecutor::new(vec![Ok(CommandOutput {
-        success: false,
-        output: "Command failed: permission denied".to_string(),
-    })])
+    MockCommandExecutor::new(vec![Ok(CommandOutput::exited(
+        Some(1),
+        "Command failed: permission denied",
+    ))])
 }
 
 // Mock UI

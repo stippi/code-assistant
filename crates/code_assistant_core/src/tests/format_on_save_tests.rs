@@ -161,10 +161,7 @@ async fn test_edit_tool_parameter_update_after_formatting() -> Result<()> {
     );
 
     // Mock command executor that formats the file (adds spaces)
-    let command_responses = vec![Ok(CommandOutput {
-        success: true,
-        output: "test.js\n".to_string(),
-    })];
+    let command_responses = vec![Ok(CommandOutput::success("test.js\n"))];
 
     let command_executor = MockCommandExecutor::new(command_responses);
 
@@ -243,10 +240,7 @@ async fn test_write_file_with_format_on_save() -> Result<()> {
     let files = HashMap::new();
 
     // Mock command executor that simulates formatting
-    let command_responses = vec![Ok(CommandOutput {
-        success: true,
-        output: String::new(),
-    })];
+    let command_responses = vec![Ok(CommandOutput::success(""))];
 
     let command_executor = MockCommandExecutor::new(command_responses);
     let explorer = MockExplorer::new(files, None);
@@ -307,10 +301,7 @@ async fn test_replace_in_file_with_format_on_save() -> Result<()> {
     );
 
     // Mock command executor for TOML formatting (success)
-    let command_responses = vec![Ok(CommandOutput {
-        success: true,
-        output: String::new(),
-    })];
+    let command_responses = vec![Ok(CommandOutput::success(""))];
 
     let command_executor = MockCommandExecutor::new(command_responses);
 
@@ -461,14 +452,8 @@ async fn test_format_on_save_multiple_patterns() -> Result<()> {
 
     // Mock command executor for both JS and TS
     let command_responses = vec![
-        Ok(CommandOutput {
-            success: true,
-            output: "test.js\n".to_string(),
-        }),
-        Ok(CommandOutput {
-            success: true,
-            output: "test.ts\n".to_string(),
-        }),
+        Ok(CommandOutput::success("test.js\n")),
+        Ok(CommandOutput::success("test.ts\n")),
     ];
 
     let command_executor = MockCommandExecutor::new(command_responses);
@@ -562,14 +547,8 @@ async fn test_format_on_save_glob_patterns() -> Result<()> {
 
     // Mock command executor
     let command_responses = vec![
-        Ok(CommandOutput {
-            success: true,
-            output: String::new(),
-        }),
-        Ok(CommandOutput {
-            success: true,
-            output: String::new(),
-        }),
+        Ok(CommandOutput::success("")),
+        Ok(CommandOutput::success("")),
     ];
 
     let command_executor = MockCommandExecutor::new(command_responses);
@@ -657,10 +636,7 @@ async fn test_format_on_save_with_conflicting_matches() -> Result<()> {
     );
 
     // Add a mock response for the format command
-    let command_responses = vec![Ok(CommandOutput {
-        success: true,
-        output: String::new(),
-    })];
+    let command_responses = vec![Ok(CommandOutput::success(""))];
     let command_executor = MockCommandExecutor::new(command_responses);
     let explorer = MockExplorer::new(files, None);
 

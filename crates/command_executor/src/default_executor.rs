@@ -53,10 +53,10 @@ impl CommandExecutor for DefaultCommandExecutor {
         // takes time (e.g. `cargo fmt` during format-on-save).
         let output = cmd.output().await?;
 
-        Ok(CommandOutput {
-            success: output.status.success(),
-            output: String::from_utf8_lossy(&output.stdout).into_owned(),
-        })
+        Ok(CommandOutput::exited(
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+        ))
     }
 
     async fn execute_streaming(
@@ -105,12 +105,12 @@ impl CommandExecutor for DefaultCommandExecutor {
 
         let mut child = cmd.spawn()?;
 
-        let stdout = child.stdout.take().unwrap();
-        let stderr = child.stderr.take().unwrap();
-
         let mut accumulated_output = String::new();
 
         if let Some(callback) = callback {
+            let stdout = child.stdout.take().unwrap();
+            let stderr = child.stderr.take().unwrap();
+
             // Stream stdout and stderr concurrently
             let stdout_reader = BufReader::new(stdout);
             let stderr_reader = BufReader::new(stderr);
@@ -154,18 +154,31 @@ impl CommandExecutor for DefaultCommandExecutor {
                 accumulated_output.push_str(&stderr_output);
             }
 
-            return Ok(CommandOutput {
-                success: output.status.success(),
-                output: accumulated_output,
-            });
+            return Ok(CommandOutput::exited(
+                output.status.code(),
+                accumulated_output,
+            ));
         }
 
         // Wait for the process to complete
         let status = child.wait().await?;
 
-        Ok(CommandOutput {
-            success: status.success(),
-            output: accumulated_output,
-        })
+        Ok(CommandOutput::exited(status.code(), accumulated_output))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn nonzero_exit_reports_exit_code() -> Result<()> {
+        let result = DefaultCommandExecutor
+            .execute_streaming("echo warn; exit 3", None, None, None)
+            .await?;
+        assert!(!result.success);
+        assert_eq!(result.exit_code, Some(3));
+        assert!(result.output.contains("warn"));
+        Ok(())
     }
 }

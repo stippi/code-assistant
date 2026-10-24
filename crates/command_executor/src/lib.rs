@@ -11,7 +11,26 @@ pub use sandboxed_executor::SandboxedCommandExecutor;
 #[derive(Clone)]
 pub struct CommandOutput {
     pub success: bool,
+    /// The process's exit code; `None` when it was killed by a signal,
+    /// interrupted, or the backend reports no code.
+    pub exit_code: Option<i32>,
     pub output: String,
+}
+
+impl CommandOutput {
+    /// A process that exited with `exit_code`; only code 0 is a success.
+    pub fn exited(exit_code: Option<i32>, output: impl Into<String>) -> Self {
+        Self {
+            success: exit_code == Some(0),
+            exit_code,
+            output: output.into(),
+        }
+    }
+
+    /// A process that exited with code 0.
+    pub fn success(output: impl Into<String>) -> Self {
+        Self::exited(Some(0), output)
+    }
 }
 
 #[derive(Clone, Debug, Default)]

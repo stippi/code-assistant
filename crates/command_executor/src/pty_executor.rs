@@ -94,20 +94,21 @@ pub(crate) async fn run_pty_streaming(
                 }
                 output.push_str(&collected.output);
             }
+            let exit_code = match collected.status {
+                PtySessionStatus::Exited(code) => code,
+                // The process ignored the interrupt within the drain
+                // window; dropping `session` below kills it, so the
+                // terminal is finished either way.
+                PtySessionStatus::Running => None,
+            };
             if let Some(callback) = callback {
-                let exit_code = match collected.status {
-                    PtySessionStatus::Exited(code) => code,
-                    // The process ignored the interrupt within the drain
-                    // window; dropping `session` below kills it, so the
-                    // terminal is finished either way.
-                    PtySessionStatus::Running => None,
-                };
                 let _ = callback.on_terminal_exit(exit_code);
             }
             // Dropping `session` on return kills any process that
             // ignored the interrupt.
             return Ok(CommandOutput {
                 success: false,
+                exit_code,
                 output,
             });
         }
@@ -135,10 +136,7 @@ pub(crate) async fn run_pty_streaming(
                 if let Some(callback) = callback {
                     let _ = callback.on_terminal_exit(code);
                 }
-                return Ok(CommandOutput {
-                    success: code == Some(0),
-                    output,
-                });
+                return Ok(CommandOutput::exited(code, output));
             }
             PtySessionStatus::Running => {
                 if tokio::time::Instant::now() >= deadline {
@@ -277,6 +275,7 @@ mod tests {
             .execute_streaming("echo boom; exit 2", None, None, None)
             .await?;
         assert!(!result.success);
+        assert_eq!(result.exit_code, Some(2));
         assert!(result.output.contains("boom"));
         Ok(())
     }
