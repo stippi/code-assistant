@@ -105,6 +105,21 @@ impl SessionLayout {
         Ok(self.session_dir(session_id)?.join(DRAFT_FILE))
     }
 
+    /// The highest number among the sub-agent transcripts of `parent` on
+    /// disk; 0 without any. New sub-agents number above it, so their
+    /// transcripts never collide with one whose agent the history lost.
+    pub fn highest_sub_agent_transcript(&self, parent: &str) -> u64 {
+        let Ok(dir) = self.session_dir(parent) else {
+            return 0;
+        };
+        read_dirs(&dir.join(SUB_AGENTS_DIR))
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|path| file_name(path).parse::<u64>().ok())
+            .max()
+            .unwrap_or(0)
+    }
+
     /// Externalized tool results (see `persistence::blobs`).
     pub fn blobs_dir(&self, session_id: &str) -> Result<PathBuf> {
         Ok(self.session_dir(session_id)?.join(BLOBS_DIR))

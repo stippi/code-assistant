@@ -590,6 +590,14 @@ impl SessionInstance {
         };
         let mut instance = Self::new(session, tool_registry);
         instance.loaded_version = version;
+        // Transcripts of agents the history does not know (still running at
+        // a restart, or from before their calls were recorded) keep their
+        // numbers.
+        instance.running_sub_agents.seed_ids(
+            persistence
+                .layout()
+                .highest_sub_agent_transcript(session_id),
+        );
         Ok(Some(instance))
     }
 

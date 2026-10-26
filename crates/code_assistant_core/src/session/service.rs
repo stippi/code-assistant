@@ -3324,6 +3324,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sub_agent_numbers_continue_above_existing_transcripts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let id = {
+            let service = test_service(tmp.path());
+            service.create_session(None, None).await.unwrap()
+        };
+        // Transcripts of agents the history never recorded.
+        let store = FileSessionPersistence::new_with_root_dir(tmp.path().to_path_buf());
+        for agent in [1, 4] {
+            let transcript = crate::persistence::ChatSession::new_empty(
+                crate::persistence::layout::sub_agent_session_id(&id, agent),
+                format!("Sub-agent #{agent}"),
+                Default::default(),
+                None,
+            );
+            store.clone().create_chat_session(&transcript).unwrap();
+        }
+
+        // After a restart, the next agent is #5.
+        let (service, manager) = test_service_with_manager(tmp.path());
+        service.load_session(id.clone(), None).await.unwrap();
+        let next = manager
+            .lock()
+            .await
+            .get_session(&id)
+            .unwrap()
+            .running_sub_agents
+            .register("t1", "look", true);
+        assert_eq!(next, 5);
+    }
+
+    #[tokio::test]
     async fn send_or_queue_queues_while_agent_is_running() {
         let tmp = tempfile::tempdir().unwrap();
         let (service, manager) = test_service_with_manager(tmp.path());
