@@ -158,7 +158,7 @@ Tools without a registered renderer fall through to the legacy rendering path.
 | `InlineToolRenderer` | `read_files`, `list_files`, `search_files`, `glob_files`, `web_search`, `web_fetch`, `perplexity_ask` | Inline |
 | `TerminalCardRenderer` | `execute_command` | Card |
 | `DiffCardRenderer` | `edit`, `replace_in_file`, `write_file`, `delete_files` | Card |
-| `SubAgentCardRenderer` | `spawn_agent` | Card |
+| `SubAgentLineRenderer` | `spawn_agent` | Inline |
 
 ### Rendering Flow in `elements.rs`
 
