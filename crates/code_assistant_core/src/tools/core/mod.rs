@@ -9,6 +9,7 @@
 pub use tools_core::{
     ImageData, MAX_IMAGE_EDGE, Render, ResourcesTracker, Tool, ToolContext, ToolError,
     ToolRegistry, ToolResult, ToolSpec, cap_base64_image, cap_image_data, generate_tool_title,
+    svg_to_png,
 };
 
 // Domain-side pieces that historically lived here.

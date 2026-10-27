@@ -23,7 +23,7 @@ pub mod title;
 pub mod tool;
 
 pub use dyn_tool::{AnyOutput, DynTool};
-pub use image::{MAX_IMAGE_EDGE, cap_base64_image, cap_image_data};
+pub use image::{MAX_IMAGE_EDGE, cap_base64_image, cap_image_data, svg_to_png};
 pub use permissions::{
     PermissionDecision, PermissionMediator, PermissionRequest, PermissionRequestReason,
     PermissionTier, ToolPermissions,

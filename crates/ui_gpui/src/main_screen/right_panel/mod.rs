@@ -9,6 +9,7 @@
 #[cfg(feature = "browser-panel")]
 mod browser;
 mod file_filter;
+mod file_renderers;
 mod file_viewer;
 pub mod files_view;
 mod line_selection;

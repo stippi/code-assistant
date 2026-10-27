@@ -14,7 +14,7 @@ use anyhow::Result;
 use code_assistant_core::persistence::SessionLayout;
 use gpui_kit::App;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{debug, warn};
@@ -104,6 +104,11 @@ pub struct FilesViewState {
     pub expanded: Vec<String>,
     #[serde(default)]
     pub show_ignored: bool,
+    /// The renderer picked per kind of file (lowercase extension, or the
+    /// name of a file without one), e.g. `md` → `text`; kinds not in it show
+    /// with their default renderer.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub renderers: BTreeMap<String, String>,
 }
 
 impl FilesViewState {

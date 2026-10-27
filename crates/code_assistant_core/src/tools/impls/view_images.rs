@@ -1,7 +1,7 @@
 use crate::tools::ToolServicesAccess;
 use crate::tools::core::{
-    ImageData, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec, cap_base64_image,
-    capabilities,
+    ImageData, MAX_IMAGE_EDGE, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
+    cap_base64_image, capabilities, svg_to_png,
 };
 use anyhow::{Result, anyhow};
 use base64::Engine as _;
@@ -12,9 +12,11 @@ use std::path::PathBuf;
 /// Maximum image file size: 20 MB
 const MAX_IMAGE_SIZE: usize = 20 * 1024 * 1024;
 
-/// Supported image extensions and their MIME types.
+/// Supported image extensions and their MIME types. SVG drawings reach the
+/// model rasterized, as PNG.
 fn mime_type_for_extension(ext: &str) -> Option<&'static str> {
     match ext.to_ascii_lowercase().as_str() {
+        "svg" => Some("image/svg+xml"),
         "png" => Some("image/png"),
         "jpg" | "jpeg" => Some("image/jpeg"),
         "gif" => Some("image/gif"),
@@ -178,7 +180,7 @@ impl Tool for ViewImagesTool {
             "View image files in a project. Reads binary image files and provides them as image content ",
             "so you can see and analyze their visual content.\n",
             "\n",
-            "Supported formats: PNG, JPEG, GIF, WebP, BMP, TIFF.\n"
+            "Supported formats: PNG, JPEG, GIF, WebP, BMP, TIFF, and SVG (drawn as PNG).\n"
         );
 
         ToolSpec {
@@ -263,7 +265,7 @@ impl Tool for ViewImagesTool {
                     failed_images.push((
                         path_str.clone(),
                         format!(
-                            "Unsupported image format '.{ext}'. Supported: png, jpg, jpeg, gif, webp, bmp, tiff, tif"
+                            "Unsupported image format '.{ext}'. Supported: png, jpg, jpeg, gif, webp, bmp, tiff, tif, svg"
                         ),
                     ));
                     continue;
@@ -300,6 +302,26 @@ impl Tool for ViewImagesTool {
                 ));
                 continue;
             }
+
+            // An SVG drawing is rasterized; models take no SVG.
+            let (media_type, bytes) = if media_type == "image/svg+xml" {
+                let resources_dir = full_path.parent().map(PathBuf::from);
+                let drawn = tokio::task::spawn_blocking(move || {
+                    svg_to_png(&bytes, resources_dir, MAX_IMAGE_EDGE)
+                })
+                .await
+                .map_err(anyhow::Error::from)
+                .and_then(|result| result);
+                match drawn {
+                    Ok(png) => ("image/png".to_string(), png),
+                    Err(e) => {
+                        failed_images.push((path_str.clone(), format!("Cannot draw the SVG: {e}")));
+                        continue;
+                    }
+                }
+            } else {
+                (media_type, bytes)
+            };
 
             // Do a quick validation that the bytes look like a valid image
             if let Err(e) = image::guess_format(&bytes) {
@@ -358,6 +380,11 @@ mod tests {
         assert!(output.contains("Unsupported image format"));
 
         Ok(())
+    }
+
+    #[test]
+    fn svg_is_a_supported_format() {
+        assert_eq!(mime_type_for_extension("SVG"), Some("image/svg+xml"));
     }
 
     #[tokio::test]
