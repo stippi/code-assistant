@@ -1,4 +1,5 @@
 mod about_dialog;
+pub(crate) mod agents_panel;
 pub mod project_dialog;
 mod question_prompt;
 pub mod right_panel;
@@ -236,6 +237,8 @@ pub struct MainScreen {
     context_limit_cache: Option<(String, u32)>,
     // Subscription to input area events
     _input_area_subscription: Subscription,
+    /// The running agents, above the input.
+    agents_panel: Entity<agents_panel::AgentsPanel>,
     _right_panel_subscription: Subscription,
     _open_file_subscription: Subscription,
     _comment_bus_subscription: Subscription,
@@ -256,6 +259,10 @@ impl MainScreen {
     ) -> Self {
         // Create the plan banner
         let plan_banner = cx.new(plan_banner::PlanBanner::new);
+        let agents_panel = {
+            let messages_view = messages_view.clone();
+            cx.new(|cx| agents_panel::AgentsPanel::new(messages_view, cx))
+        };
 
         // Create the input area
         let input_area = cx.new(|cx| InputArea::new(window, cx));
@@ -324,6 +331,7 @@ impl MainScreen {
             input_area,
             project_sidebar,
             messages_view,
+            agents_panel,
             plan_banner,
             recent_keystrokes: vec![],
             focus_handle: cx.focus_handle(),
@@ -2282,6 +2290,9 @@ impl Render for MainScreen {
                                     .bg(cx.theme().background)
                                     .border_t_1()
                                     .border_color(cx.theme().border)
+                                    // The running agents, above the input
+                                    // and outside the scrolling conversation.
+                                    .child(self.agents_panel.clone())
                                     .child(frame_profile::timed(
                                         "region.input",
                                         self.input_area.clone().into_any_element(),

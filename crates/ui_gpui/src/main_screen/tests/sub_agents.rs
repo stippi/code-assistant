@@ -1,5 +1,5 @@
-//! Running sub-agents show below the transcript; background results show as
-//! the sub-agent's line, not as a message from the user.
+//! Running sub-agents show in the panel above the input; background results
+//! show as the sub-agent's line, not as a message from the user.
 
 use crate::test_support::{MainScreenTest, TestCore};
 use code_assistant_core::agent::sub_agent::{
@@ -46,7 +46,7 @@ fn shown(test: &mut MainScreenTest) -> Vec<u64> {
 }
 
 #[gpui_kit::test]
-fn running_sub_agents_of_the_viewed_session_show_below_the_transcript(cx: &mut TestAppContext) {
+fn running_sub_agents_of_the_viewed_session_show_above_the_input(cx: &mut TestAppContext) {
     let mut test = MainScreenTest::new(cx);
     test.view_session("viewed");
 
@@ -144,4 +144,40 @@ fn a_sub_agent_transcript_opens_read_only(cx: &mut TestAppContext) {
         .cx
         .update(|_, cx| input_area.read(cx).sub_agent_transcript().cloned());
     assert_eq!(marked, Some((parent, 1)));
+}
+
+/// A parent session in a core, with sub-agent #1's transcript.
+fn session_with_transcript() -> (TestCore, String, String) {
+    let core = TestCore::new(MockLLMProvider::new(Vec::new()).into_factory());
+    let parent = core.create_session();
+    let transcript_id = code_assistant_core::persistence::layout::sub_agent_session_id(&parent, 1);
+    let mut transcript = code_assistant_core::persistence::ChatSession::new_empty(
+        transcript_id.clone(),
+        "Sub-agent #1: look".into(),
+        Default::default(),
+        None,
+    );
+    transcript.add_message(Message::new_user("Find the parser"));
+    core.store().create_chat_session(&transcript).unwrap();
+    (core, parent, transcript_id)
+}
+
+#[gpui_kit::test]
+fn open_in_the_running_list_shows_the_transcript(cx: &mut TestAppContext) {
+    let (core, parent, transcript_id) = session_with_transcript();
+    let mut test = MainScreenTest::with_core(cx, core);
+    test.gpui.cmd_load_session(parent.clone(), None);
+    let id = parent.clone();
+    test.wait_until("the session is shown", |test| {
+        test.gpui.get_current_session_id().as_deref() == Some(id.as_str())
+    });
+    let mut agent = running(1, "t1", true);
+    agent.session_id = Some(transcript_id.clone());
+    update(&mut test, &parent, vec![agent]);
+    assert!(test.shows("running-sub-agent"));
+
+    test.click("open-running-sub-agent");
+    test.wait_until("the transcript is shown", |test| {
+        test.gpui.get_current_session_id().as_deref() == Some(transcript_id.as_str())
+    });
 }
