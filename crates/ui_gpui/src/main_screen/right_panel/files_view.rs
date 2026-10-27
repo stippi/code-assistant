@@ -7,25 +7,38 @@
 //! project root re-lists loaded directories and reloads the open file when
 //! they change on disk. The open file, the expanded directories and whether
 //! ignored entries show are remembered per session.
+//!
+//! A right click on an entry opens its menu: copy the path, comment on the
+//! whole file (a card under the viewer's path header), delete the file.
+//!
+//! When the open file can be shown in more ways than as text (rendered
+//! Markdown, see [`file_renderers`](super::file_renderers)), a dropdown in
+//! the viewer's header picks one. The pick holds for files of the same
+//! kind and is remembered per session.
 
 use super::file_filter::{FileMatch, filter_paths};
+use super::file_renderers;
 use super::file_viewer::FileViewer;
 use crate::Gpui;
-use crate::comments::CommentChange;
+use crate::comments::editor::{CommentEditor, CommentEditorEvent};
+use crate::comments::{AnchorTracker, CommentChange, floating};
 use crate::shared::{file_icons, ui_state};
 use code_assistant_core::line_comments::LineComment;
 use code_assistant_core::session::{DirListing, EntryKind, TreeWatcher};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::component::select::{Select, SelectEvent, SelectItem, SelectState};
 use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size};
 use gpui_kit::{
-    Context, Entity, FocusHandle, Focusable, MouseButton, MouseMoveEvent, Pixels, Render,
-    SharedString, StyledText, Subscription, Task, UniformListScrollHandle, Window, div, prelude::*,
-    px, uniform_list,
+    Bounds, ClipboardItem, Context, Entity, FocusHandle, Focusable, MouseButton, MouseDownEvent,
+    MouseMoveEvent, Pixels, Point, Render, SharedString, StyledText, Subscription, Task,
+    UniformListScrollHandle, Window, canvas, div, point, prelude::*, px, uniform_list,
 };
+use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -45,6 +58,25 @@ enum DirState {
     Failed(String),
 }
 
+/// A choice in the renderer dropdown.
+#[derive(Clone)]
+struct RendererItem {
+    id: String,
+    label: &'static str,
+}
+
+impl SelectItem for RendererItem {
+    type Value = String;
+
+    fn title(&self) -> SharedString {
+        self.label.into()
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.id
+    }
+}
+
 /// One row of the tree.
 #[derive(Clone)]
 enum TreeRow {
@@ -60,6 +92,18 @@ enum TreeRow {
     Note { depth: usize, text: SharedString },
 }
 
+/// The menu of a tree entry, opened by a right click.
+struct EntryMenu {
+    path: String,
+    is_dir: bool,
+    /// Where it was opened, in window coordinates.
+    position: Point<Pixels>,
+    /// Asking whether to delete the file.
+    confirm_delete: bool,
+    /// Why deleting failed.
+    error: Option<String>,
+}
+
 /// Join a directory and an entry name into a relative path.
 fn join(dir: &str, name: &str) -> String {
     if dir.is_empty() {
@@ -67,6 +111,13 @@ fn join(dir: &str, name: &str) -> String {
     } else {
         format!("{dir}/{name}")
     }
+}
+
+/// The absolute path of a relative path below `root`. Joined per
+/// component, so it uses the platform's separators.
+fn absolute_path(root: &Path, path: &str) -> PathBuf {
+    path.split('/')
+        .fold(root.to_path_buf(), |file, part| file.join(part))
 }
 
 /// The parent directory of a relative path (`""` for top-level entries).
@@ -92,6 +143,9 @@ pub struct FilesView {
 
     filter: Entity<InputState>,
     query: String,
+    renderer_select: Entity<SelectState<Vec<RendererItem>>>,
+    /// The renderer ids the dropdown offers, and the selected one.
+    renderer_shown: (Vec<&'static str>, &'static str),
     /// Every file gitignore keeps; loaded when the filter is first used and
     /// dropped when the tree changes.
     all_files: Option<Arc<Vec<String>>>,
@@ -104,6 +158,19 @@ pub struct FilesView {
     /// An absolute path (and line) to open once the project root is known.
     pending_open: Option<(String, Option<usize>)>,
 
+    menu: Option<EntryMenu>,
+    delete_task: Option<Task<()>>,
+    /// The draft's comments, to find an existing comment on a whole file.
+    comments: Vec<LineComment>,
+    /// The card for a comment on the whole open file, under its path header.
+    file_comment: Option<Entity<CommentEditor>>,
+    /// A comment on the whole open file to open the card for (needs a window).
+    pending_file_comment: Option<LineComment>,
+    /// Where the path header was last drawn; the card floats below it.
+    header_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    file_comment_anchor: AnchorTracker,
+    _file_comment_subscription: Option<Subscription>,
+
     watcher: Option<(PathBuf, TreeWatcher)>,
     watch_task: Option<Task<()>>,
     load_tasks: HashMap<String, Task<()>>,
@@ -115,8 +182,11 @@ impl FilesView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let viewer = cx.new(FileViewer::new);
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter files"));
+        let renderer_select =
+            cx.new(|cx| SelectState::new(Vec::<RendererItem>::new(), None, window, cx));
         let subscriptions = vec![
             cx.subscribe_in(&filter, window, Self::on_filter_event),
+            cx.subscribe_in(&renderer_select, window, Self::on_renderer_selected),
             // The header shows the viewer's state.
             cx.observe(&viewer, |_, _, cx| cx.notify()),
             cx.subscribe(&viewer, |_, _, change: &CommentChange, cx| {
@@ -137,12 +207,22 @@ impl FilesView {
             resizing: None,
             filter,
             query: String::new(),
+            renderer_select,
+            renderer_shown: (Vec::new(), file_renderers::TEXT),
             all_files: None,
             files_task: None,
             matches: Vec::new(),
             clear_filter: false,
             pending_reveal: None,
             pending_open: None,
+            menu: None,
+            delete_task: None,
+            comments: Vec::new(),
+            file_comment: None,
+            pending_file_comment: None,
+            header_bounds: Rc::new(Cell::new(None)),
+            file_comment_anchor: AnchorTracker::default(),
+            _file_comment_subscription: None,
             watcher: None,
             watch_task: None,
             load_tasks: HashMap::new(),
@@ -157,6 +237,7 @@ impl FilesView {
     }
 
     pub fn set_comments(&mut self, comments: Vec<LineComment>, cx: &mut Context<Self>) {
+        self.comments = comments.clone();
         self.viewer
             .update(cx, |viewer, cx| viewer.set_comments(comments, cx));
     }
@@ -203,6 +284,11 @@ impl FilesView {
             .collect::<Vec<_>>()
             .join("/");
         self.open_file(path, cx);
+        if comment.on_file {
+            self.pending_file_comment = Some(comment);
+            cx.notify();
+            return;
+        }
         self.viewer
             .update(cx, |viewer, cx| viewer.reveal(comment, cx));
     }
@@ -222,6 +308,10 @@ impl FilesView {
         self.query.clear();
         self.watcher = None;
         self.watch_task = None;
+        self.menu = None;
+        self.delete_task = None;
+        self.pending_file_comment = None;
+        self.close_file_comment(cx);
         // Emptying the field needs a window; render does it.
         self.clear_filter = true;
 
@@ -233,6 +323,7 @@ impl FilesView {
         self.show_ignored = saved.show_ignored;
         let session_for_viewer = session_id.clone();
         self.viewer.update(cx, |viewer, cx| {
+            viewer.set_renderer_picks(saved.renderers, cx);
             viewer.open(session_for_viewer, saved.open_file, cx)
         });
         if session_id.is_some() {
@@ -259,6 +350,9 @@ impl FilesView {
     /// Open `path` (relative, `/`-separated) in the viewer and reveal it in
     /// the tree.
     pub fn open_file(&mut self, path: String, cx: &mut Context<Self>) {
+        if self.viewer.read(cx).path() != Some(path.as_str()) {
+            self.close_file_comment(cx);
+        }
         // Expand the ancestors so the file shows in the tree.
         let mut dir = parent(&path).to_owned();
         while !dir.is_empty() {
@@ -284,14 +378,145 @@ impl FilesView {
         cx.notify();
     }
 
+    /// Open `path` and the card for a comment on the whole file (the
+    /// existing one, if any).
+    fn start_file_comment(&mut self, path: String, cx: &mut Context<Self>) {
+        let Some(root) = &self.root else {
+            return;
+        };
+        let file = absolute_path(root, &path);
+        let comment = self
+            .comments
+            .iter()
+            .find(|c| c.on_file && c.file == file)
+            .cloned()
+            .unwrap_or_else(|| LineComment::on_file(file));
+        self.open_file(path, cx);
+        self.pending_file_comment = Some(comment);
+        cx.notify();
+    }
+
+    fn open_file_comment(
+        &mut self,
+        comment: LineComment,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let card = cx.new(|cx| CommentEditor::new(comment, window, cx));
+        self._file_comment_subscription = Some(cx.subscribe(
+            &card,
+            |this, _, event: &CommentEditorEvent, cx| {
+                match event {
+                    CommentEditorEvent::Save(comment) => {
+                        cx.emit(CommentChange::Upsert(comment.clone()))
+                    }
+                    CommentEditorEvent::Delete(id) => cx.emit(CommentChange::Remove(*id)),
+                    CommentEditorEvent::Cancel => {}
+                }
+                this.close_file_comment(cx);
+            },
+        ));
+        self.file_comment = Some(card);
+        cx.notify();
+    }
+
+    fn close_file_comment(&mut self, cx: &mut Context<Self>) {
+        if self.file_comment.take().is_some() {
+            self._file_comment_subscription = None;
+            cx.notify();
+        }
+    }
+
+    fn open_menu(
+        &mut self,
+        path: String,
+        is_dir: bool,
+        position: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        self.menu = Some(EntryMenu {
+            path,
+            is_dir,
+            position,
+            confirm_delete: false,
+            error: None,
+        });
+        cx.notify();
+    }
+
+    fn close_menu(&mut self, cx: &mut Context<Self>) {
+        if self.menu.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Copy `path`, absolute or relative to the project root.
+    fn copy_path(&mut self, path: &str, absolute: bool, cx: &mut Context<Self>) {
+        let text = match &self.root {
+            Some(root) if absolute => absolute_path(root, path).display().to_string(),
+            _ => path.to_owned(),
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        self.close_menu(cx);
+    }
+
+    fn delete_file(&mut self, path: String, cx: &mut Context<Self>) {
+        let Some(session_id) = self.session_id.clone() else {
+            return;
+        };
+        let Some(service) = cx
+            .try_global::<Gpui>()
+            .and_then(|gpui| gpui.session_service())
+        else {
+            return;
+        };
+        self.delete_task = Some(cx.spawn(async move |this, cx| {
+            let result = service
+                .delete_project_file(session_id.clone(), PathBuf::from(&path))
+                .await;
+            this.update(cx, |this, cx| {
+                if this.session_id.as_deref() != Some(session_id.as_str()) {
+                    return;
+                }
+                match result {
+                    Ok(()) => this.deleted(&path, cx),
+                    Err(e) => {
+                        if let Some(menu) = &mut this.menu {
+                            menu.error = Some(format!("{e:#}"));
+                        }
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// `path` was deleted: close it if it is open and list its directory
+    /// again (without waiting for the watcher).
+    fn deleted(&mut self, path: &str, cx: &mut Context<Self>) {
+        self.menu = None;
+        if self.viewer.read(cx).path() == Some(path) {
+            self.close_file_comment(cx);
+            self.viewer
+                .update(cx, |viewer, cx| viewer.close_deleted(cx));
+            self.persist(cx);
+        }
+        self.load_dir(parent(path).to_owned(), cx);
+        self.all_files = None;
+        self.refresh_matches(cx);
+    }
+
     fn persist(&self, cx: &mut Context<Self>) {
         let Some(session_id) = &self.session_id else {
             return;
         };
+        let viewer = self.viewer.read(cx);
         let state = ui_state::FilesViewState {
-            open_file: self.viewer.read(cx).path().map(str::to_owned),
+            open_file: viewer.path().map(str::to_owned),
             expanded: self.expanded.iter().cloned().collect(),
             show_ignored: self.show_ignored,
+            renderers: viewer.renderer_picks().clone(),
         };
         ui_state::update(cx, |store| store.set_files_view(session_id, state));
     }
@@ -523,6 +748,54 @@ impl FilesView {
         }
     }
 
+    fn on_renderer_selected(
+        &mut self,
+        _: &Entity<SelectState<Vec<RendererItem>>>,
+        event: &SelectEvent<Vec<RendererItem>>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let SelectEvent::Confirm(selected) = event;
+        match selected {
+            // Only a change is a pick; the default stays unrecorded.
+            Some(id) if id != self.viewer.read(cx).renderer_id() => {
+                let id = id.clone();
+                self.viewer
+                    .update(cx, |viewer, cx| viewer.pick_renderer(id, cx));
+                self.persist(cx);
+            }
+            Some(_) => {}
+            // Nothing selected: show the viewer's renderer again.
+            None => {
+                self.renderer_shown = (Vec::new(), file_renderers::TEXT);
+                cx.notify();
+            }
+        }
+    }
+
+    /// Offer the open file's renderers in the dropdown.
+    fn sync_renderer_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let viewer = self.viewer.read(cx);
+        let options = viewer.renderer_options();
+        let selected = viewer.renderer_id();
+        let ids: Vec<&'static str> = options.iter().map(|(id, _)| *id).collect();
+        if self.renderer_shown.0 == ids && self.renderer_shown.1 == selected {
+            return;
+        }
+        let items = options
+            .into_iter()
+            .map(|(id, label)| RendererItem {
+                id: id.to_owned(),
+                label,
+            })
+            .collect();
+        self.renderer_select.update(cx, |select, cx| {
+            select.set_items(items, window, cx);
+            select.set_selected_value(&selected.to_owned(), window, cx);
+        });
+        self.renderer_shown = (ids, selected);
+    }
+
     /// Recompute the filter matches, loading the file list first when needed.
     fn refresh_matches(&mut self, cx: &mut Context<Self>) {
         if self.query.is_empty() {
@@ -602,6 +875,7 @@ impl FilesView {
             } => {
                 let is_dir = *kind == EntryKind::Dir;
                 let selected = !is_dir && self.viewer.read(cx).path() == Some(path.as_str());
+                let menu_open = self.menu.as_ref().is_some_and(|menu| menu.path == *path);
                 let icon = if is_dir {
                     file_icons::get().get_type_icon(if *expanded {
                         "expanded_folder"
@@ -627,8 +901,10 @@ impl FilesView {
                     theme.foreground
                 };
                 let path = path.clone();
+                let selector = format!("files-row-{path}");
                 div()
                     .id(("files-tree-row", ix))
+                    .debug_selector(move || selector.clone())
                     .h(px(22.))
                     .w_full()
                     .flex()
@@ -638,6 +914,7 @@ impl FilesView {
                     .pr_2()
                     .cursor_pointer()
                     .when(selected, |d| d.bg(theme.list_active))
+                    .when(menu_open && !selected, |d| d.bg(theme.list_hover))
                     .hover(|s| s.bg(theme.list_hover))
                     .child(div().w(px(10.)).flex_none().children(chevron))
                     .child(file_icons::render_icon(
@@ -657,6 +934,12 @@ impl FilesView {
                             .text_color(fg)
                             .child(name.clone()),
                     )
+                    .on_mouse_down(MouseButton::Right, {
+                        let path = path.clone();
+                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                            this.open_menu(path.clone(), is_dir, event.position, cx)
+                        })
+                    })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if is_dir {
                             this.toggle_dir(path.clone(), cx);
@@ -729,6 +1012,12 @@ impl FilesView {
                     .text_color(theme.muted_foreground)
                     .child(dir.to_owned()),
             )
+            .on_mouse_down(MouseButton::Right, {
+                let path = path.clone();
+                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                    this.open_menu(path.clone(), false, event.position, cx)
+                })
+            })
             .on_click(cx.listener(move |this, _, _, cx| this.open_file(path.clone(), cx)))
             .into_any_element()
     }
@@ -851,8 +1140,19 @@ impl FilesView {
         let viewer = self.viewer.read(cx);
         let path = viewer.path()?.to_owned();
         let dirty = viewer.is_dirty();
+        let choose_renderer = self.renderer_shown.0.len() > 1;
+        let commented = self.root.as_ref().is_some_and(|root| {
+            let file = absolute_path(root, &path);
+            self.comments.iter().any(|c| c.on_file && c.file == file)
+        });
+        let bounds = self.header_bounds.clone();
+        let probe = canvas(move |b, _, _| bounds.set(Some(b)), |_, _, _, _| {})
+            .absolute()
+            .size_full();
+        let comment_path = path.clone();
         Some(
             div()
+                .relative()
                 .flex_none()
                 .flex()
                 .items_center()
@@ -872,6 +1172,26 @@ impl FilesView {
                         .text_color(theme.muted_foreground)
                         .child(path),
                 )
+                .child(probe)
+                .child(
+                    Button::new("files-comment-file")
+                        .icon(
+                            Icon::default()
+                                .path(SharedString::from("icons/message_circle_plus.svg"))
+                                .with_size(Size::XSmall)
+                                .when(commented, |icon| icon.text_color(theme.warning)),
+                        )
+                        .ghost()
+                        .xsmall()
+                        .tooltip(if commented {
+                            "Edit the comment on this file"
+                        } else {
+                            "Comment on this file"
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.start_file_comment(comment_path.clone(), cx)
+                        })),
+                )
                 .when(dirty, |d| {
                     d.child(
                         div()
@@ -884,8 +1204,189 @@ impl FilesView {
                                     .build(window, cx)
                             }),
                     )
+                })
+                .when(choose_renderer, |d| {
+                    d.child(
+                        div()
+                            .flex_none()
+                            .w(px(104.))
+                            .child(Select::new(&self.renderer_select).with_size(Size::XSmall)),
+                    )
                 }),
         )
+    }
+
+    /// The open entry menu, floating where it was opened.
+    fn render_menu(&self, cx: &mut Context<Self>) -> Option<gpui_kit::AnyElement> {
+        let menu = self.menu.as_ref()?;
+        let theme = cx.theme();
+        let item = |id: &'static str, icon: &'static str, label: SharedString, danger: bool| {
+            let color = if danger {
+                theme.danger
+            } else {
+                theme.foreground
+            };
+            div()
+                .id(id)
+                .debug_selector(move || id.to_owned())
+                .flex()
+                .items_center()
+                .gap_2()
+                .px_2()
+                .py_1()
+                .rounded_md()
+                .cursor_pointer()
+                .text_color(color)
+                .hover(|s| s.bg(theme.list_hover))
+                .child(
+                    Icon::default()
+                        .path(SharedString::from(icon))
+                        .with_size(Size::XSmall)
+                        .text_color(if danger {
+                            theme.danger
+                        } else {
+                            theme.muted_foreground
+                        }),
+                )
+                .child(label)
+        };
+        let path = menu.path.clone();
+        let name = path.rsplit('/').next().unwrap_or(&path).to_owned();
+        let body = if menu.confirm_delete {
+            let delete_path = path.clone();
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .px_2()
+                        .py_1()
+                        .text_color(theme.foreground)
+                        .child(format!("Delete {name}?")),
+                )
+                .children(menu.error.clone().map(|error| {
+                    div()
+                        .px_2()
+                        .text_color(theme.danger)
+                        .whitespace_normal()
+                        .child(error)
+                }))
+                .child(
+                    item(
+                        "files-menu-confirm-delete",
+                        "icons/trash.svg",
+                        "Delete".into(),
+                        true,
+                    )
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| {
+                            this.delete_file(delete_path.clone(), cx)
+                        }),
+                    ),
+                )
+                .child(
+                    item(
+                        "files-menu-cancel",
+                        "icons/close.svg",
+                        "Cancel".into(),
+                        false,
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| this.close_menu(cx))),
+                )
+        } else {
+            let (absolute, relative, comment) = (path.clone(), path.clone(), path.clone());
+            div()
+                .flex()
+                .flex_col()
+                .child(
+                    item(
+                        "files-menu-copy-path",
+                        "icons/copy.svg",
+                        "Copy Path".into(),
+                        false,
+                    )
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.copy_path(&absolute, true, cx)),
+                    ),
+                )
+                .child(
+                    item(
+                        "files-menu-copy-relative-path",
+                        "icons/copy.svg",
+                        "Copy Relative Path".into(),
+                        false,
+                    )
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.copy_path(&relative, false, cx)),
+                    ),
+                )
+                .when(!menu.is_dir, |d| {
+                    d.child(div().my_1().h(px(1.)).bg(theme.border))
+                        .child(
+                            item(
+                                "files-menu-comment",
+                                "icons/message_circle_plus.svg",
+                                "Comment on File…".into(),
+                                false,
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    this.close_menu(cx);
+                                    this.start_file_comment(comment.clone(), cx);
+                                },
+                            )),
+                        )
+                        .child(
+                            item(
+                                "files-menu-delete",
+                                "icons/trash.svg",
+                                "Delete File…".into(),
+                                true,
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(menu) = &mut this.menu {
+                                    menu.confirm_delete = true;
+                                }
+                                cx.notify();
+                            })),
+                        )
+                })
+        };
+        Some(floating(
+            menu.position,
+            div()
+                .id("files-entry-menu")
+                .occlude()
+                .on_mouse_down_out(
+                    cx.listener(|this, _: &MouseDownEvent, _, cx| this.close_menu(cx)),
+                )
+                .min_w(px(180.))
+                .max_w(px(320.))
+                .p_1()
+                .rounded_lg()
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.popover)
+                .shadow_md()
+                .text_xs()
+                .child(body),
+        ))
+    }
+
+    /// The card for a comment on the whole open file, under its path header.
+    fn render_file_comment(
+        &mut self,
+        header: Option<Bounds<Pixels>>,
+        window: &mut Window,
+    ) -> Option<gpui_kit::AnyElement> {
+        let position = self
+            .file_comment
+            .as_ref()
+            .and(header)
+            .map(|b| point(b.left() + px(8.), b.bottom() + px(4.)));
+        self.file_comment_anchor.track(position, window);
+        Some(floating(position?, self.file_comment.clone()?))
     }
 
     fn on_resize_move(
@@ -922,6 +1423,13 @@ impl Render for FilesView {
             self.filter
                 .update(cx, |input, cx| input.set_value("", window, cx));
         }
+        self.sync_renderer_select(window, cx);
+        if let Some(comment) = self.pending_file_comment.take() {
+            self.open_file_comment(comment, window, cx);
+        }
+        // Read last frame's header position; the header sets it again when
+        // it is drawn.
+        let header = self.header_bounds.take();
         let theme = cx.theme();
         let border = theme.border;
         let handle_color = if self.resizing.is_some() {
@@ -1002,6 +1510,8 @@ impl Render for FilesView {
                     .children(divider)
                     .child(viewer_column),
             )
+            .children(self.render_menu(cx))
+            .children(self.render_file_comment(header, window))
             .into_any_element()
     }
 }
@@ -1009,6 +1519,163 @@ impl Render for FilesView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use code_assistant_core::session::DirEntry;
+    use gpui_kit::{Modifiers, TestAppContext, VisualTestContext};
+
+    /// A window with a `FilesView` of the project `/p` holding `src/a.rs`
+    /// and the folder `docs`.
+    fn view(cx: &mut TestAppContext) -> (Entity<FilesView>, &mut VisualTestContext) {
+        let window = cx.update(|cx| {
+            gpui_kit::component::init(cx);
+            file_icons::init(cx);
+            cx.open_window(Default::default(), |window, cx| {
+                cx.new(|cx| FilesView::new(window, cx))
+            })
+            .unwrap()
+        });
+        let view = window.root(cx).unwrap();
+        let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
+        view.update(cx, |view, cx| {
+            let entry = |name: &str, kind| DirEntry {
+                name: name.into(),
+                kind,
+                ignored: false,
+            };
+            view.root = Some(PathBuf::from("/p"));
+            view.dirs.insert(
+                String::new(),
+                DirState::Loaded(DirListing {
+                    entries: vec![entry("docs", EntryKind::Dir), entry("src", EntryKind::Dir)],
+                    omitted: 0,
+                }),
+            );
+            view.dirs.insert(
+                "src".into(),
+                DirState::Loaded(DirListing {
+                    entries: vec![entry("a.rs", EntryKind::File)],
+                    omitted: 0,
+                }),
+            );
+            view.expanded.insert("src".into());
+            view.rebuild_rows();
+            cx.notify();
+        });
+        cx.run_until_parked();
+        (view, cx)
+    }
+
+    fn right_click(selector: &'static str, cx: &mut VisualTestContext) {
+        let bounds = cx.debug_bounds(selector).expect(selector);
+        cx.simulate_mouse_down(bounds.center(), MouseButton::Right, Modifiers::none());
+        cx.simulate_mouse_up(bounds.center(), MouseButton::Right, Modifiers::none());
+        cx.run_until_parked();
+    }
+
+    fn click(selector: &'static str, cx: &mut VisualTestContext) {
+        let bounds = cx.debug_bounds(selector).expect(selector);
+        cx.simulate_click(bounds.center(), Modifiers::none());
+        cx.run_until_parked();
+    }
+
+    fn clipboard(cx: &mut VisualTestContext) -> Option<String> {
+        cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text()))
+    }
+
+    #[gpui_kit::test]
+    fn the_entry_menu_copies_paths(cx: &mut TestAppContext) {
+        let (view, cx) = view(cx);
+        right_click("files-row-src/a.rs", cx);
+        click("files-menu-copy-path", cx);
+        let absolute = PathBuf::from("/p").join("src").join("a.rs");
+        assert_eq!(clipboard(cx), Some(absolute.display().to_string()));
+        view.read_with(cx, |view, _| assert!(view.menu.is_none()));
+
+        right_click("files-row-src/a.rs", cx);
+        click("files-menu-copy-relative-path", cx);
+        assert_eq!(clipboard(cx).as_deref(), Some("src/a.rs"));
+    }
+
+    #[gpui_kit::test]
+    fn folders_offer_only_copying(cx: &mut TestAppContext) {
+        let (_view, cx) = view(cx);
+        right_click("files-row-docs", cx);
+        assert!(cx.debug_bounds("files-menu-copy-path").is_some());
+        assert!(cx.debug_bounds("files-menu-comment").is_none());
+        assert!(cx.debug_bounds("files-menu-delete").is_none());
+    }
+
+    #[gpui_kit::test]
+    fn deleting_asks_first(cx: &mut TestAppContext) {
+        let (view, cx) = view(cx);
+        right_click("files-row-src/a.rs", cx);
+        click("files-menu-delete", cx);
+        view.read_with(cx, |view, _| {
+            assert!(view.menu.as_ref().is_some_and(|menu| menu.confirm_delete))
+        });
+        assert!(cx.debug_bounds("files-menu-confirm-delete").is_some());
+        click("files-menu-cancel", cx);
+        view.read_with(cx, |view, _| assert!(view.menu.is_none()));
+    }
+
+    #[gpui_kit::test]
+    fn a_deleted_open_file_closes(cx: &mut TestAppContext) {
+        let (view, cx) = view(cx);
+        view.update(cx, |view, cx| {
+            view.open_file("src/a.rs".into(), cx);
+            view.deleted("src/a.rs", cx);
+        });
+        view.read_with(cx, |view, cx| {
+            assert_eq!(view.viewer.read(cx).path(), None);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn comments_on_a_whole_file_open_a_card_under_its_header(cx: &mut TestAppContext) {
+        let (view, cx) = view(cx);
+        right_click("files-row-src/a.rs", cx);
+        click("files-menu-comment", cx);
+        // The first frame draws the header, the next floats the card below.
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        view.read_with(cx, |view, cx| {
+            assert_eq!(view.viewer.read(cx).path(), Some("src/a.rs"));
+            let card = view.file_comment.as_ref().expect("the card opened");
+            let comment = card.read(cx).comment();
+            assert!(comment.on_file);
+            assert_eq!(comment.file, PathBuf::from("/p/src/a.rs"));
+            assert_eq!(comment.id, 0);
+        });
+
+        // An existing comment on the file is opened again, also when the
+        // composer reveals it.
+        let mut existing = LineComment::on_file("/p/src/a.rs");
+        existing.id = 7;
+        existing.text = "split this up".into();
+        view.update(cx, |view, cx| {
+            view.close_file_comment(cx);
+            view.set_comments(vec![existing.clone()], cx);
+            view.start_file_comment("src/a.rs".into(), cx);
+        });
+        cx.run_until_parked();
+        view.read_with(cx, |view, cx| {
+            let card = view.file_comment.as_ref().expect("the card opened");
+            assert_eq!(card.read(cx).comment().id, 7);
+        });
+        view.update(cx, |view, cx| {
+            view.close_file_comment(cx);
+            view.open_file("src/other.rs".into(), cx);
+            view.reveal_comment(existing.clone(), cx);
+        });
+        cx.run_until_parked();
+        view.read_with(cx, |view, cx| {
+            assert_eq!(view.viewer.read(cx).path(), Some("src/a.rs"));
+            assert!(view.file_comment.is_some());
+        });
+
+        // Opening another file closes the card.
+        view.update(cx, |view, cx| view.open_file("src/other.rs".into(), cx));
+        view.read_with(cx, |view, _| assert!(view.file_comment.is_none()));
+    }
 
     #[test]
     fn paths_join_and_split() {

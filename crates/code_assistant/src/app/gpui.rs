@@ -125,6 +125,11 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                 .lock()
                 .await
                 .set_wakeup_handle(wakeup_handle);
+            // Background sub-agents report their results to the service.
+            manager_for_mcp
+                .lock()
+                .await
+                .set_sub_agent_sink(Arc::new(service.clone()));
 
             // Monitors and background-job notifications: agents are told
             // when something they started in the background has news.

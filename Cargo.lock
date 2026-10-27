@@ -11168,6 +11168,7 @@ dependencies = [
  "command_executor",
  "image",
  "regex",
+ "resvg 0.45.1",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -11847,6 +11848,7 @@ dependencies = [
  "image",
  "llm",
  "open",
+ "percent-encoding",
  "rust-embed",
  "sandbox",
  "serde",
@@ -11871,6 +11873,7 @@ dependencies = [
  "async-channel",
  "async-trait",
  "base64 0.22.1",
+ "chrono",
  "code_assistant_core",
  "command_executor",
  "crossterm",
@@ -14177,18 +14180,18 @@ dependencies = [
 
 [[package]]
 name = "zstd-safe"
-version = "7.2.4"
+version = "7.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f49c4d5f0abb602a93fb8736af2a4f4dd9512e36f7f570d66e65ff867ed3b9d"
+checksum = "64d80649ab6db9d9f6f9c80a40becd948eda4714a0a5ac8c4d157a32231c7882"
 dependencies = [
  "zstd-sys",
 ]
 
 [[package]]
 name = "zstd-sys"
-version = "2.0.16+zstd.1.5.7"
+version = "2.1.2+zstd.1.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91e19ebc2adc8f83e43039e79776e3fda8ca919132d68a1fed6a5faca2683748"
+checksum = "481ada9c543b2323cbb7bbdbb5249177fbf0188ed959ed2c15e4b22421c84ed3"
 dependencies = [
  "cc",
  "pkg-config",

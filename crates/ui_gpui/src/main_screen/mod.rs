@@ -1,4 +1,5 @@
 mod about_dialog;
+pub(crate) mod agents_panel;
 pub mod project_dialog;
 mod question_prompt;
 pub mod right_panel;
@@ -236,6 +237,8 @@ pub struct MainScreen {
     context_limit_cache: Option<(String, u32)>,
     // Subscription to input area events
     _input_area_subscription: Subscription,
+    /// The running agents, above the input.
+    agents_panel: Entity<agents_panel::AgentsPanel>,
     _right_panel_subscription: Subscription,
     _open_file_subscription: Subscription,
     _comment_bus_subscription: Subscription,
@@ -256,6 +259,10 @@ impl MainScreen {
     ) -> Self {
         // Create the plan banner
         let plan_banner = cx.new(plan_banner::PlanBanner::new);
+        let agents_panel = {
+            let messages_view = messages_view.clone();
+            cx.new(|cx| agents_panel::AgentsPanel::new(messages_view, cx))
+        };
 
         // Create the input area
         let input_area = cx.new(|cx| InputArea::new(window, cx));
@@ -324,6 +331,7 @@ impl MainScreen {
             input_area,
             project_sidebar,
             messages_view,
+            agents_panel,
             plan_banner,
             recent_keystrokes: vec![],
             focus_handle: cx.focus_handle(),
@@ -1091,6 +1099,10 @@ impl MainScreen {
             let current_activity_state =
                 gpui.current_session_activity_state.lock().unwrap().clone();
 
+            if code_assistant_core::persistence::layout::sub_agent_parent(session_id).is_some() {
+                tracing::warn!("MainScreen: Cannot send message — {session_id} is a transcript");
+                return;
+            }
             if current_activity_state
                 .as_ref()
                 .is_some_and(|s| s.is_running_externally())
@@ -1951,8 +1963,13 @@ impl Render for MainScreen {
             })
         });
 
+        let sub_agent_transcript = current_session_id.as_deref().and_then(|id| {
+            code_assistant_core::persistence::layout::sub_agent_parent(id)
+                .map(|(parent, agent_id)| (parent.to_string(), agent_id))
+        });
         self.input_area.update(cx, |input_area, _cx| {
             input_area.set_agent_state(agent_is_running, cancel_enabled, externally_locked);
+            input_area.set_sub_agent_transcript(sub_agent_transcript);
             input_area.set_context_usage(context_usage);
             input_area.set_context_total_usage(context_total_usage);
         });
@@ -2273,6 +2290,9 @@ impl Render for MainScreen {
                                     .bg(cx.theme().background)
                                     .border_t_1()
                                     .border_color(cx.theme().border)
+                                    // The running agents, above the input
+                                    // and outside the scrolling conversation.
+                                    .child(self.agents_panel.clone())
                                     .child(frame_profile::timed(
                                         "region.input",
                                         self.input_area.clone().into_any_element(),

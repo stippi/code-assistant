@@ -1,4 +1,4 @@
-//! Read-only access to a session's project files, for a file viewer. The
+//! Access to a session's project files, for a file viewer. The
 //! root is the session's effective project path (the worktree when it has
 //! one), so the view follows a worktree switch.
 
@@ -70,6 +70,15 @@ impl SessionService {
     ) -> Result<()> {
         self.with_project_root(session_id, move |root| {
             browse::write_file(&root, &rel_path, &text)
+        })
+        .await
+    }
+
+    /// Delete the file `rel_path` of the session's project (the user
+    /// deleting it in a file viewer).
+    pub async fn delete_project_file(&self, session_id: String, rel_path: PathBuf) -> Result<()> {
+        self.with_project_root(session_id, move |root| {
+            browse::delete_file(&root, &rel_path)
         })
         .await
     }
@@ -162,6 +171,12 @@ mod tests {
 
         let files = service.list_project_files(id.clone()).await.unwrap();
         assert_eq!(files.files, vec!["src/lib.rs".to_string()]);
+
+        service
+            .delete_project_file(id.clone(), PathBuf::from("src/lib.rs"))
+            .await
+            .unwrap();
+        assert!(!project.path().join("src/lib.rs").exists());
 
         assert!(
             service

@@ -14,7 +14,12 @@
 //! Comments on this file show as tinted lines (editor decorations, which
 //! follow edits). After a load or save each comment is found again by its
 //! excerpt ([`line_comments::locate`]); one that moved is updated.
+//!
+//! A file can also be shown by a renderer ([`file_renderers`]), such as
+//! rendered Markdown. The editor still holds the text then, so loading and
+//! saving work the same; the renderer gets the editor's text.
 
+use super::file_renderers::{self, RendererHandle};
 use crate::Gpui;
 use crate::comments::editor::{CommentEditor, CommentEditorEvent};
 use crate::comments::{AnchorTracker, CommentChange, floating, selection_pill};
@@ -30,6 +35,7 @@ use gpui_kit::{
     Context, Entity, EventEmitter, FocusHandle, Focusable, HighlightStyle, KeyDownEvent, Pixels,
     Point, Render, Subscription, Task, Window, div, point, prelude::*, px,
 };
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -80,6 +86,14 @@ pub struct FileViewer {
     anchor: AnchorTracker,
     /// The selection whose pill a press elsewhere dismissed.
     pill_dismissed: Option<std::ops::Range<usize>>,
+    /// The renderer picked per kind of file ([`file_renderers::chosen`]).
+    renderer_picks: BTreeMap<String, String>,
+    /// The shown renderer and its view, when it is not the text editor.
+    renderer: Option<(&'static str, Box<dyn RendererHandle>)>,
+    _renderer_subscription: Option<Subscription>,
+    /// The open file shows as text, whatever renderer was picked: it was
+    /// asked to show a line or comment its renderer cannot.
+    text_override: bool,
 }
 
 impl EventEmitter<CommentChange> for FileViewer {}
@@ -109,6 +123,10 @@ impl FileViewer {
             _comment_editor_subscription: None,
             anchor: AnchorTracker::default(),
             pill_dismissed: None,
+            renderer_picks: BTreeMap::new(),
+            text_override: false,
+            renderer: None,
+            _renderer_subscription: None,
         }
     }
 
@@ -118,6 +136,53 @@ impl FileViewer {
 
     pub fn is_dirty(&self) -> bool {
         self.dirty
+    }
+
+    /// The ways the shown file can be shown, as `(id, label)`, the text
+    /// editor first.
+    pub fn renderer_options(&self) -> Vec<(&'static str, &'static str)> {
+        let others = self
+            .path
+            .as_deref()
+            .into_iter()
+            .flat_map(|path| file_renderers::for_path(path).map(|r| (r.id, r.label)));
+        std::iter::once((file_renderers::TEXT, "Text"))
+            .chain(others)
+            .collect()
+    }
+
+    /// The renderer the shown file is shown with.
+    pub fn renderer_id(&self) -> &'static str {
+        self.chosen_renderer()
+            .map_or(file_renderers::TEXT, |r| r.id)
+    }
+
+    fn chosen_renderer(&self) -> Option<&'static file_renderers::FileRenderer> {
+        if self.text_override {
+            return None;
+        }
+        file_renderers::chosen(&self.renderer_picks, self.path.as_deref()?)
+    }
+
+    pub fn renderer_picks(&self) -> &BTreeMap<String, String> {
+        &self.renderer_picks
+    }
+
+    pub fn set_renderer_picks(&mut self, picks: BTreeMap<String, String>, cx: &mut Context<Self>) {
+        if self.renderer_picks != picks {
+            self.renderer_picks = picks;
+            cx.notify();
+        }
+    }
+
+    /// Show the shown file, and the files of its kind, with renderer `id`.
+    pub fn pick_renderer(&mut self, id: String, cx: &mut Context<Self>) {
+        if let Some(path) = &self.path {
+            self.renderer_picks
+                .insert(file_renderers::file_kind(path), id);
+            self.text_override = false;
+            cx.notify();
+        }
     }
 
     /// The shown file's absolute path, once its root is known.
@@ -143,6 +208,9 @@ impl FileViewer {
         self.editor = None;
         self.marks = None;
         self._editor_subscriptions.clear();
+        self.renderer = None;
+        self._renderer_subscription = None;
+        self.text_override = false;
         self.dirty = false;
         self.disk_changed = false;
         self.save_error = None;
@@ -156,6 +224,12 @@ impl FileViewer {
         cx.notify();
     }
 
+    /// Show nothing, dropping unsaved edits: the shown file was deleted.
+    pub fn close_deleted(&mut self, cx: &mut Context<Self>) {
+        self.dirty = false;
+        self.open(self.session_id.clone(), None, cx);
+    }
+
     /// Read the shown file again (it changed on disk).
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         self.load(cx);
@@ -164,6 +238,9 @@ impl FileViewer {
     pub fn set_comments(&mut self, comments: Vec<LineComment>, cx: &mut Context<Self>) {
         if self.comments != comments {
             self.comments = comments;
+            if let Some((_, renderer)) = &self.renderer {
+                renderer.set_comments(&self.comments, cx);
+            }
             self.reanchor_and_mark(cx);
             cx.notify();
         }
@@ -264,7 +341,11 @@ impl FileViewer {
                 self._editor_subscriptions = vec![
                     cx.subscribe(&editor, |this, editor, event: &InputEvent, cx| {
                         if matches!(event, InputEvent::Change) {
-                            let dirty = editor.read(cx).value().as_ref() != this.saved_text;
+                            let value = editor.read(cx).value();
+                            if let Some((_, renderer)) = &this.renderer {
+                                renderer.set_text(&value, cx);
+                            }
+                            let dirty = value.as_ref() != this.saved_text;
                             if dirty != this.dirty {
                                 this.dirty = dirty;
                                 cx.notify();
@@ -284,7 +365,65 @@ impl FileViewer {
             }
         }
         self.state = ViewerState::Editing;
+        if let Some((_, renderer)) = &self.renderer {
+            renderer.set_text(&self.saved_text, cx);
+        }
         self.reanchor_and_mark(cx);
+    }
+
+    /// Create or drop the renderer's view so it matches the chosen one;
+    /// called from `render` (creating a view needs the window).
+    fn sync_renderer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let wanted = self
+            .chosen_renderer()
+            .filter(|_| matches!(self.state, ViewerState::Editing));
+        let (Some(wanted), Some(editor), Some(file), Some(root)) =
+            (wanted, &self.editor, self.file(), self.root.clone())
+        else {
+            if self.renderer.take().is_some() {
+                self._renderer_subscription = None;
+            }
+            return;
+        };
+        if self
+            .renderer
+            .as_ref()
+            .is_some_and(|(id, _)| *id == wanted.id)
+        {
+            return;
+        }
+        let text = editor.read(cx).value();
+        let renderer = (wanted.create)(file, root, window, cx);
+        renderer.set_text(&text, cx);
+        renderer.set_comments(&self.comments, cx);
+        self._renderer_subscription = Some(renderer.forward_comments(cx));
+        self.renderer = Some((wanted.id, renderer));
+        // The editor's selection pill or comment card are not in view now.
+        if self.comment_editor.is_some() {
+            self.close_comment_editor(cx);
+        }
+    }
+
+    /// Hand pending reveals to the renderer. One it cannot show stays for
+    /// the editor, which then shows this file.
+    fn reveal_in_renderer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((_, renderer)) = &self.renderer else {
+            return;
+        };
+        let comment = self
+            .pending_reveal
+            .take()
+            .filter(|c| !renderer.reveal_comment(c.clone(), window, cx));
+        let line = self
+            .pending_line
+            .take()
+            .filter(|&line| !renderer.reveal_line(line, window, cx));
+        if comment.is_some() || line.is_some() {
+            self.pending_reveal = comment;
+            self.pending_line = line;
+            self.text_override = true;
+            self.sync_renderer(window, cx);
+        }
     }
 
     /// Find this file's comments again in the editor's text, update the ones
@@ -297,7 +436,7 @@ impl FileViewer {
         let text = editor.read(cx).text().clone();
         let source = text.to_string();
         let lines: Vec<&str> = source.lines().collect();
-        let color = cx.theme().warning.opacity(0.16);
+        let color = crate::comments::mark_color(cx);
         let mut decorations = Vec::new();
         let mut moved = Vec::new();
         for comment in self
@@ -352,7 +491,7 @@ impl FileViewer {
         let file = self.file()?;
         self.comments
             .iter()
-            .find(|c| !c.in_diff && c.file == file && c.start_line <= end && start <= c.end_line)
+            .find(|c| !c.in_diff && c.file == file && c.overlaps(start, end))
             .cloned()
     }
 
@@ -366,17 +505,7 @@ impl FileViewer {
                 else {
                     return;
                 };
-                LineComment {
-                    id: 0,
-                    file,
-                    start_line: start,
-                    end_line: end,
-                    old_side: false,
-                    in_diff: false,
-                    on_message: false,
-                    excerpt,
-                    text: String::new(),
-                }
+                LineComment::on_lines(file, start, end, excerpt)
             }
         };
         self.open_comment_editor(comment, window, cx);
@@ -637,7 +766,12 @@ impl FileViewer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<gpui_kit::AnyElement> {
-        let (pill, card) = self.floating_positions(cx);
+        // A renderer floats its own pill and card.
+        let (pill, card) = if self.renderer.is_some() {
+            (None, None)
+        } else {
+            self.floating_positions(cx)
+        };
         self.anchor.track(pill.or(card), window);
         if let (Some(position), Some(editor)) = (card, &self.comment_editor) {
             return Some(floating(position, editor.clone()));
@@ -686,6 +820,8 @@ impl Render for FileViewer {
             };
             self.apply_loaded(text, window, cx);
         }
+        self.sync_renderer(window, cx);
+        self.reveal_in_renderer(window, cx);
         if self.editor.is_some()
             && let Some(comment) = self.pending_reveal.take()
         {
@@ -711,14 +847,15 @@ impl Render for FileViewer {
                 self.notice(format!("File too large to show ({} KB)", size / 1024), cx)
             }
             ViewerState::Failed(error) => self.notice(error.clone(), cx),
-            ViewerState::Editing => match &self.editor {
-                Some(editor) => Editor::new(editor)
+            ViewerState::Editing => match (&self.renderer, &self.editor) {
+                (Some((_, renderer)), _) => renderer.view().into_any_element(),
+                (None, Some(editor)) => Editor::new(editor)
                     .bordered(false)
                     .text_size(gpui_kit::rems(0.78125))
                     .font_family("Menlo")
                     .size_full()
                     .into_any_element(),
-                None => self.notice("Loading…", cx),
+                (None, None) => self.notice("Loading…", cx),
             },
         };
         v_flex()
@@ -730,7 +867,10 @@ impl Render for FileViewer {
                     this.save(cx);
                     cx.stop_propagation();
                 } else if ks.modifiers.secondary() && ks.modifiers.shift && ks.key == "m" {
-                    this.start_comment(window, cx);
+                    match &this.renderer {
+                        Some((_, renderer)) => renderer.start_comment(window, cx),
+                        None => this.start_comment(window, cx),
+                    }
                     cx.stop_propagation();
                 }
             }))

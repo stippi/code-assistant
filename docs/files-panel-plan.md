@@ -34,7 +34,8 @@ header of file-editing cards, the file headers of `read_files` and
 `search_files` results) open the file in the Files view, at the shown line
 where there is one; requests travel over the app-wide
 `shared::open_file::OpenFileBus`. A file of another project than the
-session's is not opened.
+session's is not opened. Markdown and SVG files show rendered, with a
+dropdown to switch to the editor; see `docs/file-renderers.md`.
 
 Decisions taken while building:
 
@@ -77,6 +78,15 @@ Decisions taken while building:
 - **Watching** uses a new `fs_explorer::watch::TreeWatcher` (the git
   `ChangeWatcher` only covers repositories and does not say which paths
   changed).
+- **Entry menu.** A right click on a tree entry or filter match opens a
+  menu: *Copy Path* (absolute), *Copy Relative Path*, and for files
+  *Comment on File…* and *Delete File…* (confirmed in the menu,
+  `SessionService::delete_project_file`; folders are not deleted).
+- **Comments on a whole file** (`LineComment::on_file`) have no lines or
+  excerpt and go to the model as `<comment on="file" path="…">`. Their card
+  floats under the viewer's path header, which also has a button for it
+  (tinted while the file has such a comment); the composer chip reveals
+  them there.
 
 Where the code lives: `fs_explorer::browse` and `fs_explorer::watch`;
 `code_assistant_core::line_comments` and `session/service/files.rs`; in

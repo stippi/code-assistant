@@ -41,6 +41,10 @@ pub struct LineComment {
     /// quoted passage; `file` and the lines are unused.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub on_message: bool,
+    /// On the whole file rather than on some of its lines: the lines and
+    /// `excerpt` are unused.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub on_file: bool,
     /// The selected lines as shown when the comment was made.
     pub excerpt: String,
     pub text: String,
@@ -56,14 +60,44 @@ impl LineComment {
         }
     }
 
-    /// Where the comment is, for compact labels: `lib.rs:12-15`, or
-    /// `message` for a comment on a chat message.
+    /// Where the comment is, for compact labels: `lib.rs:12-15`, `lib.rs`
+    /// for a comment on the whole file, or `message` for a comment on a chat
+    /// message.
     pub fn location_label(&self) -> String {
         if self.on_message {
             "message".to_owned()
+        } else if self.on_file {
+            self.file_name()
         } else {
             format!("{}:{}", self.file_name(), self.lines_label())
         }
+    }
+
+    /// A new comment on lines `start_line..=end_line` of `file`, which read
+    /// `excerpt`.
+    pub fn on_lines(
+        file: PathBuf,
+        start_line: usize,
+        end_line: usize,
+        excerpt: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: 0,
+            file,
+            start_line,
+            end_line,
+            old_side: false,
+            in_diff: false,
+            on_message: false,
+            on_file: false,
+            excerpt: excerpt.into(),
+            text: String::new(),
+        }
+    }
+
+    /// Whether this comment's lines meet `start..=end`.
+    pub fn overlaps(&self, start: usize, end: usize) -> bool {
+        self.start_line <= end && start <= self.end_line
     }
 
     /// A comment on a chat message, quoting `quote`.
@@ -76,7 +110,24 @@ impl LineComment {
             old_side: false,
             in_diff: false,
             on_message: true,
+            on_file: false,
             excerpt: quote.into(),
+            text: String::new(),
+        }
+    }
+
+    /// A comment on the whole file `file`.
+    pub fn on_file(file: impl Into<PathBuf>) -> Self {
+        Self {
+            id: 0,
+            file: file.into(),
+            start_line: 0,
+            end_line: 0,
+            old_side: false,
+            in_diff: false,
+            on_message: false,
+            on_file: true,
+            excerpt: String::new(),
             text: String::new(),
         }
     }
@@ -114,6 +165,14 @@ pub fn render(comments: &[LineComment]) -> String {
             out.push_str(&format!(
                 "<comment on=\"message\">\n<quote>\n{}\n</quote>\n{}\n</comment>\n",
                 cap_excerpt(&c.excerpt),
+                c.text.trim(),
+            ));
+            continue;
+        }
+        if c.on_file {
+            out.push_str(&format!(
+                "<comment on=\"file\" path=\"{}\">\n{}\n</comment>\n",
+                c.file.display(),
                 c.text.trim(),
             ));
             continue;
@@ -182,6 +241,8 @@ pub struct ParsedComment {
     pub code: String,
     pub text: String,
     pub on_message: bool,
+    /// On the whole file: `lines` and `code` are empty.
+    pub on_file: bool,
 }
 
 /// Read a block produced by [`render`]; `None` for any other text.
@@ -199,7 +260,20 @@ pub fn parse(block: &str) -> Option<Vec<ParsedComment>> {
         let inner_and_rest = &after[head_end + 1..];
         let end = inner_and_rest.find("</comment>")?;
         let inner = &inner_and_rest[..end];
-        let on_message = attribute(head, "on").as_deref() == Some("message");
+        let on = attribute(head, "on");
+        rest = &inner_and_rest[end + "</comment>".len()..];
+        if on.as_deref() == Some("file") {
+            comments.push(ParsedComment {
+                path: attribute(head, "path")?,
+                lines: String::new(),
+                code: String::new(),
+                text: inner.trim().to_owned(),
+                on_message: false,
+                on_file: true,
+            });
+            continue;
+        }
+        let on_message = on.as_deref() == Some("message");
         let tag = if on_message { "quote" } else { "code" };
         let (open, close) = (format!("<{tag}>\n"), format!("\n</{tag}>"));
         let code_start = inner.find(&open)? + open.len();
@@ -218,8 +292,8 @@ pub fn parse(block: &str) -> Option<Vec<ParsedComment>> {
             code: inner[code_start..code_end].to_owned(),
             text: inner[code_end + close.len()..].trim().to_owned(),
             on_message,
+            on_file: false,
         });
-        rest = &inner_and_rest[end + "</comment>".len()..];
     }
     Some(comments)
 }
@@ -243,6 +317,7 @@ mod tests {
             old_side: false,
             in_diff: false,
             on_message: false,
+            on_file: false,
             excerpt: excerpt.to_owned(),
             text: text.to_owned(),
         }
@@ -324,5 +399,26 @@ mod tests {
         let mut c = comment("a.rs", (5, 5), "gone", "why removed?");
         c.old_side = true;
         assert!(render(&[c]).contains("lines=\"5\" side=\"old\""));
+    }
+
+    #[test]
+    fn file_comments_name_only_the_path() {
+        let mut c = LineComment::on_file("/p/src/lib.rs");
+        c.text = "split this up".into();
+        let block = render(&relative_to(
+            &[c.clone(), comment("/p/a.rs", (1, 1), "x", "y")],
+            Path::new("/p"),
+        ));
+        assert!(
+            block.contains("<comment on=\"file\" path=\"src/lib.rs\">\nsplit this up\n</comment>")
+        );
+        let parsed = parse(&block).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert!(parsed[0].on_file);
+        assert_eq!(parsed[0].path, "src/lib.rs");
+        assert_eq!(parsed[0].text, "split this up");
+        assert!(parsed[0].code.is_empty());
+        assert_eq!(parsed[1].lines, "1");
+        assert_eq!(c.location_label(), "lib.rs");
     }
 }

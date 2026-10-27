@@ -37,7 +37,8 @@ Decisions taken while building:
   the hand-back starts with a note naming the tab's address.
 - **Sub-agents** keep their own `BrowserSessionManager` and register it with
   the session's `SessionBrowsers` while they run; the panel lists them as
-  "sub-agent · profile".
+  "sub-agent · profile". The panel of an opened sub-agent transcript shows
+  that sub-agent's browsers (`SessionBrowsers::transcript`).
 - **Lifetime**: a watched throwaway browser survives the turn end and closes
   when the last viewer lets go, unless the agent used it again meanwhile.
 - **Input** is forwarded only after "Take control"; the address bar and

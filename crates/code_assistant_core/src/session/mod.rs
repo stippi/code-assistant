@@ -26,6 +26,7 @@ pub mod pull_request;
 pub mod questions;
 pub mod service;
 pub mod sleep_inhibitor;
+pub mod sub_agent_transcripts;
 pub mod turn;
 pub mod wakeup;
 pub mod watcher;
@@ -85,6 +86,8 @@ pub struct SessionSnapshot {
     pub armed_wakeups: Vec<wakeup::ArmedWakeupInfo>,
     /// Monitors running in the session, oldest first.
     pub active_monitors: Vec<monitor::ActiveMonitorInfo>,
+    /// Sub-agents running right now, oldest first.
+    pub running_sub_agents: Vec<crate::agent::sub_agent::RunningSubAgentInfo>,
 }
 
 impl SessionSnapshot {
@@ -115,6 +118,10 @@ impl SessionSnapshot {
             UiEvent::UpdateActiveMonitors {
                 session_id: self.session_id.clone(),
                 monitors: self.active_monitors.clone(),
+            },
+            UiEvent::UpdateRunningSubAgents {
+                session_id: self.session_id.clone(),
+                agents: self.running_sub_agents.clone(),
             },
         ];
         // Show the error banner when connecting to an errored session.

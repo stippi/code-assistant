@@ -25,7 +25,7 @@ pub mod diff_syntax;
 pub mod inline_renderer;
 pub mod mcp_tool;
 pub mod session_card;
-pub mod sub_agent_card;
+pub mod sub_agent_line;
 pub mod terminal_card;
 pub mod wakeup_renderer;
 
