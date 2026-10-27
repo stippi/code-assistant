@@ -73,6 +73,23 @@
   - Falls back to raw output if JSON parsing fails
   - Located in `build_content()` method, triggered when tool_name is "spawn_agent"
 
+### Completed (phase 7: background runs, transcripts)
+- [x] **Background sub-agents**: `background: true` returns right away; the answer arrives
+  later as a user message `[sub-agent #N] finished: …` (or `failed` / `cancelled`), which starts
+  a turn when the session is idle and is queued otherwise (`SubAgentSink`,
+  `SessionService::deliver_sub_agent_result`). Background agents end with the session.
+- [x] **Running sub-agents view**: `UiEvent::UpdateRunningSubAgents` lists the running agents
+  (`#id`, title, activity, elapsed). GPUI shows them in a panel above the input, outside the
+  scrolling conversation, with Open and Cancel (`main_screen/agents_panel.rs`); in the
+  conversation a `spawn_agent` call is one collapsed line, "Sub-agent · <task> running /
+  finished / failed", expanding to its answer and a link to its transcript
+  (`tool_cards/sub_agent_line.rs`). The terminal UI shows status lines and the
+  `/agents [cancel <id>|cancel all|open <id>|back]` command.
+- [x] **Transcripts**: each sub-agent's conversation is stored as a read-only session
+  `<parent>/sub-agents/<N>`, left out of the session listings and openable from both UIs. In
+  GPUI the input of an opened transcript is locked: no typing, sending, pasting, and its
+  selectors and buttons take no clicks.
+
 ### Pending
 - [ ] **Permission attribution**: Show permission requests as originating from sub-agent context (inline or popover)
 
