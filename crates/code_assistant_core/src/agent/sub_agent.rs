@@ -531,12 +531,14 @@ impl DefaultSubAgentRunner {
             }
         };
 
-        // Create a fresh project manager on the parent's project, or on the
-        // sub-agent's own worktree.
         let project_manager: Arc<dyn crate::config::ProjectManager> =
             Arc::from((self.project_manager_factory)());
+        // The sub-agent's own worktree, if it has one, becomes its project;
+        // `init_path` stays the parent's, so per-project tool choices still
+        // apply.
+        let mut session_config = self.session_config.clone();
         if let Some(path) = project_path {
-            let _ = project_manager.add_temporary_project(path);
+            session_config.worktree_path = Some(path);
         }
 
         let command_executor: Box<dyn CommandExecutor> = {
@@ -581,7 +583,7 @@ impl DefaultSubAgentRunner {
             hooks_factory: self.hooks_factory.clone(),
         };
 
-        let mut agent = Agent::new(components, self.session_config.clone());
+        let mut agent = Agent::new(components, session_config);
 
         // Configure for sub-agent use.
         agent.set_tool_scope(tool_scope_for_subagent());

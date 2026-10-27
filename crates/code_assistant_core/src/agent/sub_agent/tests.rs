@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::ProjectManager;
 use crate::mocks::{MockLLMProvider, MockProjectManager, MockUI, PendingLLMProvider};
 use crate::session::service::LlmClientFactory;
 use std::time::Duration;
@@ -678,4 +679,80 @@ async fn sub_agents_share_the_tree_unless_a_worktree_is_asked_for() {
         ..SubAgentOptions::default()
     };
     assert!(ran_in_worktree(&repo, isolated).await);
+}
+
+/// A project manager the test can still look into after the sub-agent ran.
+#[derive(Clone, Default)]
+struct SharedProjects(Arc<MockProjectManager>);
+
+impl ProjectManager for SharedProjects {
+    fn add_temporary_project(&self, path: std::path::PathBuf) -> Result<String> {
+        self.0.add_temporary_project(path)
+    }
+
+    fn get_projects(&self) -> Result<std::collections::HashMap<String, crate::types::Project>> {
+        self.0.get_projects()
+    }
+
+    fn get_project(&self, name: &str) -> Result<Option<crate::types::Project>> {
+        self.0.get_project(name)
+    }
+
+    fn get_explorer_for_project(&self, name: &str) -> Result<Box<dyn fs_explorer::CodeExplorer>> {
+        self.0.get_explorer_for_project(name)
+    }
+}
+
+/// Run a sub-agent of a session in `parent` and return the directory its
+/// project (the one its system prompt names) points at.
+async fn project_of(parent: &std::path::Path, options: SubAgentOptions) -> std::path::PathBuf {
+    let projects = SharedProjects::default();
+    let config = SessionConfig {
+        init_path: Some(parent.to_path_buf()),
+        ..SessionConfig::default()
+    };
+    let runner = DefaultSubAgentRunner::new(
+        SessionModelConfig::new("test-sub-agent".into()),
+        config,
+        Arc::default(),
+        Arc::default(),
+        Arc::new(MockUI::default()),
+        None,
+        ToolPermissions::default(),
+        crate::tools::test_registry(),
+        None,
+        None,
+    )
+    .with_llm_client_factory(answering_provider("done"))
+    .with_project_manager_factory(Arc::new({
+        let projects = projects.clone();
+        move || Box::new(projects.clone())
+    }));
+    runner
+        .run("tool-1", "change something".into(), options)
+        .await
+        .unwrap();
+    // The mock manager names every temporary project alike, so a later
+    // registration of the parent's tree would have replaced the sub-agent's.
+    projects
+        .0
+        .get_project("temp_project")
+        .unwrap()
+        .expect("the sub-agent registered its project")
+        .path
+}
+
+#[tokio::test]
+async fn sub_agent_works_in_its_worktree_not_the_parents_tree() {
+    let (dir, repo) = git_project();
+    let options = SubAgentOptions {
+        worktree: true,
+        ..SubAgentOptions::default()
+    };
+    let project = project_of(&repo, options).await;
+    assert!(
+        project.starts_with(dir.path().canonicalize().unwrap().join(".worktrees")),
+        "{} is not in the worktrees folder",
+        project.display()
+    );
 }
