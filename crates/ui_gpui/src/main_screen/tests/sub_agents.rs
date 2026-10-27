@@ -201,3 +201,16 @@ fn a_transcript_takes_no_input(cx: &mut TestAppContext) {
     assert_eq!(test.transcript(), vec!["user: Find the parser"]);
     assert!(!test.agent_is_running());
 }
+
+#[gpui_kit::test]
+fn a_running_sub_agents_transcript_offers_no_resume(cx: &mut TestAppContext) {
+    // The sub-agent still works on its task: its transcript ends with the
+    // task, which in a session of its own would offer Resume.
+    let (core, _parent, transcript_id) = session_with_transcript();
+    let mut test = MainScreenTest::with_core(cx, core);
+    test.gpui.cmd_load_session(transcript_id, None);
+    test.wait_until("the transcript is shown", |test| {
+        test.transcript().len() == 1
+    });
+    assert!(!test.shows("resume-session"));
+}

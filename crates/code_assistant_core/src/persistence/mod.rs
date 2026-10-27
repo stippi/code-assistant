@@ -719,8 +719,13 @@ impl ChatSession {
     ///     was killed before executing / returning the tool result).
     ///
     /// A session that ends in a plain assistant text reply is considered
-    /// "complete" and is not resumable.
+    /// "complete" and is not resumable. Neither is a sub-agent's transcript:
+    /// its agent runs on behalf of the parent session, and while it works the
+    /// transcript ends in its task or a tool call.
     pub fn is_resumable(&self) -> bool {
+        if layout::sub_agent_parent(&self.id).is_some() {
+            return false;
+        }
         let messages: Vec<&Message> = self.get_active_messages();
         is_resumable_from_messages(messages.as_slice())
     }

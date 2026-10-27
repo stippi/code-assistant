@@ -1281,6 +1281,7 @@ impl Render for MessagesView {
                         .child(
                             div()
                                 .id("resume-session")
+                                .debug_selector(|| "resume-session".into())
                                 .flex()
                                 .items_center()
                                 .justify_center()
