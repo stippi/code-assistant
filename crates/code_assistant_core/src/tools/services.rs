@@ -8,6 +8,7 @@
 
 use crate::agent::SubAgentRunner;
 use crate::config::ProjectManager;
+use crate::session::monitor::SessionMonitors;
 use crate::session::wakeup::SessionWakeups;
 use crate::tools::core::ToolContext;
 use crate::tools::terminal_interrupts::TerminalInterrupts;
@@ -33,6 +34,10 @@ pub struct ToolServices {
     /// Optional session-bound wakeup handle for the `schedule_wakeup` /
     /// `cancel_wakeup` tools
     pub wakeups: Option<SessionWakeups>,
+    /// Optional session-bound monitor handle for the `monitor` /
+    /// `stop_monitor` tools; also tells the session when a background job
+    /// of `execute_command` exits
+    pub monitors: Option<SessionMonitors>,
     /// Optional registry of live PTY sessions for `execute_command`'s
     /// session mode and the `write_stdin` tool. Lives on the session
     /// instance so sessions survive across agent runs.
@@ -50,6 +55,10 @@ pub struct ToolServices {
     /// from the owning `SessionManager`'s persistence; when absent the tools
     /// fall back to the default on-disk store.
     pub session_source: Option<Arc<dyn crate::session_query::SessionSource>>,
+    /// The MCP servers whose resources the file tools reach through the
+    /// `:mcp:<server>` scope: the agent's registry's servers, minus those the
+    /// session switched off. `None` where MCP resources are not offered.
+    pub mcp_resources: Option<Arc<mcp_client::McpResourceServers>>,
 }
 
 impl ToolServices {
@@ -60,10 +69,12 @@ impl ToolServices {
             ui: None,
             sub_agent_runner: None,
             wakeups: None,
+            monitors: None,
             pty_sessions: None,
             terminal_interrupts: None,
             browser_sessions: None,
             session_source: None,
+            mcp_resources: None,
         }
     }
 }
@@ -80,6 +91,7 @@ pub trait ToolServicesAccess {
     fn sub_agent_runner(&self) -> Option<&dyn SubAgentRunner>;
     fn pty_sessions(&self) -> Option<&PtySessionManager>;
     fn browser_sessions(&self) -> Option<&web::BrowserSessionManager>;
+    fn mcp_resources(&self) -> Option<&mcp_client::McpResourceServers>;
 }
 
 impl ToolServicesAccess for ToolContext<'_> {
@@ -115,5 +127,10 @@ impl ToolServicesAccess for ToolContext<'_> {
     fn browser_sessions(&self) -> Option<&web::BrowserSessionManager> {
         self.extension::<ToolServices>()
             .and_then(|services| services.browser_sessions.as_deref())
+    }
+
+    fn mcp_resources(&self) -> Option<&mcp_client::McpResourceServers> {
+        self.extension::<ToolServices>()
+            .and_then(|services| services.mcp_resources.as_deref())
     }
 }

@@ -39,6 +39,10 @@ pub struct AgentComponents {
     /// Optional session-bound wakeup handle for the wakeup tools.
     pub wakeups: Option<crate::session::wakeup::SessionWakeups>,
 
+    /// Optional session-bound monitor handle for the monitor tools and
+    /// background-job exit notifications.
+    pub monitors: Option<crate::session::monitor::SessionMonitors>,
+
     /// Optional PTY session registry, shared with the owning session
     /// instance so interactive sessions survive across agent runs.
     pub pty_sessions: Option<Arc<pty_session::PtySessionManager>>,
@@ -87,6 +91,7 @@ impl Agent {
 
             sub_agent_runner,
             wakeups,
+            monitors,
             pty_sessions,
             terminal_interrupts,
             browser_sessions,
@@ -99,11 +104,12 @@ impl Agent {
         // MCP servers and built-in tool groups the session deactivated → their
         // scope tags, which the runtime excludes from the offered/dispatchable
         // tool set.
-        let mut excluded_tool_capabilities: Vec<String> =
-            crate::tools::mcp_selection::session_disabled_mcp_servers(&session_config)
-                .iter()
-                .map(|server| mcp_client::server_scope_capability(server))
-                .collect();
+        let disabled_mcp_servers =
+            crate::tools::mcp_selection::session_disabled_mcp_servers(&session_config);
+        let mut excluded_tool_capabilities: Vec<String> = disabled_mcp_servers
+            .iter()
+            .map(|server| mcp_client::server_scope_capability(server))
+            .collect();
         excluded_tool_capabilities.extend(
             crate::tools::builtin_selection::session_excluded_capabilities(&session_config),
         );
@@ -118,10 +124,15 @@ impl Agent {
 
             sub_agent_runner,
             wakeups,
+            monitors,
             pty_sessions,
             terminal_interrupts,
             browser_sessions,
             session_source,
+            mcp_resources: crate::tools::mcp::session_resource_servers(
+                &tool_registry,
+                &disabled_mcp_servers,
+            ),
         });
 
         let runtime = AgentRuntime::new(AgentRuntimeComponents {
@@ -306,11 +317,11 @@ impl Agent {
             state.context_limit_override = None;
         }
         if let Some(model_config) = self.app_state().model_config.clone() {
-            // Resolve the model identifier (provider/id) from the display name
-            // This is used for system prompt selection based on model ID matching
+            // The model's key (provider/id), also for sessions that refer to
+            // it by name. Used for system prompt selection by model ID.
             let model_hint = llm::provider_config::ConfigurationSystem::load()
                 .ok()
-                .and_then(|config| config.model_identifier(&model_config.model_name))
+                .and_then(|config| config.resolve_key(&model_config.model_name))
                 .or_else(|| Some(model_config.model_name.clone()));
             self.set_model_hint(model_hint);
         }

@@ -255,19 +255,16 @@ impl CommandExecutor for MockCommandExecutor {
 
 // Create a mock with successful execution
 pub fn create_command_executor_mock() -> MockCommandExecutor {
-    MockCommandExecutor::new(vec![Ok(CommandOutput {
-        success: true,
-        output: "Command output".to_string(),
-    })])
+    MockCommandExecutor::new(vec![Ok(CommandOutput::success("Command output"))])
 }
 
 // Create a mock with failed execution
 #[allow(dead_code)]
 pub fn create_failed_command_executor_mock() -> MockCommandExecutor {
-    MockCommandExecutor::new(vec![Ok(CommandOutput {
-        success: false,
-        output: "Command failed: permission denied".to_string(),
-    })])
+    MockCommandExecutor::new(vec![Ok(CommandOutput::exited(
+        Some(1),
+        "Command failed: permission denied",
+    ))])
 }
 
 // Mock UI
@@ -1212,6 +1209,12 @@ impl ToolTestFixture {
         fixture
     }
 
+    /// Offer these MCP servers' resources (the `:mcp:<server>` scope).
+    pub fn with_mcp_resources(mut self, servers: Arc<mcp_client::McpResourceServers>) -> Self {
+        self.services.mcp_resources = Some(servers);
+        self
+    }
+
     /// Enable plan state for this fixture
     pub fn with_plan(mut self) -> Self {
         self.services.plan = Some(PlanState::default());
@@ -1233,6 +1236,29 @@ impl ToolTestFixture {
             used_ids: 0,
         });
         self
+    }
+
+    /// Attach a monitor handle recording what it delivers (session
+    /// `test-session`); returns the recorder.
+    pub fn with_recorded_monitors(self) -> (Self, RecordingMonitorSink) {
+        let sink = RecordingMonitorSink::default();
+        (self.with_monitors(sink.clone()), sink)
+    }
+
+    /// Attach a monitor handle delivering into `sink` (session
+    /// `test-session`).
+    pub fn with_monitors(mut self, sink: impl crate::session::monitor::MonitorSink) -> Self {
+        self.services.monitors = Some(crate::session::monitor::SessionMonitors {
+            handle: crate::session::monitor::MonitorHandle::new(sink, None),
+            session_id: "test-session".to_string(),
+            used_ids: 0,
+        });
+        self
+    }
+
+    /// The monitor handle, for assertions.
+    pub fn monitors(&self) -> Option<&crate::session::monitor::SessionMonitors> {
+        self.services.monitors.as_ref()
     }
 
     /// Attach a PTY session registry, as agent sessions have one.
@@ -1375,5 +1401,37 @@ impl crate::persistence::DraftStore for MockDraftStore {
         Self::check(&self.write_error)?;
         self.drafts.lock().unwrap().remove(session_id);
         Ok(())
+    }
+}
+
+/// Records the notifications a [`crate::session::monitor::MonitorHandle`]
+/// delivers.
+#[derive(Clone, Default)]
+pub struct RecordingMonitorSink {
+    delivered: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl RecordingMonitorSink {
+    pub fn delivered(&self) -> Vec<String> {
+        self.delivered.lock().unwrap().clone()
+    }
+
+    /// Wait (up to 10 s) until at least `count` messages were delivered.
+    pub async fn wait_for(&self, count: usize) -> Vec<String> {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let delivered = self.delivered();
+            if delivered.len() >= count || tokio::time::Instant::now() >= deadline {
+                return delivered;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::session::monitor::MonitorSink for RecordingMonitorSink {
+    async fn deliver(&self, _session_id: &str, message: &str) {
+        self.delivered.lock().unwrap().push(message.to_string());
     }
 }

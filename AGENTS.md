@@ -11,6 +11,7 @@ Additional documentation is available in the `docs` folder if needed.
 - `cargo test --package <crate>` - Test a single crate (names in Crate Layers below)
 - `cargo fmt --all -- --check` - Check code formatting
 - `cargo clippy --all-targets --all-features -- -D warnings` - Run linter
+- `cargo deny check` - Check dependencies for advisories, licenses and sources (policy in `deny.toml`; `cargo install cargo-deny` once)
 
 ## Architecture Overview
 
@@ -52,6 +53,21 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
 
 ## Configuration
 
+### Models & Reasoning Effort
+- Providers in `providers.json`; the models the picker offers in
+  `model-selection.json`, keyed `provider/id` with optional overrides
+  (`llm::model_selection`; while it is missing, an old `models.json` is
+  imported in memory)
+- What a model can do (context, output limit, edit format, effort levels and
+  how to request them) comes from `llm::capabilities` — a hand-kept catalog
+  (`catalog.json`), the provider's model listing (`llm::discovery`, cached in
+  `model-discovery.json`) and fallback rules per API family
+- Effort is chosen per session (`SessionModelConfig::effort`,
+  `SessionService::set_effort`, `UiEvent::UpdateEffort`); the factory turns
+  it into request fields, clients send no reasoning defaults of their own
+- Model `config` blocks are JSON Merge Patches; see
+  `docs/model-configuration.md`
+
 ### MCP Client Mode
 - Connects to MCP servers configured in `<config_dir>/mcp-servers.json`
   (stdio or HTTP, via the `rmcp` SDK) and registers their tools in the
@@ -59,6 +75,10 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
   `.mcp.json` at the project root
 - The registry is rebuilt from the current config at the start of every
   agent run (`ToolRegistryProvider` seam)
+- Server resources are read through the file tools' `:mcp:<server>` scope
+  (`read_files` paths = resource URIs, `list_files` lists them); servers
+  travel in the registry's `McpResourceServers` extension into
+  `ToolServices::mcp_resources`, and the system prompt lists their catalog
 - An expired OAuth login is renewed by a browser login when a call or
   connect hits it (`mcp_client::Reauthorizer`, `tools::mcp_auth`), unless
   `auto_reauthorize` is off in `mcp-servers.json`; a server without a login
@@ -106,6 +126,17 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
 - Audio through the `VoiceAudio` seam; the binary's `voice` feature plugs in
   the `audio` crate (macOS voice-processing I/O with echo cancellation,
   `cpal` half-duplex elsewhere); see `docs/voice-mode.md`
+
+### Background Monitors
+- `monitor` tool: a command whose output lines are events; each (batched)
+  reaches the agent as a `[monitor #N] …` message that starts a turn when
+  the session is idle or is queued while one runs — like a wakeup;
+  `stop_monitor` ends it silently
+- Background `execute_command` jobs (session mode) announce their exit with
+  `[background job <id> exited] …` unless `write_stdin` saw it first
+- `code_assistant_core::session::monitor` (`MonitorHandle`, installed with
+  `SessionManager::set_monitor_handle`; `UiEvent::UpdateActiveMonitors`);
+  see `docs/background-monitors.md`
 
 ### Session Storage
 - One folder per session below `sessions/`, the ID is its path:

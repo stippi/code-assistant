@@ -2,18 +2,21 @@
 //!
 //! `register_mcp_tools` is the whole client mode from the embedder's point of
 //! view: connect to every enabled server, list its tools, wrap and register
-//! the enabled ones. A server that fails to start contributes an error status
-//! instead of tools.
+//! the enabled ones. A server offering resources is also left with the
+//! registry, in its [`McpResourceServers`] extension. A server that fails to
+//! start contributes an error status instead of tools.
 
 use crate::client::McpServerConnection;
 use crate::config::{McpServerConfig, McpServersConfig};
+use crate::resources::{McpResourceServers, ResourceCatalog, ResourceServer};
 use crate::tool::McpTool;
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use futures::future::join_all;
 use rmcp::model::Tool as McpToolDescriptor;
 use std::borrow::Cow;
 use std::sync::Arc;
+use std::time::Duration;
 use tools_core::registry::ToolRegistry;
 
 /// Supplies (and typically caches) live [`McpServerConnection`]s for
@@ -91,12 +94,42 @@ pub async fn register_mcp_tools_pooled(
     register_discovered(registry, servers, discovered, extra_capabilities)
 }
 
-/// A connected server and the tools it offers.
-type Discovered = (Arc<McpServerConnection>, Vec<McpToolDescriptor>);
+/// A connected server, the tools it offers and, when it offers resources,
+/// what it listed of them.
+struct Discovered {
+    connection: Arc<McpServerConnection>,
+    descriptors: Vec<McpToolDescriptor>,
+    resources: Option<ResourceCatalog>,
+}
 
+/// How long registration waits for a server's resource listing. The catalog
+/// only feeds the system prompt; without it the resources are still
+/// readable, and `list_files` lists them again (with the full timeout).
+const CATALOG_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// List a server's tools and, alongside, its resources.
 async fn discover(connection: Arc<McpServerConnection>) -> Result<Discovered> {
-    let descriptors = connection.list_tools().await?;
-    Ok((connection, descriptors))
+    let catalog = async {
+        if !connection.supports_resources() {
+            return None;
+        }
+        // A failed listing still offers the server's resources: reading may
+        // work, and listing again reports the error when the model asks.
+        let catalog = tokio::time::timeout(CATALOG_TIMEOUT, ResourceCatalog::discover(&connection))
+            .await
+            .unwrap_or_else(|_elapsed| Err(anyhow!("no answer within {CATALOG_TIMEOUT:?}")))
+            .inspect_err(|error| {
+                tracing::warn!(server = connection.name(), "listing resources: {error:#}")
+            })
+            .unwrap_or_default();
+        Some(catalog)
+    };
+    let (descriptors, resources) = tokio::join!(connection.list_tools(), catalog);
+    Ok(Discovered {
+        descriptors: descriptors?,
+        connection,
+        resources,
+    })
 }
 
 /// Register what the servers offered, in configuration order, so the
@@ -113,14 +146,8 @@ fn register_discovered(
         .into_iter()
         .zip(discovered)
         .map(|((name, server_config), result)| {
-            let result = result.map(|(connection, descriptors)| {
-                register_tools(
-                    registry,
-                    connection,
-                    descriptors,
-                    server_config,
-                    extra_capabilities,
-                )
+            let result = result.map(|discovered| {
+                register_tools(registry, discovered, server_config, extra_capabilities)
             });
             McpServerStatus {
                 server: name.clone(),
@@ -139,11 +166,9 @@ pub async fn register_connection_tools(
     config: &McpServerConfig,
     extra_capabilities: &[&'static str],
 ) -> Result<Vec<String>> {
-    let descriptors = connection.list_tools().await?;
     Ok(register_tools(
         registry,
-        connection,
-        descriptors,
+        discover(connection).await?,
         config,
         extra_capabilities,
     ))
@@ -151,11 +176,15 @@ pub async fn register_connection_tools(
 
 fn register_tools(
     registry: &mut ToolRegistry,
-    connection: Arc<McpServerConnection>,
-    descriptors: Vec<McpToolDescriptor>,
+    discovered: Discovered,
     config: &McpServerConfig,
     extra_capabilities: &[&'static str],
 ) -> Vec<String> {
+    let Discovered {
+        connection,
+        descriptors,
+        resources,
+    } = discovered;
     let mut registered = Vec::new();
     for descriptor in descriptors {
         if !config.is_tool_enabled(&descriptor.name) {
@@ -165,6 +194,14 @@ fn register_tools(
         let tool = McpTool::new(connection.clone(), &descriptor, capabilities);
         registered.push(tool.registry_name().to_string());
         registry.register(Box::new(tool));
+    }
+    if let Some(catalog) = resources {
+        registry
+            .extension_mut::<McpResourceServers>()
+            .insert(ResourceServer {
+                connection: connection.clone(),
+                catalog,
+            });
     }
     tracing::info!(
         server = connection.name(),

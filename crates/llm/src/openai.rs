@@ -77,8 +77,6 @@ struct OpenAIRequest {
     stream_options: Option<StreamOptions>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     prompt_cache_key: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -309,7 +307,6 @@ pub struct OpenAIClient {
     model: String,
     model_temperatures: HashMap<String, f32>,
     model_top_ps: HashMap<String, f32>,
-    model_reasoning_efforts: HashMap<String, String>,
     // Customization points
     auth_provider: Box<dyn AuthProvider>,
     request_customizer: Box<dyn RequestCustomizer>,
@@ -325,14 +322,12 @@ impl OpenAIClient {
     pub fn new(api_key: String, model: String, base_url: String) -> Self {
         let model_temperatures = Self::default_temperatures();
         let model_top_ps = Self::default_top_ps();
-        let model_reasoning_efforts = Self::default_reasoning_efforts();
         Self {
             client: utils::http_client(),
             base_url,
             model,
             model_temperatures,
             model_top_ps,
-            model_reasoning_efforts,
             auth_provider: Box::new(ApiKeyAuth::new(api_key)),
             request_customizer: Box::new(DefaultRequestCustomizer),
             custom_config: None,
@@ -348,14 +343,12 @@ impl OpenAIClient {
     ) -> Self {
         let model_temperatures = Self::default_temperatures();
         let model_top_ps = Self::default_top_ps();
-        let model_reasoning_efforts = Self::default_reasoning_efforts();
         Self {
             client: utils::http_client(),
             base_url,
             model,
             model_temperatures,
             model_top_ps,
-            model_reasoning_efforts,
             auth_provider,
             request_customizer,
             custom_config: None,
@@ -403,21 +396,6 @@ impl OpenAIClient {
     /// Returns the temperature for the current model, defaulting to 1.0 if not set.
     fn get_top_p(&self) -> Option<f32> {
         self.model_top_ps.get(&self.model).cloned()
-    }
-
-    /// Returns default temperature mapping for known model IDs.
-    fn default_reasoning_efforts() -> HashMap<String, String> {
-        let mut m = HashMap::new();
-        m.insert("o3".to_string(), "low".to_string());
-        m.insert("o4-mini".to_string(), "low".to_string());
-        m.insert("gpt-oss-120b".to_string(), "low".to_string());
-        m.insert("openai/gpt-oss-120b".to_string(), "low".to_string());
-        // Add other model defaults as needed
-        m
-    }
-
-    fn get_reasoning_effort(&self) -> Option<String> {
-        self.model_reasoning_efforts.get(&self.model).cloned()
     }
 
     pub(crate) fn convert_message(message: &Message) -> Vec<OpenAIChatMessage> {
@@ -691,7 +669,7 @@ impl OpenAIClient {
 
         // Apply custom model configuration if present
         if let Some(ref custom_config) = self.custom_config {
-            request_json = crate::config_merge::merge_json(request_json, custom_config.clone());
+            request_json = crate::config_merge::merge_patch(request_json, custom_config.clone());
         }
 
         // Allow request customizer to modify the request
@@ -796,7 +774,7 @@ impl OpenAIClient {
 
         // Apply custom model configuration if present
         if let Some(ref custom_config) = self.custom_config {
-            request_json = crate::config_merge::merge_json(request_json, custom_config.clone());
+            request_json = crate::config_merge::merge_patch(request_json, custom_config.clone());
         }
 
         // Allow request customizer to modify the request
@@ -1197,7 +1175,6 @@ impl LLMProvider for OpenAIClient {
             stream: None,
             stream_options: None,
             prompt_cache_key: Some(crate::prompt_caching::prompt_cache_key(&request.session_id)),
-            reasoning_effort: self.get_reasoning_effort(),
             // The API rejects a tool choice for a request without tools.
             tool_choice: tools.as_ref().map(|_| serde_json::json!("auto")),
             tools,

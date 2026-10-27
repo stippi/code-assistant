@@ -698,6 +698,19 @@ impl Gpui {
                     });
                 }
             }
+            UiEvent::UpdateActiveMonitors {
+                session_id,
+                monitors,
+            } => {
+                self.update_project_sidebar(cx, |sidebar, cx| {
+                    sidebar.update_session_monitored(session_id.clone(), !monitors.is_empty(), cx);
+                });
+                if self.is_current_session(&session_id) {
+                    self.update_messages_view(cx, |view, cx| {
+                        view.set_active_monitors(monitors, cx);
+                    });
+                }
+            }
             UiEvent::UpdateSessionActivityState {
                 session_id,
                 activity_state,
@@ -887,6 +900,14 @@ impl Gpui {
                 // Store the current model
                 *self.current_model.lock().unwrap() = Some(model_name);
                 // Refresh UI to update the model selector
+                cx.refresh();
+            }
+            UiEvent::UpdateEffort { choice } => {
+                debug!(
+                    "UI: UpdateEffort event with selection {:?}",
+                    choice.selected
+                );
+                *self.current_effort.lock().unwrap() = choice;
                 cx.refresh();
             }
             UiEvent::UpdateAllowedModels { models } => {

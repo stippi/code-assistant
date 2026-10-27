@@ -1,5 +1,6 @@
 //! General settings section — theme, scale, and other global preferences.
 
+use crate::input::model_selector::ModelItem;
 use code_assistant_core::session::default_model::DefaultModelConfig;
 use code_assistant_core::session::idle_handoff::HandoffConfig;
 use code_assistant_core::session::lifecycle::LifecycleConfig;
@@ -15,7 +16,7 @@ use tracing::warn;
 pub struct GeneralSection {
     focus_handle: FocusHandle,
     /// The model new sessions start with; stored in `ui-settings.json`.
-    default_model_select: Entity<SelectState<Vec<String>>>,
+    default_model_select: Entity<SelectState<Vec<ModelItem>>>,
     _default_model_subscription: Subscription,
     /// Input tokens of a session's last request from which an idle session
     /// gets a prepared handoff; stored in `handoff.json`.
@@ -31,7 +32,7 @@ pub struct GeneralSection {
 impl GeneralSection {
     pub fn new(window: &mut gpui_kit::Window, cx: &mut Context<Self>) -> Self {
         let default_model_select =
-            cx.new(|cx| SelectState::new(Vec::<String>::new(), None, window, cx));
+            cx.new(|cx| SelectState::new(Vec::<ModelItem>::new(), None, window, cx));
         let default_model_subscription = cx.subscribe_in(
             &default_model_select,
             window,
@@ -70,16 +71,19 @@ impl GeneralSection {
         this
     }
 
-    /// Re-read the configured models and the stored default, e.g. after the
-    /// Models section changed `models.json`.
+    /// Re-read the offered models and the stored default, e.g. after the
+    /// Models section changed the selection.
     pub fn reload(&mut self, window: &mut gpui_kit::Window, cx: &mut Context<Self>) {
-        let mut models = llm::provider_config::ConfigurationSystem::load()
-            .map(|config| config.list_models())
+        let config = llm::provider_config::ConfigurationSystem::load().ok();
+        let models = config
+            .as_ref()
+            .map(|config| ModelItem::for_models(config, None))
             .unwrap_or_default();
-        models.sort();
-        let default_model = DefaultModelConfig::load()
-            .model
-            .filter(|model| models.contains(model));
+        let default_model = config.as_ref().and_then(|config| {
+            DefaultModelConfig::load()
+                .model
+                .and_then(|model| config.resolve_key(&model))
+        });
         self.default_model_select.update(cx, |state, cx| {
             state.set_items(models, window, cx);
             if let Some(model) = &default_model {
@@ -90,8 +94,8 @@ impl GeneralSection {
 
     fn on_default_model_selected(
         &mut self,
-        _: &Entity<SelectState<Vec<String>>>,
-        event: &SelectEvent<Vec<String>>,
+        _: &Entity<SelectState<Vec<ModelItem>>>,
+        event: &SelectEvent<Vec<ModelItem>>,
         _window: &mut gpui_kit::Window,
         _cx: &mut Context<Self>,
     ) {
@@ -241,7 +245,7 @@ impl Render for GeneralSection {
                     ))
                     .child(Self::render_config_path(
                         "Models",
-                        &llm::provider_config::ConfigurationSystem::models_config_path()
+                        &llm::model_selection::ModelSelection::path()
                             .display()
                             .to_string(),
                         cx,

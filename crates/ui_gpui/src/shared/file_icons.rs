@@ -242,7 +242,7 @@ impl FileIcons {
         let icon_type = match tool_name {
             "read_files" => TOOL_READ_FILES,
             "list_files" => TOOL_LIST_FILES,
-            "execute_command" => TOOL_EXECUTE_COMMAND,
+            "execute_command" | "monitor" | "stop_monitor" => TOOL_EXECUTE_COMMAND,
             "write_file" => TOOL_WRITE_FILE,
             "replace_in_file" => TOOL_REPLACE_IN_FILE,
             "edit" => TOOL_EDIT,

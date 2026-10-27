@@ -247,6 +247,61 @@ server share one browser login, which runs to completion even if the tool
 call that started it is cancelled. With the switch off, the tool call fails
 with a hint to log in from the settings or with `code-assistant mcp-login`.
 
+### Resources
+
+MCP servers can also expose *resources* (spec: `resources/list`,
+`resources/templates/list`, `resources/read`); the spec leaves it to the
+host how they reach the model. Rather than two more tools per server (Claude
+Code's `ListMcpResourcesTool` / `ReadMcpResourceTool`), the file tools
+address them through a reserved scope next to the skills' `:config:` /
+`:system:`:
+
+- `read_files` with project `:mcp:<server>` reads resources; the paths are
+  resource URIs, optionally with a line range (`docs://guide.md:10-20`).
+- `list_files` with project `:mcp:<server>` lists the server's current
+  resources and templates; a path narrows them to a URI prefix (`.` for
+  all).
+
+How it is wired:
+
+- **Registration** (`mcp_client::register_*`) leaves every server declaring
+  the `resources` capability, with what it listed, in the registry's
+  `McpResourceServers` extension (`ToolRegistry::extension`) — no tools are
+  added. Resources and templates are listed alongside the tools and waited
+  for at most 5 s; a server that does not answer in time is offered with an
+  empty catalog.
+- **`Agent::new`** takes them from the registry minus the servers the
+  session switched off (`tools::mcp::session_resource_servers`) and puts
+  them into `ToolServices::mcp_resources`. Sub-agents get the same set;
+  code-assistant's own MCP server mode gets none, so its `read_files` cannot
+  reach the resources of code-assistant's servers.
+- **The system prompt** gets an *MCP Resources* section per server
+  (`tools::mcp::resources_prompt_section`) where the tool scope offers
+  `read_files`: 25 resources and 10 templates at most, resources annotated `audience: ["user"]` left out, the rest
+  ordered by `priority`.
+- **Line ranges**: a trailing `:N`, `:N-M`, `:N-`, `:-M` is a line range
+  when what precedes it still has a scheme. A URI the server listed is
+  taken whole, a listed remainder takes the range; so is a URI that only
+  one of the server's templates produces whole (`log://app:{month}`). A
+  bare number right after an authority (`http://host:8080`) of an unlisted
+  URI is taken for a port. When the shortened URI of an unlisted one cannot
+  be read, the path is read whole (`urn:docs:42`). A read returning several
+  contents gives one file per content, named by its URI plus the range,
+  which applies to each.
+
+Contents become what the model can use (`mcp_client::ResourcePart`): text
+as text, PNG/JPEG/GIF/WebP blobs as images, other blobs as text when they
+decode to UTF-8 (JSON, SVG, …), anything else fails that path with a
+reason. Tool results get the same treatment for embedded resources, and a
+resource link becomes a line naming its URI. Reads go through the same
+reconnect/re-authorization path as tool calls; listings and reads, which
+have no side effects, are sent again after any reconnect. Subscriptions and
+`list_changed` notifications are not used, so the catalog is what the
+server listed when the registry was built — and `ConfigToolRegistry` reuses
+a registry while its configuration is unchanged and something still holds
+it. The prompt may therefore name resources that are gone or miss new
+ones; `list_files` always asks the server, and `read_files` reads any URI.
+
 Still open from this note: additive scope selection (step 1),
 read-only/outward classification and the outward-confirmation
 `ToolInterceptor` (step 3). Until step 3 lands, outward-facing MCP tools

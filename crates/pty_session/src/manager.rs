@@ -129,6 +129,12 @@ impl PtySessionManager {
         Some(entry.session.clone())
     }
 
+    /// Whether `id` is still tracked, without refreshing its LRU timestamp.
+    /// A session the agent already saw exit (and stopped tracking) is not.
+    pub fn is_tracked(&self, id: u32) -> bool {
+        self.entries.lock().unwrap().contains_key(&id)
+    }
+
     /// Stop tracking a session. Does not terminate it — callers drop the
     /// returned `Arc` (which kills the process) or keep it alive on purpose.
     pub fn remove(&self, id: u32) -> Option<Arc<PtySession>> {

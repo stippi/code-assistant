@@ -213,6 +213,18 @@ impl Gpui {
         });
     }
 
+    /// Stop a monitor the agent started (no notification follows).
+    pub(crate) fn cmd_stop_monitor(&self, session_id: String, monitor_id: u64) {
+        let Some(service) = self.session_service() else {
+            return;
+        };
+        self.dispatch(async move {
+            if let Err(e) = service.stop_monitor(session_id, monitor_id).await {
+                debug!("Failed to stop monitor: {e:#}");
+            }
+        });
+    }
+
     /// Delete a session. The caller is responsible for disconnecting the
     /// messages view first if the session is currently shown (see the
     /// sidebar delete handler in `main_screen`).
@@ -403,6 +415,19 @@ impl Gpui {
                     }
                 }
                 Err(e) => gpui.display_error(format!("{e:#}")),
+            }
+        });
+    }
+
+    pub(crate) fn cmd_set_effort(&self, session_id: String, effort: llm::capabilities::Effort) {
+        let Some(service) = self.session_service() else {
+            return;
+        };
+        let gpui = self.clone();
+        self.dispatch(async move {
+            // The UpdateEffort notification arrives via the stream.
+            if let Err(e) = service.set_effort(session_id, Some(effort)).await {
+                gpui.display_error(format!("{e:#}"));
             }
         });
     }

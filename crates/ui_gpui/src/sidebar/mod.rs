@@ -87,6 +87,8 @@ pub struct SessionSidebar {
     activity_states: HashMap<String, SessionActivityState>,
     /// When each session's next wakeup fires, for sessions with one to fire.
     next_wakeups: HashMap<String, chrono::DateTime<chrono::Utc>>,
+    /// Sessions with a monitor running.
+    monitored: HashSet<String>,
     awaiting_user: HashMap<String, AwaitingUser>,
     _item_subscriptions: Vec<Subscription>,
     _picker_subscription: Subscription,
@@ -119,6 +121,7 @@ impl SessionSidebar {
             focus_handle: cx.focus_handle(),
             activity_states: HashMap::new(),
             next_wakeups: HashMap::new(),
+            monitored: HashSet::new(),
             awaiting_user: HashMap::new(),
             _item_subscriptions: Vec::new(),
             _picker_subscription: picker_subscription,
@@ -179,6 +182,7 @@ impl SessionSidebar {
             let activity = self.activity_states.get(&session.id).cloned();
             let awaiting = self.awaiting_user.get(&session.id).copied();
             let next_wakeup = self.next_wakeups.get(&session.id).copied();
+            let monitored = self.monitored.contains(&session.id);
             let entity = match existing.remove(&session.id) {
                 Some(entity) => {
                     entity.update(cx, |item, cx| {
@@ -198,6 +202,7 @@ impl SessionSidebar {
                 }
                 item.set_awaiting_user(awaiting, cx);
                 item.set_next_wakeup(next_wakeup, cx);
+                item.set_monitored(monitored, cx);
                 item.set_show_project(show_project, cx);
             });
             self._item_subscriptions
@@ -320,6 +325,24 @@ impl SessionSidebar {
             Some(at) => self.next_wakeups.insert(session_id, at),
             None => self.next_wakeups.remove(&session_id),
         };
+        cx.notify();
+    }
+
+    /// Whether a monitor runs in the session.
+    pub fn update_session_monitored(
+        &mut self,
+        session_id: String,
+        monitored: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(item) = self.items.get(&session_id) {
+            item.update(cx, |item, cx| item.set_monitored(monitored, cx));
+        }
+        if monitored {
+            self.monitored.insert(session_id);
+        } else {
+            self.monitored.remove(&session_id);
+        }
         cx.notify();
     }
 

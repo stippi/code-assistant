@@ -7,6 +7,7 @@ use crate::Gpui;
 use crate::shared::frame_profile;
 
 use code_assistant_core::session::instance::SessionActivityState;
+use code_assistant_core::session::monitor::ActiveMonitorInfo;
 use code_assistant_core::session::wakeup::ArmedWakeupInfo;
 
 use gpui_kit::component::scroll::ScrollableElement;
@@ -103,6 +104,9 @@ pub struct MessagesView {
     /// The viewed session's wakeups still to fire, soonest first; shown
     /// below the transcript while the agent is not running.
     armed_wakeups: Vec<ArmedWakeupInfo>,
+    /// The viewed session's running monitors, oldest first; shown with the
+    /// wakeups.
+    active_monitors: Vec<ActiveMonitorInfo>,
     /// Renders the wakeup countdown again when its text changes.
     wakeup_refresh_task: Option<Task<()>>,
 
@@ -201,6 +205,7 @@ impl MessagesView {
             last_animation_offset,
             _spinner_task: Some(spinner_task),
             armed_wakeups: Vec::new(),
+            active_monitors: Vec::new(),
             wakeup_refresh_task: None,
             list_bounds: Rc::new(Cell::new(Bounds::default())),
             edge_scroll_velocity: Rc::new(Cell::new(0.0)),
@@ -907,6 +912,22 @@ impl MessagesView {
         &self.armed_wakeups
     }
 
+    pub fn set_active_monitors(
+        &mut self,
+        monitors: Vec<ActiveMonitorInfo>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_monitors != monitors {
+            self.active_monitors = monitors;
+            self.wakeup_refresh_task = None;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn active_monitors(&self) -> &[ActiveMonitorInfo] {
+        &self.active_monitors
+    }
+
     pub fn set_is_resumable(&self, is_resumable: bool) {
         self.is_resumable.set(is_resumable);
     }
@@ -971,22 +992,29 @@ impl Render for MessagesView {
                 )
             });
 
-        // Wakeups still to fire, while nothing else shows that the session
-        // goes on.
+        // Wakeups still to fire and running monitors, while nothing else
+        // shows that the session goes on.
         let agent_running = self
             .activity_state
             .lock()
             .ok()
             .and_then(|g| g.clone())
             .is_some_and(|s| !s.is_terminal());
-        let has_wakeups = !self.armed_wakeups.is_empty() && !agent_running;
+        let has_wakeups =
+            (!self.armed_wakeups.is_empty() || !self.active_monitors.is_empty()) && !agent_running;
         if has_wakeups && self.wakeup_refresh_task.is_none() {
-            let next = self.armed_wakeups[0].fires_at.with_timezone(&chrono::Local);
             // The next spinner frame, or earlier when the countdown changes.
             let next_frame = Duration::from_millis(
                 (WAKEUP_SPINNER_FRAME_MS - wall_clock_millis() % WAKEUP_SPINNER_FRAME_MS) as u64,
             );
-            let after = crate::tool_cards::wakeup_renderer::countdown_changes_after(next)
+            let after = self
+                .armed_wakeups
+                .first()
+                .and_then(|next| {
+                    crate::tool_cards::wakeup_renderer::countdown_changes_after(
+                        next.fires_at.with_timezone(&chrono::Local),
+                    )
+                })
                 .map_or(next_frame, |countdown| countdown.min(next_frame));
             self.wakeup_refresh_task = Some(cx.spawn(async move |view, cx| {
                 cx.background_executor().timer(after).await;

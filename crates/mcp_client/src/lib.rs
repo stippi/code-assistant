@@ -1,8 +1,10 @@
 //! MCP client mode: connect to configured MCP servers (stdio or HTTP
 //! streamable transport) and register each offered MCP tool as a regular
-//! [`tools_core::ToolRegistry`] tool. MCP stays a registry *source*, never an
-//! architecture — everything downstream of the registry (dialects, scoping,
-//! the agent loop, permission checks) keeps working unchanged.
+//! [`tools_core::ToolRegistry`] tool; servers offering resources are left
+//! with the registry for the embedder to offer ([`resources`]). MCP stays a registry
+//! *source*, never an architecture — everything downstream of the registry
+//! (dialects, scoping, the agent loop, permission checks) keeps working
+//! unchanged.
 //!
 //! Built on the official Rust MCP SDK (`rmcp`).
 
@@ -12,6 +14,7 @@ pub mod config;
 pub mod naming;
 pub mod output;
 pub mod registry;
+pub mod resources;
 pub mod tool;
 
 #[cfg(test)]
@@ -26,12 +29,14 @@ pub use config::{
     McpServerConfig, McpServersConfig, McpTransport, parse_local_mcp_json, substitute_variables,
 };
 pub use naming::is_mcp_tool_name;
+pub use output::ResourcePart;
 pub use output::deserialize_mcp_output;
 pub use registry::{
     ConnectionProvider, DiscoveredTool, MCP_CAPABILITY, McpServerStatus, discover_tools,
     register_connection_tools, register_mcp_tools, register_mcp_tools_pooled,
     server_scope_capability,
 };
+pub use resources::{McpResourceServers, ResourceCatalog, ResourceServer};
 /// Re-exported so embedders can name the credential-store trait object type
 /// (`Arc<dyn CredentialStore>`) that [`McpServerConnection::connect`] and
 /// [`authenticate_http_server`] take, without depending on `rmcp` directly.

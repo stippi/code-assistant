@@ -415,6 +415,23 @@ impl PtySession {
         }
     }
 
+    /// Resolves with the exit code (`None` when none is known) once the
+    /// process exited. Holds no reference to the session, so waiting on it
+    /// never keeps the process alive.
+    pub fn exited(&self) -> impl std::future::Future<Output = Option<i32>> + Send + 'static {
+        let mut exit_rx = self.exit_rx.clone();
+        async move {
+            loop {
+                if let Some(code) = *exit_rx.borrow_and_update() {
+                    return code;
+                }
+                if exit_rx.changed().await.is_err() {
+                    return (*exit_rx.borrow()).flatten();
+                }
+            }
+        }
+    }
+
     /// Send bytes to the process' stdin. Only available for `tty` sessions.
     pub fn write(&self, bytes: &[u8]) -> Result<()> {
         let Some(writer_tx) = &self.writer_tx else {
@@ -594,6 +611,20 @@ mod tests {
         let session = PtySession::spawn(shell("exit 7", true)).unwrap();
         let out = session.collect_output(Duration::from_secs(10)).await;
         assert_eq!(out.status, PtySessionStatus::Exited(Some(7)));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn exited_resolves_with_the_exit_code_without_polling() {
+        let session = PtySession::spawn(shell("sleep 0.2; exit 3", false)).unwrap();
+        let exited = session.exited();
+        // Dropping the session would kill the process; the future must not
+        // need it.
+        let code = tokio::time::timeout(Duration::from_secs(10), exited)
+            .await
+            .expect("exit must be observed");
+        assert_eq!(code, Some(3));
+        // Already exited: resolves at once.
+        assert_eq!(session.exited().await, Some(3));
     }
 
     #[tokio::test(flavor = "multi_thread")]

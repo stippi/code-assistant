@@ -102,6 +102,7 @@ impl Gpui {
                     // Sidebar state: relevant for every session, always.
                     UiEvent::UpdateSessionActivityState { .. }
                     | UiEvent::UpdateArmedWakeups { .. }
+                    | UiEvent::UpdateActiveMonitors { .. }
                     | UiEvent::UpdateSessionMetadata { .. }
                     | UiEvent::UpdateSessionLifecycle { .. }
                     | UiEvent::UpdateChatList { .. }
@@ -438,6 +439,7 @@ mod tests {
     ) -> SessionSnapshot {
         let now = std::time::SystemTime::now();
         SessionSnapshot {
+            effort: Default::default(),
             session_id: session_id.to_string(),
             messages: Vec::new(),
             tool_results: Vec::new(),
@@ -469,6 +471,7 @@ mod tests {
             pending_new_context_target: None,
             pending_questions: Vec::new(),
             armed_wakeups: Vec::new(),
+            active_monitors: Vec::new(),
         }
     }
 

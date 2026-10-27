@@ -1,7 +1,8 @@
 [package]
 name = "ui_terminal"
-version = "0.2.17"
+version = "0.2.18"
 edition = "2024"
+license = "MIT"
 
 [dependencies]
 code_assistant_core = { path = "../code_assistant_core", default-features = false }

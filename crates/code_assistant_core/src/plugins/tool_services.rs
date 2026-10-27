@@ -6,6 +6,7 @@
 use crate::agent::SubAgentRunner;
 use crate::config::ProjectManager;
 use crate::plugins::AgentAppState;
+use crate::session::monitor::SessionMonitors;
 use crate::session::wakeup::SessionWakeups;
 use crate::tools::ToolServices;
 use crate::ui::UserInterface;
@@ -19,10 +20,12 @@ pub struct CodeAssistantToolServices {
     pub sub_agent_runner: Option<Arc<dyn SubAgentRunner>>,
 
     pub wakeups: Option<SessionWakeups>,
+    pub monitors: Option<SessionMonitors>,
     pub pty_sessions: Option<Arc<pty_session::PtySessionManager>>,
     pub terminal_interrupts: Option<Arc<crate::tools::TerminalInterrupts>>,
     pub browser_sessions: Option<Arc<web::BrowserSessionManager>>,
     pub session_source: Option<Arc<dyn crate::session_query::SessionSource>>,
+    pub mcp_resources: Option<Arc<mcp_client::McpResourceServers>>,
 }
 
 impl ToolServicesProvider for CodeAssistantToolServices {
@@ -34,10 +37,12 @@ impl ToolServicesProvider for CodeAssistantToolServices {
             ui: Some(self.ui.clone()),
             sub_agent_runner: self.sub_agent_runner.clone(),
             wakeups: self.wakeups.clone(),
+            monitors: self.monitors.clone(),
             pty_sessions: self.pty_sessions.clone(),
             terminal_interrupts: self.terminal_interrupts.clone(),
             browser_sessions: self.browser_sessions.clone(),
             session_source: self.session_source.clone(),
+            mcp_resources: self.mcp_resources.clone(),
         })
     }
 
@@ -55,10 +60,12 @@ impl ToolServicesProvider for CodeAssistantToolServices {
 
             sub_agent_runner: self.sub_agent_runner.clone(),
             wakeups: self.wakeups.clone(),
+            monitors: self.monitors.clone(),
             pty_sessions: self.pty_sessions.clone(),
             terminal_interrupts: self.terminal_interrupts.clone(),
             browser_sessions: self.browser_sessions.clone(),
             session_source: self.session_source.clone(),
+            mcp_resources: self.mcp_resources.clone(),
         })
     }
 }

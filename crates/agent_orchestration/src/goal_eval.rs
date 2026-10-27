@@ -7,8 +7,8 @@
 //! contract and the agent's own account of the turn, it decides one verdict —
 //! and is deliberately strict about `Satisfied`, which is the only path a goal
 //! has to `Done`. Kept parallel to `pal_observations`' `LlmExtractor`: a thin
-//! wrapper over the `llm` crate, so any provider configured in the shared
-//! `models.json` works. Unlike the extractor it runs in an async context (the
+//! wrapper over the `llm` crate, so any model offered in the shared
+//! configuration works. Unlike the extractor it runs in an async context (the
 //! controller pass), so it calls the provider directly rather than through a
 //! blocking bridge.
 

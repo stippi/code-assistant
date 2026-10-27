@@ -1,5 +1,6 @@
 pub mod attachment;
 mod comments;
+pub mod effort_selector;
 pub mod mcp_selector;
 pub mod model_selector;
 pub mod permission_selector;
@@ -13,7 +14,9 @@ use super::shared::file_icons;
 use attachment::{AttachmentEvent, AttachmentView};
 use base64::Engine;
 use code_assistant_core::persistence::{DraftAttachment, MessageEdit};
+use code_assistant_core::session::effort::EffortChoice;
 use code_assistant_core::ui::ui_events::{BuiltinToolToggle, McpServerHealth, McpServerToggle};
+use effort_selector::{EffortSelector, EffortSelectorEvent};
 use gpui_kit::component::input::{
     Enter, Escape, IndentInline, InputEvent, MoveDown, MoveUp, Paste, Textarea, TextareaState,
 };
@@ -24,6 +27,7 @@ use gpui_kit::{
     EventEmitter, FocusHandle, Focusable, Pixels, Render, SharedString, Subscription, Window,
     anchored, deferred, div, prelude::*, px,
 };
+use llm::capabilities::Effort;
 use mcp_selector::{McpSelector, McpSelectorEvent};
 use model_selector::{ModelSelector, ModelSelectorEvent};
 use permission_selector::{PermissionSelector, PermissionSelectorEvent};
@@ -63,6 +67,8 @@ pub enum InputAreaEvent {
 
     /// Model selection changed
     ModelChanged { model_name: String },
+    /// Reasoning effort changed
+    EffortChanged { effort: Effort },
     /// Sandbox mode changed
     SandboxChanged { policy: SandboxPolicy },
     /// Permission tier changed
@@ -113,6 +119,7 @@ pub struct InputArea {
     /// Escape hid the menu; it stays hidden until the text changes.
     slash_menu_dismissed: bool,
     model_selector: Entity<ModelSelector>,
+    effort_selector: Entity<EffortSelector>,
     sandbox_selector: Entity<SandboxSelector>,
     permission_selector: Entity<PermissionSelector>,
     worktree_selector: Entity<WorktreeSelector>,
@@ -148,6 +155,7 @@ pub struct InputArea {
     // Subscriptions
     _input_subscription: Subscription,
     _model_selector_subscription: Subscription,
+    _effort_selector_subscription: Subscription,
     _sandbox_selector_subscription: Subscription,
     _permission_selector_subscription: Subscription,
     _worktree_selector_subscription: Subscription,
@@ -168,6 +176,7 @@ impl InputArea {
 
         // Create the model selector
         let model_selector = cx.new(|cx| ModelSelector::new(window, cx));
+        let effort_selector = cx.new(|cx| EffortSelector::new(window, cx));
         let sandbox_selector = cx.new(|cx| SandboxSelector::new(window, cx));
         let permission_selector = cx.new(|cx| PermissionSelector::new(window, cx));
         let worktree_selector = cx.new(|cx| WorktreeSelector::new(window, cx));
@@ -176,6 +185,8 @@ impl InputArea {
         // Subscribe to model selector events
         let model_selector_subscription =
             cx.subscribe_in(&model_selector, window, Self::on_model_selector_event);
+        let effort_selector_subscription =
+            cx.subscribe_in(&effort_selector, window, Self::on_effort_selector_event);
         let sandbox_selector_subscription =
             cx.subscribe_in(&sandbox_selector, window, Self::on_sandbox_selector_event);
         let permission_selector_subscription = cx.subscribe_in(
@@ -193,6 +204,7 @@ impl InputArea {
             slash_menu: None,
             slash_menu_dismissed: false,
             model_selector,
+            effort_selector,
             sandbox_selector,
             permission_selector,
             worktree_selector,
@@ -218,6 +230,7 @@ impl InputArea {
 
             _input_subscription: input_subscription,
             _model_selector_subscription: model_selector_subscription,
+            _effort_selector_subscription: effort_selector_subscription,
             _sandbox_selector_subscription: sandbox_selector_subscription,
             _permission_selector_subscription: permission_selector_subscription,
             _worktree_selector_subscription: worktree_selector_subscription,
@@ -314,6 +327,21 @@ impl InputArea {
     /// Read the currently selected model name
     pub fn current_model(&self) -> Option<String> {
         self.current_model.clone()
+    }
+
+    /// Sync the effort selector with the session's model and effort
+    pub fn set_effort_choice(
+        &mut self,
+        choice: EffortChoice,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.effort_selector
+            .update(cx, |selector, cx| selector.set_choice(choice, window, cx));
+    }
+
+    pub fn effort_choice<'a>(&self, cx: &'a gpui_kit::App) -> &'a EffortChoice {
+        self.effort_selector.read(cx).choice()
     }
 
     pub fn set_current_sandbox_policy(
@@ -749,6 +777,20 @@ impl InputArea {
                 cx.emit(InputAreaEvent::ModelChanged {
                     model_name: model_name.clone(),
                 });
+            }
+        }
+    }
+
+    fn on_effort_selector_event(
+        &mut self,
+        _selector: &Entity<EffortSelector>,
+        event: &EffortSelectorEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            EffortSelectorEvent::EffortChanged { effort } => {
+                cx.emit(InputAreaEvent::EffortChanged { effort: *effort });
             }
         }
     }

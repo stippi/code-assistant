@@ -1,255 +1,609 @@
-//! Models settings section — list configured models, add/edit/remove.
+//! Models settings section — per provider, the models it offers (from its
+//! model listing) with a switch to show each in the model picker. Shown
+//! models can be renamed and given overrides. Backed by
+//! `model-selection.json`; the listings are cached in `model-discovery.json`.
 
-use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::select::{Select, SelectEvent, SelectItem, SelectState};
+use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
+use gpui_kit::component::select::{Select, SelectState};
+use gpui_kit::component::switch::Switch;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size};
-use gpui_kit::{App, Context, Entity, FocusHandle, Focusable, SharedString, div, prelude::*, px};
-use serde_json::{Map, Value};
-use std::collections::BTreeMap;
-use tracing::{debug, warn};
+use gpui_kit::{
+    App, Context, Entity, FocusHandle, Focusable, SharedString, Subscription, div, prelude::*, px,
+};
+use llm::capabilities::{Effort, ModelCapabilities};
+use llm::discovery::DiscoveryCache;
+use llm::model_selection::ModelSelection;
+use llm::provider_config::{ConfigurationSystem, EditFormat, ModelConfig, ProvidersConfig};
+use std::collections::{HashMap, HashSet};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tracing::warn;
 
-/// A single model entry from models.json.
-#[derive(Clone, Debug)]
-pub struct ModelEntry {
-    pub name: String,
-    pub provider: String,
-    pub model_id: String,
-    pub context_limit: u32,
-}
+/// Listings older than this are refreshed when the section opens.
+const LISTING_MAX_AGE_SECS: u64 = 24 * 60 * 60;
+/// Select entry for "no override".
+const MODEL_DEFAULT: &str = "Model default";
 
-/// A provider reference for the dropdown.
-#[derive(Clone, Debug)]
-struct ProviderItem {
+/// One model of a provider's list.
+#[derive(Debug, Clone, PartialEq)]
+struct ModelRow {
     key: String,
-    label: String,
+    id: String,
+    name: String,
+    /// Shown in the model picker.
+    enabled: bool,
+    capabilities: ModelCapabilities,
 }
 
-impl SelectItem for ProviderItem {
-    type Value = String;
+/// The rows of a provider: its listed models plus the shown ones it did not
+/// list (added by hand, or gone from the listing), by name — independent of
+/// whether they are shown, so toggling a model does not move it; only those
+/// matching `filter` (name or ID).
+fn provider_rows(config: &ConfigurationSystem, provider_id: &str, filter: &str) -> Vec<ModelRow> {
+    let Some(provider) = config.providers.get(provider_id) else {
+        return Vec::new();
+    };
+    let listed: Vec<String> = config
+        .discovery
+        .providers
+        .get(provider_id)
+        .map(|listing| listing.models.iter().map(|m| m.id.clone()).collect())
+        .unwrap_or_default();
+    let shown = config
+        .models
+        .values()
+        .filter(|model| model.provider == provider_id)
+        .map(|model| model.id.clone());
+    let ids: HashSet<String> = listed.into_iter().chain(shown).collect();
 
-    fn title(&self) -> SharedString {
-        SharedString::from(self.label.clone())
+    let filter = filter.trim().to_lowercase();
+    let mut rows: Vec<ModelRow> = ids
+        .into_iter()
+        .map(|id| {
+            let key = ModelConfig::key_for(provider_id, &id);
+            let enabled = config.models.contains_key(&key);
+            let capabilities = if enabled {
+                config.model_capabilities(&key).unwrap_or_default()
+            } else {
+                let model = ModelConfig::new(provider_id, &id);
+                ConfigurationSystem::api_client_kind_for_configs(&model, provider)
+                    .map(|api| {
+                        ModelCapabilities::resolve(
+                            api,
+                            &id,
+                            config.discovery.model(provider_id, &id),
+                        )
+                    })
+                    .unwrap_or_default()
+            };
+            let name = capabilities
+                .display_name
+                .clone()
+                .unwrap_or_else(|| id.clone());
+            ModelRow {
+                key,
+                id,
+                name,
+                enabled,
+                capabilities,
+            }
+        })
+        .filter(|row| {
+            filter.is_empty()
+                || row.name.to_lowercase().contains(&filter)
+                || row.id.to_lowercase().contains(&filter)
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        a.name
+            .to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    rows
+}
+
+/// The API a provider type speaks, as shown on its card.
+fn api_label(provider_type: &str) -> String {
+    if provider_type == "ai-core" {
+        // The API differs per deployment.
+        return "SAP AI Core".to_string();
     }
+    let provider = llm::provider_config::ProviderConfig {
+        label: String::new(),
+        provider: provider_type.to_string(),
+        config: serde_json::Value::Null,
+    };
+    ConfigurationSystem::api_client_kind_for_configs(&ModelConfig::new("", ""), &provider)
+        .map(|kind| kind.to_string())
+        .unwrap_or_else(|_| provider_type.to_string())
+}
 
-    fn value(&self) -> &Self::Value {
-        &self.key
+/// "1M", "272K"
+fn format_tokens(tokens: u32) -> String {
+    if tokens >= 1_000_000 && tokens.is_multiple_of(1_000_000) {
+        format!("{}M", tokens / 1_000_000)
+    } else if tokens >= 1000 {
+        format!("{}K", tokens / 1000)
+    } else {
+        tokens.to_string()
     }
 }
 
-/// State of the model form.
-#[derive(Clone, Debug, PartialEq)]
-enum FormMode {
-    Hidden,
-    Adding,
-    Editing(String),
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default()
+}
+
+/// The inputs of the override editor of the expanded model.
+struct Editor {
+    key: String,
+    name: Entity<InputState>,
+    behaves_like: Entity<InputState>,
+    context_limit: Entity<InputState>,
+    default_effort: Entity<SelectState<Vec<String>>>,
+    edit_format: Entity<SelectState<Vec<String>>>,
+    extra_config: Entity<TextareaState>,
+    error: Option<String>,
 }
 
 pub struct ModelsSection {
     focus_handle: FocusHandle,
-    models: Vec<ModelEntry>,
-    providers: Vec<ProviderItem>,
-    form_mode: FormMode,
-    // Form inputs
-    form_name_input: Entity<InputState>,
-    form_model_id_input: Entity<InputState>,
-    form_context_limit_input: Entity<InputState>,
-    form_provider_select: Entity<SelectState<Vec<ProviderItem>>>,
-    _provider_select_subscription: gpui_kit::Subscription,
-    form_selected_provider: Option<String>,
+    providers: ProvidersConfig,
+    selection: ModelSelection,
+    discovery: DiscoveryCache,
+    /// Providers whose model listing is being fetched.
+    refreshing: HashSet<String>,
+    /// Providers whose model list is open (all are while filtering).
+    expanded: HashSet<String>,
+    filter_input: Entity<InputState>,
+    /// The configuration and the rows per provider, rebuilt when the
+    /// selection, the listings or the filter change — not on every frame.
+    config: ConfigurationSystem,
+    rows: HashMap<String, Vec<ModelRow>>,
+    /// "Add model ID" input per provider.
+    add_inputs: HashMap<String, Entity<InputState>>,
+    editor: Option<Editor>,
+    _filter_subscription: Subscription,
 }
 
 impl ModelsSection {
     pub fn new(window: &mut gpui_kit::Window, cx: &mut Context<Self>) -> Self {
-        let models = Self::load_models();
-        let providers = Self::load_providers();
-
-        let form_name_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("e.g. Claude Sonnet"));
-        let form_model_id_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("e.g. claude-sonnet-4-20250514"));
-        let form_context_limit_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("e.g. 200000"));
-
-        let provider_items = providers.clone();
-        let form_provider_select =
-            cx.new(|cx| SelectState::new(Vec::<ProviderItem>::new(), None, window, cx));
-        form_provider_select.update(cx, |state, cx| {
-            state.set_items(provider_items, window, cx);
-        });
-
-        let provider_select_subscription =
-            cx.subscribe_in(&form_provider_select, window, Self::on_provider_selected);
-
-        Self {
+        let filter_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Filter models by name or ID"));
+        let filter_subscription = cx.subscribe_in(
+            &filter_input,
+            window,
+            |this, _, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.rebuild(cx);
+                }
+            },
+        );
+        let mut this = Self {
             focus_handle: cx.focus_handle(),
-            models,
-            providers,
-            form_mode: FormMode::Hidden,
-            form_name_input,
-            form_model_id_input,
-            form_context_limit_input,
-            form_provider_select,
-            _provider_select_subscription: provider_select_subscription,
-            form_selected_provider: None,
-        }
+            providers: ProvidersConfig::new(),
+            selection: ModelSelection::default(),
+            discovery: DiscoveryCache::default(),
+            refreshing: HashSet::new(),
+            expanded: HashSet::new(),
+            filter_input,
+            config: ConfigurationSystem::default(),
+            rows: HashMap::new(),
+            add_inputs: HashMap::new(),
+            editor: None,
+            _filter_subscription: filter_subscription,
+        };
+        this.reload(window, cx);
+        this
     }
 
-    fn on_provider_selected(
+    /// Reload providers, selection and listings from disk, and refresh
+    /// listings that are missing or stale.
+    pub fn reload(&mut self, window: &mut gpui_kit::Window, cx: &mut Context<Self>) {
+        self.providers = ConfigurationSystem::load_providers_config(None).unwrap_or_default();
+        self.selection = ModelSelection::load_or_import().unwrap_or_else(|e| {
+            warn!("Failed to load the model selection: {e:#}");
+            ModelSelection::default()
+        });
+        self.discovery = DiscoveryCache::load();
+
+        for provider_id in self.providers.keys() {
+            if !self.add_inputs.contains_key(provider_id) {
+                let input =
+                    cx.new(|cx| InputState::new(window, cx).placeholder("Add a model ID by hand"));
+                self.add_inputs.insert(provider_id.clone(), input);
+            }
+        }
+
+        let stale: Vec<String> =
+            self.providers
+                .keys()
+                .filter(|id| {
+                    self.discovery.providers.get(*id).is_none_or(|listing| {
+                        now_secs() - listing.fetched_at > LISTING_MAX_AGE_SECS
+                    })
+                })
+                .cloned()
+                .collect();
+        for provider_id in stale {
+            self.refresh(provider_id, cx);
+        }
+        self.rebuild(cx);
+    }
+
+    /// Recompute the configuration view and every provider's rows.
+    fn rebuild(&mut self, cx: &mut Context<Self>) {
+        self.config = self.view_config();
+        let filter = self.filter_input.read(cx).value().to_string();
+        self.rows = self
+            .providers
+            .keys()
+            .map(|id| (id.clone(), provider_rows(&self.config, id, &filter)))
+            .collect();
+        cx.notify();
+    }
+
+    fn filtering(&self, cx: &App) -> bool {
+        !self.filter_input.read(cx).value().trim().is_empty()
+    }
+
+    fn toggle_expanded(&mut self, provider_id: &str, cx: &mut Context<Self>) {
+        if !self.expanded.remove(provider_id) {
+            self.expanded.insert(provider_id.to_string());
+        }
+        cx.notify();
+    }
+
+    /// The configuration as the rest of the app sees it (models of
+    /// providers that no longer exist are left out).
+    fn view_config(&self) -> ConfigurationSystem {
+        let selection = ModelSelection {
+            models: self
+                .selection
+                .models
+                .iter()
+                .filter(|model| self.providers.contains_key(&model.provider))
+                .cloned()
+                .collect(),
+        };
+        ConfigurationSystem::from_parts(self.providers.clone(), selection, self.discovery.clone())
+            .unwrap_or_default()
+    }
+
+    /// Fetch a provider's model listing on a background thread (with its
+    /// own tokio runtime — gpui's executor is not tokio).
+    fn refresh(&mut self, provider_id: String, cx: &mut Context<Self>) {
+        let Some(provider) = self.providers.get(&provider_id).cloned() else {
+            return;
+        };
+        if !self.refreshing.insert(provider_id.clone()) {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()?;
+                    runtime.block_on(llm::discovery::list_models(&provider))
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.refreshing.remove(&provider_id);
+                // Another window may have refreshed other providers meanwhile.
+                this.discovery = DiscoveryCache::load();
+                this.discovery.record(&provider_id, result);
+                if let Err(e) = this.discovery.save() {
+                    warn!("Failed to save the model listings: {e:#}");
+                }
+                this.rebuild(cx);
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn persist(&mut self, cx: &mut Context<Self>) {
+        if let Err(e) = self.selection.save() {
+            warn!("Failed to save the model selection: {e:#}");
+        }
+        self.rebuild(cx);
+    }
+
+    fn set_enabled(
         &mut self,
-        _: &Entity<SelectState<Vec<ProviderItem>>>,
-        event: &SelectEvent<Vec<ProviderItem>>,
-        _window: &mut gpui_kit::Window,
+        provider_id: &str,
+        model_id: &str,
+        enabled: bool,
         cx: &mut Context<Self>,
     ) {
-        if let SelectEvent::Confirm(Some(provider_key)) = event {
-            self.form_selected_provider = Some(provider_key.clone());
-            cx.notify();
+        self.selection.set_enabled(provider_id, model_id, enabled);
+        if !enabled
+            && self.editor.as_ref().map(|e| e.key.as_str())
+                == Some(ModelConfig::key_for(provider_id, model_id).as_str())
+        {
+            self.editor = None;
         }
+        self.persist(cx);
     }
 
-    /// Reload models from disk.
-    pub fn reload(&mut self) {
-        self.models = Self::load_models();
-        self.providers = Self::load_providers();
+    fn add_by_hand(
+        &mut self,
+        provider_id: &str,
+        window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(input) = self.add_inputs.get(provider_id).cloned() else {
+            return;
+        };
+        let model_id = input.read(cx).value().trim().to_string();
+        if model_id.is_empty() {
+            return;
+        }
+        input.update(cx, |state, cx| state.set_value("", window, cx));
+        self.set_enabled(provider_id, &model_id, true, cx);
     }
 
-    fn load_models() -> Vec<ModelEntry> {
-        let config_path = llm::provider_config::ConfigurationSystem::models_config_path();
-        let content = match std::fs::read_to_string(&config_path) {
-            Ok(c) => c,
-            Err(_) => return Vec::new(),
+    fn toggle_editor(
+        &mut self,
+        row: &ModelRow,
+        window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.editor.as_ref().is_some_and(|e| e.key == row.key) {
+            self.editor = None;
+            cx.notify();
+            return;
+        }
+        let Some(model) = self.selection.get(&row.key).cloned() else {
+            return;
         };
-
-        let map: BTreeMap<String, serde_json::Value> = match serde_json::from_str(&content) {
-            Ok(m) => m,
-            Err(e) => {
-                warn!("Failed to parse models.json: {}", e);
-                return Vec::new();
-            }
-        };
-
-        map.into_iter()
-            .map(|(name, value)| {
-                let provider = value
-                    .get("provider")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-                let model_id = value
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let context_limit = value
-                    .get("context_token_limit")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as u32;
-
-                ModelEntry {
-                    name,
-                    provider,
-                    model_id,
-                    context_limit,
+        let text_input = |placeholder: String,
+                          value: Option<String>,
+                          window: &mut gpui_kit::Window,
+                          cx: &mut Context<Self>| {
+            cx.new(|cx| {
+                let state = InputState::new(window, cx).placeholder(placeholder);
+                match value {
+                    Some(value) => state.default_value(value),
+                    None => state,
                 }
             })
-            .collect()
+        };
+        // Placeholders show what applies without an override.
+        let defaults = {
+            let mut without_overrides = model.clone();
+            without_overrides.name = None;
+            without_overrides.context_token_limit = None;
+            let mut selection = self.selection.clone();
+            if let Some(entry) = selection.get_mut(&row.key) {
+                *entry = without_overrides;
+            }
+            ConfigurationSystem::from_parts(
+                self.providers.clone(),
+                selection,
+                self.discovery.clone(),
+            )
+            .ok()
+        };
+        let default_name = defaults
+            .as_ref()
+            .map(|config| config.display_name(&row.key))
+            .unwrap_or_else(|| row.id.clone());
+        let default_context = defaults
+            .as_ref()
+            .and_then(|config| config.context_limit(&row.key))
+            .map(|limit| limit.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+
+        let name = text_input(default_name, model.name.clone(), window, cx);
+        let behaves_like = text_input(
+            "catalog model ID, e.g. claude-opus-4-8".to_string(),
+            model.behaves_like.clone(),
+            window,
+            cx,
+        );
+        let context_limit = text_input(
+            default_context,
+            model.context_token_limit.map(|limit| limit.to_string()),
+            window,
+            cx,
+        );
+
+        let mut effort_items = vec![MODEL_DEFAULT.to_string()];
+        if let Some(reasoning) = &row.capabilities.reasoning {
+            effort_items.extend(
+                reasoning
+                    .levels
+                    .iter()
+                    .map(|level| level.as_str().to_string()),
+            );
+        }
+        let effort_value = model
+            .default_effort
+            .map(|effort| effort.as_str().to_string())
+            .unwrap_or_else(|| MODEL_DEFAULT.to_string());
+        let default_effort = cx.new(|cx| SelectState::new(effort_items, None, window, cx));
+        default_effort.update(cx, |state, cx| {
+            state.set_selected_value(&effort_value, window, cx)
+        });
+
+        let format_items = vec![
+            MODEL_DEFAULT.to_string(),
+            "simple".to_string(),
+            "diff".to_string(),
+        ];
+        let format_value = match model.edit_format {
+            Some(EditFormat::Simple) => "simple",
+            Some(EditFormat::Diff) => "diff",
+            None => MODEL_DEFAULT,
+        }
+        .to_string();
+        let edit_format = cx.new(|cx| SelectState::new(format_items, None, window, cx));
+        edit_format.update(cx, |state, cx| {
+            state.set_selected_value(&format_value, window, cx)
+        });
+
+        let extra = if model.config.is_null() {
+            String::new()
+        } else {
+            serde_json::to_string_pretty(&model.config).unwrap_or_default()
+        };
+        let extra_config = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .auto_grow(2, 10)
+                .placeholder("Extra request fields as JSON, merged into every request")
+                .default_value(extra)
+        });
+
+        self.editor = Some(Editor {
+            key: row.key.clone(),
+            name,
+            behaves_like,
+            context_limit,
+            default_effort,
+            edit_format,
+            extra_config,
+            error: None,
+        });
+        cx.notify();
     }
 
-    fn load_providers() -> Vec<ProviderItem> {
-        let config_path = llm::provider_config::ConfigurationSystem::providers_config_path();
-        let content = match std::fs::read_to_string(&config_path) {
-            Ok(c) => c,
-            Err(_) => return Vec::new(),
+    fn save_editor(&mut self, cx: &mut Context<Self>) {
+        let Some(editor) = self.editor.as_mut() else {
+            return;
+        };
+        let text = |input: &Entity<InputState>, cx: &App| {
+            Some(input.read(cx).value().trim().to_string()).filter(|s| !s.is_empty())
+        };
+        let selected = |select: &Entity<SelectState<Vec<String>>>, cx: &App| {
+            select
+                .read(cx)
+                .selected_value()
+                .cloned()
+                .filter(|value| value != MODEL_DEFAULT)
         };
 
-        let map: BTreeMap<String, serde_json::Value> = match serde_json::from_str(&content) {
-            Ok(m) => m,
-            Err(e) => {
-                warn!("Failed to parse providers.json: {}", e);
-                return Vec::new();
+        let context_limit = match text(&editor.context_limit, cx) {
+            None => None,
+            Some(value) => match value.replace(['_', ','], "").parse::<u32>() {
+                Ok(limit) => Some(limit),
+                Err(_) => {
+                    editor.error = Some(format!("Context window '{value}' is not a number"));
+                    cx.notify();
+                    return;
+                }
+            },
+        };
+        let extra = editor.extra_config.read(cx).value().trim().to_string();
+        let config = if extra.is_empty() {
+            serde_json::Value::Null
+        } else {
+            match serde_json::from_str::<serde_json::Value>(&extra) {
+                Ok(value) if value.is_object() => value,
+                _ => {
+                    editor.error = Some("Extra request fields must be a JSON object".to_string());
+                    cx.notify();
+                    return;
+                }
             }
         };
 
-        map.into_iter()
-            .map(|(key, value)| {
-                let label = value
-                    .get("label")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(&key)
-                    .to_string();
-                ProviderItem { key, label }
-            })
-            .collect()
-    }
-
-    fn provider_exists(&self, provider_key: &str) -> bool {
-        self.providers.iter().any(|p| p.key == provider_key)
-    }
-
-    fn provider_label(&self, provider_key: &str) -> Option<&str> {
-        self.providers
-            .iter()
-            .find(|p| p.key == provider_key)
-            .map(|p| p.label.as_str())
-    }
-
-    fn render_model_card(&self, entry: &ModelEntry, cx: &mut Context<Self>) -> impl IntoElement {
-        let context_str = if entry.context_limit >= 1000 {
-            format!("{}K context", entry.context_limit / 1000)
-        } else if entry.context_limit > 0 {
-            format!("{} tokens", entry.context_limit)
-        } else {
-            "no limit set".to_string()
+        let name = text(&editor.name, cx);
+        let behaves_like = text(&editor.behaves_like, cx);
+        let default_effort = selected(&editor.default_effort, cx).and_then(|v| Effort::parse(&v));
+        let edit_format = selected(&editor.edit_format, cx).map(|value| match value.as_str() {
+            "diff" => EditFormat::Diff,
+            _ => EditFormat::Simple,
+        });
+        let key = editor.key.clone();
+        let Some(model) = self.selection.get_mut(&key) else {
+            return;
         };
+        model.name = name;
+        model.behaves_like = behaves_like;
+        model.context_token_limit = context_limit;
+        model.default_effort = default_effort;
+        model.edit_format = edit_format;
+        model.config = config;
+        self.editor = None;
+        self.persist(cx);
+    }
 
-        let provider_missing = !self.provider_exists(&entry.provider);
-        let is_expanded = self.form_mode == FormMode::Editing(entry.name.clone());
-        let name_for_click = entry.name.clone();
-
-        let provider_display = if provider_missing {
-            format!("{} (not configured)", entry.provider)
+    fn render_provider(&self, provider_id: &str, cx: &mut Context<Self>) -> impl IntoElement {
+        let provider = &self.providers[provider_id];
+        let rows = self.rows.get(provider_id).cloned().unwrap_or_default();
+        let open = self.filtering(cx) || self.expanded.contains(provider_id);
+        let listing = self.discovery.providers.get(provider_id);
+        let shown = self
+            .config
+            .models
+            .values()
+            .filter(|model| model.provider == provider_id)
+            .count();
+        let refreshing = self.refreshing.contains(provider_id);
+        let status = if refreshing {
+            "Fetching models…".to_string()
         } else {
-            self.provider_label(&entry.provider)
-                .unwrap_or(&entry.provider)
-                .to_string()
+            match listing {
+                None => "Not listed yet".to_string(),
+                Some(listing) => {
+                    let total = listing.models.len();
+                    format!("{shown} of {total} listed models shown")
+                }
+            }
         };
+        // Providers may share a label (one proxy, several APIs): the API and
+        // the provider ID tell them apart.
+        let status = format!(
+            "{} · {provider_id} · {status}",
+            api_label(&provider.provider)
+        );
+        let error = listing.and_then(|listing| listing.error.clone());
+        let id_for_refresh = provider_id.to_string();
+        let id_for_add = provider_id.to_string();
+        let id_for_toggle = provider_id.to_string();
 
         div()
-            .id(SharedString::from(format!("model-{}", entry.name)))
             .flex()
             .flex_col()
             .rounded_lg()
             .border_1()
-            .border_color(if is_expanded {
-                cx.theme().primary
-            } else {
-                cx.theme().border
-            })
+            .border_color(cx.theme().border)
             .bg(cx.theme().secondary)
             .overflow_hidden()
-            // Card header (clickable)
+            // Header (opens and closes the model list)
             .child(
                 div()
-                    .id(SharedString::from(format!("model-header-{}", entry.name)))
+                    .id(SharedString::from(format!("provider-models-{provider_id}")))
                     .flex()
                     .items_center()
                     .gap_3()
                     .px_4()
                     .py_3()
                     .cursor_pointer()
-                    .hover(|s| s.bg(cx.theme().muted.opacity(0.5)))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        if this.form_mode == FormMode::Editing(name_for_click.clone()) {
-                            this.form_mode = FormMode::Hidden;
-                        } else {
-                            this.populate_form_from_entry(&name_for_click, window, cx);
-                            this.form_mode = FormMode::Editing(name_for_click.clone());
-                        }
-                        cx.notify();
+                    .hover(|s| s.bg(cx.theme().muted.opacity(0.3)))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.toggle_expanded(&id_for_toggle, cx);
                     }))
+                    .child(
+                        Icon::default()
+                            .path(SharedString::from(if open {
+                                "icons/chevron_down.svg"
+                            } else {
+                                "icons/chevron_right.svg"
+                            }))
+                            .with_size(Size::XSmall)
+                            .text_color(cx.theme().muted_foreground),
+                    )
                     .child(
                         div()
                             .flex_1()
+                            .min_w_0()
                             .flex()
                             .flex_col()
                             .gap(px(2.))
@@ -258,226 +612,76 @@ impl ModelsSection {
                                     .text_sm()
                                     .font_weight(gpui_kit::FontWeight::MEDIUM)
                                     .text_color(cx.theme().foreground)
-                                    .child(SharedString::from(entry.name.clone())),
+                                    .child(SharedString::from(provider.label.clone())),
                             )
                             .child(
                                 div()
-                                    .flex()
-                                    .gap_2()
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(if provider_missing {
-                                                gpui_kit::hsla(0.0, 0.7, 0.5, 1.0)
-                                            } else {
-                                                cx.theme().muted_foreground
-                                            })
-                                            .child(SharedString::from(provider_display)),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(SharedString::from(format!(
-                                                "· {}",
-                                                context_str
-                                            ))),
-                                    ),
-                            )
-                            .when(!entry.model_id.is_empty(), |el| {
-                                el.child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground.opacity(0.7))
-                                        .child(SharedString::from(format!(
-                                            "ID: {}",
-                                            entry.model_id
-                                        ))),
-                                )
-                            }),
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(SharedString::from(status)),
+                            ),
                     )
-                    // Provider status indicator
+                    .when_some(error, |el, error| {
+                        el.child(Self::render_error_badge(provider_id, error, cx))
+                    })
                     .child(
                         div()
-                            .w(px(8.))
-                            .h(px(8.))
-                            .rounded_full()
-                            .bg(if provider_missing {
-                                gpui_kit::hsla(0.0, 0.7, 0.5, 1.0)
-                            } else {
-                                gpui_kit::hsla(0.33, 0.7, 0.45, 1.0)
-                            }),
-                    )
-                    // Expand chevron
-                    .child(
-                        Icon::default()
-                            .path(SharedString::from(if is_expanded {
-                                "icons/chevron_up.svg"
-                            } else {
-                                "icons/chevron_down.svg"
-                            }))
-                            .with_size(Size::XSmall)
-                            .text_color(cx.theme().muted_foreground),
+                            .id(SharedString::from(format!("refresh-models-{provider_id}")))
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .when(!refreshing, |el| {
+                                el.cursor_pointer()
+                                    .hover(|s| s.bg(cx.theme().muted.opacity(0.5)))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        // Refreshing does not open or close the card.
+                                        cx.stop_propagation();
+                                        this.refresh(id_for_refresh.clone(), cx);
+                                    }))
+                            })
+                            .child(
+                                Icon::default()
+                                    .path(SharedString::from("icons/arrow_circle.svg"))
+                                    .with_size(Size::XSmall),
+                            )
+                            .child("Refresh"),
                     ),
             )
-            // Inline form when expanded
-            .when(is_expanded, |el| el.child(self.render_model_form(cx)))
-    }
-
-    fn populate_form_from_entry(
-        &mut self,
-        name: &str,
-        window: &mut gpui_kit::Window,
-        cx: &mut Context<Self>,
-    ) {
-        let entry = self.models.iter().find(|e| e.name == name).cloned();
-        if let Some(entry) = entry {
-            self.form_name_input.update(cx, |state, cx| {
-                state.set_value(SharedString::from(entry.name), window, cx);
-            });
-            self.form_model_id_input.update(cx, |state, cx| {
-                state.set_value(SharedString::from(entry.model_id), window, cx);
-            });
-            self.form_context_limit_input.update(cx, |state, cx| {
-                state.set_value(
-                    SharedString::from(entry.context_limit.to_string()),
-                    window,
-                    cx,
-                );
-            });
-            self.form_selected_provider = Some(entry.provider.clone());
-            self.form_provider_select.update(cx, |state, cx| {
-                state.set_selected_value(&entry.provider, window, cx);
-            });
-        }
-    }
-
-    fn reset_form(&mut self, window: &mut gpui_kit::Window, cx: &mut Context<Self>) {
-        self.form_name_input.update(cx, |state, cx| {
-            state.set_value(SharedString::from(""), window, cx);
-        });
-        self.form_model_id_input.update(cx, |state, cx| {
-            state.set_value(SharedString::from(""), window, cx);
-        });
-        self.form_context_limit_input.update(cx, |state, cx| {
-            state.set_value(SharedString::from(""), window, cx);
-        });
-        self.form_selected_provider = None;
-        // Refresh provider list in dropdown
-        let providers = Self::load_providers();
-        self.form_provider_select.update(cx, |state, cx| {
-            state.set_items(providers.clone(), window, cx);
-        });
-        self.providers = providers;
-    }
-
-    fn render_model_form(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let editing_key = match &self.form_mode {
-            FormMode::Editing(key) => Some(key.clone()),
-            _ => None,
-        };
-
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .px_4()
-            .pb_4()
-            .pt_2()
-            .border_t_1()
-            .border_color(cx.theme().border)
-            // Display Name
-            .child(self.render_form_row(
-                "Name",
-                Input::new(&self.form_name_input).into_any_element(),
-                cx,
-            ))
-            // Provider dropdown
-            .child(
-                self.render_form_row(
-                    "Provider",
-                    div()
-                        .child(
-                            Select::new(&self.form_provider_select)
-                                .placeholder("Select provider")
-                                .with_size(Size::Small)
-                                .icon(
-                                    Icon::default()
-                                        .path("icons/chevron_up_down.svg")
-                                        .with_size(Size::XSmall)
-                                        .text_color(cx.theme().muted_foreground),
-                                )
-                                .min_w(px(200.)),
-                        )
-                        .into_any_element(),
-                    cx,
-                ),
-            )
-            // Model ID
-            .child(self.render_form_row(
-                "Model ID",
-                Input::new(&self.form_model_id_input).into_any_element(),
-                cx,
-            ))
-            // Context limit
-            .child(self.render_form_row(
-                "Context",
-                Input::new(&self.form_context_limit_input).into_any_element(),
-                cx,
-            ))
-            // Action buttons
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .mt_2()
-                    .pt_2()
-                    .border_t_1()
-                    .border_color(cx.theme().border)
-                    // Left: Delete button (only when editing)
-                    .child(div().when_some(editing_key.clone(), |el, key| {
-                        el.child(
-                            div()
-                                .id("delete-model")
-                                .px_3()
-                                .py_1()
-                                .rounded_md()
-                                .cursor_pointer()
-                                .text_xs()
-                                .text_color(gpui_kit::hsla(0.0, 0.7, 0.5, 1.0))
-                                .hover(|s| s.bg(gpui_kit::hsla(0.0, 0.7, 0.5, 0.1)))
-                                .child("Delete")
-                                .on_click(cx.listener(move |this, _, _window, cx| {
-                                    this.delete_model(&key, cx);
-                                })),
-                        )
-                    }))
-                    // Right: Cancel + Save
-                    .child(
+            // Model rows
+            .when(open, |el| {
+                el.child(
+                    div().flex().flex_col().children(
+                        rows.into_iter()
+                            .map(|row| self.render_row(provider_id, row, cx).into_any_element()),
+                    ),
+                )
+            })
+            // Add by hand
+            .when_some(
+                self.add_inputs.get(provider_id).cloned().filter(|_| open),
+                |el, input| {
+                    el.child(
                         div()
                             .flex()
                             .items_center()
                             .gap_2()
+                            .px_4()
+                            .py_2()
+                            .border_t_1()
+                            .border_color(cx.theme().border)
                             .child(
                                 div()
-                                    .id("cancel-model-form")
-                                    .px_3()
-                                    .py_1()
-                                    .rounded_md()
-                                    .cursor_pointer()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .hover(|s| s.bg(cx.theme().muted))
-                                    .child("Cancel")
-                                    .on_click(cx.listener(|this, _, _window, cx| {
-                                        this.form_mode = FormMode::Hidden;
-                                        cx.notify();
-                                    })),
+                                    .flex_1()
+                                    .child(Input::new(&input).with_size(Size::Small)),
                             )
                             .child(
                                 div()
-                                    .id("save-model")
+                                    .id(SharedString::from(format!("add-model-{provider_id}")))
                                     .px_3()
                                     .py_1()
                                     .rounded_md()
@@ -485,205 +689,241 @@ impl ModelsSection {
                                     .text_xs()
                                     .bg(cx.theme().primary)
                                     .text_color(cx.theme().primary_foreground)
-                                    .hover(|s| s.opacity(0.9))
-                                    .child("Save")
-                                    .on_click(cx.listener(|this, _, _window, cx| {
-                                        this.save_model(cx);
+                                    .hover(|s| s.bg(cx.theme().primary.opacity(0.8)))
+                                    .child("Add")
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.add_by_hand(&id_for_add, window, cx);
                                     })),
                             ),
-                    ),
+                    )
+                },
             )
     }
 
-    fn render_form_row(
-        &self,
-        label: &str,
-        widget: gpui_kit::AnyElement,
+    /// A small "Error" badge whose tooltip carries the listing's error.
+    fn render_error_badge(
+        provider_id: &str,
+        error: String,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let danger = cx.theme().danger;
         div()
-            .w_full()
-            .flex()
-            .items_center()
-            .gap_3()
-            .child(
-                div()
-                    .w(px(80.))
-                    .flex_none()
-                    .text_xs()
-                    .font_weight(gpui_kit::FontWeight::MEDIUM)
-                    .text_color(cx.theme().muted_foreground)
-                    .child(SharedString::from(label.to_string())),
-            )
-            .child(div().flex_1().min_w_0().child(widget))
-    }
-
-    fn save_model(&mut self, cx: &mut Context<Self>) {
-        let name = self.form_name_input.read(cx).value().to_string();
-        let model_id = self.form_model_id_input.read(cx).value().to_string();
-        let context_str = self.form_context_limit_input.read(cx).value().to_string();
-
-        if name.trim().is_empty() || model_id.trim().is_empty() {
-            return;
-        }
-
-        let provider = match &self.form_selected_provider {
-            Some(p) => p.clone(),
-            None => return,
-        };
-
-        let context_limit: u32 = context_str.trim().parse().unwrap_or(200_000);
-
-        // Load existing models
-        let config_path = llm::provider_config::ConfigurationSystem::models_config_path();
-        let mut map: Map<String, Value> = match std::fs::read_to_string(&config_path) {
-            Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-            Err(_) => Map::new(),
-        };
-
-        // When editing, remove old key if name changed
-        if let FormMode::Editing(ref old_name) = self.form_mode
-            && old_name != name.trim()
-        {
-            map.remove(old_name);
-        }
-
-        // Build model entry
-        let model_value = serde_json::json!({
-            "provider": provider,
-            "id": model_id.trim(),
-            "config": {},
-            "context_token_limit": context_limit,
-        });
-
-        map.insert(name.trim().to_string(), model_value);
-
-        // Ensure parent directory exists
-        if let Some(parent) = config_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-
-        match serde_json::to_string_pretty(&map) {
-            Ok(json) => {
-                if let Err(e) = std::fs::write(&config_path, json) {
-                    warn!("Failed to write models.json: {}", e);
-                } else {
-                    debug!("Saved model to {}", config_path.display());
-                    self.form_mode = FormMode::Hidden;
-                    self.reload();
-                }
-            }
-            Err(e) => {
-                warn!("Failed to serialize models: {}", e);
-            }
-        }
-
-        cx.notify();
-    }
-
-    fn delete_model(&mut self, name: &str, cx: &mut Context<Self>) {
-        let config_path = llm::provider_config::ConfigurationSystem::models_config_path();
-        let mut map: Map<String, Value> = match std::fs::read_to_string(&config_path) {
-            Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-            Err(_) => return,
-        };
-
-        map.remove(name);
-
-        match serde_json::to_string_pretty(&map) {
-            Ok(json) => {
-                if let Err(e) = std::fs::write(&config_path, json) {
-                    warn!("Failed to write models.json: {}", e);
-                } else {
-                    debug!("Deleted model '{}' from {}", name, config_path.display());
-                    self.form_mode = FormMode::Hidden;
-                    self.reload();
-                }
-            }
-            Err(e) => {
-                warn!("Failed to serialize models: {}", e);
-            }
-        }
-
-        cx.notify();
-    }
-
-    fn render_add_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .id("add-model-btn")
+            .id(SharedString::from(format!("listing-error-{provider_id}")))
             .flex()
             .items_center()
             .gap_1()
-            .px_3()
-            .py_1()
+            .px_2()
+            .py(px(2.))
             .rounded_md()
-            .cursor_pointer()
-            .bg(cx.theme().primary)
-            .hover(|s| s.bg(cx.theme().primary.opacity(0.8)))
+            .text_xs()
+            .text_color(danger)
+            .bg(danger.opacity(0.12))
             .child(
                 Icon::default()
-                    .path(SharedString::from("icons/plus.svg"))
+                    .path(SharedString::from("icons/circle_alert.svg"))
                     .with_size(Size::XSmall)
-                    .text_color(cx.theme().primary_foreground),
+                    .text_color(danger),
             )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().primary_foreground)
-                    .child("Add"),
-            )
-            .on_click(cx.listener(|this, _, window, cx| {
-                this.form_mode = FormMode::Adding;
-                this.reset_form(window, cx);
-                cx.notify();
-            }))
+            .child("Listing failed")
+            .tooltip(move |window, cx| {
+                Tooltip::new(SharedString::from(error.clone())).build(window, cx)
+            })
     }
 
-    fn render_add_model_dialog(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_row(
+        &self,
+        provider_id: &str,
+        row: ModelRow,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let mut badges = Vec::new();
+        if let Some(context) = row.capabilities.context_window {
+            badges.push(format!("{} context", format_tokens(context)));
+        }
+        if let Some(reasoning) = &row.capabilities.reasoning
+            && let (Some(first), Some(last)) = (reasoning.levels.first(), reasoning.levels.last())
+        {
+            badges.push(if first == last {
+                format!("effort {}", first.as_str())
+            } else {
+                format!("effort {}–{}", first.as_str(), last.as_str())
+            });
+        }
+        if row.capabilities.edit_format == Some(EditFormat::Diff) {
+            badges.push("diff edits".to_string());
+        }
+        let expanded = self.editor.as_ref().is_some_and(|e| e.key == row.key);
+        let view = cx.entity();
+        let provider_for_switch = provider_id.to_string();
+        let id_for_switch = row.id.clone();
+        let row_for_click = row.clone();
+
         div()
-            .id("add-model-dialog-backdrop")
-            .absolute()
-            .inset_0()
             .flex()
-            .items_start()
-            .justify_center()
-            .pt(px(60.))
-            .bg(cx.theme().background.opacity(0.6))
-            .on_mouse_down(
-                gpui_kit::MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
-                    this.form_mode = FormMode::Hidden;
-                    cx.notify();
-                }),
-            )
+            .flex_col()
+            .border_t_1()
+            .border_color(cx.theme().border)
             .child(
                 div()
-                    .id("add-model-dialog")
-                    .w(px(480.))
-                    .bg(cx.theme().popover)
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .rounded_lg()
-                    .shadow_lg()
                     .flex()
-                    .flex_col()
-                    .overflow_hidden()
-                    .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
-                        cx.stop_propagation();
-                    })
-                    // Title
+                    .items_center()
+                    .gap_3()
+                    .px_4()
+                    .py_2()
                     .child(
-                        div().px_4().py_3().child(
-                            div()
-                                .text_base()
-                                .font_weight(gpui_kit::FontWeight::MEDIUM)
-                                .text_color(cx.theme().foreground)
-                                .child("New Model"),
-                        ),
+                        Switch::new(SharedString::from(format!("model-enabled-{}", row.key)))
+                            .checked(row.enabled)
+                            .with_size(Size::Small)
+                            .on_click(move |enabled, _window, app| {
+                                let enabled = *enabled;
+                                let provider = provider_for_switch.clone();
+                                let id = id_for_switch.clone();
+                                view.update(app, |this, cx| {
+                                    this.set_enabled(&provider, &id, enabled, cx);
+                                });
+                            }),
                     )
-                    // Form content
-                    .child(self.render_model_form(cx)),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(if row.enabled {
+                                        cx.theme().foreground
+                                    } else {
+                                        cx.theme().muted_foreground
+                                    })
+                                    .truncate()
+                                    .child(SharedString::from(row.name.clone())),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground.opacity(0.8))
+                                    .truncate()
+                                    .child(SharedString::from(
+                                        std::iter::once(row.id.clone())
+                                            .chain(badges)
+                                            .collect::<Vec<_>>()
+                                            .join(" · "),
+                                    )),
+                            ),
+                    )
+                    .when(row.enabled, |el| {
+                        el.child(
+                            div()
+                                .id(SharedString::from(format!("edit-model-{}", row.key)))
+                                .p_1()
+                                .rounded_md()
+                                .cursor_pointer()
+                                .hover(|s| s.bg(cx.theme().muted.opacity(0.5)))
+                                .child(
+                                    Icon::default()
+                                        .path(SharedString::from(if expanded {
+                                            "icons/chevron_up.svg"
+                                        } else {
+                                            "icons/chevron_down.svg"
+                                        }))
+                                        .with_size(Size::XSmall)
+                                        .text_color(cx.theme().muted_foreground),
+                                )
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.toggle_editor(&row_for_click, window, cx);
+                                })),
+                        )
+                    }),
             )
+            .when(expanded, |el| el.child(self.render_editor(cx)))
+    }
+
+    fn render_editor(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(editor) = &self.editor else {
+            return div().into_any_element();
+        };
+        let row = |label: &str, widget: gpui_kit::AnyElement, cx: &mut Context<Self>| {
+            div()
+                .flex()
+                .items_center()
+                .gap_3()
+                .child(
+                    div()
+                        .w(px(110.))
+                        .flex_none()
+                        .text_xs()
+                        .font_weight(gpui_kit::FontWeight::MEDIUM)
+                        .text_color(cx.theme().muted_foreground)
+                        .child(SharedString::from(label.to_string())),
+                )
+                .child(div().flex_1().min_w_0().child(widget))
+        };
+        let select = |state: &Entity<SelectState<Vec<String>>>| {
+            Select::new(state).with_size(Size::Small).into_any_element()
+        };
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .px_4()
+            .py_3()
+            .bg(cx.theme().background)
+            .child(row(
+                "Name",
+                Input::new(&editor.name)
+                    .with_size(Size::Small)
+                    .into_any_element(),
+                cx,
+            ))
+            .child(row(
+                "Behaves like",
+                Input::new(&editor.behaves_like)
+                    .with_size(Size::Small)
+                    .into_any_element(),
+                cx,
+            ))
+            .child(row(
+                "Context window",
+                Input::new(&editor.context_limit)
+                    .with_size(Size::Small)
+                    .into_any_element(),
+                cx,
+            ))
+            .child(row("Default effort", select(&editor.default_effort), cx))
+            .child(row("Edit format", select(&editor.edit_format), cx))
+            .child(row(
+                "Extra fields",
+                Textarea::new(&editor.extra_config).into_any_element(),
+                cx,
+            ))
+            .when_some(editor.error.clone(), |el, error| {
+                el.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().danger)
+                        .child(SharedString::from(error)),
+                )
+            })
+            .child(
+                div().flex().justify_end().child(
+                    div()
+                        .id("save-model-overrides")
+                        .px_3()
+                        .py_1()
+                        .rounded_md()
+                        .cursor_pointer()
+                        .text_xs()
+                        .bg(cx.theme().primary)
+                        .text_color(cx.theme().primary_foreground)
+                        .hover(|s| s.bg(cx.theme().primary.opacity(0.8)))
+                        .child("Save")
+                        .on_click(cx.listener(|this, _, _, cx| this.save_editor(cx))),
+                ),
+            )
+            .into_any_element()
     }
 }
 
@@ -699,102 +939,135 @@ impl Render for ModelsSection {
         _window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let form_mode = self.form_mode.clone();
-        let has_providers = !self.providers.is_empty();
+        let filtering = self.filtering(cx);
+        let mut provider_ids: Vec<String> = self
+            .providers
+            .keys()
+            // While filtering, providers without a match drop out.
+            .filter(|id| !filtering || self.rows.get(*id).is_some_and(|rows| !rows.is_empty()))
+            .cloned()
+            .collect();
+        provider_ids.sort_by_key(|id| self.providers[id].label.to_lowercase());
+        let no_providers = self.providers.is_empty();
 
         div()
-            .relative()
-            .size_full()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .w_full()
+            .max_w(px(700.))
+            .mx_auto()
             .child(
                 div()
-                    .flex()
-                    .flex_col()
-                    .gap_3()
-                    .w_full()
-                    .max_w(px(700.))
-                    .mx_auto()
-                    // Header
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child("MODELS"),
-                            )
-                            .when(has_providers, |el| el.child(self.render_add_button(cx))),
-                    )
-                    // No providers warning
-                    .when(!has_providers, |el| {
-                        el.child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .items_center()
-                                .justify_center()
-                                .py_8()
-                                .gap_3()
-                                .child(
-                                    div()
-                                        .text_base()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child("Please configure providers first"),
-                                )
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(
-                                            "Models need a provider. Go to the Providers section to add one.",
-                                        ),
-                                ),
-                        )
-                    })
-                    // Model cards
-                    .when(has_providers, |el| {
-                        el.children(
-                            self.models
-                                .clone()
-                                .iter()
-                                .map(|entry| {
-                                    self.render_model_card(entry, cx).into_any_element()
-                                }),
-                        )
-                    })
-                    // Empty state (providers exist but no models)
-                    .when(has_providers && self.models.is_empty(), |el| {
-                        el.child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .items_center()
-                                .justify_center()
-                                .py_8()
-                                .gap_3()
-                                .child(
-                                    div()
-                                        .text_base()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child("No models configured yet"),
-                                )
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(
-                                            "Click \"+ Add\" above to configure a model.",
-                                        ),
-                                ),
-                        )
-                    }),
+                    .text_xs()
+                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                    .text_color(cx.theme().muted_foreground)
+                    .child("MODELS"),
             )
-            // Dialog overlay for adding
-            .when(form_mode == FormMode::Adding, |el| {
-                el.child(self.render_add_model_dialog(cx))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(
+                        "Choose which of your providers' models appear in the model picker. \
+                         Context window, reasoning effort and request settings come from the \
+                         built-in catalog and the provider; expand a shown model to override them.",
+                    ),
+            )
+            .when(no_providers, |el| {
+                el.child(
+                    div()
+                        .py_8()
+                        .flex()
+                        .justify_center()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Add a provider in the Providers section first."),
+                )
             })
+            .when(!no_providers, |el| {
+                el.child(Input::new(&self.filter_input).with_size(Size::Small))
+                    .children(provider_ids.iter().map(|provider_id| {
+                        self.render_provider(provider_id, cx).into_any_element()
+                    }))
+            })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use llm::discovery::DiscoveredModel;
+    use llm::provider_config::ProviderConfig;
+
+    fn config(selection: Vec<ModelConfig>, listed: Vec<&str>) -> ConfigurationSystem {
+        let providers = [(
+            "anthropic".to_string(),
+            ProviderConfig {
+                label: "Anthropic".into(),
+                provider: "anthropic".into(),
+                config: serde_json::json!({}),
+            },
+        )]
+        .into_iter()
+        .collect();
+        let mut discovery = DiscoveryCache::default();
+        discovery.record(
+            "anthropic",
+            Ok(listed.into_iter().map(DiscoveredModel::new).collect()),
+        );
+        ConfigurationSystem::from_parts(providers, ModelSelection { models: selection }, discovery)
+            .unwrap()
+    }
+
+    #[test]
+    fn rows_are_ordered_by_name_and_include_unlisted_shown_models() {
+        let config = config(
+            vec![
+                ModelConfig::new("anthropic", "claude-opus-5"),
+                ModelConfig::new("anthropic", "claude-private-preview"),
+            ],
+            vec!["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"],
+        );
+        let rows = provider_rows(&config, "anthropic", "");
+        let names: Vec<(&str, bool)> = rows.iter().map(|r| (r.name.as_str(), r.enabled)).collect();
+        assert_eq!(
+            names,
+            vec![
+                ("Claude Haiku 4.5", false),
+                ("Claude Opus 5", true),
+                ("Claude Sonnet 5", false),
+                ("claude-private-preview", true),
+            ],
+            "toggling a model must not move its row"
+        );
+        assert!(rows[1].capabilities.reasoning.is_some());
+    }
+
+    #[test]
+    fn rows_filter_by_name_or_id() {
+        let config = config(vec![], vec!["claude-opus-5", "claude-sonnet-5"]);
+        let rows = provider_rows(&config, "anthropic", "SONNET");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "claude-sonnet-5");
+        assert_eq!(
+            provider_rows(&config, "anthropic", "opus-5")[0].id,
+            "claude-opus-5"
+        );
+    }
+
+    #[test]
+    fn cards_name_the_api() {
+        assert_eq!(api_label("anthropic"), "Anthropic API");
+        assert_eq!(api_label("openai-responses"), "OpenAI Responses API");
+        assert_eq!(api_label("vertex"), "Vertex API");
+        assert_eq!(api_label("ai-core"), "SAP AI Core");
+    }
+
+    #[test]
+    fn token_counts_are_short() {
+        assert_eq!(format_tokens(1_000_000), "1M");
+        assert_eq!(format_tokens(272_000), "272K");
+        assert_eq!(format_tokens(1_048_576), "1048K");
     }
 }

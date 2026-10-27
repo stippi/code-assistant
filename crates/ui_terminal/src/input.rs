@@ -45,6 +45,10 @@ pub enum KeyEventResult {
     SwitchSession(String),
     /// Manage the session's durable goals (`/goal`): the raw argument text.
     Goal { args: String },
+    /// Show the session's reasoning effort.
+    ShowEffort,
+    /// Set the session's reasoning effort.
+    SetEffort(llm::capabilities::Effort),
     /// Show the current permission tier.
     ShowPermissionTier,
     /// Switch the permission tier.
@@ -225,6 +229,8 @@ impl InputManager {
                                 self.textarea.insert_str(&template);
                                 KeyEventResult::Continue
                             }
+                            CommandResult::ShowEffort => KeyEventResult::ShowEffort,
+                            CommandResult::SetEffort(effort) => KeyEventResult::SetEffort(effort),
                             CommandResult::ShowPermissionTier => KeyEventResult::ShowPermissionTier,
                             CommandResult::SetPermissionTier(tier) => {
                                 KeyEventResult::SetPermissionTier(tier)

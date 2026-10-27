@@ -67,6 +67,8 @@ pub struct SessionListItem {
     awaiting_user: Option<AwaitingUser>,
     /// When the session's next wakeup fires, if one is still to fire.
     next_wakeup: Option<chrono::DateTime<chrono::Utc>>,
+    /// A monitor runs in the session.
+    monitored: bool,
     /// Whether the subtitle names the project; not inside a project folder.
     show_project: bool,
     focus_handle: FocusHandle,
@@ -87,6 +89,7 @@ impl SessionListItem {
             activity_state: SessionActivityState::Idle,
             awaiting_user: None,
             next_wakeup: None,
+            monitored: false,
             show_project: true,
             focus_handle: cx.focus_handle(),
         }
@@ -142,6 +145,13 @@ impl SessionListItem {
         }
     }
 
+    pub fn set_monitored(&mut self, monitored: bool, cx: &mut Context<Self>) {
+        if self.monitored != monitored {
+            self.monitored = monitored;
+            cx.notify();
+        }
+    }
+
     pub fn set_show_project(&mut self, show_project: bool, cx: &mut Context<Self>) {
         if self.show_project != show_project {
             self.show_project = show_project;
@@ -153,7 +163,7 @@ impl SessionListItem {
         SessionStatus::resolve(
             &self.activity_state,
             self.awaiting_user,
-            self.next_wakeup.is_some(),
+            self.next_wakeup.is_some() || self.monitored,
         )
     }
 
@@ -326,12 +336,14 @@ impl Render for SessionListItem {
             SessionStatus::RateLimited => (Some("Rate limited".into()), cx.theme().warning),
             SessionStatus::Retrying => (Some("Retrying".into()), cx.theme().warning),
             SessionStatus::Scheduled => (
-                self.next_wakeup.map(|at| {
-                    format!(
-                        "Wakeup {}",
-                        Self::format_wakeup_time(at.with_timezone(&chrono::Local))
-                    )
-                }),
+                self.next_wakeup
+                    .map(|at| {
+                        format!(
+                            "Wakeup {}",
+                            Self::format_wakeup_time(at.with_timezone(&chrono::Local))
+                        )
+                    })
+                    .or_else(|| self.monitored.then(|| "Monitoring".to_string())),
                 cx.theme().muted_foreground,
             ),
             SessionStatus::Failed => (Some("Failed".into()), cx.theme().danger),

@@ -13,11 +13,13 @@ use tools_core::permissions::PermissionTier;
 // New session management architecture
 pub mod browsers;
 pub mod default_model;
+pub mod effort;
 pub mod event_stream;
 pub mod idle_handoff;
 pub mod instance;
 pub mod lifecycle;
 pub mod manager;
+pub mod monitor;
 pub mod new_context;
 pub mod permissions;
 pub mod pull_request;
@@ -32,6 +34,7 @@ pub mod watcher;
 // core→UI broadcast stream
 pub use event_stream::{EventPayload, EventStream, SessionEvent, StreamError, Subscription};
 pub use manager::SessionManager;
+pub use monitor::{MonitorHandle, SessionMonitors};
 pub use service::SessionService;
 pub use service::{
     DirEntry, DirListing, EntryKind, FileContent, ProjectDir, ProjectFile, ProjectFiles,
@@ -61,6 +64,7 @@ pub struct SessionSnapshot {
     /// Text summary of a queued (pending) user message, if any.
     pub pending_message: Option<String>,
     pub current_model: String,
+    pub effort: effort::EffortChoice,
     pub allowed_models: Vec<String>,
     pub sandbox_policy: SandboxPolicy,
     pub permission_tier: PermissionTier,
@@ -79,6 +83,8 @@ pub struct SessionSnapshot {
     pub pending_questions: Vec<questions::UserQuestionRequest>,
     /// Wakeups still to fire, soonest first.
     pub armed_wakeups: Vec<wakeup::ArmedWakeupInfo>,
+    /// Monitors running in the session, oldest first.
+    pub active_monitors: Vec<monitor::ActiveMonitorInfo>,
 }
 
 impl SessionSnapshot {
@@ -106,6 +112,10 @@ impl SessionSnapshot {
                 session_id: self.session_id.clone(),
                 wakeups: self.armed_wakeups.clone(),
             },
+            UiEvent::UpdateActiveMonitors {
+                session_id: self.session_id.clone(),
+                monitors: self.active_monitors.clone(),
+            },
         ];
         // Show the error banner when connecting to an errored session.
         if let instance::SessionActivityState::Errored { message } = &self.activity_state {
@@ -121,6 +131,9 @@ impl SessionSnapshot {
         });
         events.push(UiEvent::UpdateCurrentModel {
             model_name: self.current_model.clone(),
+        });
+        events.push(UiEvent::UpdateEffort {
+            choice: self.effort.clone(),
         });
         events.push(UiEvent::UpdateSandboxPolicy {
             policy: self.sandbox_policy.clone(),

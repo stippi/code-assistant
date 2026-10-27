@@ -126,6 +126,17 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
                 .await
                 .set_wakeup_handle(wakeup_handle);
 
+            // Monitors and background-job notifications: agents are told
+            // when something they started in the background has news.
+            let monitor_handle = code_assistant_core::session::MonitorHandle::new(
+                service.clone(),
+                Some(manager_for_mcp.lock().await.sleep_inhibitor()),
+            );
+            manager_for_mcp
+                .lock()
+                .await
+                .set_monitor_handle(monitor_handle);
+
             // Idle handoff: long sessions left idle get a prepared
             // `/new <prompt>` while the prompt cache is warm.
             manager_for_mcp.lock().await.set_idle_handoff(
@@ -173,8 +184,14 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
             let goal_service = service.clone();
             let goal_model = config.model.clone();
             tokio::spawn(async move {
-                match llm::factory::create_llm_client_from_model(&goal_model, None, false, None)
-                    .await
+                match llm::factory::create_llm_client_from_model(
+                    &goal_model,
+                    None,
+                    None,
+                    false,
+                    None,
+                )
+                .await
                 {
                     Ok(provider) => {
                         code_assistant_core::goals::spawn_goal_controller(

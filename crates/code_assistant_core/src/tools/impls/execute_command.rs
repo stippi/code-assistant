@@ -41,14 +41,18 @@ pub struct ExecuteCommandOutput {
     /// Session mode: id under which the still-running process is tracked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pty_session_id: Option<u32>,
-    /// Session mode: exit code, when the process exited within the yield
-    /// window and reported one.
+    /// Exit code, when the process exited (in session mode: within the
+    /// yield window) and reported one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
     /// Session mode: the process was still running when the yield window
     /// closed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub running: bool,
+    /// Session mode: the agent is told with a message when the still-running
+    /// process exits.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub notify_on_exit: bool,
 }
 
 // Render implementation for output formatting
@@ -94,6 +98,11 @@ impl Render for ExecuteCommandOutput {
             formatted.push_str(&format!(
                 "\nThe process keeps running in the background. Use the write_stdin tool with session_id {session_id} to send input, poll for more output (empty chars), or interrupt it (chars \"\\u0003\")."
             ));
+            if self.notify_on_exit {
+                formatted.push_str(&format!(
+                    "\nWhen it exits, you receive a message starting with '[background job {session_id} exited]', so there is no need to poll for its completion: continue with other work, or end your turn if there is nothing else to do."
+                ));
+            }
         }
 
         formatted
@@ -253,68 +262,19 @@ impl Tool for ExecuteCommandTool {
         context: &mut ToolContext<'a>,
         input: &mut Self::Input,
     ) -> Result<Self::Output> {
-        // Resolve the scope (a project name, or a reserved skills-scope token
-        // such as `:config:` / `:system:`) to a sandboxed explorer. This lets
-        // bundled skill scripts under `:config:` / `:system:` be executed.
-        let explorer = crate::config::explorer_for_scope(context.project_manager(), &input.project)
-            .map_err(|e| anyhow!("Failed to resolve scope {}: {}", input.project, e))?;
-
-        let project_root = explorer.root_dir();
-
-        // Create a PathBuf for the working directory if provided
+        let PreparedCommand {
+            effective_working_dir,
+            sandbox_request,
+        } = prepare_command(
+            context,
+            "execute_command",
+            &input.project,
+            input.working_dir.as_deref(),
+            &input.command_line,
+            input.ask_user_approval,
+        )
+        .await?;
         let working_dir_path = input.working_dir.as_ref().map(PathBuf::from);
-
-        // Check if working directory is absolute and handle it properly
-        if let Some(dir) = &working_dir_path
-            && dir.is_absolute()
-        {
-            return Err(anyhow!(
-                "Working directory must be relative to project root"
-            ));
-        }
-
-        // Prepare effective working directory
-        let effective_working_dir = working_dir_path
-            .as_ref()
-            .map(|dir| project_root.join(dir))
-            .unwrap_or_else(|| project_root.clone());
-
-        let mut bypass_sandbox = false;
-        if input.ask_user_approval {
-            let handler = context.permission_handler.ok_or_else(|| {
-                anyhow!(
-                    "Cannot request user approval: no permission handler configured for execute_command"
-                )
-            })?;
-
-            let decision = handler
-                .request_permission(PermissionRequest {
-                    tool_id: context.tool_id.as_deref(),
-                    tool_name: "execute_command",
-                    reason: PermissionRequestReason::ExecuteCommand {
-                        command_line: &input.command_line,
-                        working_dir: Some(effective_working_dir.as_path()),
-                    },
-                })
-                .await?;
-
-            match decision {
-                PermissionDecision::Denied => {
-                    return Err(anyhow!(
-                        "Command execution cancelled: user denied permission"
-                    ));
-                }
-                PermissionDecision::GrantedOnce
-                | PermissionDecision::GrantedSession
-                | PermissionDecision::GrantedPersistent => {
-                    bypass_sandbox = true;
-                }
-            }
-        }
-
-        let mut sandbox_request = SandboxCommandRequest::default();
-        sandbox_request.writable_roots.push(project_root.clone());
-        sandbox_request.bypass_sandbox = bypass_sandbox;
 
         // Session mode: run in a PTY/pipe session that can outlive this call.
         if input.tty.is_some() || input.yield_time_ms.is_some() {
@@ -382,10 +342,96 @@ impl Tool for ExecuteCommandTool {
             output: result.output,
             success: result.success,
             pty_session_id: None,
-            exit_code: None,
+            exit_code: result.exit_code,
             running: false,
+            notify_on_exit: false,
         })
     }
+}
+
+/// Where and how a command runs, resolved from a tool's input.
+pub(crate) struct PreparedCommand {
+    pub effective_working_dir: PathBuf,
+    pub sandbox_request: SandboxCommandRequest,
+}
+
+/// Resolve the scope and working directory of a command and, when
+/// `ask_user_approval` is set, ask the user to let it run outside the
+/// sandbox. Shared by `execute_command` and `monitor`.
+pub(crate) async fn prepare_command(
+    // `&mut` for `Send`: the context is not `Sync`.
+    context: &mut ToolContext<'_>,
+    tool_name: &str,
+    project: &str,
+    working_dir: Option<&str>,
+    command_line: &str,
+    ask_user_approval: bool,
+) -> Result<PreparedCommand> {
+    // Resolve the scope (a project name, or a reserved skills-scope token
+    // such as `:config:` / `:system:`) to a sandboxed explorer. This lets
+    // bundled skill scripts under `:config:` / `:system:` be executed.
+    let explorer = crate::config::explorer_for_scope(context.project_manager(), project)
+        .map_err(|e| anyhow!("Failed to resolve scope {}: {}", project, e))?;
+
+    let project_root = explorer.root_dir();
+
+    // Check if working directory is absolute and handle it properly
+    let working_dir_path = working_dir.map(PathBuf::from);
+    if let Some(dir) = &working_dir_path
+        && dir.is_absolute()
+    {
+        return Err(anyhow!(
+            "Working directory must be relative to project root"
+        ));
+    }
+
+    // Prepare effective working directory
+    let effective_working_dir = working_dir_path
+        .as_ref()
+        .map(|dir| project_root.join(dir))
+        .unwrap_or_else(|| project_root.clone());
+
+    let mut bypass_sandbox = false;
+    if ask_user_approval {
+        let handler = context.permission_handler.ok_or_else(|| {
+            anyhow!(
+                "Cannot request user approval: no permission handler configured for {tool_name}"
+            )
+        })?;
+
+        let decision = handler
+            .request_permission(PermissionRequest {
+                tool_id: context.tool_id.as_deref(),
+                tool_name,
+                reason: PermissionRequestReason::ExecuteCommand {
+                    command_line,
+                    working_dir: Some(effective_working_dir.as_path()),
+                },
+            })
+            .await?;
+
+        match decision {
+            PermissionDecision::Denied => {
+                return Err(anyhow!(
+                    "Command execution cancelled: user denied permission"
+                ));
+            }
+            PermissionDecision::GrantedOnce
+            | PermissionDecision::GrantedSession
+            | PermissionDecision::GrantedPersistent => {
+                bypass_sandbox = true;
+            }
+        }
+    }
+
+    let mut sandbox_request = SandboxCommandRequest::default();
+    sandbox_request.writable_roots.push(project_root.clone());
+    sandbox_request.bypass_sandbox = bypass_sandbox;
+
+    Ok(PreparedCommand {
+        effective_working_dir,
+        sandbox_request,
+    })
 }
 
 /// Yield-time bounds for session mode, mirroring the tool schema.
@@ -495,10 +541,24 @@ impl ExecuteCommandTool {
         let output = match collected.status {
             pty_session::PtySessionStatus::Running => {
                 let session_id = manager.register_with_tool_id(
-                    session,
+                    session.clone(),
                     &input.command_line,
                     context.tool_id.clone(),
                 );
+                // Tell the agent when the process exits, so it can go on
+                // with other work instead of polling.
+                let notify_on_exit = match &context.services().monitors {
+                    Some(monitors) => {
+                        monitors.watch_job_exit(
+                            &manager,
+                            session_id,
+                            &session,
+                            &input.command_line,
+                        );
+                        true
+                    }
+                    None => false,
+                };
                 ExecuteCommandOutput {
                     project: input.project.clone(),
                     command_line: input.command_line.clone(),
@@ -508,6 +568,7 @@ impl ExecuteCommandTool {
                     pty_session_id: Some(session_id),
                     exit_code: None,
                     running: true,
+                    notify_on_exit,
                 }
             }
             pty_session::PtySessionStatus::Exited(code) => ExecuteCommandOutput {
@@ -519,6 +580,7 @@ impl ExecuteCommandTool {
                 pty_session_id: None,
                 exit_code: code,
                 running: false,
+                notify_on_exit: false,
             },
         };
 
@@ -578,6 +640,7 @@ mod tests {
             pty_session_id: None,
             exit_code: None,
             running: false,
+            notify_on_exit: false,
         };
 
         let mut tracker = ResourcesTracker::new();
@@ -600,6 +663,7 @@ mod tests {
             pty_session_id: None,
             exit_code: None,
             running: false,
+            notify_on_exit: false,
         };
 
         let mut tracker = ResourcesTracker::new();
@@ -613,10 +677,9 @@ mod tests {
     #[tokio::test]
     async fn test_execute_command_success() -> Result<()> {
         // Create test fixture with command executor and UI
-        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
-            success: true,
-            output: "Command output".to_string(),
-        })])
+        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(
+            CommandOutput::success("Command output"),
+        )])
         .with_ui()
         .with_tool_id("test-tool-1".to_string());
         let mut context = fixture.context();
@@ -652,10 +715,10 @@ mod tests {
     #[tokio::test]
     async fn test_execute_command_failure() -> Result<()> {
         // Create test fixture with failing command executor and UI
-        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
-            success: false,
-            output: "Command failed: permission denied".to_string(),
-        })])
+        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput::exited(
+            Some(1),
+            "Command failed: permission denied",
+        ))])
         .with_ui()
         .with_tool_id("test-tool-2".to_string());
         let mut context = fixture.context();
@@ -689,12 +752,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_execute_command_reports_exit_code() -> Result<()> {
+        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput::exited(
+            Some(3),
+            "2 warnings",
+        ))]);
+        let mut context = fixture.context();
+
+        let mut input = ExecuteCommandInput {
+            project: "test".to_string(),
+            command_line: "python3 check.py".to_string(),
+            working_dir: None,
+            ask_user_approval: false,
+            tty: None,
+            yield_time_ms: None,
+        };
+
+        let result = ExecuteCommandTool.execute(&mut context, &mut input).await?;
+
+        assert_eq!(result.exit_code, Some(3));
+        let rendered = result.render(&mut ResourcesTracker::new());
+        assert!(rendered.contains("Status: Failed\nExit code: 3\n"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn test_execute_command_streaming() -> Result<()> {
         // Create test fixture with multi-line output and UI for streaming
-        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
-            success: true,
-            output: "Line 1\nLine 2\nLine 3\n".to_string(),
-        })])
+        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(
+            CommandOutput::success("Line 1\nLine 2\nLine 3\n"),
+        )])
         .with_ui()
         .with_tool_id("test-streaming-tool".to_string());
         let mut context = fixture.context();
@@ -733,10 +821,9 @@ mod tests {
     #[tokio::test]
     async fn test_execute_command_without_permission_flag_does_not_prompt() -> Result<()> {
         let mediator = Arc::new(TestPermissionMediator::new(PermissionDecision::GrantedOnce));
-        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
-            success: true,
-            output: "Command output".to_string(),
-        })])
+        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(
+            CommandOutput::success("Command output"),
+        )])
         .with_permission_handler(mediator.clone())
         .with_ui()
         .with_tool_id("test-tool-permission-free".to_string());
@@ -766,10 +853,9 @@ mod tests {
     #[tokio::test]
     async fn test_execute_command_permission_denied() {
         let mediator = Arc::new(TestPermissionMediator::new(PermissionDecision::Denied));
-        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
-            success: true,
-            output: "Command output".to_string(),
-        })])
+        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(
+            CommandOutput::success("Command output"),
+        )])
         .with_permission_handler(mediator.clone())
         .with_ui()
         .with_tool_id("test-tool-permission-denied".to_string());
@@ -793,10 +879,9 @@ mod tests {
     #[tokio::test]
     async fn test_execute_command_permission_bypasses_sandbox() -> Result<()> {
         let mediator = Arc::new(TestPermissionMediator::new(PermissionDecision::GrantedOnce));
-        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(CommandOutput {
-            success: true,
-            output: "Command output".to_string(),
-        })])
+        let mut fixture = ToolTestFixture::with_command_responses(vec![Ok(
+            CommandOutput::success("Command output"),
+        )])
         .with_permission_handler(mediator.clone())
         .with_ui()
         .with_tool_id("test-tool-permission-bypass".to_string());
@@ -1058,6 +1143,44 @@ mod tests {
             .get(session_id)
             .unwrap()
             .terminate();
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn background_job_exit_is_announced() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let (mut fixture, notifications) =
+            session_mode_fixture(dir.path()).with_recorded_monitors();
+        let mut context = fixture.context();
+
+        let mut input = session_mode_input("sleep 1; echo built; exit 2", 250);
+        let result = ExecuteCommandTool.execute(&mut context, &mut input).await?;
+        assert!(result.running);
+        assert!(result.notify_on_exit);
+        let session_id = result.pty_session_id.unwrap();
+        let rendered = result.render(&mut ResourcesTracker::new());
+        assert!(
+            rendered.contains(&format!("[background job {session_id} exited]")),
+            "{rendered}"
+        );
+
+        let delivered = notifications.wait_for(1).await;
+        assert_eq!(
+            delivered,
+            vec![crate::session::monitor::job_exited_message(
+                session_id,
+                "sleep 1; echo built; exit 2",
+                Some(2)
+            )]
+        );
+
+        // The output is still there to read.
+        drop(context);
+        let session = fixture.pty_sessions().unwrap().get(session_id).unwrap();
+        let rest = session
+            .collect_output(std::time::Duration::from_secs(1))
+            .await;
+        assert!(rest.output.contains("built"), "{}", rest.output);
         Ok(())
     }
 

@@ -156,12 +156,9 @@ impl ACPTerminalCommandExecutor {
             }
 
             if let Some(status) = output_response.exit_status {
-                let success = status.exit_code.map(|code| code == 0).unwrap_or(false);
+                let exit_code = status.exit_code.map(|code| code as i32);
 
-                return Ok(CommandOutput {
-                    success,
-                    output: output_current,
-                });
+                return Ok(CommandOutput::exited(exit_code, output_current));
             }
 
             if Instant::now() >= deadline {
@@ -210,16 +207,12 @@ impl ACPTerminalCommandExecutor {
             .await
             .map_err(|e| anyhow!("Failed to read terminal output: {e}"))?;
 
-        let success = output_response
+        let exit_code = output_response
             .exit_status
             .or(Some(wait_response.exit_status))
             .and_then(|status| status.exit_code)
-            .map(|code| code == 0)
-            .unwrap_or(false);
+            .map(|code| code as i32);
 
-        Ok(CommandOutput {
-            success,
-            output: output_response.output,
-        })
+        Ok(CommandOutput::exited(exit_code, output_response.output))
     }
 }

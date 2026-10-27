@@ -8,6 +8,7 @@ use tokio::sync::Mutex;
 use crate::agent::{Agent, AgentComponents, DefaultSubAgentRunner, SubAgentCancellationRegistry};
 use crate::config::ProjectManager;
 use crate::persistence::{ChatMetadata, ChatSession, FileSessionPersistence, SessionModelConfig};
+use crate::session::effort::EffortChoice;
 use crate::session::instance::SessionInstance;
 use crate::session::sleep_inhibitor::SleepInhibitor;
 use crate::session::{SessionCheckpoint, SessionConfig};
@@ -15,6 +16,7 @@ use crate::ui::ui_events::UiEvent;
 use crate::utils::file_utils;
 use command_executor::{CommandExecutor, SandboxedCommandExecutor};
 use llm::LLMProvider;
+use llm::capabilities::Effort;
 use sandbox::SandboxPolicy;
 use tools_core::permissions::{
     PermissionDecision, PermissionMediator, PermissionRequest, PermissionRequestReason,
@@ -156,7 +158,7 @@ pub struct SessionManager {
     /// editing tool, regardless of the model's `edit_format` preference.
     ///
     /// This corresponds to `--use-diff-format` on the command line. When
-    /// false, the model's `edit_format` from `models.json` is honored.
+    /// false, the model's `edit_format` from the model selection is honored.
     force_diff_format: bool,
 
     /// Prevents system idle sleep while any agent is running.
@@ -180,6 +182,11 @@ pub struct SessionManager {
     /// Handle to the process-wide wakeup scheduler; when set, agents get the
     /// `schedule_wakeup` / `cancel_wakeup` tools bound to their session.
     wakeup_handle: Option<crate::session::wakeup::WakeupHandle>,
+
+    /// Handle to the process' monitors; when set, agents get the `monitor`
+    /// / `stop_monitor` tools bound to their session, and are told when a
+    /// background job exits.
+    monitor_handle: Option<crate::session::monitor::MonitorHandle>,
 
     /// Timers preparing a handoff for long sessions left idle; armed when a
     /// run ends.
@@ -208,7 +215,7 @@ impl SessionManager {
     ) -> Self {
         // The CLI's `--use-diff-format` flag is plumbed through the template's
         // `use_diff_blocks` field. Capture it as the override and reset the
-        // template so subsequent per-session resolution from `models.json`
+        // template so subsequent per-session resolution from the model selection
         // isn't shadowed by a stale template value.
         let force_diff_format = session_config_template.use_diff_blocks;
         let mut session_config_template = session_config_template;
@@ -228,6 +235,7 @@ impl SessionManager {
             mcp_server_control: None,
             hooks_factory: None,
             wakeup_handle: None,
+            monitor_handle: None,
             idle_handoff: None,
             permission_timeout: None,
             events,
@@ -246,6 +254,22 @@ impl SessionManager {
     /// without the wakeup tools.
     pub fn set_wakeup_handle(&mut self, handle: crate::session::wakeup::WakeupHandle) {
         self.wakeup_handle = Some(handle);
+    }
+
+    /// Install the monitor handle (see [`crate::session::monitor`]). Wiring
+    /// layers set this right after constructing the service; without it,
+    /// agents run without the monitor tools and background jobs exit
+    /// unannounced.
+    pub fn set_monitor_handle(&mut self, handle: crate::session::monitor::MonitorHandle) {
+        self.monitor_handle = Some(handle);
+    }
+
+    /// Stop a monitor of a session without a notification. Returns whether
+    /// it was still running.
+    pub fn stop_monitor(&self, session_id: &str, monitor_id: u64) -> bool {
+        self.monitor_handle
+            .as_ref()
+            .is_some_and(|handle| handle.stop(session_id, monitor_id))
     }
 
     /// Install the idle handoff timers (see
@@ -619,7 +643,7 @@ impl SessionManager {
     ///
     /// Precedence:
     /// 1. CLI override (`force_diff_format`, set via `--use-diff-format`).
-    /// 2. The model's `edit_format` from `models.json`.
+    /// 2. The model's `edit_format` from the model selection.
     /// 3. Otherwise `false` (the simple `edit` tool).
     fn resolve_use_diff_blocks(&self, model_config: Option<&SessionModelConfig>) -> bool {
         if self.force_diff_format {
@@ -744,27 +768,22 @@ impl SessionManager {
             session_instance.reload_from_persistence(&self.persistence)?;
         }
 
-        let model_name_for_event = {
-            let existing_model_name = {
+        let model_config_for_event = {
+            let existing_model_config = {
                 let session_instance = self.active_sessions.get_mut(&session_id).unwrap();
-                session_instance
-                    .session
-                    .model_config
-                    .as_ref()
-                    .map(|config| config.model_name.clone())
+                session_instance.session.model_config.clone()
             };
 
-            if let Some(model_name) = existing_model_name {
-                model_name
+            if let Some(model_config) = existing_model_config {
+                model_config
             } else {
                 let default_model_config = self.default_model_config();
-                let model_name = default_model_config.model_name.clone();
                 {
                     let session_instance = self.active_sessions.get_mut(&session_id).unwrap();
                     session_instance.session.model_config = Some(default_model_config.clone());
                 }
                 needs_persist = true;
-                model_name
+                default_model_config
             }
         };
 
@@ -779,11 +798,24 @@ impl SessionManager {
             snapshot
         };
 
-        snapshot.current_model = model_name_for_event;
+        snapshot.effort = EffortChoice::for_model(
+            &model_config_for_event.model_name,
+            model_config_for_event.effort,
+        );
+        // Frontends select models by key; older sessions name theirs.
+        snapshot.current_model = llm::provider_config::ConfigurationSystem::load()
+            .ok()
+            .and_then(|config| config.resolve_key(&model_config_for_event.model_name))
+            .unwrap_or(model_config_for_event.model_name);
         snapshot.armed_wakeups = self
             .wakeup_handle
             .as_ref()
             .map(|handle| handle.armed(&session_id))
+            .unwrap_or_default();
+        snapshot.active_monitors = self
+            .monitor_handle
+            .as_ref()
+            .map(|handle| handle.active(&session_id))
             .unwrap_or_default();
         snapshot.allowed_models = self
             .allowed_models_for_session(&session_id)
@@ -1337,11 +1369,10 @@ impl SessionManager {
             .unwrap_or_else(|| Arc::new(SubAgentCancellationRegistry::default()));
 
         // Create sub-agent runner
-        let model_name_for_subagent = session_state
+        let model_for_subagent = session_state
             .model_config
-            .as_ref()
-            .map(|c| c.model_name.clone())
-            .unwrap_or_else(|| self.default_model_name());
+            .clone()
+            .unwrap_or_else(|| self.default_model_config());
         // Permission tier and session-scoped grants, shared between the
         // agent and its sub-agents. The grants live on the session instance
         // so "always allow" answers survive across agent runs; the tier
@@ -1358,7 +1389,7 @@ impl SessionManager {
 
         let sub_agent_runner: Arc<dyn crate::agent::SubAgentRunner> = Arc::new(
             DefaultSubAgentRunner::new(
-                model_name_for_subagent,
+                model_for_subagent,
                 session_config.clone(),
                 sandbox_context_clone,
                 sub_agent_cancellation_registry.clone(),
@@ -1396,6 +1427,21 @@ impl SessionManager {
                         .get(session_id)
                         .map(|instance| {
                             crate::session::wakeup::highest_wakeup_id(
+                                &instance.session.tool_executions,
+                            )
+                        })
+                        .unwrap_or(0),
+                }
+            }),
+            monitors: self.monitor_handle.clone().map(|handle| {
+                crate::session::monitor::SessionMonitors {
+                    handle,
+                    session_id: session_id.to_string(),
+                    used_ids: self
+                        .active_sessions
+                        .get(session_id)
+                        .map(|instance| {
+                            crate::session::monitor::highest_monitor_id(
                                 &instance.session.tool_executions,
                             )
                         })
@@ -1652,6 +1698,9 @@ impl SessionManager {
         if let Some(handle) = &self.wakeup_handle {
             handle.cancel_session(session_id.to_string());
         }
+        if let Some(handle) = &self.monitor_handle {
+            handle.stop_session(session_id);
+        }
         if let Some(timers) = &self.idle_handoff {
             timers.disarm(session_id);
         }
@@ -1892,7 +1941,7 @@ impl SessionManager {
             // there is no API-client compatibility left to preserve, and
             // blocking here would pin the session to an unusable model.
             // Any configured model may take over (the escape hatch that
-            // lets a session heal after models.json changed underneath it).
+            // lets a session heal after the model selection changed underneath it).
             return Ok(ModelSwitchCheck::allowed(model_name));
         };
         let new_kind = config.model_api_client_kind(model_name).with_context(|| {
@@ -1984,6 +2033,27 @@ impl SessionManager {
         };
 
         Ok(ModelSwitchOutcome { warning })
+    }
+
+    /// Choose the reasoning effort of a session's next runs (`None`: the
+    /// model's default). Returns the updated model config.
+    pub fn set_session_effort(
+        &mut self,
+        session_id: &str,
+        effort: Option<Effort>,
+    ) -> Result<SessionModelConfig> {
+        let fallback = self.default_model_config();
+        let session = self.persistence.update_entry(session_id, |session| {
+            let model_config = session.model_config.get_or_insert(fallback);
+            model_config.effort = effort;
+            Ok(())
+        })?;
+        if let Some(instance) = self.active_sessions.get_mut(session_id) {
+            instance.session.model_config = session.model_config.clone();
+        }
+        session
+            .model_config
+            .context("session has no model config after setting its effort")
     }
 
     pub fn set_session_sandbox_policy(
@@ -2305,13 +2375,20 @@ impl SessionManager {
                 .active_sessions
                 .get(&metadata.id)
                 .is_some_and(|instance| !instance.get_activity_state().is_terminal());
-            // A wakeup still to fire continues the session.
+            // A wakeup still to fire or a running monitor continues the
+            // session.
             let wakeup_armed = self
                 .wakeup_handle
                 .as_ref()
                 .is_some_and(|handle| !handle.armed(&metadata.id).is_empty());
-            let busy =
-                running_here || wakeup_armed || self.is_agent_locked_externally(&metadata.id);
+            let monitored = self
+                .monitor_handle
+                .as_ref()
+                .is_some_and(|handle| !handle.active(&metadata.id).is_empty());
+            let busy = running_here
+                || wakeup_armed
+                || monitored
+                || self.is_agent_locked_externally(&metadata.id);
             let repo_root = metadata
                 .branch
                 .as_ref()
@@ -3082,13 +3159,7 @@ mod tests {
     }
 
     fn model_config(provider: &str, id: &str) -> llm::provider_config::ModelConfig {
-        llm::provider_config::ModelConfig {
-            provider: provider.to_string(),
-            id: id.to_string(),
-            config: serde_json::json!({}),
-            context_token_limit: 1000,
-            edit_format: llm::provider_config::EditFormat::Simple,
-        }
+        llm::provider_config::ModelConfig::new(provider, id)
     }
 
     fn model_switch_test_config() -> llm::provider_config::ConfigurationSystem {
@@ -3136,6 +3207,7 @@ mod tests {
                     model_config("aicore", "gpt-aicore-id"),
                 ),
             ]),
+            discovery: Default::default(),
         }
     }
 
@@ -3181,7 +3253,7 @@ mod tests {
         );
     }
 
-    /// A session whose recorded model was removed from models.json must be
+    /// A session whose recorded model was removed from the model selection must be
     /// allowed to switch to any configured model — there is no API-client
     /// compatibility left to preserve, and blocking would pin the session
     /// to an unusable model (headless channels could never recover).
@@ -3218,7 +3290,7 @@ mod tests {
         let (manager, _dir) = build_manager(true);
 
         // Force-diff is on; even a model name that won't be found in
-        // models.json (returns default `Simple`) should resolve to true.
+        // the model selection (returns default `Simple`) should resolve to true.
         let cfg = SessionModelConfig::new("__nonexistent_test_model_xyz__".to_string());
         assert!(manager.resolve_use_diff_blocks(Some(&cfg)));
 

@@ -1,5 +1,5 @@
 use agent_client_protocol::schema as acp;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::Mutex;
 
@@ -11,12 +11,14 @@ use crate::{ACPTerminalCommandExecutor, ACPUserUI, AcpProjectManager, ClientConn
 use code_assistant_core::config::{DefaultProjectManager, ProjectManager};
 use code_assistant_core::injection::without_injections;
 use code_assistant_core::persistence::SessionModelConfig;
+use code_assistant_core::session::effort::EffortChoice;
 use code_assistant_core::session::{SessionConfig, SessionManager};
 use code_assistant_core::skills::{
     SkillsConfig, discover_session_catalog, render_skill_injection, resolve_skill_trigger,
 };
 use code_assistant_core::ui::UserInterface;
 use command_executor::{CommandExecutor, DefaultCommandExecutor};
+use llm::capabilities::Effort;
 use llm::factory::create_llm_client_from_model;
 use llm::provider_config::ConfigurationSystem;
 use tokio::sync::{mpsc, oneshot};
@@ -25,6 +27,10 @@ use tools_core::permissions::PermissionTier;
 /// Config option id used for the model selector exposed via session config
 /// options. This is what the client echoes back in `session/set_config_option`.
 const MODEL_CONFIG_ID: &str = "model";
+
+/// Config option id of the reasoning effort selector (offered only for
+/// models that reason).
+const EFFORT_CONFIG_ID: &str = "effort";
 
 /// The permission tiers exposed to ACP clients as session modes
 /// (`session/set_mode`). Mode ids match the tier's serde names.
@@ -129,6 +135,20 @@ fn goal_command_args(prompt: &[acp::ContentBlock]) -> Option<String> {
         .then(|| rest.trim_start().to_string())
 }
 
+/// The effort selector for a model that reasons; `None` for one that does not.
+fn effort_config_option(choice: &EffortChoice) -> Option<acp::SessionConfigOption> {
+    let selected = choice.selected?;
+    let options = choice
+        .levels
+        .iter()
+        .map(|level| acp::SessionConfigSelectOption::new(level.as_str(), level.label()))
+        .collect::<Vec<_>>();
+    Some(
+        acp::SessionConfigOption::select(EFFORT_CONFIG_ID, "Effort", selected.as_str(), options)
+            .category(acp::SessionConfigOptionCategory::ThoughtLevel),
+    )
+}
+
 fn goal_command_has_only_text(prompt: &[acp::ContentBlock]) -> bool {
     matches!(prompt, [acp::ContentBlock::Text(_)])
 }
@@ -199,17 +219,19 @@ impl AgentState {
 
     /// Look up the context-window token limit for a model from configuration.
     fn model_context_limit(model_name: &str) -> Option<u64> {
-        let config = ConfigurationSystem::load().ok()?;
-        let model = config.get_model(model_name)?;
-        let limit = model.context_token_limit;
-        (limit > 0).then_some(limit as u64)
+        let limit = ConfigurationSystem::load()
+            .ok()?
+            .context_limit(model_name)?;
+        (limit > 0).then_some(u64::from(limit))
     }
 
     /// Build the model selector config option (a `select` dropdown grouped by
-    /// provider) for the current configuration, resolving the selected model.
+    /// provider) for the current configuration, resolving the selected model,
+    /// followed by the effort selector when that model reasons.
     fn compute_model_config(
         default_model: &str,
         preferred_model: Option<&str>,
+        effort: Option<Effort>,
     ) -> Option<ModelConfigInfo> {
         let config = match ConfigurationSystem::load() {
             Ok(config) => config,
@@ -219,62 +241,55 @@ impl AgentState {
             }
         };
 
-        // Group available model display names by provider label.
+        // Group the offered models (by key, ordered by display name) by
+        // provider label.
         let mut by_provider: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        let mut available_names: HashSet<String> = HashSet::new();
-
-        for (display_name, model_config) in &config.models {
-            let Some(provider_config) = config.providers.get(&model_config.provider) else {
-                tracing::warn!(
-                    provider = %model_config.provider,
-                    model = %display_name,
-                    "ACP: Skipping model because provider configuration is missing"
-                );
+        for key in config.list_models() {
+            let provider = &config.models[&key].provider;
+            let Some(provider_config) = config.providers.get(provider) else {
                 continue;
             };
-
-            available_names.insert(display_name.clone());
             by_provider
                 .entry(provider_config.label.clone())
                 .or_default()
-                .push(display_name.clone());
+                .push(key);
         }
 
-        if available_names.is_empty() {
+        if by_provider.is_empty() {
             tracing::warn!("ACP: No available models found for model selector");
             return None;
         }
 
-        let preferred_display = preferred_model
-            .and_then(|name| available_names.contains(name).then(|| name.to_string()));
-        let default_display = available_names
-            .contains(default_model)
-            .then(|| default_model.to_string());
+        // Sessions may still name their model; options are keyed.
+        let preferred_key = preferred_model.and_then(|name| config.resolve_key(name));
+        let default_key = config.resolve_key(default_model);
 
-        // Deterministic fallback: first model by (provider label, name).
+        // Deterministic fallback: the first model of the first provider.
         let first_model = by_provider
-            .iter()
+            .values()
             .next()
-            .and_then(|(_, names)| names.iter().min().cloned());
+            .and_then(|keys| keys.first().cloned());
 
-        let selected_model_name = preferred_display
+        let selected_model_name = preferred_key
             .clone()
-            .or_else(|| default_display.clone())
+            .or(default_key)
             .or(first_model)
             .unwrap_or_else(|| default_model.to_string());
 
         let selection_changed = match preferred_model {
-            Some(original) => preferred_display.as_deref() != Some(original),
+            Some(original) => preferred_key.as_deref() != Some(original),
             None => false,
         };
 
         // Build grouped select options.
         let mut groups: Vec<acp::SessionConfigSelectGroup> = Vec::new();
-        for (label, mut names) in by_provider {
-            names.sort();
-            let options = names
+        for (label, keys) in by_provider {
+            let options = keys
                 .into_iter()
-                .map(|name| acp::SessionConfigSelectOption::new(name.clone(), name))
+                .map(|key| {
+                    let name = config.display_name(&key);
+                    acp::SessionConfigSelectOption::new(key, name)
+                })
                 .collect::<Vec<_>>();
             groups.push(acp::SessionConfigSelectGroup::new(
                 label.clone(),
@@ -291,8 +306,14 @@ impl AgentState {
         )
         .category(acp::SessionConfigOptionCategory::Model);
 
+        let mut options = vec![option];
+        options.extend(effort_config_option(&EffortChoice::for_model(
+            &selected_model_name,
+            effort,
+        )));
+
         Some(ModelConfigInfo {
-            options: vec![option],
+            options,
             selected_model_name,
             selection_changed,
         })
@@ -420,7 +441,8 @@ impl AgentState {
         };
         let permission_tier = session_config.permission_tier;
 
-        let model_info = Self::compute_model_config(&default_model, Some(default_model.as_str()));
+        let model_info =
+            Self::compute_model_config(&default_model, Some(default_model.as_str()), None);
         let selected_model_name = model_info
             .as_ref()
             .map(|info| info.selected_model_name.clone())
@@ -644,16 +666,21 @@ impl AgentState {
 
         let mut config_options = None;
         let default_model = self.session_manager.lock().await.default_model_name();
+        let stored_effort = stored_model_config
+            .as_ref()
+            .and_then(|config| config.effort);
         if let Some(model_info) = Self::compute_model_config(
             &default_model,
             stored_model_config
                 .as_ref()
                 .map(|config| config.model_name.as_str()),
+            stored_effort,
         ) {
             if model_info.selection_changed {
                 let mut manager = self.session_manager.lock().await;
                 let fallback_model_config =
-                    SessionModelConfig::new(model_info.selected_model_name.clone());
+                    SessionModelConfig::new(model_info.selected_model_name.clone())
+                        .with_effort(stored_effort);
                 if let Err(err) = manager
                     .set_session_model_config(&arguments.session_id.0, Some(fallback_model_config))
                 {
@@ -678,43 +705,47 @@ impl AgentState {
         &self,
         arguments: acp::SetSessionConfigOptionRequest,
     ) -> Result<acp::SetSessionConfigOptionResponse, acp::Error> {
-        if arguments.config_id.0.as_ref() != MODEL_CONFIG_ID {
-            tracing::warn!(
-                config_id = %arguments.config_id.0,
-                "ACP: Received set_config_option for unknown config id"
-            );
-            return Err(acp::Error::invalid_params());
-        }
+        let value = arguments.value.0.to_string();
+        let session_id = arguments.session_id.0.to_string();
+        let current = self.session_model_config(&session_id).await?;
 
-        let requested_model_id = arguments.value.0.to_string();
-
-        let config = match ConfigurationSystem::load() {
-            Ok(config) => config,
-            Err(err) => {
-                tracing::error!(error = ?err, "ACP: Failed to load configuration while setting model");
-                return Err(to_acp_error(&err));
+        let new_model_config = match arguments.config_id.0.as_ref() {
+            MODEL_CONFIG_ID => {
+                let config = ConfigurationSystem::load().map_err(|err| {
+                    tracing::error!(error = ?err, "ACP: Failed to load configuration while setting model");
+                    to_acp_error(&err)
+                })?;
+                let Some(key) = config.resolve_key(&value) else {
+                    tracing::warn!(model_id = %value, "ACP: Invalid model selection request");
+                    return Err(acp::Error::invalid_params());
+                };
+                // The chosen effort carries over to the new model.
+                SessionModelConfig::new(key).with_effort(current.effort)
+            }
+            EFFORT_CONFIG_ID => {
+                let Some(effort) = Effort::parse(&value) else {
+                    tracing::warn!(effort = %value, "ACP: Invalid effort selection request");
+                    return Err(acp::Error::invalid_params());
+                };
+                current.with_effort(Some(effort))
+            }
+            other => {
+                tracing::warn!(config_id = %other, "ACP: Received set_config_option for unknown config id");
+                return Err(acp::Error::invalid_params());
             }
         };
-
-        if config.get_model(&requested_model_id).is_none() {
-            tracing::warn!(model_id = %requested_model_id, "ACP: Invalid model selection request");
-            return Err(acp::Error::invalid_params());
-        }
-
-        let new_model_config = SessionModelConfig::new(requested_model_id.clone());
-        let session_id = arguments.session_id.clone();
 
         // Pending (not yet persisted) session?
         {
             let mut pending = self.pending_sessions.lock().await;
-            if let Some(pending_session) = pending.get_mut(session_id.0.as_ref()) {
-                pending_session.model_config = new_model_config;
+            if let Some(pending_session) = pending.get_mut(&session_id) {
+                pending_session.model_config = new_model_config.clone();
                 tracing::info!(
-                    "ACP: Pending session {} switched to model {}",
-                    session_id.0,
-                    requested_model_id,
+                    "ACP: Pending session {session_id} now uses {} at effort {:?}",
+                    new_model_config.model_name,
+                    new_model_config.effort,
                 );
-                return Ok(self.model_config_response(&requested_model_id));
+                return Ok(Self::config_options_response(&new_model_config));
             }
         }
 
@@ -722,7 +753,7 @@ impl AgentState {
         {
             let mut manager = self.session_manager.lock().await;
             if let Err(err) =
-                manager.set_session_model_config(&session_id.0, Some(new_model_config))
+                manager.set_session_model_config(&session_id, Some(new_model_config.clone()))
             {
                 tracing::error!(error = ?err, "ACP: Failed to persist session model selection");
                 return Err(to_acp_error(&err));
@@ -730,21 +761,43 @@ impl AgentState {
         }
 
         tracing::info!(
-            "ACP: Session {} switched to model {}",
-            session_id.0,
-            requested_model_id,
+            "ACP: Session {session_id} now uses {} at effort {:?}",
+            new_model_config.model_name,
+            new_model_config.effort,
         );
 
-        Ok(self.model_config_response(&requested_model_id))
+        Ok(Self::config_options_response(&new_model_config))
     }
 
-    /// Build a `SetSessionConfigOptionResponse` carrying the updated model
-    /// selector (with `selected` marked current).
-    fn model_config_response(&self, selected: &str) -> acp::SetSessionConfigOptionResponse {
-        // `selected` always names a configured model, so no default is needed.
-        let options = Self::compute_model_config(selected, Some(selected))
-            .map(|info| info.options)
-            .unwrap_or_default();
+    /// The model config a session runs with: its pending one before the
+    /// first prompt, otherwise the stored one (or the default model).
+    async fn session_model_config(
+        &self,
+        session_id: &str,
+    ) -> Result<SessionModelConfig, acp::Error> {
+        if let Some(pending) = self.pending_sessions.lock().await.get(session_id) {
+            return Ok(pending.model_config.clone());
+        }
+        let manager = self.session_manager.lock().await;
+        let stored = manager
+            .get_session_model_config(session_id)
+            .map_err(|err| to_acp_error(&err))?;
+        Ok(stored.unwrap_or_else(|| SessionModelConfig::new(manager.default_model_name())))
+    }
+
+    /// Build a `SetSessionConfigOptionResponse` carrying the updated model and
+    /// effort selectors (with the session's values marked current).
+    fn config_options_response(
+        model_config: &SessionModelConfig,
+    ) -> acp::SetSessionConfigOptionResponse {
+        // The model always names a configured model, so no default is needed.
+        let options = Self::compute_model_config(
+            &model_config.model_name,
+            Some(&model_config.model_name),
+            model_config.effort,
+        )
+        .map(|info| info.options)
+        .unwrap_or_default();
         acp::SetSessionConfigOptionResponse::new(options)
     }
 
@@ -970,6 +1023,7 @@ impl AgentState {
         // Create LLM client
         let llm_client = match create_llm_client_from_model(
             &model_name_for_prompt,
+            session_model_config.effort,
             self.playback_path.clone(),
             self.fast_playback,
             None,
@@ -1195,6 +1249,22 @@ impl AgentState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn effort_option_offers_the_model_levels_as_thought_level() {
+        let choice = EffortChoice {
+            levels: vec![Effort::Low, Effort::High],
+            selected: Some(Effort::High),
+        };
+        let option = serde_json::to_value(effort_config_option(&choice).unwrap()).unwrap();
+        assert_eq!(option["id"], EFFORT_CONFIG_ID);
+        assert_eq!(option["category"], "thought_level");
+        assert_eq!(option["currentValue"], "high");
+        assert_eq!(option["options"][0]["value"], "low");
+        assert_eq!(option["options"][1]["name"], "High");
+
+        assert!(effort_config_option(&EffortChoice::default()).is_none());
+    }
 
     /// A project manager for project `proj` at `root`, defining skill `demo`.
     fn project_with_skill(
