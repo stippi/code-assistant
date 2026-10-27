@@ -408,10 +408,15 @@ impl FilesView {
         }
     }
 
-    /// Copy `path`, absolute or relative to the project root.
+    /// Copy `path`, absolute or relative to the project root. The absolute
+    /// path is joined per component, so it uses the platform's separators.
     fn copy_path(&mut self, path: &str, absolute: bool, cx: &mut Context<Self>) {
         let text = match &self.root {
-            Some(root) if absolute => root.join(path).display().to_string(),
+            Some(root) if absolute => path
+                .split('/')
+                .fold(root.clone(), |file, part| file.join(part))
+                .display()
+                .to_string(),
             _ => path.to_owned(),
         };
         cx.write_to_clipboard(ClipboardItem::new_string(text));
@@ -1484,7 +1489,8 @@ mod tests {
         let (view, cx) = view(cx);
         right_click("files-row-src/a.rs", cx);
         click("files-menu-copy-path", cx);
-        assert_eq!(clipboard(cx).as_deref(), Some("/p/src/a.rs"));
+        let absolute = PathBuf::from("/p").join("src").join("a.rs");
+        assert_eq!(clipboard(cx), Some(absolute.display().to_string()));
         view.read_with(cx, |view, _| assert!(view.menu.is_none()));
 
         right_click("files-row-src/a.rs", cx);
