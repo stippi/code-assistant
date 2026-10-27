@@ -1,3 +1,4 @@
+mod clone_tree;
 mod run;
 pub mod running;
 #[cfg(test)]
