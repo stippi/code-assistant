@@ -88,7 +88,8 @@
 - [x] **Transcripts**: each sub-agent's conversation is stored as a read-only session
   `<parent>/sub-agents/<N>`, left out of the session listings and openable from both UIs. In
   GPUI the input of an opened transcript is locked: no typing, sending, pasting, and its
-  selectors and buttons take no clicks.
+  selectors and buttons take no clicks. Its browser panel shows the sub-agent's browsers
+  while it runs.
 
 ### Pending
 - [ ] **Permission attribution**: Show permission requests as originating from sub-agent context (inline or popover)

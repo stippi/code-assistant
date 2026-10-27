@@ -202,13 +202,16 @@ impl DefaultSubAgentRunner {
             }
         }
 
-        // The sub-agent's own browsers, listed with the session's while it
-        // runs.
+        // The sub-agent's own browsers, listed with the session's and its
+        // transcript's while it runs.
         let browsers = Arc::new(web::BrowserSessionManager::default());
-        let _listed = self
-            .session_browsers
-            .as_ref()
-            .map(|session| session.register_sub_agent(parent_tool_id, browsers.clone()));
+        let _listed = self.session_browsers.as_ref().map(|session| {
+            session.register_sub_agent(
+                parent_tool_id,
+                browsers.clone(),
+                transcript.as_ref().map(|(id, _, _)| id.clone()),
+            )
+        });
 
         let transcript_ui = transcript.as_ref().map(|(_, _, ui)| ui.clone());
         let agent_transcript = transcript.map(|(id, persistence, _)| (id, persistence));

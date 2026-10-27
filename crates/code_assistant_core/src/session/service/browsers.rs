@@ -55,9 +55,16 @@ impl SessionService {
     }
 }
 
+/// The browsers of the session `session_id`; for a running sub-agent's
+/// transcript, the sub-agent's.
 async fn session_browsers(ctx: &ServiceCtx, session_id: &str) -> Option<Arc<SessionBrowsers>> {
     let manager = ctx.manager.lock().await;
-    manager
-        .get_session(session_id)
-        .map(|instance| instance.browsers.clone())
+    let sub_agent = crate::persistence::layout::sub_agent_parent(session_id)
+        .and_then(|(parent, _)| manager.get_session(parent))
+        .and_then(|parent| parent.browsers.transcript(session_id));
+    sub_agent.or_else(|| {
+        manager
+            .get_session(session_id)
+            .map(|instance| instance.browsers.clone())
+    })
 }

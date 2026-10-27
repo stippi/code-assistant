@@ -6,6 +6,10 @@
 //! while it runs. [`SessionBrowsers`] lists them all, publishes their metadata
 //! — never frames — on the session's [`EventStream`], and opens
 //! [`BrowserView`]s for a panel.
+//!
+//! A sub-agent that keeps a transcript also gets a [`SessionBrowsers`] of its
+//! own for the transcript's session, so a panel showing the transcript shows
+//! the sub-agent's browsers as its agent's.
 
 use crate::session::event_stream::EventStream;
 use crate::ui::UiEvent;
@@ -43,27 +47,44 @@ pub struct BrowserEntry {
 /// The browsers of one session.
 pub struct SessionBrowsers {
     agent: Arc<BrowserSessionManager>,
-    sub_agents: Mutex<Vec<(String, Arc<BrowserSessionManager>)>>,
+    sub_agents: Mutex<Vec<SubAgentEntry>>,
     /// Rings when sub-agents come or go or a browser changes hands.
     changed: Arc<Notify>,
-    publisher: Mutex<Option<JoinHandle<()>>>,
+    publisher: Mutex<Option<Publisher>>,
+}
+
+/// A running sub-agent's browsers.
+struct SubAgentEntry {
+    tool_id: String,
+    manager: Arc<BrowserSessionManager>,
+    /// The sub-agent's browsers as its transcript's session sees them.
+    transcript: Option<(String, Arc<SessionBrowsers>)>,
+}
+
+/// Where the listing is published.
+struct Publisher {
+    task: JoinHandle<()>,
+    events: EventStream,
+    session_id: String,
 }
 
 impl Default for SessionBrowsers {
     fn default() -> Self {
-        Self {
-            agent: Arc::new(BrowserSessionManager::default()),
-            sub_agents: Mutex::default(),
-            changed: Arc::new(Notify::new()),
-            publisher: Mutex::default(),
-        }
+        Self::of(Arc::new(BrowserSessionManager::default()))
     }
 }
 
 impl Drop for SessionBrowsers {
     fn drop(&mut self) {
+        // The browsers go with this; a panel still showing them learns so.
         if let Some(publisher) = self.publisher.lock().unwrap().take() {
-            publisher.abort();
+            publisher.task.abort();
+            publisher.events.publish_ui(
+                &publisher.session_id,
+                UiEvent::BrowsersChanged {
+                    browsers: Vec::new(),
+                },
+            );
         }
     }
 }
@@ -81,35 +102,61 @@ impl Drop for SubAgentBrowsers {
                 .sub_agents
                 .lock()
                 .unwrap()
-                .retain(|(id, _)| *id != self.tool_id);
+                .retain(|entry| entry.tool_id != self.tool_id);
             browsers.changed.notify_one();
         }
     }
 }
 
 impl SessionBrowsers {
+    /// The browsers of an agent whose browsers are kept in `agent`.
+    fn of(agent: Arc<BrowserSessionManager>) -> Self {
+        Self {
+            agent,
+            sub_agents: Mutex::default(),
+            changed: Arc::new(Notify::new()),
+            publisher: Mutex::default(),
+        }
+    }
+
     /// The browsers of the session's own agent.
     pub fn agent(&self) -> &Arc<BrowserSessionManager> {
         &self.agent
     }
 
     /// List the browsers of the sub-agent `tool_id` while the returned guard
-    /// lives.
+    /// lives, also for its transcript's session `transcript` if it keeps one.
     pub fn register_sub_agent(
         self: &Arc<Self>,
         tool_id: impl Into<String>,
         manager: Arc<BrowserSessionManager>,
+        transcript: Option<String>,
     ) -> SubAgentBrowsers {
         let tool_id = tool_id.into();
-        self.sub_agents
-            .lock()
-            .unwrap()
-            .push((tool_id.clone(), manager));
+        let transcript = transcript.map(|id| (id, Arc::new(Self::of(manager.clone()))));
+        self.sub_agents.lock().unwrap().push(SubAgentEntry {
+            tool_id: tool_id.clone(),
+            manager,
+            transcript,
+        });
         self.changed.notify_one();
         SubAgentBrowsers {
             browsers: Arc::downgrade(self),
             tool_id,
         }
+    }
+
+    /// The browsers of the running sub-agent whose transcript is the session
+    /// `session_id`.
+    pub fn transcript(&self, session_id: &str) -> Option<Arc<SessionBrowsers>> {
+        self.sub_agents
+            .lock()
+            .unwrap()
+            .iter()
+            .find_map(|entry| match &entry.transcript {
+                Some((id, browsers)) if id == session_id => Some(browsers.clone()),
+                _ => None,
+            })
     }
 
     /// Every manager with the sub-agent that owns it.
@@ -120,7 +167,7 @@ impl SessionBrowsers {
                     .lock()
                     .unwrap()
                     .iter()
-                    .map(|(id, manager)| (Some(id.clone()), manager.clone())),
+                    .map(|entry| (Some(entry.tool_id.clone()), entry.manager.clone())),
             )
             .collect()
     }
@@ -185,12 +232,16 @@ impl SessionBrowsers {
     pub fn publish_to(self: &Arc<Self>, events: EventStream, session_id: String) {
         let mut publisher = self.publisher.lock().unwrap();
         if publisher.is_none() {
-            *publisher = Some(tokio::spawn(publish_changes(
-                Arc::downgrade(self),
-                self.changed.clone(),
+            *publisher = Some(Publisher {
+                task: tokio::spawn(publish_changes(
+                    Arc::downgrade(self),
+                    self.changed.clone(),
+                    events.clone(),
+                    session_id.clone(),
+                )),
                 events,
                 session_id,
-            )));
+            });
         }
     }
 
@@ -377,7 +428,7 @@ mod tests {
         open(browsers.agent(), "default").await;
         let sub_manager = Arc::new(BrowserSessionManager::default());
         open(&sub_manager, "default").await;
-        let registration = browsers.register_sub_agent("tool-7", sub_manager.clone());
+        let registration = browsers.register_sub_agent("tool-7", sub_manager.clone(), None);
 
         let keys: Vec<BrowserKey> = browsers.listing().into_iter().map(|e| e.key).collect();
         assert_eq!(
@@ -395,6 +446,27 @@ mod tests {
 
         browsers.agent().close_all().await;
         sub_manager.close_all().await;
+    }
+
+    /// A sub-agent's transcript sees the sub-agent's browsers as its agent's,
+    /// while the sub-agent runs.
+    #[test]
+    fn a_transcript_sees_its_sub_agents_browsers() {
+        let browsers = Arc::new(SessionBrowsers::default());
+        let sub_manager = Arc::new(BrowserSessionManager::default());
+        let registration = browsers.register_sub_agent(
+            "tool-7",
+            sub_manager.clone(),
+            Some("s/sub-agents/1".into()),
+        );
+
+        assert!(browsers.transcript("s/sub-agents/2").is_none());
+        let transcript = browsers.transcript("s/sub-agents/1").expect("listed");
+        assert!(Arc::ptr_eq(transcript.agent(), &sub_manager));
+        drop(transcript);
+
+        drop(registration);
+        assert!(browsers.transcript("s/sub-agents/1").is_none());
     }
 
     /// Metadata reaches the event stream: a browser opening, a navigation,
