@@ -11848,6 +11848,7 @@ dependencies = [
  "image",
  "llm",
  "open",
+ "percent-encoding",
  "rust-embed",
  "sandbox",
  "serde",

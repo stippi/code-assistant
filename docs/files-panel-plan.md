@@ -34,7 +34,8 @@ header of file-editing cards, the file headers of `read_files` and
 `search_files` results) open the file in the Files view, at the shown line
 where there is one; requests travel over the app-wide
 `shared::open_file::OpenFileBus`. A file of another project than the
-session's is not opened.
+session's is not opened. Markdown and SVG files show rendered, with a
+dropdown to switch to the editor; see `docs/file-renderers.md`.
 
 Decisions taken while building:
 

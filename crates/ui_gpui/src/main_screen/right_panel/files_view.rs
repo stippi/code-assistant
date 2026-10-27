@@ -7,8 +7,14 @@
 //! project root re-lists loaded directories and reloads the open file when
 //! they change on disk. The open file, the expanded directories and whether
 //! ignored entries show are remembered per session.
+//!
+//! When the open file can be shown in more ways than as text (rendered
+//! Markdown, see [`file_renderers`](super::file_renderers)), a dropdown in
+//! the viewer's header picks one. The pick holds for files of the same
+//! kind and is remembered per session.
 
 use super::file_filter::{FileMatch, filter_paths};
+use super::file_renderers;
 use super::file_viewer::FileViewer;
 use crate::Gpui;
 use crate::comments::CommentChange;
@@ -18,6 +24,7 @@ use code_assistant_core::session::{DirListing, EntryKind, TreeWatcher};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::component::select::{Select, SelectEvent, SelectItem, SelectState};
 use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size};
 use gpui_kit::{
     Context, Entity, FocusHandle, Focusable, MouseButton, MouseMoveEvent, Pixels, Render,
@@ -43,6 +50,25 @@ enum DirState {
     Loading,
     Loaded(DirListing),
     Failed(String),
+}
+
+/// A choice in the renderer dropdown.
+#[derive(Clone)]
+struct RendererItem {
+    id: String,
+    label: &'static str,
+}
+
+impl SelectItem for RendererItem {
+    type Value = String;
+
+    fn title(&self) -> SharedString {
+        self.label.into()
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.id
+    }
 }
 
 /// One row of the tree.
@@ -92,6 +118,9 @@ pub struct FilesView {
 
     filter: Entity<InputState>,
     query: String,
+    renderer_select: Entity<SelectState<Vec<RendererItem>>>,
+    /// The renderer ids the dropdown offers, and the selected one.
+    renderer_shown: (Vec<&'static str>, &'static str),
     /// Every file gitignore keeps; loaded when the filter is first used and
     /// dropped when the tree changes.
     all_files: Option<Arc<Vec<String>>>,
@@ -115,8 +144,11 @@ impl FilesView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let viewer = cx.new(FileViewer::new);
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter files"));
+        let renderer_select =
+            cx.new(|cx| SelectState::new(Vec::<RendererItem>::new(), None, window, cx));
         let subscriptions = vec![
             cx.subscribe_in(&filter, window, Self::on_filter_event),
+            cx.subscribe_in(&renderer_select, window, Self::on_renderer_selected),
             // The header shows the viewer's state.
             cx.observe(&viewer, |_, _, cx| cx.notify()),
             cx.subscribe(&viewer, |_, _, change: &CommentChange, cx| {
@@ -137,6 +169,8 @@ impl FilesView {
             resizing: None,
             filter,
             query: String::new(),
+            renderer_select,
+            renderer_shown: (Vec::new(), file_renderers::TEXT),
             all_files: None,
             files_task: None,
             matches: Vec::new(),
@@ -233,6 +267,7 @@ impl FilesView {
         self.show_ignored = saved.show_ignored;
         let session_for_viewer = session_id.clone();
         self.viewer.update(cx, |viewer, cx| {
+            viewer.set_renderer_picks(saved.renderers, cx);
             viewer.open(session_for_viewer, saved.open_file, cx)
         });
         if session_id.is_some() {
@@ -288,10 +323,12 @@ impl FilesView {
         let Some(session_id) = &self.session_id else {
             return;
         };
+        let viewer = self.viewer.read(cx);
         let state = ui_state::FilesViewState {
-            open_file: self.viewer.read(cx).path().map(str::to_owned),
+            open_file: viewer.path().map(str::to_owned),
             expanded: self.expanded.iter().cloned().collect(),
             show_ignored: self.show_ignored,
+            renderers: viewer.renderer_picks().clone(),
         };
         ui_state::update(cx, |store| store.set_files_view(session_id, state));
     }
@@ -521,6 +558,54 @@ impl FilesView {
             }
             _ => {}
         }
+    }
+
+    fn on_renderer_selected(
+        &mut self,
+        _: &Entity<SelectState<Vec<RendererItem>>>,
+        event: &SelectEvent<Vec<RendererItem>>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let SelectEvent::Confirm(selected) = event;
+        match selected {
+            // Only a change is a pick; the default stays unrecorded.
+            Some(id) if id != self.viewer.read(cx).renderer_id() => {
+                let id = id.clone();
+                self.viewer
+                    .update(cx, |viewer, cx| viewer.pick_renderer(id, cx));
+                self.persist(cx);
+            }
+            Some(_) => {}
+            // Nothing selected: show the viewer's renderer again.
+            None => {
+                self.renderer_shown = (Vec::new(), file_renderers::TEXT);
+                cx.notify();
+            }
+        }
+    }
+
+    /// Offer the open file's renderers in the dropdown.
+    fn sync_renderer_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let viewer = self.viewer.read(cx);
+        let options = viewer.renderer_options();
+        let selected = viewer.renderer_id();
+        let ids: Vec<&'static str> = options.iter().map(|(id, _)| *id).collect();
+        if self.renderer_shown.0 == ids && self.renderer_shown.1 == selected {
+            return;
+        }
+        let items = options
+            .into_iter()
+            .map(|(id, label)| RendererItem {
+                id: id.to_owned(),
+                label,
+            })
+            .collect();
+        self.renderer_select.update(cx, |select, cx| {
+            select.set_items(items, window, cx);
+            select.set_selected_value(&selected.to_owned(), window, cx);
+        });
+        self.renderer_shown = (ids, selected);
     }
 
     /// Recompute the filter matches, loading the file list first when needed.
@@ -851,6 +936,7 @@ impl FilesView {
         let viewer = self.viewer.read(cx);
         let path = viewer.path()?.to_owned();
         let dirty = viewer.is_dirty();
+        let choose_renderer = self.renderer_shown.0.len() > 1;
         Some(
             div()
                 .flex_none()
@@ -883,6 +969,14 @@ impl FilesView {
                                 gpui_kit::component::tooltip::Tooltip::new("Unsaved edits")
                                     .build(window, cx)
                             }),
+                    )
+                })
+                .when(choose_renderer, |d| {
+                    d.child(
+                        div()
+                            .flex_none()
+                            .w(px(104.))
+                            .child(Select::new(&self.renderer_select).with_size(Size::XSmall)),
                     )
                 }),
         )
@@ -922,6 +1016,7 @@ impl Render for FilesView {
             self.filter
                 .update(cx, |input, cx| input.set_value("", window, cx));
         }
+        self.sync_renderer_select(window, cx);
         let theme = cx.theme();
         let border = theme.border;
         let handle_color = if self.resizing.is_some() {

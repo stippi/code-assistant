@@ -57,6 +57,11 @@ pub fn message_comments(cx: &App) -> Vec<LineComment> {
         .unwrap_or_default()
 }
 
+/// The tint behind commented lines or passages.
+pub fn mark_color(cx: &App) -> gpui_kit::Hsla {
+    cx.theme().warning.opacity(0.16)
+}
+
 /// `child` floating at `position` (window coordinates) above everything,
 /// kept inside the window.
 pub fn floating(position: Point<Pixels>, child: impl IntoElement) -> AnyElement {

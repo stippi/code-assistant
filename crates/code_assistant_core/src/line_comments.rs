@@ -66,6 +66,32 @@ impl LineComment {
         }
     }
 
+    /// A new comment on lines `start_line..=end_line` of `file`, which read
+    /// `excerpt`.
+    pub fn on_lines(
+        file: PathBuf,
+        start_line: usize,
+        end_line: usize,
+        excerpt: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: 0,
+            file,
+            start_line,
+            end_line,
+            old_side: false,
+            in_diff: false,
+            on_message: false,
+            excerpt: excerpt.into(),
+            text: String::new(),
+        }
+    }
+
+    /// Whether this comment's lines meet `start..=end`.
+    pub fn overlaps(&self, start: usize, end: usize) -> bool {
+        self.start_line <= end && start <= self.end_line
+    }
+
     /// A comment on a chat message, quoting `quote`.
     pub fn on_message(quote: impl Into<String>) -> Self {
         Self {
