@@ -20,12 +20,23 @@ pub struct ExecuteCommandInput {
     pub working_dir: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ask_user_approval: bool,
-    /// Session mode: allocate a real terminal (PTY) with open stdin.
+    /// Run in a terminal session that goes to the background when the
+    /// command is still running after [`BACKGROUND_AFTER`].
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
+    /// Former session-mode parameters, no longer offered to the model.
+    /// Either one still selects background mode (models trained on
+    /// Codex-style tools send them); `tty: false` still selects plain pipes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tty: Option<bool>,
-    /// Session mode: how long to wait for output before returning.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub yield_time_ms: Option<u64>,
+}
+
+impl ExecuteCommandInput {
+    fn runs_in_background(&self) -> bool {
+        self.background || self.tty.is_some() || self.yield_time_ms.is_some()
+    }
 }
 
 // Output type
@@ -38,19 +49,19 @@ pub struct ExecuteCommandOutput {
     pub working_dir: Option<PathBuf>,
     pub output: String,
     pub success: bool,
-    /// Session mode: id under which the still-running process is tracked.
+    /// Background mode: id under which the still-running process is tracked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pty_session_id: Option<u32>,
-    /// Exit code, when the process exited (in session mode: within the
-    /// yield window) and reported one.
+    /// Exit code, when the process exited (in background mode: before it
+    /// went to the background) and reported one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
-    /// Session mode: the process was still running when the yield window
-    /// closed.
+    /// Background mode: the process was still running after
+    /// [`BACKGROUND_AFTER`].
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub running: bool,
-    /// Session mode: the agent is told with a message when the still-running
-    /// process exits.
+    /// Background mode: the agent is told with a message when the
+    /// still-running process exits.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub notify_on_exit: bool,
 }
@@ -199,10 +210,12 @@ impl Tool for ExecuteCommandTool {
             "Execute a command line or shell script within a specified project. ",
             "By default, blocks until the command returns by itself and then provides all output at once; ",
             "in that mode it must not be used with commands that would keep running forever, unless combined with a timeout. ",
-            "Setting `tty` and/or `yield_time_ms` switches to session mode: the command runs in an interactive terminal session, ",
-            "the tool returns after `yield_time_ms` with the output so far, and if the process is still running you get a ",
-            "session_id for the write_stdin tool to send input, poll for more output, or interrupt. ",
-            "Use session mode for long-running processes (builds, servers) and interactive programs (ssh, REPLs, sudo)."
+            "Setting `background` runs the command in an interactive terminal session instead: if it exits within 5 seconds, ",
+            "you get its complete result as usual; otherwise the tool returns the output so far and a session_id for the ",
+            "write_stdin tool to send input, poll for more output, or interrupt, while the process keeps running in the background. ",
+            "Use `background` only for commands you expect to run for a long time (slow builds or test suites, servers, watchers) ",
+            "and for interactive programs (ssh, REPLs, sudo). Run ordinary commands, including normal builds and tests that ",
+            "finish within a minute or two, without it."
         );
         ToolSpec {
             name: "execute_command".into(),
@@ -229,13 +242,10 @@ impl Tool for ExecuteCommandTool {
                         "description": "Set to true if this command should request user approval to run outside the sandbox",
                         "default": false
                     },
-                    "tty": {
+                    "background": {
                         "type": "boolean",
-                        "description": "Session mode: run the command in a PTY (real terminal) with stdin kept open, so interactive programs (ssh, REPLs, sudo prompts) work and write_stdin can send input. Set to false for a non-interactive background session (plain pipes, stdin closed). Defaults to true when session mode is active."
-                    },
-                    "yield_time_ms": {
-                        "type": "integer",
-                        "description": "Session mode: return after this many milliseconds with the output so far instead of blocking until exit (250-30000, default 10000). If the process is still running, the result carries a session_id for the write_stdin tool."
+                        "description": "Run in a terminal session (stdin open) that goes to the background if the command is still running after 5 seconds. Only for long-running or interactive commands.",
+                        "default": false
                     }
                 },
                 "required": ["project", "command_line"]
@@ -276,8 +286,8 @@ impl Tool for ExecuteCommandTool {
         .await?;
         let working_dir_path = input.working_dir.as_ref().map(PathBuf::from);
 
-        // Session mode: run in a PTY/pipe session that can outlive this call.
-        if input.tty.is_some() || input.yield_time_ms.is_some() {
+        // Background mode: run in a PTY session that can outlive this call.
+        if input.runs_in_background() {
             return self
                 .execute_session_mode(context, input, effective_working_dir, &sandbox_request)
                 .await;
@@ -434,10 +444,10 @@ pub(crate) async fn prepare_command(
     })
 }
 
-/// Yield-time bounds for session mode, mirroring the tool schema.
-const MIN_YIELD_TIME_MS: u64 = 250;
-const MAX_YIELD_TIME_MS: u64 = 30_000;
-const DEFAULT_YIELD_TIME_MS: u64 = 10_000;
+/// Background mode: a command still running after this long goes to the
+/// background. One that exits sooner is not worth a background job and its
+/// exit notification, so its result comes back like a blocking call's.
+const BACKGROUND_AFTER: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Forwards a PTY session's raw output to a tool card for the session's
 /// whole lifetime — including between turns, so a background process keeps
@@ -484,7 +494,7 @@ impl ExecuteCommandTool {
             .and_then(|services| services.pty_sessions.clone())
         else {
             return Err(anyhow!(
-                "Interactive sessions are not available in this environment; run the command without tty/yield_time_ms"
+                "Background commands are not available in this environment; run the command without `background`"
             ));
         };
 
@@ -517,17 +527,10 @@ impl ExecuteCommandTool {
             });
         }
 
-        let yield_time = std::time::Duration::from_millis(
-            input
-                .yield_time_ms
-                .unwrap_or(DEFAULT_YIELD_TIME_MS)
-                .clamp(MIN_YIELD_TIME_MS, MAX_YIELD_TIME_MS),
-        );
-
         // The sink already streams raw colored output live; here we just
         // wait for the window and emit the sanitized text as one plain
         // ToolOutput chunk (model result + text frontends).
-        let collected = session.collect_output(yield_time).await;
+        let collected = session.collect_output(BACKGROUND_AFTER).await;
 
         if !collected.output.is_empty()
             && let (Some(ui), Some(tool_id)) = (context.ui(), &context.tool_id)
@@ -690,6 +693,7 @@ mod tests {
             command_line: "ls -la".to_string(),
             working_dir: Some("src".to_string()),
             ask_user_approval: false,
+            background: false,
             tty: None,
             yield_time_ms: None,
         };
@@ -729,6 +733,7 @@ mod tests {
             command_line: "rm -rf /tmp/nonexistent".to_string(),
             working_dir: None,
             ask_user_approval: false,
+            background: false,
             tty: None,
             yield_time_ms: None,
         };
@@ -764,6 +769,7 @@ mod tests {
             command_line: "python3 check.py".to_string(),
             working_dir: None,
             ask_user_approval: false,
+            background: false,
             tty: None,
             yield_time_ms: None,
         };
@@ -793,6 +799,7 @@ mod tests {
             command_line: "echo 'test'".to_string(),
             working_dir: None,
             ask_user_approval: false,
+            background: false,
             tty: None,
             yield_time_ms: None,
         };
@@ -834,6 +841,7 @@ mod tests {
             command_line: "ls".to_string(),
             working_dir: None,
             ask_user_approval: false,
+            background: false,
             tty: None,
             yield_time_ms: None,
         };
@@ -866,6 +874,7 @@ mod tests {
             command_line: "ls".to_string(),
             working_dir: None,
             ask_user_approval: true,
+            background: false,
             tty: None,
             yield_time_ms: None,
         };
@@ -892,6 +901,7 @@ mod tests {
             command_line: "ls".to_string(),
             working_dir: None,
             ask_user_approval: true,
+            background: false,
             tty: None,
             yield_time_ms: None,
         };
@@ -928,14 +938,15 @@ mod tests {
         ToolTestFixture::with_project_manager(project_manager).with_pty_sessions()
     }
 
-    fn session_mode_input(command_line: &str, yield_time_ms: u64) -> ExecuteCommandInput {
+    fn background_input(command_line: &str) -> ExecuteCommandInput {
         ExecuteCommandInput {
             project: "real".to_string(),
             command_line: command_line.to_string(),
             working_dir: None,
             ask_user_approval: false,
+            background: true,
             tty: None,
-            yield_time_ms: Some(yield_time_ms),
+            yield_time_ms: None,
         }
     }
 
@@ -967,9 +978,9 @@ mod tests {
         // Do not assume the login shell prints within the first yield window.
         // Gate output on stdin so a silent first response is exercised on every
         // run, not just when a loaded CI runner starts the shell slowly.
-        let mut input = session_mode_input("read -r release; echo started; read -r finish", 500);
+        let mut input = background_input("read -r release; echo started; read -r finish");
         let result = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
+            std::time::Duration::from_secs(20),
             ExecuteCommandTool.execute(&mut context, &mut input),
         )
         .await
@@ -1013,7 +1024,7 @@ mod tests {
         let mut fixture = session_mode_fixture(dir.path());
         let mut context = fixture.context();
 
-        let mut input = session_mode_input("echo done; exit 3", 10_000);
+        let mut input = background_input("echo done; exit 3");
         let result = ExecuteCommandTool.execute(&mut context, &mut input).await?;
 
         assert!(!result.running);
@@ -1031,6 +1042,39 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn background_command_that_exits_quickly_returns_like_a_blocking_one() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let mut fixture = session_mode_fixture(dir.path());
+        let mut context = fixture.context();
+
+        let mut input = background_input("sleep 1; echo built");
+        let result = ExecuteCommandTool.execute(&mut context, &mut input).await?;
+
+        assert!(
+            !result.running,
+            "a quick command must not go to the background"
+        );
+        assert_eq!(result.exit_code, Some(0));
+        assert!(result.output.contains("built"), "output: {}", result.output);
+        Ok(())
+    }
+
+    #[test]
+    fn former_session_parameters_select_background_mode() {
+        let input = |extra: serde_json::Value| {
+            let mut json = json!({"project": "p", "command_line": "make"});
+            json.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            serde_json::from_value::<ExecuteCommandInput>(json).unwrap()
+        };
+        assert!(!input(json!({})).runs_in_background());
+        assert!(input(json!({"background": true})).runs_in_background());
+        assert!(input(json!({"yield_time_ms": 1000})).runs_in_background());
+        assert!(input(json!({"tty": false})).runs_in_background());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn session_mode_without_registry_fails_gracefully() {
         let dir = tempfile::tempdir().unwrap();
         let explorer = crate::mocks::MockExplorer::new(Default::default(), None)
@@ -1044,7 +1088,7 @@ mod tests {
         let mut fixture = ToolTestFixture::with_project_manager(project_manager);
         let mut context = fixture.context();
 
-        let mut input = session_mode_input("echo hi", 500);
+        let mut input = background_input("echo hi");
         let result = ExecuteCommandTool.execute(&mut context, &mut input).await;
         let error = result
             .err()
@@ -1063,7 +1107,7 @@ mod tests {
             .with_tool_id("tool-stream-1".to_string());
         let mut context = fixture.context();
 
-        let mut input = session_mode_input("printf '\\033[32mgreen\\033[0m\\n'", 10_000);
+        let mut input = background_input("printf '\\033[32mgreen\\033[0m\\n'");
         let result = ExecuteCommandTool.execute(&mut context, &mut input).await?;
 
         assert!(!result.running);
@@ -1096,17 +1140,15 @@ mod tests {
             .with_ui()
             .with_tool_id("tool-bg-1".to_string());
 
-        // Short yield: the tool returns while the process is still running,
-        // before it prints the delayed "LATE" marker. The gap between the
+        // The tool returns while the process is still running, before it
+        // prints the delayed "LATE" marker. The gap between the
         // markers is generous so that login-shell startup latency (session
         // mode spawns `$SHELL -l -c ...`) on a loaded CI runner cannot blur
         // EARLY into LATE.
         let session_id = {
             let mut context = fixture.context();
-            let mut input = session_mode_input(
-                "printf 'EARLY\\n'; sleep 3; printf 'LATE\\n'; sleep 30",
-                500,
-            );
+            let mut input =
+                background_input("printf 'EARLY\\n'; sleep 8; printf 'LATE\\n'; sleep 30");
             let result = ExecuteCommandTool.execute(&mut context, &mut input).await?;
             assert!(result.running, "process should outlive the tool call");
             result.pty_session_id.expect("running session has an id")
@@ -1116,7 +1158,7 @@ mod tests {
 
         // The login shell may still be starting up when the tool returns, so
         // don't demand EARLY at that exact instant; poll for it (comfortably
-        // within the 3s gap before LATE). This is the "output keeps streaming
+        // within the 3s left of the gap before LATE). This is the "output keeps streaming
         // with no tool call polling the session" guarantee.
         let streamed_early =
             wait_for_terminal_text(&fixture, "EARLY", std::time::Duration::from_secs(2)).await;
@@ -1131,7 +1173,7 @@ mod tests {
 
         // Wait past the delay without any tool call touching the session.
         let streamed_later =
-            wait_for_terminal_text(&fixture, "LATE", std::time::Duration::from_secs(5)).await;
+            wait_for_terminal_text(&fixture, "LATE", std::time::Duration::from_secs(10)).await;
         assert!(
             streamed_later.contains("LATE"),
             "output produced between turns should keep streaming to the card: {streamed_later:?}"
@@ -1153,7 +1195,7 @@ mod tests {
             session_mode_fixture(dir.path()).with_recorded_monitors();
         let mut context = fixture.context();
 
-        let mut input = session_mode_input("sleep 1; echo built; exit 2", 250);
+        let mut input = background_input("sleep 6; echo built; exit 2");
         let result = ExecuteCommandTool.execute(&mut context, &mut input).await?;
         assert!(result.running);
         assert!(result.notify_on_exit);
@@ -1169,7 +1211,7 @@ mod tests {
             delivered,
             vec![crate::session::monitor::job_exited_message(
                 session_id,
-                "sleep 1; echo built; exit 2",
+                "sleep 6; echo built; exit 2",
                 Some(2)
             )]
         );
@@ -1190,7 +1232,7 @@ mod tests {
         let mut fixture = session_mode_fixture(dir.path());
         let mut context = fixture.context();
 
-        let mut input = session_mode_input("sleep 30", 300);
+        let mut input = background_input("sleep 30");
         let result = ExecuteCommandTool.execute(&mut context, &mut input).await?;
 
         let mut tracker = ResourcesTracker::new();
