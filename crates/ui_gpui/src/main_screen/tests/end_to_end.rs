@@ -42,7 +42,10 @@ fn editing_a_rejected_message_replaces_it(cx: &mut TestAppContext) {
     let mut test = MainScreenTest::with_core(cx, TestCore::new(llm.streaming().into_factory()));
     let session_id = test.open_new_session();
     test.send("rejected");
-    test.wait_until("the request failed", |test| !test.agent_is_running());
+    // Not `!agent_is_running()`: that also holds before the run started.
+    test.wait_until("the request failed", |test| {
+        !test.agent_is_running() && test.shows("edit-message-btn")
+    });
 
     test.click("edit-message-btn");
     test.wait_until("the edit started", |test| test.is_editing());
