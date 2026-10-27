@@ -9,17 +9,20 @@ interacting through the `write_stdin` tool. The design follows Codex's
 
 ## Model-facing behavior
 
-- `execute_command` with `tty` and/or `yield_time_ms` set runs the command
-  in **session mode**: the tool waits at most `yield_time_ms`
-  (250–30000 ms, default 10000) and returns the output produced so far.
-  - Process exited in time → result carries the exit code, nothing is
-    tracked.
-  - Process still running → result carries a `session_id`; the process
-    keeps running in the background.
-- `tty: true` (the default in session mode) allocates a real PTY with a
-  controlling terminal — ssh logins, sudo prompts, and REPLs work, and
-  stdin stays open. `tty: false` uses plain pipes with stdin closed, for
-  non-interactive background processes.
+- `execute_command` with `background: true` runs the command in a
+  **session**: the tool waits 5 s. The tool description tells the model to
+  use it only for long-running commands (slow builds, servers, watchers)
+  and interactive programs; ordinary commands block.
+  - Process exited in time → the result is the same as a blocking call's
+    (output and exit code), nothing is tracked. A quick command is not
+    worth a background job and its exit notification.
+  - Process still running → result carries the output so far and a
+    `session_id`; the process keeps running in the background.
+- Sessions run on a real PTY with a controlling terminal — ssh logins,
+  sudo prompts, and REPLs work, and stdin stays open. The model has no
+  wait time or terminal settings to choose; the former parameters
+  (`yield_time_ms`, `tty`) are still accepted and select background mode,
+  `tty: false` still gives plain pipes with stdin closed.
 - `write_stdin(session_id, chars, yield_time_ms)` sends `chars` verbatim
   to the session and returns the output since the last call. Empty
   `chars` polls without writing (default yield 10 s, max 300 s — for
