@@ -453,6 +453,12 @@ impl InputArea {
         self.sub_agent_transcript = transcript;
     }
 
+    /// Whether the viewed session takes no input: a sub-agent's transcript
+    /// can be read, not written to, and its selectors change nothing.
+    fn is_read_only(&self) -> bool {
+        self.sub_agent_transcript.is_some()
+    }
+
     /// Update the context usage of the last API request (drives the ring and
     /// its breakdown tooltip).
     pub fn set_context_usage(&mut self, usage: Option<ContextUsage>) {
@@ -474,6 +480,10 @@ impl InputArea {
     /// For secondary Enter (Shift+Enter), we let the action propagate so the
     /// `Input` component inserts a line break as usual.
     fn on_enter(&mut self, action: &Enter, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_read_only() {
+            cx.stop_propagation();
+            return;
+        }
         if !action.secondary {
             let current_text = self.text_input.read(cx).value().to_string();
 
@@ -528,6 +538,9 @@ impl InputArea {
     /// this problem and the event still propagates to the `Input` for normal
     /// text pasting.
     fn on_paste(&mut self, _: &Paste, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_read_only() {
+            return;
+        }
         if let Some(clipboard_item) = cx.read_from_clipboard() {
             let prev_count = self.attachments.len();
 
@@ -934,7 +947,7 @@ impl InputArea {
     fn on_submit_click(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
         let content = self.text_input.read(cx).value().to_string();
 
-        if self.has_sendable_content(cx) {
+        if self.has_sendable_content(cx) && !self.is_read_only() {
             // Capture editing before clearing
             let editing = self.editing;
 
@@ -967,6 +980,8 @@ impl InputArea {
         let text_input_handle = self.text_input.read(cx).focus_handle(cx);
         let is_focused = text_input_handle.is_focused(window);
         let has_sendable_content = self.has_sendable_content(cx);
+        let read_only = self.is_read_only();
+        let cancel_enabled = self.cancel_enabled && !read_only;
         let slash_menu = self.render_slash_menu(cx);
 
         div()
@@ -1128,10 +1143,21 @@ impl InputArea {
                     .items_start()
                     .p_2()
                     .gap_2()
-                    .when(
-                        self.externally_locked || self.sub_agent_transcript.is_some(),
-                        |el| el.opacity(0.45),
-                    )
+                    .when(self.externally_locked || read_only, |el| el.opacity(0.45))
+                    // A transcript's selectors and buttons take no clicks.
+                    .when(read_only, |el| {
+                        el.relative().child(
+                            div()
+                                .id("read-only-input")
+                                .debug_selector(|| "read-only-input".into())
+                                .absolute()
+                                .size_full()
+                                .top_0()
+                                .left_0()
+                                .occlude()
+                                .cursor(CursorStyle::OperationNotAllowed),
+                        )
+                    })
                     // Left column: text field + selector row (share same width).
                     // `min_w_0` lets it shrink below its content so the buttons
                     // on the right always stay visible.
@@ -1155,7 +1181,11 @@ impl InputArea {
                                     .rounded_md()
                                     .track_focus(&text_input_handle)
                                     .children(slash_menu)
-                                    .child(Textarea::new(&self.text_input).appearance(false))
+                                    .child(
+                                        Textarea::new(&self.text_input)
+                                            .appearance(false)
+                                            .disabled(read_only),
+                                    )
                             })
                             .child(self.render_selector_row(cx)),
                     )
@@ -1172,9 +1202,8 @@ impl InputArea {
 
                                 // Send button - enabled when there is text or an attachment
                                 // (e.g. review comments) and not externally locked
-                                let send_enabled = has_sendable_content
-                                    && !self.externally_locked
-                                    && self.sub_agent_transcript.is_none();
+                                let send_enabled =
+                                    has_sendable_content && !self.externally_locked && !read_only;
 
                                 let mut send_button = div()
                                     .id("send-btn")
@@ -1214,7 +1243,7 @@ impl InputArea {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .cursor(if self.cancel_enabled {
+                                    .cursor(if cancel_enabled {
                                         CursorStyle::PointingHand
                                     } else {
                                         CursorStyle::OperationNotAllowed
@@ -1222,7 +1251,7 @@ impl InputArea {
                                     .child(file_icons::render_icon(
                                         &file_icons::get().get_type_icon(file_icons::STOP),
                                         22.0,
-                                        if self.cancel_enabled {
+                                        if cancel_enabled {
                                             cx.theme().danger
                                         } else {
                                             cx.theme().muted_foreground
@@ -1230,7 +1259,7 @@ impl InputArea {
                                         "⬜",
                                     ));
 
-                                if self.cancel_enabled {
+                                if cancel_enabled {
                                     cancel_button = cancel_button
                                         .hover(|s| s.bg(cx.theme().muted))
                                         .on_click(cx.listener(Self::on_cancel_click));

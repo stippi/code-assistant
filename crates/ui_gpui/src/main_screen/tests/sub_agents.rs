@@ -1,5 +1,6 @@
 //! Running sub-agents show in the panel above the input; background results
-//! show as the sub-agent's line, not as a message from the user.
+//! show as the sub-agent's line, not as a message from the user; an opened
+//! transcript takes no input.
 
 use crate::test_support::{MainScreenTest, TestCore};
 use code_assistant_core::agent::sub_agent::{
@@ -171,6 +172,7 @@ fn open_in_the_running_list_shows_the_transcript(cx: &mut TestAppContext) {
     test.wait_until("the session is shown", |test| {
         test.gpui.get_current_session_id().as_deref() == Some(id.as_str())
     });
+    assert!(!test.shows("read-only-input"));
     let mut agent = running(1, "t1", true);
     agent.session_id = Some(transcript_id.clone());
     update(&mut test, &parent, vec![agent]);
@@ -180,4 +182,22 @@ fn open_in_the_running_list_shows_the_transcript(cx: &mut TestAppContext) {
     test.wait_until("the transcript is shown", |test| {
         test.gpui.get_current_session_id().as_deref() == Some(transcript_id.as_str())
     });
+    assert!(test.shows("read-only-input"));
+}
+
+#[gpui_kit::test]
+fn a_transcript_takes_no_input(cx: &mut TestAppContext) {
+    let (core, _parent, transcript_id) = session_with_transcript();
+    let mut test = MainScreenTest::with_core(cx, core);
+    test.gpui.cmd_load_session(transcript_id, None);
+    test.wait_until("the transcript is shown", |test| {
+        test.transcript().len() == 1
+    });
+
+    test.type_text("go on");
+    assert_eq!(test.input_text(), "");
+    test.cx.simulate_keystrokes("enter");
+    test.settle();
+    assert_eq!(test.transcript(), vec!["user: Find the parser"]);
+    assert!(!test.agent_is_running());
 }
