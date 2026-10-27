@@ -17,7 +17,8 @@ pub struct SpawnAgentInput {
     /// If true, return right away; the result arrives as a message later.
     #[serde(default, skip_serializing_if = "is_false")]
     pub background: bool,
-    /// If true, work in a git worktree of its own and merge back when done.
+    /// If true, work in a copy of the project on a branch of its own and
+    /// merge back when done.
     #[serde(default, skip_serializing_if = "is_false")]
     pub worktree: bool,
 }
@@ -133,13 +134,13 @@ impl Tool for SpawnAgentTool {
             "By default a sub-agent works in your working tree: its edits land there right away, ",
             "and edits to the same file by several agents are serialized, so none is lost.\n\n",
             "Set `worktree: true` when a sub-agent will change files while you or other sub-agents change files too, ",
-            "typically for background or parallel work. In a git project it then works in its own git worktree, ",
-            "started from your current files; when it finishes, its changes are merged into your working tree ",
-            "and the result says which files changed. Files ignored by git are not merged back. ",
+            "typically for background or parallel work. In a git project it then works in a copy of your project ",
+            "on a branch of its own, with your uncommitted work, build outputs and installed dependencies, ",
+            "so it can build and test right away. When it finishes, its changes are merged into your working tree ",
+            "and the result says which files changed. Files ignored by git, such as build outputs, are not merged back. ",
             "If its changes conflict with edits made meanwhile, nothing is applied and the result names a branch holding them: ",
             "you then resolve the conflict yourself. Give parallel sub-agents separate parts of the code to keep conflicts rare. ",
-            "A worktree is a fresh checkout without build outputs, so builds there start from scratch: ",
-            "don't use one for research or other read-only work.\n\n",
+            "Research and other read-only work doesn't need a worktree.\n\n",
             "Set `background: true` to not wait for a sub-agent: the tool returns right away and the ",
             "sub-agent's answer arrives later as a message starting with `[sub-agent #<id>]`. ",
             "Meanwhile continue with other work, or end your turn if there is nothing else to do: ",
@@ -169,7 +170,7 @@ impl Tool for SpawnAgentTool {
                     "worktree": {
                         "type": "boolean",
                         "default": false,
-                        "description": "If true, the sub-agent works in a git worktree of its own and its changes are merged back when it finishes. Use it when it will change files while others do too."
+                        "description": "If true, the sub-agent works in a copy of the project on a branch of its own, and its changes are merged back when it finishes. Use it when it will change files while others do too."
                     }
                 },
                 "required": ["instructions"]

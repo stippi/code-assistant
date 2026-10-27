@@ -1,12 +1,17 @@
 //! Isolated workspaces for sub-agents.
 //!
-//! A sub-agent in a git project runs in its own worktree, started from a
-//! snapshot of the parent's tree (uncommitted work included). Its edits,
-//! formatter runs, builds and git commands stay there, so several agents can
-//! write at once. When it finishes, its changes are merged into
-//! the parent's working tree all-or-nothing; on a conflict nothing is
+//! A sub-agent in a git project can run in a workspace of its own: a git
+//! worktree on a branch of its own, filled with a copy-on-write copy of
+//! everything in the parent's tree, uncommitted work, build outputs and
+//! installed dependencies included ([`super::clone_tree`]), so it builds and
+//! tests right away. Where the file system cannot clone files, the worktree
+//! is a checkout of a snapshot of the parent's tree instead, without ignored
+//! files. Its edits, formatter runs, builds and git commands stay there, so
+//! several agents can write at once. When it finishes, its changes are merged
+//! into the parent's working tree all-or-nothing; on a conflict nothing is
 //! applied and the changes stay on a branch for the parent to resolve.
 
+use super::clone_tree::clone_tree;
 use anyhow::{Context, Result};
 use git::isolation::{
     MergeConflict, changed_paths, merge_into_working_tree, snapshot_working_tree,
@@ -70,9 +75,7 @@ impl ChildWorkspace {
             .collect();
         let branch = format!("code-assistant/sub-agent/{id}-{}", &base[..8]);
         let path = worktree::suggest_worktree_path(&repo_root, &branch);
-        let worktree = worktree::create_worktree(&git, &repo_root, &path, &branch, Some(&base))
-            .await
-            .context("Failed to create a worktree for the sub-agent")?;
+        let (worktree, base) = fill_worktree(&git, &repo_root, &path, &branch, base).await?;
         Ok(Some(Self {
             git,
             repo_root,
@@ -174,6 +177,88 @@ impl ChildWorkspace {
                 .await;
         }
     }
+}
+
+/// Create the worktree at `path` on `branch` and fill it: with a clone of
+/// `repo_root` where the file system can, else with a checkout of `base`, the
+/// snapshot of `repo_root`. Returns the worktree and the commit its files
+/// start from.
+async fn fill_worktree(
+    git: &GitBinary,
+    repo_root: &Path,
+    path: &Path,
+    branch: &str,
+    base: String,
+) -> Result<(PathBuf, String)> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create {}", parent.display()))?;
+    }
+    let path_str = path.to_str().context("Worktree path must be valid UTF-8")?;
+    git.run(
+        repo_root,
+        &[
+            "--no-optional-locks",
+            "worktree",
+            "add",
+            "--no-checkout",
+            "-b",
+            branch,
+            "--",
+            path_str,
+            &base,
+        ],
+    )
+    .await
+    .context("Failed to create a worktree for the sub-agent")?;
+    let worktree = path.canonicalize()?;
+
+    // Other worktrees inside the parent's tree are not part of it.
+    let skip = nested_worktrees(git, repo_root).await;
+    if let Err(e) = clone_tree(repo_root, &worktree, &skip).await {
+        tracing::info!("No copy of the project for the sub-agent ({e}); checking it out instead");
+        clear_except_git(&worktree)?;
+        git.run(&worktree, &["reset", "-q", "--hard"]).await?;
+        return Ok((worktree, base));
+    }
+    // The parent's tree may have changed since its snapshot: start from what
+    // was copied, so only the sub-agent's own changes are merged back.
+    let start = snapshot_working_tree(git, &worktree, "code-assistant: sub-agent base").await?;
+    git.run(&worktree, &["update-ref", "HEAD", &start]).await?;
+    git.run(&worktree, &["read-tree", &start]).await?;
+    Ok((worktree, start))
+}
+
+/// The worktrees of the repository at `repo_root` that lie inside it.
+async fn nested_worktrees(git: &GitBinary, repo_root: &Path) -> Vec<PathBuf> {
+    let Ok(list) = git
+        .run(repo_root, &["worktree", "list", "--porcelain"])
+        .await
+    else {
+        return Vec::new();
+    };
+    list.lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .filter_map(|path| Path::new(path).canonicalize().ok())
+        .filter(|path| path != repo_root && path.starts_with(repo_root))
+        .collect()
+}
+
+/// Remove everything in `dir` but its `.git`: a partial copy.
+fn clear_except_git(dir: &Path) -> Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_name() == ".git" {
+            continue;
+        }
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            std::fs::remove_dir_all(&path)?;
+        } else {
+            std::fs::remove_file(&path)?;
+        }
+    }
+    Ok(())
 }
 
 impl MergeOutcome {
@@ -349,6 +434,54 @@ mod tests {
             "one\ntwo\nthree\n"
         );
         assert!(branches(&repo).contains(&kept));
+    }
+
+    /// Clones need a file system that supports them; elsewhere the
+    /// workspace is a checkout without ignored files.
+    #[cfg(target_vendor = "apple")]
+    #[tokio::test]
+    async fn the_workspace_holds_ignored_files_too_and_starts_clean() {
+        let dir = repo();
+        let repo = dir.path().join("repo");
+        std::fs::write(repo.join(".gitignore"), "build/\n").unwrap();
+        git(&repo, &["add", ".gitignore"]);
+        git(&repo, &["commit", "-q", "-m", "ignore"]);
+        std::fs::create_dir_all(repo.join("build")).unwrap();
+        std::fs::write(repo.join("build/out.bin"), "built").unwrap();
+        std::fs::write(repo.join("sub/draft.txt"), "draft\n").unwrap();
+        // A worktree of the repository inside it is not copied.
+        git(&repo, &["worktree", "add", "-q", "nested", "-b", "other"]);
+
+        let ws = ChildWorkspace::create(&repo, "tool_g")
+            .await
+            .unwrap()
+            .unwrap();
+        let copy = ws.project_dir();
+        assert_eq!(
+            std::fs::read_to_string(copy.join("build/out.bin")).unwrap(),
+            "built"
+        );
+        assert!(!copy.join("nested").exists());
+        assert_eq!(git(&copy, &["status", "--porcelain"]), "");
+
+        std::fs::write(copy.join("build/out.bin"), "rebuilt").unwrap();
+        std::fs::write(copy.join("sub/a.txt"), "ONE\ntwo\nthree\n").unwrap();
+        let outcome = ws.finish().await.unwrap();
+
+        assert_eq!(
+            outcome,
+            MergeOutcome::Merged {
+                files: vec!["sub/a.txt".to_string()]
+            }
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.join("build/out.bin")).unwrap(),
+            "built"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.join("sub/draft.txt")).unwrap(),
+            "draft\n"
+        );
     }
 
     #[tokio::test]
