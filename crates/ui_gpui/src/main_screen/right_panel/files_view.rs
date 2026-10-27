@@ -30,7 +30,7 @@ use gpui_kit::{
 };
 use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -85,6 +85,13 @@ fn join(dir: &str, name: &str) -> String {
     } else {
         format!("{dir}/{name}")
     }
+}
+
+/// The absolute path of a relative path below `root`. Joined per
+/// component, so it uses the platform's separators.
+fn absolute_path(root: &Path, path: &str) -> PathBuf {
+    path.split('/')
+        .fold(root.to_path_buf(), |file, part| file.join(part))
 }
 
 /// The parent directory of a relative path (`""` for top-level entries).
@@ -342,7 +349,7 @@ impl FilesView {
         let Some(root) = &self.root else {
             return;
         };
-        let file = root.join(&path);
+        let file = absolute_path(root, &path);
         let comment = self
             .comments
             .iter()
@@ -408,15 +415,10 @@ impl FilesView {
         }
     }
 
-    /// Copy `path`, absolute or relative to the project root. The absolute
-    /// path is joined per component, so it uses the platform's separators.
+    /// Copy `path`, absolute or relative to the project root.
     fn copy_path(&mut self, path: &str, absolute: bool, cx: &mut Context<Self>) {
         let text = match &self.root {
-            Some(root) if absolute => path
-                .split('/')
-                .fold(root.clone(), |file, part| file.join(part))
-                .display()
-                .to_string(),
+            Some(root) if absolute => absolute_path(root, path).display().to_string(),
             _ => path.to_owned(),
         };
         cx.write_to_clipboard(ClipboardItem::new_string(text));
@@ -1054,7 +1056,7 @@ impl FilesView {
         let path = viewer.path()?.to_owned();
         let dirty = viewer.is_dirty();
         let commented = self.root.as_ref().is_some_and(|root| {
-            let file = root.join(&path);
+            let file = absolute_path(root, &path);
             self.comments.iter().any(|c| c.on_file && c.file == file)
         });
         let bounds = self.header_bounds.clone();
