@@ -1364,6 +1364,7 @@ mod tests {
                     old_side: false,
                     in_diff: false,
                     on_message: false,
+                    on_file: false,
                     excerpt: "fn main() {}".into(),
                     text: "rename this".into(),
                 },

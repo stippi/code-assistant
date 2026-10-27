@@ -895,6 +895,7 @@ impl BlockView {
         let expanded = self.comments_expanded;
         let label = match comments {
             [c] if c.on_message => "1 comment on a message".to_owned(),
+            [c] if c.on_file => format!("1 comment on {}", c.path),
             [c] => format!("1 comment on {}:{}", c.path, c.lines),
             _ => format!("{} line comments", comments.len()),
         };
@@ -943,21 +944,25 @@ impl BlockView {
                     .child(div().text_xs().text_color(theme.muted_foreground).child(
                         if c.on_message {
                             "on a message".to_owned()
+                        } else if c.on_file {
+                            c.path.clone()
                         } else {
                             format!("{}:{}", c.path, c.lines)
                         },
                     ))
-                    .child(
-                        div()
-                            .p_1p5()
-                            .rounded_md()
-                            .bg(theme.muted)
-                            .font_family("Menlo")
-                            .text_xs()
-                            .text_color(theme.foreground)
-                            .whitespace_normal()
-                            .children(c.code.lines().map(|l| div().child(l.to_owned()))),
-                    )
+                    .when(!c.on_file, |d| {
+                        d.child(
+                            div()
+                                .p_1p5()
+                                .rounded_md()
+                                .bg(theme.muted)
+                                .font_family("Menlo")
+                                .text_xs()
+                                .text_color(theme.foreground)
+                                .whitespace_normal()
+                                .children(c.code.lines().map(|l| div().child(l.to_owned()))),
+                        )
+                    })
                     .child(
                         div()
                             .text_sm()
