@@ -224,6 +224,12 @@ impl FileViewer {
         cx.notify();
     }
 
+    /// Show nothing, dropping unsaved edits: the shown file was deleted.
+    pub fn close_deleted(&mut self, cx: &mut Context<Self>) {
+        self.dirty = false;
+        self.open(self.session_id.clone(), None, cx);
+    }
+
     /// Read the shown file again (it changed on disk).
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         self.load(cx);
