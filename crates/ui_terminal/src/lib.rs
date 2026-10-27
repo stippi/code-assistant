@@ -9,6 +9,7 @@ pub mod renderer;
 pub mod slash_popup;
 pub mod state;
 pub mod streaming;
+pub mod sub_agents;
 pub mod terminal_color;
 pub mod text_util;
 pub mod textarea;

@@ -34,6 +34,8 @@ pub struct AppState {
     pub activity_state: Option<SessionActivityState>,
     pub session_activity_states: HashMap<String, SessionActivityState>,
     pub pending_message: Option<String>,
+    /// The current session's running sub-agents, oldest first.
+    pub running_sub_agents: Vec<code_assistant_core::agent::sub_agent::RunningSubAgentInfo>,
     pub tool_statuses: HashMap<String, code_assistant_core::ui::ToolStatus>,
     pub current_model: Option<String>,
     pub info_message: Option<InfoMessage>,
@@ -70,6 +72,7 @@ impl AppState {
             activity_state: None,
             session_activity_states: HashMap::new(),
             pending_message: None,
+            running_sub_agents: Vec::new(),
             tool_statuses: HashMap::new(),
             current_model: None,
             info_message: None,

@@ -472,6 +472,7 @@ mod tests {
             pending_questions: Vec::new(),
             armed_wakeups: Vec::new(),
             active_monitors: Vec::new(),
+            running_sub_agents: Vec::new(),
         }
     }
 

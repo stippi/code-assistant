@@ -49,3 +49,6 @@ base64 = "0.22"
 
 # Clipboard access for paste
 arboard = "3"
+
+[dev-dependencies]
+chrono = "0.4"

@@ -1,9 +1,9 @@
 //! Renderer for the `spawn_agent` (sub-agent) tool.
 //!
-//! Mirrors the GPUI `sub_agent_card`: a "Sub-agent" header with an
-//! instructions summary, the sub-agent's live tool-call list with per-call
-//! status colors, and a cancelled/error/response footer. Parses the tool's
-//! output as [`SubAgentOutput`] JSON streamed by the sub-agent runner.
+//! A "Sub-agent" header with an instructions summary, the sub-agent's live
+//! tool-call list with per-call status colors, and a cancelled/error/response
+//! footer. Parses the tool's output as [`SubAgentOutput`] JSON streamed by
+//! the sub-agent runner.
 //!
 //! A single [`sub_agent_lines`] builder feeds all three trait methods so the
 //! live viewport, the height calculation, and the scrollback history stay in
@@ -174,6 +174,9 @@ mod tests {
             error,
             response,
             usage: None,
+            agent_id: None,
+            background: false,
+            session_id: None,
         }
         .to_json()
     }

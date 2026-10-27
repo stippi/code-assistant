@@ -6,6 +6,7 @@ mod scroll;
 use crate::Gpui;
 use crate::shared::frame_profile;
 
+use code_assistant_core::agent::sub_agent::RunningSubAgentInfo;
 use code_assistant_core::session::instance::SessionActivityState;
 use code_assistant_core::session::monitor::ActiveMonitorInfo;
 use code_assistant_core::session::wakeup::ArmedWakeupInfo;
@@ -31,11 +32,11 @@ use scroll::{
 use super::blocks::MessageContainer;
 
 /// Braille spinner frames for the activity indicator.
-const BRAILLE_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+pub(crate) const BRAILLE_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 /// Frame duration of the slow spinner of a session waiting for a wakeup.
-const WAKEUP_SPINNER_FRAME_MS: u128 = 500;
+pub(crate) const WAKEUP_SPINNER_FRAME_MS: u128 = 500;
 
-fn wall_clock_millis() -> u128 {
+pub(crate) fn wall_clock_millis() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -109,6 +110,9 @@ pub struct MessagesView {
     active_monitors: Vec<ActiveMonitorInfo>,
     /// Renders the wakeup countdown again when its text changes.
     wakeup_refresh_task: Option<Task<()>>,
+    /// The viewed session's running sub-agents, oldest first; the agents
+    /// panel above the input shows them.
+    running_sub_agents: Vec<RunningSubAgentInfo>,
 
     // -- Edge auto-scroll state (drag-to-select near a viewport edge) --
     /// Bounds of the message list viewport in window coordinates, captured
@@ -207,6 +211,7 @@ impl MessagesView {
             armed_wakeups: Vec::new(),
             active_monitors: Vec::new(),
             wakeup_refresh_task: None,
+            running_sub_agents: Vec::new(),
             list_bounds: Rc::new(Cell::new(Bounds::default())),
             edge_scroll_velocity: Rc::new(Cell::new(0.0)),
             edge_drag_active: Rc::new(Cell::new(false)),
@@ -924,8 +929,23 @@ impl MessagesView {
         }
     }
 
+    pub fn set_running_sub_agents(
+        &mut self,
+        agents: Vec<RunningSubAgentInfo>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.running_sub_agents != agents {
+            self.running_sub_agents = agents;
+            cx.notify();
+        }
+    }
+
     pub(crate) fn active_monitors(&self) -> &[ActiveMonitorInfo] {
         &self.active_monitors
+    }
+
+    pub(crate) fn running_sub_agents(&self) -> &[RunningSubAgentInfo] {
+        &self.running_sub_agents
     }
 
     pub fn set_is_resumable(&self, is_resumable: bool) {
@@ -1261,6 +1281,7 @@ impl Render for MessagesView {
                         .child(
                             div()
                                 .id("resume-session")
+                                .debug_selector(|| "resume-session".into())
                                 .flex()
                                 .items_center()
                                 .justify_center()

@@ -74,6 +74,7 @@ impl SpinnerState {
 enum StatusKind {
     Info,
     Plan,
+    SubAgents,
     Pending,
 }
 
@@ -90,6 +91,8 @@ pub struct TerminalRenderer {
     pub transcript: TranscriptState,
     /// Optional pending user message (displayed between input and live content while streaming)
     pending_user_message: Option<String>,
+    /// The viewed session's running sub-agents, one status line each.
+    running_sub_agents: Vec<code_assistant_core::agent::sub_agent::RunningSubAgentInfo>,
     /// Current error message to display
     current_error: Option<String>,
     /// Current info message to display
@@ -156,6 +159,7 @@ impl TerminalRenderer {
         Ok(Self {
             transcript: TranscriptState::default(),
             pending_user_message: None,
+            running_sub_agents: Vec::new(),
             current_error: None,
             info_message: None,
 
@@ -295,6 +299,14 @@ impl TerminalRenderer {
     /// Mark that a hidden tool completed - paragraph break may be needed before next text
     pub fn mark_hidden_tool_completed(&mut self) {
         self.needs_paragraph_break_after_hidden_tool = true;
+    }
+
+    /// Set the running sub-agents shown above the composer.
+    pub fn set_running_sub_agents(
+        &mut self,
+        agents: Vec<code_assistant_core::agent::sub_agent::RunningSubAgentInfo>,
+    ) {
+        self.running_sub_agents = agents;
     }
 
     /// Set or unset a pending user message (displayed while streaming)
@@ -876,6 +888,14 @@ impl TerminalRenderer {
                 height = height.saturating_add(h);
                 has_any = true;
             }
+            if let Some(lines) = crate::sub_agents::running_lines(&self.running_sub_agents) {
+                if has_any {
+                    height = height.saturating_add(1);
+                }
+                let h = Self::measure_markdown_height(&lines, width, 20);
+                height = height.saturating_add(h);
+                has_any = true;
+            }
             let show_status_info = self.info_message.is_some() && !self.info_in_footer(width);
             if let (true, Some(info_msg)) = (show_status_info, &self.info_message) {
                 if has_any {
@@ -920,6 +940,13 @@ impl TerminalRenderer {
             status_entries.push(StatusEntry {
                 kind: StatusKind::Plan,
                 content: plan_text,
+                height: 0,
+            });
+        }
+        if let Some(lines) = crate::sub_agents::running_lines(&self.running_sub_agents) {
+            status_entries.push(StatusEntry {
+                kind: StatusKind::SubAgents,
+                content: lines,
                 height: 0,
             });
         }
@@ -1262,7 +1289,9 @@ impl TerminalRenderer {
             let entry_area = Rect::new(area.x, y, area.width, height);
             match entry.kind {
                 StatusKind::Info => Self::render_info_message(f, entry_area, &entry.content),
-                StatusKind::Plan => Self::render_plan_message(f, entry_area, &entry.content),
+                StatusKind::Plan | StatusKind::SubAgents => {
+                    Self::render_plan_message(f, entry_area, &entry.content)
+                }
                 StatusKind::Pending => Self::render_pending_message(f, entry_area, &entry.content),
             }
 

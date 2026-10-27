@@ -585,7 +585,7 @@ impl Gpui {
             tbr_registry.register(Arc::new(InlineToolRenderer::new()));
             tbr_registry.register(Arc::new(tool_cards::terminal_card::TerminalCardRenderer));
             tbr_registry.register(Arc::new(tool_cards::diff_card::DiffCardRenderer));
-            tbr_registry.register(Arc::new(tool_cards::sub_agent_card::SubAgentCardRenderer));
+            tbr_registry.register(Arc::new(tool_cards::sub_agent_line::SubAgentLineRenderer));
             tbr_registry.register(Arc::new(tool_cards::code_card::CodeCardRenderer));
             tbr_registry.register(Arc::new(tool_cards::session_card::SessionCardRenderer));
             tbr_registry.register(Arc::new(tool_cards::browser_renderer::BrowserToolRenderer));

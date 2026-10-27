@@ -89,6 +89,7 @@ fn test_spawn_agent_output_render() {
         answer: "The answer is 42.".to_string(),
         error: None,
         ui_output: None,
+        ..Default::default()
     };
 
     let mut tracker = ResourcesTracker::new();
@@ -101,6 +102,7 @@ fn test_spawn_agent_output_render() {
         answer: String::new(),
         error: Some("Cancelled by user".to_string()),
         ui_output: None,
+        ..Default::default()
     };
 
     let rendered = output.render(&mut tracker);
@@ -112,6 +114,7 @@ fn test_spawn_agent_output_render() {
         answer: String::new(),
         error: Some("Connection failed".to_string()),
         ui_output: None,
+        ..Default::default()
     };
 
     let rendered = output.render(&mut tracker);
@@ -123,6 +126,7 @@ fn test_spawn_agent_output_render() {
         answer: "Plain text answer".to_string(),
         error: None,
         ui_output: Some(r#"{"tools":[],"response":"Markdown response"}"#.to_string()),
+        ..Default::default()
     };
 
     let mut tracker = ResourcesTracker::new();
@@ -139,6 +143,7 @@ fn test_spawn_agent_output_render() {
         answer: "Just the answer".to_string(),
         error: None,
         ui_output: None,
+        ..Default::default()
     };
     assert_eq!(
         output_without_ui.render_for_ui(&mut tracker),

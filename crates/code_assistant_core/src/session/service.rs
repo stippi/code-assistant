@@ -720,6 +720,7 @@ impl SessionService {
         attachments: Vec<DraftAttachment>,
         edited_node_id: Option<NodeId>,
     ) -> Result<()> {
+        ensure_not_a_transcript(&session_id)?;
         if let Some(command) = NewContextCommand::parse(&message) {
             return self
                 .start_new_context(session_id, message, command, attachments, edited_node_id)
@@ -862,6 +863,7 @@ impl SessionService {
         message: String,
         attachments: Vec<DraftAttachment>,
     ) -> Result<Option<String>> {
+        ensure_not_a_transcript(&session_id)?;
         ensure!(
             NewContextCommand::parse(&message).is_none(),
             "/new and /handoff can't be queued; wait for the agent to finish or stop it"
@@ -964,6 +966,27 @@ impl SessionService {
         self.call_control(move |ctx| async move {
             let manager = ctx.manager.lock().await;
             Ok(manager.stop_monitor(&session_id, monitor_id))
+        })
+        .await
+    }
+
+    /// Deliver the result of a background sub-agent (see
+    /// [`crate::agent::sub_agent::SubAgentSink`]): record it in the stored
+    /// `spawn_agent` result, then hand it to the session as a message — a
+    /// turn starts when the session is idle, otherwise it is queued for the
+    /// running agent's next step. A session that no longer exists swallows
+    /// it silently.
+    ///
+    /// The run that started the agent may not have stored the `spawn_agent`
+    /// result yet (it does so after its current tool batch); then nothing is
+    /// delivered and this returns `false`, to be retried.
+    pub async fn deliver_sub_agent_result(
+        &self,
+        session_id: String,
+        finished: crate::agent::sub_agent::FinishedSubAgent,
+    ) -> Result<bool> {
+        self.call_session(session_id.clone(), move |ctx| async move {
+            deliver_sub_agent_result_impl(&ctx, &session_id, &finished).await
         })
         .await
     }
@@ -2194,6 +2217,95 @@ async fn inject_wakeup_impl(
     send_or_queue_user_message_impl(ctx, session_id, message, &[]).await
 }
 
+/// Sub-agent transcripts are written by their sub-agent only.
+fn ensure_not_a_transcript(session_id: &str) -> Result<()> {
+    ensure!(
+        crate::persistence::layout::sub_agent_parent(session_id).is_none(),
+        "This is a sub-agent's transcript; it is read-only"
+    );
+    Ok(())
+}
+
+/// How often, and how long apart, a background result is offered to a
+/// session whose run has not stored the `spawn_agent` call yet (an hour).
+const SUB_AGENT_DELIVERY_ATTEMPTS: usize = 18_000;
+const SUB_AGENT_DELIVERY_RETRY: std::time::Duration = std::time::Duration::from_millis(200);
+
+async fn deliver_sub_agent_result_impl(
+    ctx: &ServiceCtx,
+    session_id: &str,
+    finished: &crate::agent::sub_agent::FinishedSubAgent,
+) -> Result<bool> {
+    let recorded = {
+        let mut manager = ctx.manager.lock().await;
+        let Some(instance) = manager.get_session(session_id) else {
+            debug!("Sub-agent result for unknown session {session_id} dropped");
+            return Ok(true);
+        };
+        let stored = instance
+            .session
+            .tool_executions
+            .iter()
+            .any(|exec| exec.tool_request.id == finished.tool_id);
+        if !stored && !instance.get_activity_state().is_terminal() {
+            return Ok(false);
+        }
+        manager.mark_sub_agent_finished(session_id, &finished.tool_id, &finished.ui_output)
+    };
+    match recorded {
+        Ok(Some(result)) => ctx.notify_session(
+            session_id,
+            UiEvent::UpdateToolStatus {
+                tool_id: result.tool_id,
+                status: result.status,
+                message: result.message,
+                output: result.output,
+                styled_output: None,
+                duration_seconds: None,
+                images: Vec::new(),
+            },
+        ),
+        Ok(None) => debug!(
+            "Sub-agent #{} has no stored result in session {session_id}",
+            finished.agent_id
+        ),
+        // The result is still delivered.
+        Err(e) => warn!(
+            "Failed to record the result of sub-agent #{}: {e}",
+            finished.agent_id
+        ),
+    }
+    send_or_queue_user_message_impl(ctx, session_id, &finished.message(), &[]).await?;
+    Ok(true)
+}
+
+#[async_trait::async_trait]
+impl crate::agent::sub_agent::SubAgentSink for SessionService {
+    async fn finished(
+        &self,
+        session_id: &str,
+        finished: crate::agent::sub_agent::FinishedSubAgent,
+    ) {
+        let agent_id = finished.agent_id;
+        // Wait for the run that started the agent to store its result; it
+        // does so at the latest when it ends.
+        for _ in 0..SUB_AGENT_DELIVERY_ATTEMPTS {
+            match self
+                .deliver_sub_agent_result(session_id.to_string(), finished.clone())
+                .await
+            {
+                Ok(true) => return,
+                Ok(false) => tokio::time::sleep(SUB_AGENT_DELIVERY_RETRY).await,
+                Err(e) => {
+                    warn!("Failed to deliver sub-agent #{agent_id} to session {session_id}: {e}");
+                    return;
+                }
+            }
+        }
+        warn!("Gave up delivering sub-agent #{agent_id} to session {session_id}");
+    }
+}
+
 async fn resume_session_impl(ctx: &ServiceCtx, session_id: &str) -> Result<()> {
     debug!("ResumeSession requested for {}", session_id);
 
@@ -2417,6 +2529,7 @@ fn schedule_agent_impl(
                             session: run_session_config,
                             model: Some(session_config),
                             task,
+                            sub_agent_llm: runtime.llm_client_factory.clone(),
                         },
                     )
                     .await
@@ -2481,6 +2594,8 @@ mod new_context;
 mod recovery_tests;
 #[cfg(test)]
 mod stored_output_tests;
+#[cfg(test)]
+mod sub_agent_tests;
 
 #[cfg(test)]
 mod tests {
@@ -3206,6 +3321,38 @@ mod tests {
 
         let snapshot = service.load_session(id, None).await.unwrap();
         assert_eq!(snapshot.messages.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn sub_agent_numbers_continue_above_existing_transcripts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let id = {
+            let service = test_service(tmp.path());
+            service.create_session(None, None).await.unwrap()
+        };
+        // Transcripts of agents the history never recorded.
+        let store = FileSessionPersistence::new_with_root_dir(tmp.path().to_path_buf());
+        for agent in [1, 4] {
+            let transcript = crate::persistence::ChatSession::new_empty(
+                crate::persistence::layout::sub_agent_session_id(&id, agent),
+                format!("Sub-agent #{agent}"),
+                Default::default(),
+                None,
+            );
+            store.clone().create_chat_session(&transcript).unwrap();
+        }
+
+        // After a restart, the next agent is #5.
+        let (service, manager) = test_service_with_manager(tmp.path());
+        service.load_session(id.clone(), None).await.unwrap();
+        let next = manager
+            .lock()
+            .await
+            .get_session(&id)
+            .unwrap()
+            .running_sub_agents
+            .register("t1", "look", true);
+        assert_eq!(next, 5);
     }
 
     #[tokio::test]
