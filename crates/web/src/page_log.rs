@@ -166,52 +166,54 @@ pub(crate) async fn spawn_listeners(page: &Page, log: Arc<PageLog>) -> Result<Ve
         }
     }));
 
+    // Requests, responses and failures share one task that takes requests
+    // first: each listener gets its events in order, so a response is only
+    // handled once its request is in the log. Separate tasks could see the
+    // response first and drop it, leaving the request pending.
     let mut requests = page.event_listener::<EventRequestWillBeSent>().await?;
-    let sink = log.clone();
-    tasks.push(tokio::spawn(async move {
-        while let Some(event) = requests.next().await {
-            let id = event.request_id.inner().clone();
-            let mut network = sink.network.lock().unwrap();
-            if network.len() == CAPACITY {
-                network.pop_front();
-            }
-            network.push_back(NetworkRequest {
-                id,
-                method: event.request.method.clone(),
-                url: event.request.url.clone(),
-                resource_type: event
-                    .r#type
-                    .as_ref()
-                    .map(|t| t.as_ref().to_lowercase())
-                    .unwrap_or_else(|| "other".to_string()),
-                status: None,
-                mime_type: None,
-                failure: None,
-            });
-        }
-    }));
-
     let mut responses = page.event_listener::<EventResponseReceived>().await?;
-    let sink = log.clone();
-    tasks.push(tokio::spawn(async move {
-        while let Some(event) = responses.next().await {
-            sink.update_request(event.request_id.inner(), |r| {
-                r.status = Some(event.response.status);
-                r.mime_type = Some(event.response.mime_type.clone());
-            });
-        }
-    }));
-
     let mut failures = page.event_listener::<EventLoadingFailed>().await?;
     let sink = log;
     tasks.push(tokio::spawn(async move {
-        while let Some(event) = failures.next().await {
-            let failure = if event.canceled == Some(true) {
-                "canceled".to_string()
-            } else {
-                event.error_text.clone()
-            };
-            sink.update_request(event.request_id.inner(), |r| r.failure = Some(failure));
+        loop {
+            tokio::select! {
+                biased;
+                Some(event) = requests.next() => {
+                    let id = event.request_id.inner().clone();
+                    let mut network = sink.network.lock().unwrap();
+                    if network.len() == CAPACITY {
+                        network.pop_front();
+                    }
+                    network.push_back(NetworkRequest {
+                        id,
+                        method: event.request.method.clone(),
+                        url: event.request.url.clone(),
+                        resource_type: event
+                            .r#type
+                            .as_ref()
+                            .map(|t| t.as_ref().to_lowercase())
+                            .unwrap_or_else(|| "other".to_string()),
+                        status: None,
+                        mime_type: None,
+                        failure: None,
+                    });
+                }
+                Some(event) = responses.next() => {
+                    sink.update_request(event.request_id.inner(), |r| {
+                        r.status = Some(event.response.status);
+                        r.mime_type = Some(event.response.mime_type.clone());
+                    });
+                }
+                Some(event) = failures.next() => {
+                    let failure = if event.canceled == Some(true) {
+                        "canceled".to_string()
+                    } else {
+                        event.error_text.clone()
+                    };
+                    sink.update_request(event.request_id.inner(), |r| r.failure = Some(failure));
+                }
+                else => break,
+            }
         }
     }));
 
