@@ -1585,13 +1585,14 @@ impl SessionManager {
             })
             .await;
 
-            // A background notification queued after the agent last looked
-            // (or during a run that never asks the model) would wait for the
-            // next turn: answer it in this run instead. The queue stays
-            // locked from the last look until the session is idle, and
-            // deliveries queue only under that lock while a run is going
-            // (`SessionManager::queue_notification_while_running`), so each
-            // one is either answered here or finds the session idle.
+            // A notification or user message queued after the agent last
+            // looked (or during a run that never asks the model) would wait
+            // for the next turn: answer it in this run instead. Both queues
+            // stay locked from the last look until the session is idle, and
+            // messages are queued only under their lock while a run is going
+            // (`SessionManager::queue_notification_while_running`,
+            // `queue_user_message_while_running`), so each one is either
+            // answered here or finds the session idle and starts a turn.
             let mut answered = false;
             let (result, final_usage, final_state) = loop {
                 let result = match outcome {
@@ -1616,8 +1617,10 @@ impl SessionManager {
                 };
                 let final_state = {
                     let notifications = pending_notifications_for_task.lock().unwrap();
-                    let leftover =
-                        result.is_ok() && !cancellation.is_cancelled() && notifications.is_some();
+                    let message = pending_message_for_task.lock().unwrap();
+                    let leftover = result.is_ok()
+                        && !cancellation.is_cancelled()
+                        && (notifications.is_some() || message.is_some());
                     (!leftover).then(|| {
                         // Release before going idle: a dispatch observing idle can acquire it.
                         drop(run_guards.take());
@@ -2669,8 +2672,8 @@ impl SessionManager {
 
     /// Queue a text-only user message for a running agent session
     #[allow(dead_code)]
-    pub fn queue_user_message(&mut self, session_id: &str, message: String) -> Result<()> {
-        self.queue_structured_user_message(
+    pub fn queue_user_message(&mut self, session_id: &str, message: String) -> Result<bool> {
+        self.queue_user_message_while_running(
             session_id,
             vec![ContentBlock::Text {
                 text: message,
@@ -2737,18 +2740,27 @@ impl SessionManager {
         Ok(())
     }
 
-    /// Queue structured content (text + attachments) for a running agent session
-    pub fn queue_structured_user_message(
-        &mut self,
+    /// Queue structured content (text + attachments) if an agent runs in the
+    /// session, appended to what is already pending. Returns `false` for an
+    /// idle session, which the caller starts a turn in instead.
+    ///
+    /// Like [`Self::queue_notification_while_running`], the state is read
+    /// under the pending message's lock, which a run holds while it checks
+    /// for leftovers and goes idle.
+    pub fn queue_user_message_while_running(
+        &self,
         session_id: &str,
         content_blocks: Vec<ContentBlock>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let session_instance = self
             .active_sessions
             .get(session_id)
             .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
 
         let mut pending = session_instance.pending_message.lock().unwrap();
+        if session_instance.get_activity_state().is_terminal() {
+            return Ok(false);
+        }
         match pending.as_mut() {
             Some(existing) => {
                 // Append new content blocks to existing pending blocks
@@ -2759,7 +2771,7 @@ impl SessionManager {
             }
         }
 
-        Ok(())
+        Ok(true)
     }
 
     /// Queue a background notification if an agent runs in the session; it

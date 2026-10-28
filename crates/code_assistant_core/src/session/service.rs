@@ -871,9 +871,24 @@ impl SessionService {
         self.call_session(session_id.clone(), move |ctx| async move {
             let content_blocks =
                 user_message_blocks(&ctx, &session_id, &message, &attachments).await?;
-            let mut manager = ctx.manager.lock().await;
-            manager.queue_structured_user_message(&session_id, content_blocks)?;
-            manager.get_pending_message(&session_id)
+            {
+                let manager = ctx.manager.lock().await;
+                if manager.queue_user_message_while_running(&session_id, content_blocks)? {
+                    return manager.get_pending_message(&session_id);
+                }
+            }
+            // The run ended before the frontend learned of it: the message
+            // starts a turn instead of waiting for one.
+            send_user_message_impl(
+                &ctx,
+                &session_id,
+                &message,
+                &attachments,
+                None,
+                RunOptions::default(),
+            )
+            .await?;
+            Ok(None)
         })
         .await
     }
@@ -2084,17 +2099,19 @@ async fn send_or_queue_user_message_impl(
 
     if running {
         let content_blocks = user_message_blocks(ctx, session_id, message, attachments).await?;
-        let mut manager = ctx.manager.lock().await;
-        manager.queue_structured_user_message(session_id, content_blocks)?;
-        if let Some(summary) = manager.get_pending_message(session_id)? {
-            ctx.notify_session(
-                session_id,
-                UiEvent::UpdatePendingMessage {
-                    message: Some(summary),
-                },
-            );
+        let manager = ctx.manager.lock().await;
+        // Unless the run ended meanwhile; then the message starts a turn.
+        if manager.queue_user_message_while_running(session_id, content_blocks)? {
+            if let Some(summary) = manager.get_pending_message(session_id)? {
+                ctx.notify_session(
+                    session_id,
+                    UiEvent::UpdatePendingMessage {
+                        message: Some(summary),
+                    },
+                );
+            }
+            return Ok(());
         }
-        return Ok(());
     }
 
     send_user_message_impl(
@@ -3090,8 +3107,14 @@ mod tests {
     #[tokio::test]
     async fn queue_and_take_pending_message() {
         let tmp = tempfile::tempdir().unwrap();
-        let service = test_service(tmp.path());
+        let (service, manager) = test_service_with_manager(tmp.path());
         let id = service.create_session(None, None).await.unwrap();
+        manager
+            .lock()
+            .await
+            .get_session_mut(&id)
+            .unwrap()
+            .set_activity_state(crate::session::instance::SessionActivityState::AgentRunning);
 
         let pending = service
             .queue_user_message(id.clone(), "hello".to_string(), Vec::new())

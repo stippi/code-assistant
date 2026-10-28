@@ -495,6 +495,28 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_message_queued_after_the_run_ended_starts_a_turn() {
+        let tmp = tempfile::tempdir().unwrap();
+        let llm = answering(&["on it"]);
+        let (service, _) = test_service_with_llm(tmp.path(), llm.clone().into_factory());
+        let id = service.create_session(None, None).await.unwrap();
+        let mut subscription = service.subscribe();
+
+        // The frontend still believed the agent was running.
+        let pending = service
+            .queue_user_message(id.clone(), "Write the tests".into(), vec![])
+            .await
+            .unwrap();
+        assert_eq!(pending, None, "nothing waits in an idle session");
+        idle(&mut subscription, &id).await;
+
+        let messages = path(tmp.path(), &id);
+        assert_eq!(messages.len(), 2, "{messages:?}");
+        assert_eq!(texts(&messages[0]), ["Write the tests"]);
+        assert_eq!(texts(&messages[1]), ["on it"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn new_without_prompt_in_a_new_session_only_creates_it() {
         let tmp = tempfile::tempdir().unwrap();
         let llm = answering(&[]);
