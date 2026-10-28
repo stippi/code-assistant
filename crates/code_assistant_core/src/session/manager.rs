@@ -1247,6 +1247,7 @@ impl SessionManager {
             session_state,
             activity,
             pending_message_ref,
+            pending_notifications_ref,
             pending_target,
             sandbox_context,
         ) = {
@@ -1269,6 +1270,7 @@ impl SessionManager {
                 session_instance.create_publisher(self.events.clone(), turn_recorder.clone());
             let activity = session_instance.activity.clone();
             let pending_message_ref = session_instance.pending_message.clone();
+            let pending_notifications_ref = session_instance.pending_notifications.clone();
             let pending_target = session_instance.pending_new_context_target.clone();
 
             let mut tool_executions: Vec<_> = session_instance
@@ -1328,6 +1330,7 @@ impl SessionManager {
                 session_state,
                 activity,
                 pending_message_ref,
+                pending_notifications_ref,
                 pending_target,
                 session_instance.sandbox_context.clone(),
             )
@@ -1509,6 +1512,7 @@ impl SessionManager {
 
         // Set the shared pending message reference
         agent.set_pending_message_ref(pending_message_ref);
+        agent.set_pending_notifications_ref(pending_notifications_ref);
 
         agent.set_cancellation(cancellation.clone());
 
@@ -2748,6 +2752,22 @@ impl SessionManager {
             }
         }
 
+        Ok(())
+    }
+
+    /// Queue a background notification for a running agent session; it
+    /// joins the notifications already waiting, apart from the user's
+    /// pending message.
+    pub fn queue_notification(&mut self, session_id: &str, message: &str) -> Result<()> {
+        let session_instance = self
+            .active_sessions
+            .get(session_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
+
+        let mut pending = session_instance.pending_notifications.lock().unwrap();
+        pending
+            .get_or_insert_with(Vec::new)
+            .push(ContentBlock::new_text(message));
         Ok(())
     }
 

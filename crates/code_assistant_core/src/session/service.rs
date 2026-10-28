@@ -947,7 +947,8 @@ impl SessionService {
 
     /// Deliver a background notification (see [`crate::session::monitor`]):
     /// like a wakeup, `message` starts a turn when the session is idle and
-    /// is queued as the pending message while an agent runs. A session that
+    /// is queued for the running agent's next step — apart from the user's
+    /// pending message — while an agent runs. A session that
     /// no longer exists swallows it silently.
     pub async fn inject_notification(&self, session_id: String, message: String) -> Result<()> {
         self.call_session(session_id.clone(), move |ctx| async move {
@@ -955,7 +956,7 @@ impl SessionService {
                 debug!("Notification for unknown session {session_id} dropped");
                 return Ok(());
             }
-            send_or_queue_user_message_impl(&ctx, &session_id, &message, &[]).await
+            send_or_queue_notification_impl(&ctx, &session_id, &message).await
         })
         .await
     }
@@ -2062,8 +2063,8 @@ async fn append_and_run(
     Ok(())
 }
 
-/// Shared by [`SessionService::send_or_queue_user_message`] and the wakeup
-/// path: decide send-vs-queue by the session's actual activity state.
+/// Behind [`SessionService::send_or_queue_user_message`]: decide
+/// send-vs-queue by the session's actual activity state.
 async fn send_or_queue_user_message_impl(
     ctx: &ServiceCtx,
     session_id: &str,
@@ -2105,6 +2106,34 @@ async fn send_or_queue_user_message_impl(
         RunOptions::default(),
     )
     .await
+}
+
+/// Like [`send_or_queue_user_message_impl`] for a background notification
+/// (wakeup, monitor event, finished sub-agent): an idle session gets it as
+/// the message starting a turn; a running agent finds it in its own queue,
+/// so it never mixes with what the user queued.
+async fn send_or_queue_notification_impl(
+    ctx: &ServiceCtx,
+    session_id: &str,
+    message: &str,
+) -> Result<()> {
+    let queued = {
+        let mut manager = ctx.manager.lock().await;
+        manager.ensure_session_loaded(session_id)?;
+        let instance = manager
+            .get_session(session_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
+        let running = !instance.get_activity_state().is_terminal();
+        if running {
+            manager.queue_notification(session_id, message)?;
+        }
+        running
+    };
+    if queued {
+        return Ok(());
+    }
+
+    send_user_message_impl(ctx, session_id, message, &[], None, RunOptions::default()).await
 }
 
 async fn try_send_user_message_if_idle_impl(
@@ -2214,7 +2243,7 @@ async fn inject_wakeup_impl(
         // The wakeup is still delivered.
         Err(e) => warn!("Failed to record that wakeup {wakeup_id} fired: {e}"),
     }
-    send_or_queue_user_message_impl(ctx, session_id, message, &[]).await
+    send_or_queue_notification_impl(ctx, session_id, message).await
 }
 
 /// Sub-agent transcripts are written by their sub-agent only.
@@ -2275,7 +2304,7 @@ async fn deliver_sub_agent_result_impl(
             finished.agent_id
         ),
     }
-    send_or_queue_user_message_impl(ctx, session_id, &finished.message(), &[]).await?;
+    send_or_queue_notification_impl(ctx, session_id, &finished.message()).await?;
     Ok(true)
 }
 
@@ -2600,6 +2629,20 @@ mod sub_agent_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The background notifications waiting for `session_id`'s next step,
+    /// as the transcript would show them.
+    pub(super) async fn queued_notifications(
+        manager: &Arc<Mutex<SessionManager>>,
+        session_id: &str,
+    ) -> Option<String> {
+        let manager = manager.lock().await;
+        let instance = manager.get_session(session_id).unwrap();
+        let pending = instance.pending_notifications.lock().unwrap();
+        pending
+            .as_deref()
+            .map(crate::utils::content::text_summary_from_blocks)
+    }
     use crate::mocks::{MockLLMProvider, PendingLLMProvider, create_test_response_text};
     use crate::persistence::FileSessionPersistence;
     use crate::session::SessionConfig;
@@ -3105,10 +3148,47 @@ mod tests {
             .await
             .unwrap();
 
-        let pending = service.take_pending_message(id).await.unwrap();
         assert_eq!(
-            pending.as_deref(),
+            queued_notifications(&manager, &id).await.as_deref(),
             Some(wakeup_message(1, "check").as_str())
+        );
+        assert_eq!(service.take_pending_message(id).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn notifications_stay_apart_from_the_users_pending_message() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (service, manager) = test_service_with_manager(tmp.path());
+        let id = service.create_session(None, None).await.unwrap();
+        manager
+            .lock()
+            .await
+            .get_session_mut(&id)
+            .unwrap()
+            .set_activity_state(crate::session::instance::SessionActivityState::AgentRunning);
+
+        service
+            .queue_user_message(id.clone(), "One more thing".into(), vec![])
+            .await
+            .unwrap();
+        let job = crate::session::monitor::job_exited_message(7, "make", Some(0));
+        service
+            .inject_notification(id.clone(), job.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            queued_notifications(&manager, &id).await.as_deref(),
+            Some(job.as_str())
+        );
+        // Editing the pending message takes only what the user typed.
+        assert_eq!(
+            service.take_pending_message(id.clone()).await.unwrap(),
+            Some("One more thing".to_string())
+        );
+        assert_eq!(
+            queued_notifications(&manager, &id).await.as_deref(),
+            Some(job.as_str())
         );
     }
 
@@ -3139,11 +3219,12 @@ mod tests {
             .await
             .unwrap();
 
-        let pending = service.take_pending_message(id).await.unwrap().unwrap();
+        let pending = queued_notifications(&manager, &id).await.unwrap();
         assert!(
             pending.contains(&first) && pending.contains(&second),
             "{pending}"
         );
+        assert_eq!(service.take_pending_message(id).await.unwrap(), None);
         let parsed = crate::session::monitor::parse_notification_messages(&pending).unwrap();
         assert_eq!(parsed.len(), 2);
     }

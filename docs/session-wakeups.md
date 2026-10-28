@@ -84,9 +84,10 @@ On fire, the scheduler goes through the `SessionService` command bus:
    the transcript can tell it from a human message.
 3. If the session is idle: `add_user_message` + `start_agent_for_session`
    (the `send_user_message_impl` path).
-4. If a turn is running: write into the `pending_message` slot
-   (`queue_structured_user_message` path) — the running turn picks it up at
-   its next iteration; no second task is spawned.
+4. If a turn is running: queue it in `pending_notifications`
+   (`SessionManager::queue_notification`) — the running turn picks it up at
+   its next iteration as a message of its own, ahead of whatever the user
+   queued in `pending_message`; no second task is spawned.
 5. If the session no longer exists: drop silently.
 
 The turn then ends naturally (`LoopFlow::GetUserInput` → task returns →

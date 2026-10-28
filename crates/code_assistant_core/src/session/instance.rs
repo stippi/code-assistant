@@ -296,6 +296,12 @@ pub struct SessionInstance {
     /// Pending user message (structured content blocks) that will be processed by the next agent iteration
     pub pending_message: Arc<Mutex<Option<Vec<ContentBlock>>>>,
 
+    /// Background notifications (finished sub-agents, monitor events,
+    /// wakeups) queued for the next agent iteration. Kept apart from
+    /// [`Self::pending_message`]: they reach the model as a message of their
+    /// own and never show up in, or get edited with, what the user queued.
+    pub pending_notifications: Arc<Mutex<Option<Vec<ContentBlock>>>>,
+
     /// Tracks sandbox-approved roots for this session
     pub sandbox_context: Arc<SandboxContext>,
 
@@ -404,6 +410,7 @@ impl SessionInstance {
             activity: SessionActivity::default(),
             stop_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             pending_message: Arc::new(Mutex::new(None)),
+            pending_notifications: Arc::new(Mutex::new(None)),
             sandbox_context,
             permissions: tools_core::ToolPermissions::default(),
             pending_permission_requests: Arc::new(

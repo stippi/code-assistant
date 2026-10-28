@@ -1,7 +1,7 @@
 //! Background sub-agents end to end: the parent's turn ends while the child
 //! runs, and the child's result comes back into the session as a message.
 
-use super::tests::test_service_with_manager;
+use super::tests::{queued_notifications, test_service_with_manager};
 use super::*;
 use crate::agent::sub_agent::{
     FinishedOutcome, FinishedSubAgent, SubAgentActivity, SubAgentOutput,
@@ -278,9 +278,10 @@ async fn background_results_queue_while_the_agent_runs() {
     }
 
     // Both wait for the running agent's next step, in one message.
-    let pending = service.take_pending_message(id).await.unwrap().unwrap();
+    let pending = queued_notifications(&manager, &id).await.unwrap();
     assert!(pending.contains("[sub-agent #1] finished:"));
     assert!(pending.contains("[sub-agent #2] finished:"));
+    assert_eq!(service.take_pending_message(id).await.unwrap(), None);
 }
 
 #[tokio::test]
