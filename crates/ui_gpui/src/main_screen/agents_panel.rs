@@ -162,23 +162,25 @@ fn sub_agent_row(
                 .text_color(foreground)
                 .child(agent.title.clone()),
         )
-        .when(agent.background, |row| {
-            row.child(
-                div()
-                    .flex_none()
-                    .px_1p5()
-                    .rounded(px(4.))
-                    .border_1()
-                    .border_color(muted.opacity(0.4))
-                    .text_size(rems(0.6875))
-                    .text_color(muted)
-                    .child("background"),
-            )
-        })
+        // The columns right of the title keep their width, so they line up
+        // from row to row and do not move while the elapsed time ticks: a
+        // missing badge or button leaves its space empty.
         .child(
             div()
                 .flex_none()
-                .max_w(px(220.))
+                .px_1p5()
+                .rounded(px(4.))
+                .border_1()
+                .border_color(muted.opacity(0.4))
+                .text_size(rems(0.6875))
+                .text_color(muted)
+                .when(!agent.background, |badge| badge.invisible())
+                .child("background"),
+        )
+        .child(
+            div()
+                .flex_none()
+                .w(px(160.))
                 .overflow_hidden()
                 .text_ellipsis()
                 .whitespace_nowrap()
@@ -189,35 +191,39 @@ fn sub_agent_row(
         .child(
             div()
                 .flex_none()
+                .w(rems(3.5))
+                .text_right()
                 .text_size(rems(0.75))
                 .text_color(muted)
                 .child(elapsed_text(agent.started_at)),
         )
-        .when_some(agent.session_id.clone(), |row, session_id| {
-            row.child(
-                div()
-                    .id(SharedString::from(format!(
-                        "open-running-{}",
-                        agent.tool_id
-                    )))
-                    .debug_selector(|| "open-running-sub-agent".into())
-                    .flex_none()
-                    .px_2()
-                    .py(px(1.))
-                    .rounded(px(4.))
-                    .text_size(rems(0.6875))
-                    .text_color(muted)
-                    .cursor_pointer()
-                    .hover(|s| s.bg(foreground.opacity(0.1)).text_color(foreground))
-                    .on_click(cx.listener(move |_view, _event: &ClickEvent, _window, cx| {
-                        cx.stop_propagation();
-                        if let Some(gpui) = cx.try_global::<crate::Gpui>() {
-                            gpui.cmd_load_session(session_id.clone(), None);
-                        }
-                    }))
-                    .child("Open"),
-            )
-        })
+        .child(
+            div()
+                .id(SharedString::from(format!(
+                    "open-running-{}",
+                    agent.tool_id
+                )))
+                .flex_none()
+                .px_2()
+                .py(px(1.))
+                .rounded(px(4.))
+                .text_size(rems(0.6875))
+                .text_color(muted)
+                .map(|button| match agent.session_id.clone() {
+                    Some(session_id) => button
+                        .debug_selector(|| "open-running-sub-agent".into())
+                        .cursor_pointer()
+                        .hover(|s| s.bg(foreground.opacity(0.1)).text_color(foreground))
+                        .on_click(cx.listener(move |_view, _event: &ClickEvent, _window, cx| {
+                            cx.stop_propagation();
+                            if let Some(gpui) = cx.try_global::<crate::Gpui>() {
+                                gpui.cmd_load_session(session_id.clone(), None);
+                            }
+                        })),
+                    None => button.invisible(),
+                })
+                .child("Open"),
+        )
         .child(
             div()
                 .id(SharedString::from(format!(
