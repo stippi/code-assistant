@@ -971,7 +971,8 @@ impl SessionService {
                 debug!("Notification for unknown session {session_id} dropped");
                 return Ok(());
             }
-            send_or_queue_notification_impl(&ctx, &session_id, &message).await
+            send_or_queue_notification_impl(&ctx, &session_id, &message).await?;
+            Ok(())
         })
         .await
     }
@@ -2128,22 +2129,24 @@ async fn send_or_queue_user_message_impl(
 /// Like [`send_or_queue_user_message_impl`] for a background notification
 /// (wakeup, monitor event, finished sub-agent): an idle session gets it as
 /// the message starting a turn; a running agent finds it in its own queue,
-/// so it never mixes with what the user queued.
+/// so it never mixes with what the user queued. Returns whether it was
+/// queued.
 async fn send_or_queue_notification_impl(
     ctx: &ServiceCtx,
     session_id: &str,
     message: &str,
-) -> Result<()> {
+) -> Result<bool> {
     let queued = {
         let mut manager = ctx.manager.lock().await;
         manager.ensure_session_loaded(session_id)?;
         manager.queue_notification_while_running(session_id, message)?
     };
     if queued {
-        return Ok(());
+        return Ok(true);
     }
 
-    send_user_message_impl(ctx, session_id, message, &[], None, RunOptions::default()).await
+    send_user_message_impl(ctx, session_id, message, &[], None, RunOptions::default()).await?;
+    Ok(false)
 }
 
 async fn try_send_user_message_if_idle_impl(
@@ -2253,7 +2256,8 @@ async fn inject_wakeup_impl(
         // The wakeup is still delivered.
         Err(e) => warn!("Failed to record that wakeup {wakeup_id} fired: {e}"),
     }
-    send_or_queue_notification_impl(ctx, session_id, message).await
+    send_or_queue_notification_impl(ctx, session_id, message).await?;
+    Ok(())
 }
 
 /// Sub-agent transcripts are written by their sub-agent only.
@@ -2314,7 +2318,25 @@ async fn deliver_sub_agent_result_impl(
             finished.agent_id
         ),
     }
-    send_or_queue_notification_impl(ctx, session_id, &finished.message()).await?;
+    let queued = send_or_queue_notification_impl(ctx, session_id, &finished.message()).await?;
+    // Started a turn: the result is in the history, its agent is done. A
+    // queued one leaves the list when the running agent takes it.
+    if !queued {
+        let manager = ctx.manager.lock().await;
+        if let Some(instance) = manager.get_session(session_id)
+            && instance
+                .running_sub_agents
+                .remove_delivered(&[finished.agent_id])
+        {
+            ctx.notify_session(
+                session_id,
+                UiEvent::UpdateRunningSubAgents {
+                    session_id: session_id.to_string(),
+                    agents: instance.running_sub_agents.list(),
+                },
+            );
+        }
+    }
     Ok(true)
 }
 

@@ -39,7 +39,15 @@ impl Render for AgentsPanel {
             self.refresh = None;
             return div().into_any_element();
         }
-        if self.refresh.is_none() {
+        let queued = agents
+            .iter()
+            .filter(|agent| agent.result_queued_at.is_some())
+            .count();
+        let running = agents.len() - queued;
+        // Spinners and elapsed times move only while an agent runs.
+        if running == 0 {
+            self.refresh = None;
+        } else if self.refresh.is_none() {
             let next_frame = Duration::from_millis(
                 (WAKEUP_SPINNER_FRAME_MS - wall_clock_millis() % WAKEUP_SPINNER_FRAME_MS) as u64,
             );
@@ -54,10 +62,22 @@ impl Render for AgentsPanel {
         let theme = cx.theme();
         let (muted, border) = (theme.muted_foreground, theme.border);
         let frame = (wall_clock_millis() / WAKEUP_SPINNER_FRAME_MS) as usize % BRAILLE_FRAMES.len();
-        let header = match agents.len() {
-            1 => "1 sub-agent running".to_string(),
-            n => format!("{n} sub-agents running"),
-        };
+        let header = [
+            match running {
+                0 => None,
+                1 => Some("1 sub-agent running".to_string()),
+                n => Some(format!("{n} sub-agents running")),
+            },
+            match queued {
+                0 => None,
+                1 => Some("1 result queued".to_string()),
+                n => Some(format!("{n} results queued")),
+            },
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" · ");
 
         let mut list = div().flex().flex_col().py_1().child(
             div()
@@ -99,9 +119,13 @@ fn sub_agent_activity_text(
     }
 }
 
-/// `42s`, `3m 05s`, `1h 02m`.
-fn elapsed_text(started_at: chrono::DateTime<chrono::Utc>) -> String {
-    let seconds = (chrono::Utc::now() - started_at).num_seconds().max(0);
+/// `42s`, `3m 05s`, `1h 02m`: until now, or until it `ended`.
+fn elapsed_text(
+    started_at: chrono::DateTime<chrono::Utc>,
+    ended: Option<chrono::DateTime<chrono::Utc>>,
+) -> String {
+    let end = ended.unwrap_or_else(chrono::Utc::now);
+    let seconds = (end - started_at).num_seconds().max(0);
     match seconds {
         s if s < 60 => format!("{s}s"),
         s if s < 3600 => format!("{}m {:02}s", s / 60, s % 60),
@@ -110,7 +134,8 @@ fn elapsed_text(started_at: chrono::DateTime<chrono::Utc>) -> String {
 }
 
 /// One running sub-agent: what it is doing, for how long, and buttons to
-/// open its transcript or cancel it.
+/// open its transcript or cancel it. A finished background agent whose
+/// result waits for the session shows that instead, and its time stops.
 fn sub_agent_row(
     agent: code_assistant_core::agent::sub_agent::RunningSubAgentInfo,
     frame: usize,
@@ -122,7 +147,9 @@ fn sub_agent_row(
     let muted = theme.muted_foreground;
     let foreground = theme.foreground;
     let danger = theme.danger;
+    let primary = theme.primary;
     let tool_id = agent.tool_id.clone();
+    let queued = agent.result_queued_at.is_some();
     div()
         .id(SharedString::from(format!(
             "running-sub-agent-{}",
@@ -142,7 +169,7 @@ fn sub_agent_row(
                 .justify_center()
                 .text_size(rems(0.875))
                 .text_color(muted)
-                .child(BRAILLE_FRAMES[frame]),
+                .child(if queued { "✓" } else { BRAILLE_FRAMES[frame] }),
         )
         .child(
             div()
@@ -186,7 +213,27 @@ fn sub_agent_row(
                 .whitespace_nowrap()
                 .text_size(rems(0.75))
                 .text_color(muted)
-                .child(sub_agent_activity_text(&agent)),
+                .map(|column| {
+                    if queued {
+                        column.child(
+                            div()
+                                .debug_selector(|| "sub-agent-result-queued".into())
+                                .w_full()
+                                .flex()
+                                .child(
+                                    div()
+                                        .px_1p5()
+                                        .rounded(px(4.))
+                                        .bg(primary.opacity(0.12))
+                                        .text_size(rems(0.6875))
+                                        .text_color(primary)
+                                        .child("Result queued"),
+                                ),
+                        )
+                    } else {
+                        column.child(sub_agent_activity_text(&agent))
+                    }
+                }),
         )
         .child(
             div()
@@ -195,7 +242,7 @@ fn sub_agent_row(
                 .text_right()
                 .text_size(rems(0.75))
                 .text_color(muted)
-                .child(elapsed_text(agent.started_at)),
+                .child(elapsed_text(agent.started_at, agent.result_queued_at)),
         )
         .child(
             div()
@@ -236,14 +283,22 @@ fn sub_agent_row(
                 .rounded(px(4.))
                 .text_size(rems(0.6875))
                 .text_color(muted)
-                .cursor_pointer()
-                .hover(|s| s.bg(danger.opacity(0.15)).text_color(danger))
-                .on_click(cx.listener(move |_view, _event: &ClickEvent, _window, cx| {
-                    cx.stop_propagation();
-                    if let Some(gpui) = cx.try_global::<crate::Gpui>() {
-                        gpui.cmd_cancel_sub_agent(tool_id.clone());
+                .map(|button| {
+                    if queued {
+                        // It finished: nothing left to cancel.
+                        return button.invisible();
                     }
-                }))
+                    button
+                        .debug_selector(|| "cancel-running-sub-agent".into())
+                        .cursor_pointer()
+                        .hover(|s| s.bg(danger.opacity(0.15)).text_color(danger))
+                        .on_click(cx.listener(move |_view, _event: &ClickEvent, _window, cx| {
+                            cx.stop_propagation();
+                            if let Some(gpui) = cx.try_global::<crate::Gpui>() {
+                                gpui.cmd_cancel_sub_agent(tool_id.clone());
+                            }
+                        }))
+                })
                 .child("Cancel"),
         )
 }

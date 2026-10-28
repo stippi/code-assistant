@@ -653,6 +653,7 @@ impl SessionInstance {
             session_id: self.session.id.clone(),
             turn_recorder,
             pending_questions: self.pending_questions.clone(),
+            running_sub_agents: self.running_sub_agents.clone(),
         })
     }
 
@@ -1164,6 +1165,8 @@ struct SessionEventPublisher {
     turn_recorder: Option<Arc<crate::session::turn::TurnRecorder>>,
     /// Open `ask_question` requests (see [`SessionInstance::pending_questions`]).
     pending_questions: Arc<crate::session::questions::PendingQuestions>,
+    /// Finished background agents leave it when their result appears.
+    running_sub_agents: Arc<crate::agent::sub_agent::RunningSubAgents>,
 }
 
 impl SessionEventPublisher {
@@ -1270,7 +1273,24 @@ impl UserInterface for SessionEventPublisher {
             _ => {}
         }
 
+        // A queued background result reached the history: its agent is done.
+        let delivered = match &event {
+            UiEvent::DisplayUserInput { content, .. } => {
+                let ids = crate::agent::sub_agent::delivered_sub_agent_ids(content);
+                self.running_sub_agents.remove_delivered(&ids)
+            }
+            _ => false,
+        };
         self.events.publish_ui(&self.session_id, event);
+        if delivered {
+            self.events.publish_ui(
+                &self.session_id,
+                UiEvent::UpdateRunningSubAgents {
+                    session_id: self.session_id.clone(),
+                    agents: self.running_sub_agents.list(),
+                },
+            );
+        }
         Ok(())
     }
 
@@ -1597,6 +1617,7 @@ mod tests {
             session_id: session_id.to_string(),
             turn_recorder: None,
             pending_questions: Arc::default(),
+            running_sub_agents: Arc::default(),
         }
     }
 

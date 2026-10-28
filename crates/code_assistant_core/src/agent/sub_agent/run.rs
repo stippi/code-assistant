@@ -67,7 +67,10 @@ impl SubAgentRunner for DefaultSubAgentRunner {
                     Some(listing),
                 )
                 .await;
-            runner.unlist(&tool_id, background.ui.as_ref()).await;
+            // Listed until the session takes the result.
+            runner
+                .mark_result_queued(&tool_id, background.ui.as_ref())
+                .await;
             let (outcome, ui_output) = match result {
                 Ok(result) => (
                     FinishedOutcome::Completed {
@@ -142,6 +145,21 @@ impl DefaultSubAgentRunner {
                 agents: running.list(),
             })
             .await;
+    }
+
+    /// Keep a finished background agent listed, its result queued.
+    async fn mark_result_queued(&self, tool_id: &str, ui: &dyn UserInterface) {
+        let Some((session_id, running)) = &self.running else {
+            return;
+        };
+        if running.mark_result_queued(tool_id) {
+            let _ = ui
+                .send_event(UiEvent::UpdateRunningSubAgents {
+                    session_id: session_id.clone(),
+                    agents: running.list(),
+                })
+                .await;
+        }
     }
 
     #[allow(clippy::too_many_arguments)]

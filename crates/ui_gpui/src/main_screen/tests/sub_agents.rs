@@ -22,6 +22,7 @@ fn running(id: u64, tool_id: &str, background: bool) -> RunningSubAgentInfo {
         tool_count: 0,
         current_tool: None,
         session_id: None,
+        result_queued_at: None,
     }
 }
 
@@ -66,6 +67,25 @@ fn running_sub_agents_of_the_viewed_session_show_above_the_input(cx: &mut TestAp
     assert_eq!(shown(&mut test), vec![2]);
     update(&mut test, "viewed", Vec::new());
     assert!(shown(&mut test).is_empty());
+}
+
+#[gpui_kit::test]
+fn a_finished_background_agent_waits_with_its_result_queued(cx: &mut TestAppContext) {
+    let mut test = MainScreenTest::new(cx);
+    test.view_session("viewed");
+
+    update(&mut test, "viewed", vec![running(1, "t1", true)]);
+    assert!(test.shows("cancel-running-sub-agent"));
+    assert!(!test.shows("sub-agent-result-queued"));
+
+    // Finished, its result not yet taken by the session: still listed,
+    // marked as queued, nothing left to cancel.
+    let mut finished = running(1, "t1", true);
+    finished.result_queued_at = Some(chrono::Utc::now());
+    update(&mut test, "viewed", vec![finished]);
+    assert_eq!(shown(&mut test), vec![1]);
+    assert!(test.shows("sub-agent-result-queued"));
+    assert!(!test.shows("cancel-running-sub-agent"));
 }
 
 #[gpui_kit::test]

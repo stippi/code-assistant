@@ -239,6 +239,18 @@ pub fn parse_sub_agent_message(message: &str) -> Option<ParsedSubAgentMessage<'_
     })
 }
 
+/// The agents whose results `message` delivers, wherever they are among
+/// other notifications (each result starts the message or follows a blank
+/// line).
+pub fn delivered_sub_agent_ids(message: &str) -> Vec<u64> {
+    let separator = format!("\n\n{SUB_AGENT_FRAME} #");
+    std::iter::once(0)
+        .chain(message.match_indices(&separator).map(|(i, _)| i + 2))
+        .filter_map(|start| parse_sub_agent_message(&message[start..]))
+        .map(|parsed| parsed.agent_id)
+        .collect()
+}
+
 /// Parse a message holding one or more delivered results, as queued results
 /// arrive together (frontends may join their blocks with blank lines);
 /// `None` unless all of it is results.

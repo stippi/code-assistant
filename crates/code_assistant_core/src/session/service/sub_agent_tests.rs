@@ -333,6 +333,123 @@ async fn background_result_waits_until_its_call_is_stored() {
     );
 }
 
+/// Serves `steps` in order, each after its gate (if any) was notified.
+#[derive(Clone)]
+struct ScriptedProvider {
+    steps: Arc<std::sync::Mutex<std::collections::VecDeque<Step>>>,
+}
+
+type Step = (Option<Arc<tokio::sync::Notify>>, LLMResponse);
+
+#[async_trait::async_trait]
+impl LLMProvider for ScriptedProvider {
+    async fn send_message(
+        &mut self,
+        _request: LLMRequest,
+        _streaming_callback: Option<&StreamingCallback>,
+    ) -> Result<LLMResponse> {
+        let (gate, response) = self
+            .steps
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("no scripted response left");
+        if let Some(gate) = gate {
+            gate.notified().await;
+        }
+        Ok(response)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_queued_result_stays_listed_until_the_parent_takes_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let parent_gate = Arc::new(tokio::sync::Notify::new());
+    let child_gate = Arc::new(tokio::sync::Notify::new());
+    let parent = ScriptedProvider {
+        steps: Arc::new(std::sync::Mutex::new(
+            vec![
+                (
+                    None,
+                    create_test_response(
+                        "spawn-1",
+                        "spawn_agent",
+                        serde_json::json!({
+                            "instructions": "Find the parser",
+                            "background": true,
+                        }),
+                        "Let me look in the background.",
+                    ),
+                ),
+                // The parent is still busy when the result arrives.
+                (
+                    Some(parent_gate.clone()),
+                    create_test_response_text("Still thinking."),
+                ),
+                (None, create_test_response_text("Got it")),
+            ]
+            .into(),
+        )),
+    };
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let child_release = child_gate.clone();
+    let factory: LlmClientFactory = Arc::new(move |_| {
+        let provider: Box<dyn LLMProvider> =
+            match calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                0 => Box::new(parent.clone()),
+                _ => Box::new(GatedProvider {
+                    release: child_release.clone(),
+                    answer: "The parser lives in parser.rs.",
+                }),
+            };
+        Ok(provider)
+    });
+    let (service, manager) = super::tests::test_service_with_llm(tmp.path(), factory);
+    manager
+        .lock()
+        .await
+        .set_sub_agent_sink(Arc::new(service.clone()));
+    let id = service.create_session(None, None).await.unwrap();
+    service
+        .send_user_message(id.clone(), "Where is the parser?".into(), vec![], None)
+        .await
+        .unwrap();
+    wait_for(async || {
+        let snapshot = service.load_session(id.clone(), None).await.unwrap();
+        (!snapshot.running_sub_agents.is_empty()).then_some(())
+    })
+    .await;
+
+    // The sub-agent finishes while the parent runs: its result waits, and
+    // the agent stays listed with it.
+    child_gate.notify_one();
+    let snapshot = wait_for(async || {
+        let snapshot = service.load_session(id.clone(), None).await.unwrap();
+        snapshot
+            .running_sub_agents
+            .first()
+            .is_some_and(|agent| agent.result_queued_at.is_some())
+            .then_some(snapshot)
+    })
+    .await;
+    assert!(!snapshot.activity_state.is_terminal());
+    assert_eq!(snapshot.running_sub_agents.len(), 1);
+
+    // The parent's next step takes the result, and the agent leaves the list.
+    parent_gate.notify_one();
+    wait_for(async || {
+        let snapshot = service.load_session(id.clone(), None).await.unwrap();
+        let delivered = snapshot.messages.iter().any(|m| {
+            m.role == crate::ui::ui_events::MessageRole::User
+                && text_of(m).starts_with("[sub-agent #1] finished:")
+        });
+        (delivered && snapshot.activity_state.is_terminal()).then_some(snapshot)
+    })
+    .await;
+    let snapshot = service.load_session(id.clone(), None).await.unwrap();
+    assert!(snapshot.running_sub_agents.is_empty());
+}
+
 #[test]
 fn a_background_agent_of_an_earlier_process_shows_as_lost() {
     use crate::tools::core::{Render, ResourcesTracker};

@@ -1,6 +1,7 @@
 //! The sub-agents currently running in a session, foreground and background,
 //! as frontends list them. Lives on the session instance, so background
-//! agents stay listed after the turn that started them ended.
+//! agents stay listed after the turn that started them ended — and after
+//! they finished, until the session's history takes their result.
 
 use super::{SubAgentActivity, SubAgentOutput, SubAgentToolStatus};
 use crate::ui::ui_events::ToolResultData;
@@ -27,6 +28,10 @@ pub struct RunningSubAgentInfo {
     /// The session holding its transcript, once there is one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// When a background agent finished; its result waits for the session
+    /// to take it (it is listed until then).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_queued_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 struct Entry {
@@ -72,6 +77,7 @@ impl RunningSubAgents {
                 tool_count: 0,
                 current_tool: None,
                 session_id: None,
+                result_queued_at: None,
             },
             live_result: None,
         });
@@ -110,6 +116,27 @@ impl RunningSubAgents {
         {
             entry.live_result = Some(result);
         }
+    }
+
+    /// A background agent finished: keep it listed with its result queued.
+    /// Returns whether it was listed.
+    pub fn mark_result_queued(&self, tool_id: &str) -> bool {
+        let mut entries = self.entries.lock().unwrap();
+        let Some(entry) = entries.iter_mut().find(|e| e.info.tool_id == tool_id) else {
+            return false;
+        };
+        entry.info.result_queued_at = Some(chrono::Utc::now());
+        entry.info.current_tool = None;
+        true
+    }
+
+    /// The session took the results of `agent_ids`: remove those of them
+    /// whose result was queued. Returns whether the list changed.
+    pub fn remove_delivered(&self, agent_ids: &[u64]) -> bool {
+        let mut entries = self.entries.lock().unwrap();
+        let before = entries.len();
+        entries.retain(|e| !(e.info.result_queued_at.is_some() && agent_ids.contains(&e.info.id)));
+        entries.len() != before
     }
 
     /// Remove a sub-agent that ended.
@@ -207,6 +234,24 @@ mod tests {
         assert_eq!(info.current_tool.as_deref(), Some("Reading main.rs"));
         assert!(!running.update("t1", &output));
         assert!(!running.update("unknown", &output));
+    }
+
+    #[test]
+    fn a_queued_result_stays_listed_until_it_is_delivered() {
+        let running = RunningSubAgents::default();
+        running.register("t1", "Find the parser", true);
+        running.register("t2", "Find the lexer", true);
+        assert!(running.mark_result_queued("t1"));
+        assert!(!running.mark_result_queued("unknown"));
+        let listed = running.list();
+        assert!(listed[0].result_queued_at.is_some());
+        assert!(listed[1].result_queued_at.is_none());
+
+        // Only queued results are taken off when their message arrives.
+        assert!(!running.remove_delivered(&[2]));
+        assert!(running.remove_delivered(&[1, 2]));
+        let ids: Vec<u64> = running.list().iter().map(|a| a.id).collect();
+        assert_eq!(ids, vec![2]);
     }
 
     #[test]
