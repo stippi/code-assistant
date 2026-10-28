@@ -9,10 +9,11 @@
 use super::InputArea;
 use crate::shared::context_breakdown::ContextBreakdown;
 use crate::shared::context_indicator::ContextIndicator;
+use crate::shared::dismiss::dismiss_layer;
 use gpui_kit::component::{ActiveTheme, Icon, ThemeStyled};
 use gpui_kit::{
-    Anchor, AnyElement, Context, Edges, Pixels, SharedString, anchored, canvas, deferred, div,
-    prelude::*, px,
+    Anchor, AnyElement, Context, Edges, Pixels, SharedString, Window, anchored, canvas, deferred,
+    div, prelude::*, px,
 };
 
 /// Room kept for the model selector before the other selectors collapse.
@@ -23,7 +24,11 @@ const SELECTOR_ROW_CHROME_WIDTH: Pixels = px(48.);
 pub(super) const DEFAULT_SECONDARY_SELECTORS_WIDTH: Pixels = px(560.);
 
 impl InputArea {
-    pub(super) fn render_selector_row(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_selector_row(
+        &mut self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let collapsed = self.selectors_collapsed;
 
         // Measures the space the row gets (independent of its content, which
@@ -72,7 +77,7 @@ impl InputArea {
             )
             .map(|row| {
                 if collapsed {
-                    row.child(self.render_selectors_menu(cx))
+                    row.child(self.render_selectors_menu(window, cx))
                 } else {
                     row.child(self.render_inline_secondary_selectors())
                 }
@@ -128,7 +133,7 @@ impl InputArea {
             .children(self.secondary_selectors())
     }
 
-    fn render_selectors_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_selectors_menu(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let is_open = self.selectors_menu_open;
         div()
             .flex_none()
@@ -136,6 +141,8 @@ impl InputArea {
             .child(
                 div()
                     .id("selectors-menu-btn")
+                    .debug_selector(|| "selectors-menu-btn".into())
+                    .relative()
                     .size(px(22.))
                     .flex()
                     .items_center()
@@ -144,6 +151,7 @@ impl InputArea {
                     .cursor_pointer()
                     .when(is_open, |el| el.bg(cx.theme().muted))
                     .hover(|s| s.bg(cx.theme().muted.opacity(0.5)))
+                    .child(self.selectors_menu_trigger.probe())
                     .child(
                         Icon::default()
                             .path(SharedString::from("icons/ellipsis.svg"))
@@ -156,16 +164,25 @@ impl InputArea {
                     })),
             )
             .when(is_open, |el| {
-                // No outside-click dismissal: the selectors' own dropdowns
-                // paint outside this panel, and a click in them would close
-                // it before the choice lands. Picking a value closes it.
-                el.child(deferred(
+                // The selectors' own dropdowns paint outside this panel but
+                // occlude the dismiss layer, so a choice in them lands (and
+                // then closes the panel, see the selector event handlers).
+                el.child(dismiss_layer(
+                    &self.selectors_menu_trigger,
+                    window,
+                    cx.listener(|this, _, _, cx| {
+                        this.selectors_menu_open = false;
+                        cx.notify();
+                    }),
+                ))
+                .child(deferred(
                     anchored()
                         .anchor(Anchor::BottomRight)
                         .snap_to_window_with_margin(Edges::all(px(8.)))
                         .child(
                             div()
                                 .id("selectors-menu")
+                                .debug_selector(|| "selectors-menu".into())
                                 .occlude()
                                 .popover_style(cx)
                                 .shadow_md()

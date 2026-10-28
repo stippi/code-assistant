@@ -7,11 +7,13 @@
 //! reveals its place in the right panel or removes the comment.
 
 use super::{InputArea, InputAreaEvent};
+use crate::shared::dismiss::dismiss_layer;
 use code_assistant_core::line_comments::LineComment;
 use code_assistant_core::persistence::DraftAttachment;
 use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size, ThemeStyled};
 use gpui_kit::{
-    Anchor, AnyElement, Context, Edges, SharedString, anchored, deferred, div, prelude::*, px,
+    Anchor, AnyElement, Context, Edges, SharedString, Window, anchored, deferred, div, prelude::*,
+    px,
 };
 use std::collections::BTreeSet;
 
@@ -117,7 +119,11 @@ impl InputArea {
         }
     }
 
-    pub(super) fn render_comments_chip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(super) fn render_comments_chip(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let comments = self.comments();
         if comments.is_empty() {
             return None;
@@ -130,6 +136,8 @@ impl InputArea {
                 .child(
                     div()
                         .id("comments-chip")
+                        .debug_selector(|| "comments-chip".into())
+                        .relative()
                         .flex()
                         .items_center()
                         .gap_1p5()
@@ -143,6 +151,7 @@ impl InputArea {
                         .bg(theme.popover)
                         .cursor_pointer()
                         .hover(|s| s.bg(theme.muted))
+                        .child(self.comments_chip_trigger.probe())
                         .child(
                             Icon::default()
                                 .path(SharedString::from("icons/message_bubbles.svg"))
@@ -185,10 +194,17 @@ impl InputArea {
                             cx.notify();
                         })),
                 )
-                .children(
-                    self.comments_popover_open
-                        .then(|| self.render_comments_popover(cx)),
-                )
+                .when(self.comments_popover_open, |el| {
+                    el.child(dismiss_layer(
+                        &self.comments_chip_trigger,
+                        window,
+                        cx.listener(|this, _, _, cx| {
+                            this.comments_popover_open = false;
+                            cx.notify();
+                        }),
+                    ))
+                    .child(self.render_comments_popover(cx))
+                })
                 .into_any_element(),
         )
     }
@@ -285,6 +301,7 @@ impl InputArea {
                 .child(
                     div()
                         .id("comments-popover")
+                        .debug_selector(|| "comments-popover".into())
                         .occlude()
                         .popover_style(cx)
                         .shadow_md()
@@ -296,10 +313,6 @@ impl InputArea {
                         .flex()
                         .flex_col()
                         .gap_0p5()
-                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                            this.comments_popover_open = false;
-                            cx.notify();
-                        }))
                         .children(items),
                 ),
         )

@@ -2,6 +2,7 @@ pub mod assets;
 pub mod auto_scroll;
 pub mod context_breakdown;
 pub mod context_indicator;
+pub mod dismiss;
 pub mod file_icons;
 pub mod frame_profile;
 pub mod image;
