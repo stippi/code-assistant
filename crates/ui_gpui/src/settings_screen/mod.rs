@@ -6,6 +6,7 @@ mod models_section;
 pub(crate) mod provider_forms;
 pub(crate) mod provider_suggestions;
 mod providers_section;
+mod renderers_section;
 mod skills_section;
 mod tools_section;
 mod voice_section;
@@ -26,6 +27,7 @@ pub enum SettingsSection {
     Skills,
     Tools,
     McpServers,
+    FileRenderers,
     Voice,
 }
 
@@ -48,6 +50,7 @@ pub struct SettingsScreen {
     skills_section: Entity<skills_section::SkillsSection>,
     tools_section: Entity<tools_section::ToolsSection>,
     mcp_section: Entity<mcp_section::McpSection>,
+    renderers_section: Entity<renderers_section::RenderersSection>,
     voice_section: Entity<voice_section::VoiceSection>,
 }
 
@@ -60,6 +63,7 @@ impl SettingsScreen {
         let skills_section = cx.new(|cx| skills_section::SkillsSection::new(window, cx));
         let tools_section = cx.new(|cx| tools_section::ToolsSection::new(window, cx));
         let mcp_section = cx.new(|cx| mcp_section::McpSection::new(window, cx));
+        let renderers_section = cx.new(|cx| renderers_section::RenderersSection::new(window, cx));
         let voice_section = cx.new(|cx| voice_section::VoiceSection::new(window, cx));
 
         Self {
@@ -71,6 +75,7 @@ impl SettingsScreen {
             skills_section,
             tools_section,
             mcp_section,
+            renderers_section,
             voice_section,
         }
     }
@@ -116,6 +121,9 @@ impl SettingsScreen {
             }
             SettingsSection::McpServers => {
                 self.mcp_section.update(cx, |s, _cx| s.reload());
+            }
+            SettingsSection::FileRenderers => {
+                self.renderers_section.update(cx, |s, _cx| s.reload());
             }
             SettingsSection::Voice => {
                 self.voice_section.update(cx, |s, _cx| s.reload());
@@ -309,6 +317,12 @@ impl Render for SettingsScreen {
                                         cx,
                                     ))
                                     .child(self.render_nav_item(
+                                        SettingsSection::FileRenderers,
+                                        "File Renderers",
+                                        "icons/file_generic.svg",
+                                        cx,
+                                    ))
+                                    .child(self.render_nav_item(
                                         SettingsSection::Voice,
                                         "Voice",
                                         "icons/mic.svg",
@@ -335,6 +349,9 @@ impl Render for SettingsScreen {
                             SettingsSection::Tools => self.tools_section.clone().into_any_element(),
                             SettingsSection::McpServers => {
                                 self.mcp_section.clone().into_any_element()
+                            }
+                            SettingsSection::FileRenderers => {
+                                self.renderers_section.clone().into_any_element()
                             }
                             SettingsSection::Voice => self.voice_section.clone().into_any_element(),
                         },

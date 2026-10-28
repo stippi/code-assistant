@@ -787,6 +787,11 @@ impl Gpui {
 
             // Store settings as a GPUI global so entities can access/update them
             cx.set_global(UiSettingsGlobal(ui_settings.clone()));
+            // File renderers from the settings, for the Files view
+            shared::custom_renderers::set_current(
+                &shared::custom_renderers::CustomRenderersConfig::load(),
+                cx,
+            );
 
             // Flush pending debounced writes (UI settings + per-session UI
             // state) before the process exits, closing the debounce window.
