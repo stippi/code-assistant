@@ -14,6 +14,7 @@
 //! whatever the state — or, while the server waits for an OAuth login, a
 //! *Log in* button instead.
 
+use crate::shared::dismiss::{TriggerBounds, dismiss_layer};
 use code_assistant_core::ui::ui_events::{BuiltinToolToggle, McpServerHealth, McpServerToggle};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size, switch::Switch};
@@ -44,6 +45,7 @@ pub struct McpSelector {
     statuses: BTreeMap<String, McpServerHealth>,
     builtin_tools: Vec<BuiltinToolToggle>,
     open: bool,
+    trigger_bounds: TriggerBounds,
 }
 
 impl EventEmitter<McpSelectorEvent> for McpSelector {}
@@ -55,6 +57,7 @@ impl McpSelector {
             statuses: BTreeMap::new(),
             builtin_tools: Vec::new(),
             open: false,
+            trigger_bounds: TriggerBounds::default(),
         }
     }
 
@@ -187,7 +190,7 @@ fn toggle_row(label: String, switch: Switch, cx: &App) -> AnyElement {
 }
 
 impl Render for McpSelector {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Nothing to switch → render nothing so the control disappears.
         if self.is_empty() {
             return div().into_any_element();
@@ -200,6 +203,8 @@ impl Render for McpSelector {
 
         let trigger = div()
             .id("mcp-selector-trigger")
+            .debug_selector(|| "mcp-selector-trigger".into())
+            .relative()
             .flex()
             .items_center()
             .justify_between()
@@ -212,6 +217,7 @@ impl Render for McpSelector {
             .text_xs()
             .text_color(cx.theme().muted_foreground)
             .hover(|s| s.bg(cx.theme().muted.opacity(0.5)))
+            .child(self.trigger_bounds.probe())
             .child(
                 div()
                     .flex()
@@ -361,6 +367,7 @@ impl Render for McpSelector {
             // than letting it bleed through, and swallows clicks behind it.
             let panel = deferred(
                 div()
+                    .debug_selector(|| "mcp-selector-panel".into())
                     .occlude()
                     .absolute()
                     .bottom_full()
@@ -378,7 +385,16 @@ impl Render for McpSelector {
                     .gap_0p5()
                     .children(rows),
             );
-            root = root.child(panel);
+            root = root
+                .child(dismiss_layer(
+                    &self.trigger_bounds,
+                    window,
+                    cx.listener(|this, _, _, cx| {
+                        this.open = false;
+                        cx.notify();
+                    }),
+                ))
+                .child(panel);
         }
 
         root.into_any_element()

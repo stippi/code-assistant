@@ -10,6 +10,7 @@ pub mod skill_completion;
 pub mod worktree_selector;
 
 use super::shared::context_breakdown::ContextUsage;
+use super::shared::dismiss::TriggerBounds;
 use super::shared::file_icons;
 use attachment::{AttachmentEvent, AttachmentView};
 use base64::Engine;
@@ -131,12 +132,14 @@ pub struct InputArea {
     attachment_views: Vec<Entity<AttachmentView>>,
     /// The line comments chip shows its list.
     comments_popover_open: bool,
+    comments_chip_trigger: TriggerBounds,
     /// Natural width of the secondary selectors, measured while they are inline.
     secondary_selectors_width: Rc<Cell<Pixels>>,
     /// The secondary selectors don't fit and live behind the "⋯" button.
     selectors_collapsed: bool,
     /// The "⋯" button shows the collapsed selectors.
     selectors_menu_open: bool,
+    selectors_menu_trigger: TriggerBounds,
     focus_handle: FocusHandle,
 
     // Agent state for button rendering
@@ -218,9 +221,11 @@ impl InputArea {
             attachments: Vec::new(),
             attachment_views: Vec::new(),
             comments_popover_open: false,
+            comments_chip_trigger: TriggerBounds::default(),
             secondary_selectors_width: Rc::new(Cell::new(DEFAULT_SECONDARY_SELECTORS_WIDTH)),
             selectors_collapsed: false,
             selectors_menu_open: false,
+            selectors_menu_trigger: TriggerBounds::default(),
             focus_handle: cx.focus_handle(),
 
             agent_is_running: false,
@@ -1120,7 +1125,7 @@ impl InputArea {
             })
             // Attachments area - show image previews when available
             .when(!self.attachments.is_empty(), |parent| {
-                let comments_chip = self.render_comments_chip(cx);
+                let comments_chip = self.render_comments_chip(window, cx);
                 parent.child(
                     div()
                         .p_2()
@@ -1187,7 +1192,7 @@ impl InputArea {
                                             .disabled(read_only),
                                     )
                             })
-                            .child(self.render_selector_row(cx)),
+                            .child(self.render_selector_row(window, cx)),
                     )
                     // Right column: buttons (vertically centered next to text field)
                     .child(
@@ -1316,7 +1321,7 @@ fn edit_banner_text(editing: Option<MessageEdit>) -> &'static str {
 mod tests {
     use super::*;
     use code_assistant_core::session::service::SkillCatalogEntry;
-    use gpui_kit::{TestAppContext, VisualTestContext};
+    use gpui_kit::{Modifiers, TestAppContext, VisualTestContext};
 
     fn skill(name: &str) -> SkillCatalogEntry {
         SkillCatalogEntry {
@@ -1578,5 +1583,110 @@ mod tests {
         assert!(!resize(&area, cx, 1400.), "wide row keeps them inline");
         assert!(resize(&area, cx, 500.), "narrow row collapses them");
         assert!(!resize(&area, cx, 1400.), "widening brings them back");
+    }
+
+    fn click(selector: &'static str, cx: &mut VisualTestContext) {
+        let bounds = cx.debug_bounds(selector).expect(selector);
+        cx.simulate_click(bounds.center(), Modifiers::none());
+        cx.run_until_parked();
+    }
+
+    fn click_outside(cx: &mut VisualTestContext) {
+        cx.simulate_click(gpui_kit::point(px(5.), px(5.)), Modifiers::none());
+        cx.run_until_parked();
+    }
+
+    #[gpui_kit::test]
+    fn tools_popover_closes_on_a_click_outside(cx: &mut TestAppContext) {
+        let (area, cx) = input_area(cx);
+        resize(&area, cx, 1400.);
+        area.update(cx, |area, cx| {
+            area.set_builtin_tools(
+                vec![BuiltinToolToggle {
+                    id: "web".into(),
+                    label: "Web".into(),
+                    enabled: true,
+                }],
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        let open = |cx: &mut VisualTestContext| cx.debug_bounds("mcp-selector-panel").is_some();
+
+        click("mcp-selector-trigger", cx);
+        assert!(open(cx));
+        click("mcp-selector-panel", cx);
+        assert!(open(cx), "a click inside keeps it open");
+        click_outside(cx);
+        assert!(!open(cx), "a click outside closes it");
+
+        click("mcp-selector-trigger", cx);
+        click("mcp-selector-trigger", cx);
+        assert!(!open(cx), "the trigger toggles it closed");
+    }
+
+    #[gpui_kit::test]
+    fn comments_popover_closes_on_a_click_outside(cx: &mut TestAppContext) {
+        let (area, cx) = input_area(cx);
+        area.update_in(cx, |area, _, cx| {
+            area.upsert_comment(
+                code_assistant_core::line_comments::LineComment {
+                    id: 0,
+                    file: "src/main.rs".into(),
+                    start_line: 1,
+                    end_line: 1,
+                    old_side: false,
+                    in_diff: false,
+                    on_message: false,
+                    on_file: false,
+                    excerpt: "fn main() {}".into(),
+                    text: "rename this".into(),
+                },
+                cx,
+            )
+        });
+        resize(&area, cx, 1400.);
+        let open = |cx: &mut VisualTestContext| cx.debug_bounds("comments-popover").is_some();
+
+        click("comments-chip", cx);
+        assert!(open(cx));
+        click_outside(cx);
+        assert!(!open(cx), "a click outside closes it");
+
+        click("comments-chip", cx);
+        click("comments-chip", cx);
+        assert!(!open(cx), "the chip toggles it closed");
+    }
+
+    #[gpui_kit::test]
+    fn selectors_menu_closes_on_a_click_outside(cx: &mut TestAppContext) {
+        let (area, cx) = input_area(cx);
+        assert!(resize(&area, cx, 500.));
+        let open = |cx: &mut VisualTestContext| cx.debug_bounds("selectors-menu").is_some();
+
+        click("selectors-menu-btn", cx);
+        assert!(open(cx));
+        // On the panel's padding, between the selectors.
+        let panel = cx.debug_bounds("selectors-menu").unwrap();
+        cx.simulate_click(
+            panel.origin + gpui_kit::point(px(3.), px(3.)),
+            Modifiers::none(),
+        );
+        cx.run_until_parked();
+        assert!(open(cx), "a click inside keeps it open");
+        click_outside(cx);
+        assert!(!open(cx), "a click outside closes it");
+
+        // A selector's dropdown opened from the menu closes first.
+        click("selectors-menu-btn", cx);
+        click("selectors-menu", cx);
+        click_outside(cx);
+        assert!(open(cx), "the first click closes the dropdown");
+        click_outside(cx);
+        assert!(!open(cx), "the next one the menu");
+
+        click("selectors-menu-btn", cx);
+        click("selectors-menu-btn", cx);
+        assert!(!open(cx), "the trigger toggles it closed");
     }
 }
