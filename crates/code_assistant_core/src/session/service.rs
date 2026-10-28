@@ -2120,14 +2120,7 @@ async fn send_or_queue_notification_impl(
     let queued = {
         let mut manager = ctx.manager.lock().await;
         manager.ensure_session_loaded(session_id)?;
-        let instance = manager
-            .get_session(session_id)
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
-        let running = !instance.get_activity_state().is_terminal();
-        if running {
-            manager.queue_notification(session_id, message)?;
-        }
-        running
+        manager.queue_notification_while_running(session_id, message)?
     };
     if queued {
         return Ok(());

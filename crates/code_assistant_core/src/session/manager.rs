@@ -1512,6 +1512,7 @@ impl SessionManager {
 
         // Set the shared pending message reference
         agent.set_pending_message_ref(pending_message_ref);
+        let pending_notifications_for_task = pending_notifications_ref.clone();
         agent.set_pending_notifications_ref(pending_notifications_ref);
 
         agent.set_cancellation(cancellation.clone());
@@ -1537,103 +1538,116 @@ impl SessionManager {
             .take()
             .ok_or_else(|| anyhow::anyhow!("Run reservation lost"))?;
         let task_handle = tokio::spawn(async move {
-            let _agent_lock = agent_lock; // moved in — released on drop
+            // Moved in — released when the run goes idle, or on drop.
+            let mut run_guards = Some((agent_lock, sleep_guard));
 
             debug!("Starting agent for session {}", session_id_clone);
 
-            // Use catch_unwind to ensure cleanup runs even if the agent panics.
-            // Without this, a panic leaves the session permanently stuck in
-            // AgentRunning state because the cleanup code below is never reached.
-            let result = {
-                use futures::FutureExt;
-                let iteration_future = std::panic::AssertUnwindSafe(async {
-                    cancellation.check()?;
-                    agent.load_from_session_state(session_state).await?;
-                    if let Some(scope) = tool_scope_override {
-                        agent.set_tool_scope(scope);
-                        agent.invalidate_system_message_cache();
-                    }
-                    let _ = publisher
-                        .send_event(UiEvent::UpdatePlan {
-                            plan: agent.plan().clone(),
-                        })
-                        .await;
-                    // Whether the agent answered: only then is there a new
-                    // state worth preparing a handoff for when it idles.
-                    match task {
-                        RunTask::Answer => agent.run_single_iteration().await.map(|()| true),
-                        RunTask::NewContext(run) => {
-                            let target = crate::session::new_context::ask_target(
-                                &session_id_clone,
-                                &events_clone,
-                                &pending_target,
-                            );
-                            run.run(&mut agent, target, &pending_message_for_task).await
-                        }
-                        RunTask::PrepareHandoff => {
-                            use crate::session::new_context::{Prepared, prepare_handoff};
-                            match prepare_handoff(&mut agent, &pending_message_for_task).await? {
-                                Prepared::Prompt(prompt) => {
-                                    events_clone.publish_ui(
-                                        &session_id_clone,
-                                        UiEvent::HandoffPrepared { prompt },
-                                    );
-                                    Ok(false)
-                                }
-                                Prepared::Nothing => Ok(false),
-                                Prepared::Answered => Ok(true),
-                            }
-                        }
-                    }
-                });
-                match iteration_future.catch_unwind().await {
-                    Ok(result) => result,
-                    Err(panic_payload) => {
-                        let panic_msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                            (*s).to_string()
-                        } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-                            s.clone()
-                        } else {
-                            "unknown panic".to_string()
-                        };
-                        error!(
-                            "Agent task panicked for session {}: {}",
-                            session_id_clone, panic_msg
+            let mut outcome = guarded_run(&session_id_clone, async {
+                cancellation.check()?;
+                agent.load_from_session_state(session_state).await?;
+                if let Some(scope) = tool_scope_override {
+                    agent.set_tool_scope(scope);
+                    agent.invalidate_system_message_cache();
+                }
+                let _ = publisher
+                    .send_event(UiEvent::UpdatePlan {
+                        plan: agent.plan().clone(),
+                    })
+                    .await;
+                // Whether the agent answered: only then is there a new
+                // state worth preparing a handoff for when it idles.
+                match task {
+                    RunTask::Answer => agent.run_single_iteration().await.map(|()| true),
+                    RunTask::NewContext(run) => {
+                        let target = crate::session::new_context::ask_target(
+                            &session_id_clone,
+                            &events_clone,
+                            &pending_target,
                         );
-                        Err(anyhow::anyhow!("Agent panicked: {}", panic_msg))
+                        run.run(&mut agent, target, &pending_message_for_task).await
+                    }
+                    RunTask::PrepareHandoff => {
+                        use crate::session::new_context::{Prepared, prepare_handoff};
+                        match prepare_handoff(&mut agent, &pending_message_for_task).await? {
+                            Prepared::Prompt(prompt) => {
+                                events_clone.publish_ui(
+                                    &session_id_clone,
+                                    UiEvent::HandoffPrepared { prompt },
+                                );
+                                Ok(false)
+                            }
+                            Prepared::Nothing => Ok(false),
+                            Prepared::Answered => Ok(true),
+                        }
                     }
                 }
-            };
+            })
+            .await;
 
-            let (result, answered) = match result {
-                Ok(answered) => (Ok(()), answered),
-                Err(_) if cancellation.is_cancelled() => (Ok(()), false),
-                Err(error) => (Err(error), false),
+            // A background notification queued after the agent last looked
+            // (or during a run that never asks the model) would wait for the
+            // next turn: answer it in this run instead. The queue stays
+            // locked from the last look until the session is idle, and
+            // deliveries queue only under that lock while a run is going
+            // (`SessionManager::queue_notification_while_running`), so each
+            // one is either answered here or finds the session idle.
+            let mut answered = false;
+            let (result, final_usage, final_state) = loop {
+                let result = match outcome {
+                    Ok(answered_now) => {
+                        answered |= answered_now;
+                        Ok(())
+                    }
+                    Err(_) if cancellation.is_cancelled() => Ok(()),
+                    Err(error) => Err(error),
+                };
+                // Read usage while this run still owns the session. After publishing
+                // Idle a successor may already append messages and save its own usage.
+                let final_usage = if turn_recorder.is_some() {
+                    let mut manager = manager_for_outcome.lock().await;
+                    manager
+                        .ensure_session_loaded(&session_id_clone)
+                        .ok()
+                        .and_then(|_| manager.get_session(&session_id_clone))
+                        .map(|instance| instance.calculate_total_usage())
+                } else {
+                    None
+                };
+                let final_state = {
+                    let notifications = pending_notifications_for_task.lock().unwrap();
+                    let leftover =
+                        result.is_ok() && !cancellation.is_cancelled() && notifications.is_some();
+                    (!leftover).then(|| {
+                        // Release before going idle: a dispatch observing idle can acquire it.
+                        drop(run_guards.take());
+                        // `{:#}` includes the causes: the top-level context alone
+                        // ("LLM request failed") rarely says what went wrong.
+                        let final_state = match &result {
+                            Ok(()) => crate::session::instance::SessionActivityState::Idle,
+                            Err(e) => crate::session::instance::SessionActivityState::Errored {
+                                message: format!("Agent error: {e:#}"),
+                            },
+                        };
+                        activity.set(final_state.clone());
+                        final_state
+                    })
+                };
+                if let Some(final_state) = final_state {
+                    break (result, final_usage, final_state);
+                }
+                outcome = guarded_run(&session_id_clone, async {
+                    agent.run_single_iteration().await.map(|()| true)
+                })
+                .await;
             };
-            // Read usage while this run still owns the session. After publishing
-            // Idle a successor may already append messages and save its own usage.
-            let final_usage = if turn_recorder.is_some() {
-                let mut manager = manager_for_outcome.lock().await;
-                manager
-                    .ensure_session_loaded(&session_id_clone)
-                    .ok()
-                    .and_then(|_| manager.get_session(&session_id_clone))
-                    .map(|instance| instance.calculate_total_usage())
-            } else {
-                None
-            };
-            // Release before publishing idle: a dispatch observing idle can acquire it.
-            drop(_agent_lock);
-            drop(sleep_guard);
             // Log the completion with detailed error information if failed
             match &result {
                 Ok(()) => {
-                    // Always set session state back to Idle when agent task ends successfully
                     debug!(
-                        "Agent completed successfully for session {}, setting state to Idle",
+                        "Agent completed successfully for session {}, state is Idle",
                         session_id_clone
                     );
-                    activity.set(crate::session::instance::SessionActivityState::Idle);
                     if answered && let Some(timers) = &idle_handoff {
                         timers.arm(&session_id_clone);
                     }
@@ -1660,16 +1674,9 @@ impl SessionManager {
                         session_id_clone, e
                     );
 
-                    // `{:#}` includes the causes: the top-level context alone
-                    // ("LLM request failed") rarely says what went wrong.
-                    let error_message = format!("Agent error: {e:#}");
-
-                    // Set session state to Errored so the sidebar shows the error indicator
-                    // and the error is displayed when the user connects to this session.
-                    let errored_state = crate::session::instance::SessionActivityState::Errored {
-                        message: error_message.clone(),
-                    };
-                    activity.set(errored_state.clone());
+                    // The session is Errored (`final_state`), so the sidebar
+                    // shows the error indicator and the error is displayed
+                    // when the user connects to this session.
 
                     // Broadcast Errored state (sidebar update). We do NOT
                     // publish DisplayError here — frontends show the banner
@@ -1680,7 +1687,7 @@ impl SessionManager {
                         &session_id_clone,
                         crate::ui::UiEvent::UpdateSessionActivityState {
                             session_id: session_id_clone.clone(),
-                            activity_state: errored_state,
+                            activity_state: final_state,
                         },
                     );
                 }
@@ -2755,20 +2762,33 @@ impl SessionManager {
         Ok(())
     }
 
-    /// Queue a background notification for a running agent session; it
+    /// Queue a background notification if an agent runs in the session; it
     /// joins the notifications already waiting, apart from the user's
-    /// pending message.
-    pub fn queue_notification(&mut self, session_id: &str, message: &str) -> Result<()> {
+    /// pending message. Returns `false` for an idle session, which the
+    /// caller starts a turn in instead.
+    ///
+    /// The queue's lock is held while the state is read: a run ends by
+    /// checking the queue and going idle under the same lock, so a
+    /// notification is either queued for it to answer or finds the session
+    /// idle.
+    pub fn queue_notification_while_running(
+        &self,
+        session_id: &str,
+        message: &str,
+    ) -> Result<bool> {
         let session_instance = self
             .active_sessions
             .get(session_id)
             .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
 
         let mut pending = session_instance.pending_notifications.lock().unwrap();
+        if session_instance.get_activity_state().is_terminal() {
+            return Ok(false);
+        }
         pending
             .get_or_insert_with(Vec::new)
             .push(ContentBlock::new_text(message));
-        Ok(())
+        Ok(true)
     }
 
     /// Get and clear pending message for editing (returns text-only summary for UI)
@@ -2792,6 +2812,27 @@ impl SessionManager {
 
         let pending = session_instance.pending_message.lock().unwrap();
         Ok(pending.as_ref().map(|blocks| pending_summary(blocks)))
+    }
+}
+
+/// Await one step of an agent run, turning a panic into an error, so the
+/// cleanup after it still runs: without this, a panic would leave the
+/// session stuck in the AgentRunning state.
+async fn guarded_run(session_id: &str, run: impl Future<Output = Result<bool>>) -> Result<bool> {
+    use futures::FutureExt;
+    match std::panic::AssertUnwindSafe(run).catch_unwind().await {
+        Ok(result) => result,
+        Err(panic_payload) => {
+            let panic_msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                (*s).to_string()
+            } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "unknown panic".to_string()
+            };
+            error!("Agent task panicked for session {session_id}: {panic_msg}");
+            Err(anyhow::anyhow!("Agent panicked: {}", panic_msg))
+        }
     }
 }
 

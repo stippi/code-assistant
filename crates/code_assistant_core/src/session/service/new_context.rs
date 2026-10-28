@@ -458,6 +458,43 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_notification_left_when_the_run_ends_is_answered_by_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let llm = answering(&["on it"]);
+        let (service, _) = test_service_with_llm(tmp.path(), llm.clone().into_factory());
+        let id = service.create_session(None, None).await.unwrap();
+        let mut subscription = service.subscribe();
+
+        // `/new` without a prompt ends without asking the model, so nothing
+        // in the run picks up what arrived during the question.
+        service
+            .send_user_message(id.clone(), "/new".into(), vec![], None)
+            .await
+            .unwrap();
+        let request_id = next(&mut subscription, &id, |event| match event {
+            UiEvent::RequestNewContextTarget { request } => Some(request.request_id),
+            _ => None,
+        })
+        .await;
+        let job = crate::session::monitor::job_exited_message(7, "make", Some(0));
+        service
+            .inject_notification(id.clone(), job.clone())
+            .await
+            .unwrap();
+        service
+            .respond_new_context_target(id.clone(), request_id, NewContextTarget::SameSession)
+            .await
+            .unwrap();
+        idle(&mut subscription, &id).await;
+
+        let messages = path(tmp.path(), &id);
+        assert_eq!(messages.len(), 3, "{messages:?}");
+        assert!(messages[0].is_new_context);
+        assert_eq!(texts(&messages[1]), [job]);
+        assert_eq!(texts(&messages[2]), ["on it"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn new_without_prompt_in_a_new_session_only_creates_it() {
         let tmp = tempfile::tempdir().unwrap();
         let llm = answering(&[]);

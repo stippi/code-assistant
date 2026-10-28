@@ -9,7 +9,9 @@ Two producers share one delivery path, the one wakeups use
 session; when the session is idle it starts a turn, while a turn runs it is
 queued for the next iteration (`SessionInstance::pending_notifications`,
 apart from the user's pending message) and reaches the model as a message of
-its own.
+its own. A run that ends with notifications still queued answers them before
+it goes idle; queueing and going idle happen under the queue's lock, so none
+is left behind.
 
 Code: `code_assistant_core::session::monitor` (supervision, framing,
 delivery), `tools::impls::monitor` (tools), `tools::impls::execute_command`
