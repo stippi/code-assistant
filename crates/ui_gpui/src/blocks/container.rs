@@ -96,6 +96,9 @@ pub struct MessageContainer {
     next_block_id: Arc<Mutex<u64>>,
     /// Set when this is a wakeup message rather than one the user wrote.
     wakeup: Arc<Mutex<Option<WakeupMessage>>>,
+    /// The delivered sub-agent results (by index) the user expanded; they
+    /// start collapsed.
+    expanded_sub_agent_results: Arc<Mutex<std::collections::HashSet<usize>>>,
 }
 
 impl MessageContainer {
@@ -112,6 +115,7 @@ impl MessageContainer {
             session_id: Arc::new(Mutex::new(None)),
             next_block_id: Arc::new(Mutex::new(0)),
             wakeup: Arc::new(Mutex::new(None)),
+            expanded_sub_agent_results: Arc::default(),
         }
     }
 
@@ -255,6 +259,22 @@ impl MessageContainer {
         self.elements()
             .iter()
             .find_map(|block| block.read(cx).tool_block(tool_id).cloned())
+    }
+
+    /// Whether the user expanded the delivered sub-agent result `index`.
+    pub fn is_sub_agent_result_expanded(&self, index: usize) -> bool {
+        self.expanded_sub_agent_results
+            .lock()
+            .unwrap()
+            .contains(&index)
+    }
+
+    /// Expand or collapse the delivered sub-agent result `index`.
+    pub fn toggle_sub_agent_result(&self, index: usize) {
+        let mut expanded = self.expanded_sub_agent_results.lock().unwrap();
+        if !expanded.remove(&index) {
+            expanded.insert(index);
+        }
     }
 
     /// Mark this user message as an injected wakeup.

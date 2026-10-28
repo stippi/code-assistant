@@ -135,6 +135,42 @@ fn delivered_results_show_as_the_sub_agents_line(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_delivered_result_arrives_collapsed_and_expands_on_click(cx: &mut TestAppContext) {
+    let core = TestCore::new(MockLLMProvider::new(Vec::new()).into_factory());
+    let session_id = core.create_session();
+    let result = FinishedSubAgent {
+        agent_id: 1,
+        tool_id: "t1".into(),
+        outcome: FinishedOutcome::Completed {
+            answer: "It is in a.rs".into(),
+        },
+        ui_output: String::new(),
+    }
+    .message();
+    core.store()
+        .update_entry(&session_id, |session| {
+            session.add_message(Message::new_user("look around"));
+            session.add_message(Message::new_assistant("Started a sub-agent."));
+            session.add_message(Message::new_user(result));
+            Ok(())
+        })
+        .unwrap();
+
+    let mut test = MainScreenTest::with_core(cx, core);
+    test.gpui.cmd_load_session(session_id, None);
+    test.wait_until("the transcript is shown", |test| {
+        test.transcript().len() == 3
+    });
+    assert!(test.shows("sub-agent-result-header"));
+    assert!(!test.shows("sub-agent-result-body"));
+
+    test.click("sub-agent-result-header");
+    assert!(test.shows("sub-agent-result-body"));
+    test.click("sub-agent-result-header");
+    assert!(!test.shows("sub-agent-result-body"));
+}
+
+#[gpui_kit::test]
 fn a_sub_agent_transcript_opens_read_only(cx: &mut TestAppContext) {
     let core = TestCore::new(MockLLMProvider::new(Vec::new()).into_factory());
     let parent = core.create_session();
