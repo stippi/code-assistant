@@ -447,13 +447,26 @@ async fn background_sub_agent_delivers_its_answer_later() {
     assert_eq!(card.activity, Some(SubAgentActivity::Completed));
     assert!(card.background);
 
-    // Listed while running, taken off the list when done.
+    // Listed while running, and still when done: its result is queued
+    // until the session takes it.
     let listed = running_events(&bg.ui);
     assert!(listed.first().is_some_and(|agents| agents.len() == 1
         && agents[0].background
-        && agents[0].title == "Find the parser"));
-    assert!(listed.last().is_some_and(Vec::is_empty));
-    assert!(bg.running.list().is_empty());
+        && agents[0].title == "Find the parser"
+        && agents[0].result_queued_at.is_none()));
+    assert!(
+        listed
+            .last()
+            .is_some_and(|agents| agents.len() == 1 && agents[0].result_queued_at.is_some())
+    );
+    assert!(all_queued(&bg.running));
+}
+
+fn all_queued(running: &RunningSubAgents) -> bool {
+    running
+        .list()
+        .iter()
+        .all(|agent| agent.result_queued_at.is_some())
 }
 
 #[tokio::test]
@@ -483,7 +496,7 @@ async fn background_sub_agent_outlives_the_parent_run() {
         FinishedOutcome::Cancelled { .. }
     ));
     assert!(finished.message().starts_with("[sub-agent #1] cancelled:"));
-    assert!(bg.running.list().is_empty());
+    assert!(all_queued(&bg.running));
 }
 
 #[tokio::test]
@@ -511,7 +524,7 @@ async fn background_sub_agents_end_with_the_session() {
             FinishedOutcome::Cancelled { .. }
         ));
     }
-    assert!(bg.running.list().is_empty());
+    assert!(all_queued(&bg.running));
 }
 
 #[tokio::test]
@@ -609,6 +622,11 @@ fn delivered_messages_parse_back() {
     assert_eq!(parsed[0].body, "first\n\nsecond paragraph");
     assert_eq!((parsed[1].outcome, parsed[1].body), ("failed", "boom"));
     assert!(parse_sub_agent_messages(&format!("hi\n\n{message}")).is_none());
+    // Among other notifications, the delivered agents are still found.
+    let mixed = format!("[monitor #1] ci\nred\n\n{message}");
+    assert_eq!(delivered_sub_agent_ids(&mixed), vec![12]);
+    assert_eq!(delivered_sub_agent_ids(&both), vec![12, 12]);
+    assert!(delivered_sub_agent_ids("hello").is_empty());
 
     assert!(parse_sub_agent_message("[sub-agent #x] finished: no").is_none());
     assert!(parse_sub_agent_message("[sub-agent #1] other: no").is_none());

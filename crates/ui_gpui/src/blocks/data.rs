@@ -25,6 +25,18 @@ pub struct CompactionSummaryBlock {
     pub is_expanded: bool,
 }
 
+/// A delivered background sub-agent result: the sub-agent's line with its
+/// answer collapsed below.
+#[derive(Debug, Clone)]
+pub struct SubAgentResultBlock {
+    pub agent_id: u64,
+    /// `finished`, `failed` or `cancelled`.
+    pub outcome: String,
+    /// The answer, or what went wrong.
+    pub body: String,
+    pub is_expanded: bool,
+}
+
 /// Thinking text block with collapsible content
 #[derive(Debug, Clone)]
 pub struct ThinkingBlock {
@@ -273,6 +285,7 @@ pub enum BlockData {
     ToolUse(ToolUseBlock),
     ImageBlock(ImageBlock),
     CompactionSummary(CompactionSummaryBlock),
+    SubAgentResult(SubAgentResultBlock),
 }
 
 impl BlockData {
@@ -296,6 +309,7 @@ impl BlockData {
             BlockData::TextBlock(b) => Some(Cow::Borrowed(&b.content)),
             BlockData::ThinkingBlock(b) => Some(b.get_expanded_content(is_generating)),
             BlockData::CompactionSummary(b) => Some(Cow::Borrowed(&b.summary)),
+            BlockData::SubAgentResult(b) => Some(Cow::Borrowed(&b.body)),
             BlockData::ToolUse(_) | BlockData::ImageBlock(_) => None,
         }
     }
@@ -313,6 +327,13 @@ impl BlockData {
                 b.revision += 1;
                 Some(b)
             }
+            _ => None,
+        }
+    }
+
+    pub(super) fn as_sub_agent_result_mut(&mut self) -> Option<&mut SubAgentResultBlock> {
+        match self {
+            BlockData::SubAgentResult(b) => Some(b),
             _ => None,
         }
     }

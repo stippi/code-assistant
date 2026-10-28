@@ -296,6 +296,12 @@ pub struct SessionInstance {
     /// Pending user message (structured content blocks) that will be processed by the next agent iteration
     pub pending_message: Arc<Mutex<Option<Vec<ContentBlock>>>>,
 
+    /// Background notifications (finished sub-agents, monitor events,
+    /// wakeups) queued for the next agent iteration. Kept apart from
+    /// [`Self::pending_message`]: they reach the model as a message of their
+    /// own and never show up in, or get edited with, what the user queued.
+    pub pending_notifications: Arc<Mutex<Option<Vec<ContentBlock>>>>,
+
     /// Tracks sandbox-approved roots for this session
     pub sandbox_context: Arc<SandboxContext>,
 
@@ -404,6 +410,7 @@ impl SessionInstance {
             activity: SessionActivity::default(),
             stop_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             pending_message: Arc::new(Mutex::new(None)),
+            pending_notifications: Arc::new(Mutex::new(None)),
             sandbox_context,
             permissions: tools_core::ToolPermissions::default(),
             pending_permission_requests: Arc::new(
@@ -646,6 +653,7 @@ impl SessionInstance {
             session_id: self.session.id.clone(),
             turn_recorder,
             pending_questions: self.pending_questions.clone(),
+            running_sub_agents: self.running_sub_agents.clone(),
         })
     }
 
@@ -1157,6 +1165,8 @@ struct SessionEventPublisher {
     turn_recorder: Option<Arc<crate::session::turn::TurnRecorder>>,
     /// Open `ask_question` requests (see [`SessionInstance::pending_questions`]).
     pending_questions: Arc<crate::session::questions::PendingQuestions>,
+    /// Finished background agents leave it when their result appears.
+    running_sub_agents: Arc<crate::agent::sub_agent::RunningSubAgents>,
 }
 
 impl SessionEventPublisher {
@@ -1263,7 +1273,24 @@ impl UserInterface for SessionEventPublisher {
             _ => {}
         }
 
+        // A queued background result reached the history: its agent is done.
+        let delivered = match &event {
+            UiEvent::DisplayUserInput { content, .. } => {
+                let ids = crate::agent::sub_agent::delivered_sub_agent_ids(content);
+                self.running_sub_agents.remove_delivered(&ids)
+            }
+            _ => false,
+        };
         self.events.publish_ui(&self.session_id, event);
+        if delivered {
+            self.events.publish_ui(
+                &self.session_id,
+                UiEvent::UpdateRunningSubAgents {
+                    session_id: self.session_id.clone(),
+                    agents: self.running_sub_agents.list(),
+                },
+            );
+        }
         Ok(())
     }
 
@@ -1590,6 +1617,7 @@ mod tests {
             session_id: session_id.to_string(),
             turn_recorder: None,
             pending_questions: Arc::default(),
+            running_sub_agents: Arc::default(),
         }
     }
 

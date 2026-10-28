@@ -39,7 +39,15 @@ impl Render for AgentsPanel {
             self.refresh = None;
             return div().into_any_element();
         }
-        if self.refresh.is_none() {
+        let queued = agents
+            .iter()
+            .filter(|agent| agent.result_queued_at.is_some())
+            .count();
+        let running = agents.len() - queued;
+        // Spinners and elapsed times move only while an agent runs.
+        if running == 0 {
+            self.refresh = None;
+        } else if self.refresh.is_none() {
             let next_frame = Duration::from_millis(
                 (WAKEUP_SPINNER_FRAME_MS - wall_clock_millis() % WAKEUP_SPINNER_FRAME_MS) as u64,
             );
@@ -54,10 +62,22 @@ impl Render for AgentsPanel {
         let theme = cx.theme();
         let (muted, border) = (theme.muted_foreground, theme.border);
         let frame = (wall_clock_millis() / WAKEUP_SPINNER_FRAME_MS) as usize % BRAILLE_FRAMES.len();
-        let header = match agents.len() {
-            1 => "1 sub-agent running".to_string(),
-            n => format!("{n} sub-agents running"),
-        };
+        let header = [
+            match running {
+                0 => None,
+                1 => Some("1 sub-agent running".to_string()),
+                n => Some(format!("{n} sub-agents running")),
+            },
+            match queued {
+                0 => None,
+                1 => Some("1 result queued".to_string()),
+                n => Some(format!("{n} results queued")),
+            },
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" · ");
 
         let mut list = div().flex().flex_col().py_1().child(
             div()
@@ -99,9 +119,13 @@ fn sub_agent_activity_text(
     }
 }
 
-/// `42s`, `3m 05s`, `1h 02m`.
-fn elapsed_text(started_at: chrono::DateTime<chrono::Utc>) -> String {
-    let seconds = (chrono::Utc::now() - started_at).num_seconds().max(0);
+/// `42s`, `3m 05s`, `1h 02m`: until now, or until it `ended`.
+fn elapsed_text(
+    started_at: chrono::DateTime<chrono::Utc>,
+    ended: Option<chrono::DateTime<chrono::Utc>>,
+) -> String {
+    let end = ended.unwrap_or_else(chrono::Utc::now);
+    let seconds = (end - started_at).num_seconds().max(0);
     match seconds {
         s if s < 60 => format!("{s}s"),
         s if s < 3600 => format!("{}m {:02}s", s / 60, s % 60),
@@ -110,7 +134,8 @@ fn elapsed_text(started_at: chrono::DateTime<chrono::Utc>) -> String {
 }
 
 /// One running sub-agent: what it is doing, for how long, and buttons to
-/// open its transcript or cancel it.
+/// open its transcript or cancel it. A finished background agent whose
+/// result waits for the session shows that instead, and its time stops.
 fn sub_agent_row(
     agent: code_assistant_core::agent::sub_agent::RunningSubAgentInfo,
     frame: usize,
@@ -122,7 +147,9 @@ fn sub_agent_row(
     let muted = theme.muted_foreground;
     let foreground = theme.foreground;
     let danger = theme.danger;
+    let primary = theme.primary;
     let tool_id = agent.tool_id.clone();
+    let queued = agent.result_queued_at.is_some();
     div()
         .id(SharedString::from(format!(
             "running-sub-agent-{}",
@@ -142,7 +169,7 @@ fn sub_agent_row(
                 .justify_center()
                 .text_size(rems(0.875))
                 .text_color(muted)
-                .child(BRAILLE_FRAMES[frame]),
+                .child(if queued { "✓" } else { BRAILLE_FRAMES[frame] }),
         )
         .child(
             div()
@@ -162,62 +189,88 @@ fn sub_agent_row(
                 .text_color(foreground)
                 .child(agent.title.clone()),
         )
-        .when(agent.background, |row| {
-            row.child(
-                div()
-                    .flex_none()
-                    .px_1p5()
-                    .rounded(px(4.))
-                    .border_1()
-                    .border_color(muted.opacity(0.4))
-                    .text_size(rems(0.6875))
-                    .text_color(muted)
-                    .child("background"),
-            )
-        })
+        // The columns right of the title keep their width, so they line up
+        // from row to row and do not move while the elapsed time ticks: a
+        // missing badge or button leaves its space empty.
         .child(
             div()
                 .flex_none()
-                .max_w(px(220.))
+                .px_1p5()
+                .rounded(px(4.))
+                .border_1()
+                .border_color(muted.opacity(0.4))
+                .text_size(rems(0.6875))
+                .text_color(muted)
+                .when(!agent.background, |badge| badge.invisible())
+                .child("background"),
+        )
+        .child(
+            div()
+                .flex_none()
+                .w(px(160.))
                 .overflow_hidden()
                 .text_ellipsis()
                 .whitespace_nowrap()
                 .text_size(rems(0.75))
                 .text_color(muted)
-                .child(sub_agent_activity_text(&agent)),
+                .map(|column| {
+                    if queued {
+                        column.child(
+                            div()
+                                .debug_selector(|| "sub-agent-result-queued".into())
+                                .w_full()
+                                .flex()
+                                .child(
+                                    div()
+                                        .px_1p5()
+                                        .rounded(px(4.))
+                                        .bg(primary.opacity(0.12))
+                                        .text_size(rems(0.6875))
+                                        .text_color(primary)
+                                        .child("Result queued"),
+                                ),
+                        )
+                    } else {
+                        column.child(sub_agent_activity_text(&agent))
+                    }
+                }),
         )
         .child(
             div()
                 .flex_none()
+                .w(rems(3.5))
+                .text_right()
                 .text_size(rems(0.75))
                 .text_color(muted)
-                .child(elapsed_text(agent.started_at)),
+                .child(elapsed_text(agent.started_at, agent.result_queued_at)),
         )
-        .when_some(agent.session_id.clone(), |row, session_id| {
-            row.child(
-                div()
-                    .id(SharedString::from(format!(
-                        "open-running-{}",
-                        agent.tool_id
-                    )))
-                    .debug_selector(|| "open-running-sub-agent".into())
-                    .flex_none()
-                    .px_2()
-                    .py(px(1.))
-                    .rounded(px(4.))
-                    .text_size(rems(0.6875))
-                    .text_color(muted)
-                    .cursor_pointer()
-                    .hover(|s| s.bg(foreground.opacity(0.1)).text_color(foreground))
-                    .on_click(cx.listener(move |_view, _event: &ClickEvent, _window, cx| {
-                        cx.stop_propagation();
-                        if let Some(gpui) = cx.try_global::<crate::Gpui>() {
-                            gpui.cmd_load_session(session_id.clone(), None);
-                        }
-                    }))
-                    .child("Open"),
-            )
-        })
+        .child(
+            div()
+                .id(SharedString::from(format!(
+                    "open-running-{}",
+                    agent.tool_id
+                )))
+                .flex_none()
+                .px_2()
+                .py(px(1.))
+                .rounded(px(4.))
+                .text_size(rems(0.6875))
+                .text_color(muted)
+                .map(|button| match agent.session_id.clone() {
+                    Some(session_id) => button
+                        .debug_selector(|| "open-running-sub-agent".into())
+                        .cursor_pointer()
+                        .hover(|s| s.bg(foreground.opacity(0.1)).text_color(foreground))
+                        .on_click(cx.listener(move |_view, _event: &ClickEvent, _window, cx| {
+                            cx.stop_propagation();
+                            if let Some(gpui) = cx.try_global::<crate::Gpui>() {
+                                gpui.cmd_load_session(session_id.clone(), None);
+                            }
+                        })),
+                    None => button.invisible(),
+                })
+                .child("Open"),
+        )
         .child(
             div()
                 .id(SharedString::from(format!(
@@ -230,14 +283,22 @@ fn sub_agent_row(
                 .rounded(px(4.))
                 .text_size(rems(0.6875))
                 .text_color(muted)
-                .cursor_pointer()
-                .hover(|s| s.bg(danger.opacity(0.15)).text_color(danger))
-                .on_click(cx.listener(move |_view, _event: &ClickEvent, _window, cx| {
-                    cx.stop_propagation();
-                    if let Some(gpui) = cx.try_global::<crate::Gpui>() {
-                        gpui.cmd_cancel_sub_agent(tool_id.clone());
+                .map(|button| {
+                    if queued {
+                        // It finished: nothing left to cancel.
+                        return button.invisible();
                     }
-                }))
+                    button
+                        .debug_selector(|| "cancel-running-sub-agent".into())
+                        .cursor_pointer()
+                        .hover(|s| s.bg(danger.opacity(0.15)).text_color(danger))
+                        .on_click(cx.listener(move |_view, _event: &ClickEvent, _window, cx| {
+                            cx.stop_propagation();
+                            if let Some(gpui) = cx.try_global::<crate::Gpui>() {
+                                gpui.cmd_cancel_sub_agent(tool_id.clone());
+                            }
+                        }))
+                })
                 .child("Cancel"),
         )
 }

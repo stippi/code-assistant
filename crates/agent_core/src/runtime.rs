@@ -118,6 +118,10 @@ pub struct AgentRuntime {
     session_id: Option<String>,
     // Shared pending message with the embedding application (structured content blocks)
     pending_message_ref: Option<Arc<Mutex<Option<Vec<llm::ContentBlock>>>>>,
+    /// Background notifications (finished sub-agents, monitor events,
+    /// wakeups) waiting for the next step. They go into the history as a
+    /// message of their own, apart from what the user typed.
+    pending_notifications_ref: Option<Arc<Mutex<Option<Vec<llm::ContentBlock>>>>>,
 }
 
 impl AgentRuntime {
@@ -179,6 +183,7 @@ impl AgentRuntime {
             next_request_id: 1, // Start from 1
             session_id: None,
             pending_message_ref: None,
+            pending_notifications_ref: None,
             model_hint: None,
         }
     }
@@ -250,6 +255,14 @@ impl AgentRuntime {
         self.pending_message_ref = Some(pending_ref);
     }
 
+    /// Set the shared queue of background notifications from SessionInstance
+    pub fn set_pending_notifications_ref(
+        &mut self,
+        pending_ref: Arc<Mutex<Option<Vec<llm::ContentBlock>>>>,
+    ) {
+        self.pending_notifications_ref = Some(pending_ref);
+    }
+
     /// Update the model hint used for selecting system prompts
     pub fn set_model_hint(&mut self, model_hint: Option<String>) {
         let normalized = model_hint.and_then(|hint| {
@@ -272,23 +285,22 @@ impl AgentRuntime {
         self.conversation.history()
     }
 
-    /// Get and clear the pending message from shared state
-    fn get_and_clear_pending_message(&self) -> Option<Vec<llm::ContentBlock>> {
-        if let Some(ref pending_ref) = self.pending_message_ref {
-            let mut pending = pending_ref.lock().ok()?;
-            pending.take()
-        } else {
-            None
-        }
+    /// Get and clear the queued notifications, then the pending user
+    /// message, from shared state: each becomes a message of its own.
+    fn get_and_clear_pending_messages(&self) -> Vec<Vec<llm::ContentBlock>> {
+        [&self.pending_notifications_ref, &self.pending_message_ref]
+            .into_iter()
+            .flatten()
+            .filter_map(|pending_ref| pending_ref.lock().ok()?.take())
+            .collect()
     }
 
-    /// Check if there is a pending message (without clearing it)
+    /// Check if there is a pending message or notification (without clearing it)
     fn has_pending_message(&self) -> bool {
-        if let Some(ref pending_ref) = self.pending_message_ref {
-            pending_ref.lock().ok().is_some_and(|p| p.is_some())
-        } else {
-            false
-        }
+        [&self.pending_notifications_ref, &self.pending_message_ref]
+            .into_iter()
+            .flatten()
+            .any(|pending_ref| pending_ref.lock().ok().is_some_and(|p| p.is_some()))
     }
 
     /// Send a loop event to the UI.
@@ -372,8 +384,8 @@ impl AgentRuntime {
                 continue;
             }
 
-            // Check for pending user message and add it to history at start of each iteration
-            if let Some(pending_blocks) = self.get_and_clear_pending_message() {
+            // Check for pending user messages and add them to history at start of each iteration
+            for pending_blocks in self.get_and_clear_pending_messages() {
                 let text_summary = text_summary_from_blocks(&pending_blocks);
                 debug!("Processing pending user message: {}", text_summary);
                 self.append_message(Message::new_user_content(pending_blocks))?;

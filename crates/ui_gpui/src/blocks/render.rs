@@ -59,6 +59,7 @@ impl BlockView {
             .child(
                 div()
                     .id("copy-block-btn")
+                    .debug_selector(|| "copy-block-btn".into())
                     .flex()
                     .items_center()
                     .justify_center()
@@ -356,6 +357,125 @@ impl BlockView {
     }
 
     // ------------------------------------------------------------------
+    // Delivered background sub-agent result
+    // ------------------------------------------------------------------
+
+    /// The sub-agent's line, like an inline tool block's header; its answer
+    /// expands below with the same animation and copy button as other blocks.
+    fn render_sub_agent_result(
+        &mut self,
+        block: &super::SubAgentResultBlock,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        let theme = cx.theme().clone();
+        let (label, color) = match block.outcome.as_str() {
+            "finished" => (
+                format!("Sub-agent #{} finished", block.agent_id),
+                theme.muted_foreground,
+            ),
+            "cancelled" => (
+                format!("Sub-agent #{} cancelled", block.agent_id),
+                theme.muted_foreground,
+            ),
+            _ => (
+                format!("Sub-agent #{} failed", block.agent_id),
+                theme.danger,
+            ),
+        };
+        let expandable = !block.body.is_empty();
+        let chevron_icon = file_icons::get().get_type_icon(if block.is_expanded {
+            file_icons::CHEVRON_UP
+        } else {
+            file_icons::CHEVRON_DOWN
+        });
+
+        let header = div()
+            .id("sub-agent-result-header")
+            .debug_selector(|| "sub-agent-result-header".into())
+            .group("sub-agent-result")
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1p5()
+            .py_1p5()
+            .px_3()
+            .child(file_icons::render_icon_container(
+                &file_icons::get().get_type_icon(file_icons::TOOL_SPAWN_AGENT),
+                14.0,
+                color,
+                "↻",
+            ))
+            .child(
+                div()
+                    .flex_1()
+                    .text_size(rems(0.8125))
+                    .text_color(color)
+                    .child(label),
+            )
+            .when(expandable, |header| {
+                header
+                    .cursor_pointer()
+                    .on_click(cx.listener(|view, _event: &ClickEvent, _window, cx| {
+                        view.toggle_sub_agent_result(cx);
+                    }))
+                    .child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .size(px(24.))
+                            .rounded(px(6.))
+                            .group_hover("sub-agent-result", |s| {
+                                s.bg(theme.muted_foreground.opacity(0.1))
+                            })
+                            .child(file_icons::render_icon(
+                                &chevron_icon,
+                                14.0,
+                                theme.muted_foreground.opacity(0.4),
+                                "▾",
+                            )),
+                    )
+            });
+
+        let mut container = div().mt_0p5().w_full().flex().flex_col().child(header);
+
+        let animation_scale = match &self.animation_state {
+            AnimationState::Animating { height_scale, .. } => *height_scale,
+            AnimationState::Idle => {
+                if block.is_expanded {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+        };
+        if expandable && (block.is_expanded || animation_scale > 0.0) {
+            let group_name =
+                SharedString::from(format!("sub-agent-result-block-{}", cx.entity_id()));
+            let body = div()
+                .debug_selector(|| "sub-agent-result-body".into())
+                .pl(px(8.))
+                .ml(px(8.))
+                .border_l_2()
+                .border_color(theme.border)
+                .py(px(4.))
+                .text_size(rems(0.8125))
+                .text_color(theme.foreground.opacity(0.85))
+                .child(self.markdown_view(&block.body, true, cx))
+                .into_any_element();
+            let body = self.with_copy_button(group_name, body, cx);
+            container = container.child(crate::tool_cards::animated_card_body(
+                body,
+                animation_scale,
+                self.content_height.clone(),
+            ));
+        }
+
+        container.into_any_element()
+    }
+
+    // ------------------------------------------------------------------
     // Zigzag line helper (used by compaction summary)
     // ------------------------------------------------------------------
 
@@ -435,6 +555,7 @@ impl BlockView {
             BlockData::TextBlock(_) => "block.text".into(),
             BlockData::ThinkingBlock(_) => "block.thinking".into(),
             BlockData::CompactionSummary(_) => "block.compaction".into(),
+            BlockData::SubAgentResult(_) => "block.sub_agent_result".into(),
             BlockData::ImageBlock(_) => "block.image".into(),
             BlockData::ToolUse(tool) => format!("block.tool:{}", tool.name).into(),
         }
@@ -827,6 +948,7 @@ impl BlockView {
 
                 container.into_any_element()
             }
+            BlockData::SubAgentResult(block) => self.render_sub_agent_result(block, cx),
             BlockData::ImageBlock(block) => Self::render_image(block, cx),
         }
     }

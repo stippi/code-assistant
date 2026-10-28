@@ -192,6 +192,14 @@ impl Agent {
         self.runtime.set_pending_message_ref(pending_ref);
     }
 
+    /// Set the shared queue of background notifications from SessionInstance
+    pub fn set_pending_notifications_ref(
+        &mut self,
+        pending_ref: Arc<Mutex<Option<Vec<llm::ContentBlock>>>>,
+    ) {
+        self.runtime.set_pending_notifications_ref(pending_ref);
+    }
+
     /// Update the model hint used for selecting system prompts
     pub fn set_model_hint(&mut self, model_hint: Option<String>) {
         self.runtime.set_model_hint(model_hint);

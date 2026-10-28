@@ -18,7 +18,7 @@ use tracing::{debug, trace, warn};
 
 use super::{
     BlockData, BlockView, CompactionSummaryBlock, ImageBlock, MessageRole, ParameterBlock,
-    TextBlock, ThinkingBlock, ToolBlockState, ToolCollapseState, ToolUseBlock,
+    SubAgentResultBlock, TextBlock, ThinkingBlock, ToolBlockState, ToolCollapseState, ToolUseBlock,
 };
 
 /// Tracks the last block type for paragraph breaks after hidden tools
@@ -96,6 +96,9 @@ pub struct MessageContainer {
     next_block_id: Arc<Mutex<u64>>,
     /// Set when this is a wakeup message rather than one the user wrote.
     wakeup: Arc<Mutex<Option<WakeupMessage>>>,
+    /// The blocks showing the delivered sub-agent results this message
+    /// consists of, made when it is first rendered as such.
+    sub_agent_result_views: Arc<Mutex<Vec<Entity<BlockView>>>>,
 }
 
 impl MessageContainer {
@@ -112,6 +115,7 @@ impl MessageContainer {
             session_id: Arc::new(Mutex::new(None)),
             next_block_id: Arc::new(Mutex::new(0)),
             wakeup: Arc::new(Mutex::new(None)),
+            sub_agent_result_views: Arc::default(),
         }
     }
 
@@ -300,6 +304,43 @@ impl MessageContainer {
                 })
                 .collect(),
         )
+    }
+
+    /// Blocks showing the background sub-agent results this user message
+    /// delivers (see [`Self::sub_agent_results`]), collapsed at first; the
+    /// same ones on every render, so they keep their state.
+    pub fn sub_agent_result_views(&self, cx: &mut Context<Self>) -> Option<Vec<Entity<BlockView>>> {
+        let results = self.sub_agent_results(cx)?;
+        let mut views = self.sub_agent_result_views.lock().unwrap();
+        if views.len() != results.len() {
+            let request_id = *self.current_request_id.lock().unwrap();
+            let session_id = self.session_id();
+            *views = results
+                .into_iter()
+                .map(|result| {
+                    let block = BlockData::SubAgentResult(SubAgentResultBlock {
+                        agent_id: result.agent_id,
+                        outcome: result.outcome,
+                        body: result.body,
+                        is_expanded: false,
+                    });
+                    let block_id = self.allocate_block_id();
+                    cx.new(|cx| {
+                        let mut view = BlockView::new(
+                            block,
+                            block_id,
+                            request_id,
+                            self.current_project.clone(),
+                            session_id.clone(),
+                            cx,
+                        );
+                        view.set_generating(false);
+                        view
+                    })
+                })
+                .collect();
+        }
+        Some(views.clone())
     }
 
     /// The background sub-agent results this user message delivers, if it

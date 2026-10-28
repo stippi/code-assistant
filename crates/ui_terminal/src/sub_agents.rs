@@ -51,6 +51,7 @@ impl AgentsCommand {
     ) -> Result<Vec<String>, String> {
         let targets: Vec<String> = running
             .iter()
+            .filter(|agent| agent.result_queued_at.is_none())
             .filter(|agent| target.is_none_or(|id| agent.id == id))
             .map(|agent| agent.tool_id.clone())
             .collect();
@@ -70,6 +71,9 @@ fn parse_id(id: &str) -> Result<u64, String> {
 
 /// What a running sub-agent is doing, in a few words.
 fn activity_text(agent: &RunningSubAgentInfo) -> String {
+    if agent.result_queued_at.is_some() {
+        return "result queued".into();
+    }
     if let Some(tool) = &agent.current_tool {
         return tool.clone();
     }
@@ -93,8 +97,13 @@ pub fn running_lines(agents: &[RunningSubAgentInfo]) -> Option<String> {
             } else {
                 ""
             };
+            let marker = if agent.result_queued_at.is_some() {
+                "✓"
+            } else {
+                "↻"
+            };
             format!(
-                "↻ #{} {}{background} · {}",
+                "{marker} #{} {}{background} · {}",
                 agent.id,
                 agent.title,
                 activity_text(agent)
@@ -131,6 +140,15 @@ mod tests {
             tool_count: 1,
             current_tool: (id == 2).then(|| "Reading main.rs".to_string()),
             session_id: None,
+            result_queued_at: None,
+        }
+    }
+
+    fn queued(id: u64) -> RunningSubAgentInfo {
+        RunningSubAgentInfo {
+            result_queued_at: Some(chrono::Utc::now()),
+            current_tool: None,
+            ..agent(id, true)
         }
     }
 
@@ -187,6 +205,8 @@ mod tests {
         );
         assert!(AgentsCommand::cancel_targets(Some(9), &running).is_err());
         assert!(AgentsCommand::cancel_targets(None, &[]).is_err());
+        // A finished agent whose result waits has nothing left to cancel.
+        assert!(AgentsCommand::cancel_targets(Some(3), &[queued(3)]).is_err());
     }
 
     #[test]
@@ -195,6 +215,10 @@ mod tests {
         assert_eq!(
             lines,
             "↻ #1 Task 1 (background) · running tools  \n↻ #2 Task 2 · Reading main.rs"
+        );
+        assert_eq!(
+            running_lines(&[queued(3)]).unwrap(),
+            "✓ #3 Task 3 (background) · result queued"
         );
         assert!(running_lines(&[]).is_none());
         assert_eq!(listing(&[]), "No sub-agents are running.");

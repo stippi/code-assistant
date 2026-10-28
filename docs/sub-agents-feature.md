@@ -84,7 +84,11 @@
   conversation a `spawn_agent` call is one collapsed line, "Sub-agent · <task> running /
   finished / failed", expanding to its answer and a link to its transcript
   (`tool_cards/sub_agent_line.rs`). The terminal UI shows status lines and the
-  `/agents [cancel <id>|cancel all|open <id>|back]` command.
+  `/agents [cancel <id>|cancel all|open <id>|back]` command. A finished background agent
+  stays listed with "Result queued" (`RunningSubAgentInfo::result_queued_at`, its time
+  stopped, nothing to cancel) until its result reaches the session's history: at once when it
+  starts a turn, otherwise when the running agent takes it from the notification queue (the
+  session's publisher sees the delivered `[sub-agent #N]` message).
 - [x] **Transcripts**: each sub-agent's conversation is stored as a read-only session
   `<parent>/sub-agents/<N>`, left out of the session listings and openable from both UIs. In
   GPUI the input of an opened transcript is locked: no typing, sending, pasting, and its

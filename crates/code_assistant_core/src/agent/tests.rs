@@ -2766,6 +2766,33 @@ async fn test_pending_user_message_lands_after_the_compaction_handoff() -> Resul
 }
 
 #[tokio::test]
+async fn test_queued_notifications_arrive_apart_from_the_pending_user_message() -> Result<()> {
+    let (mut agent, mock_llm) = compaction_test_agent(vec![Ok(text_response("Noted"))]);
+    agent.append_message(Message::new_user("Original request"))?;
+    agent.set_pending_message_ref(Arc::new(std::sync::Mutex::new(Some(vec![
+        ContentBlock::new_text("Follow-up question"),
+    ]))));
+    agent.set_pending_notifications_ref(Arc::new(std::sync::Mutex::new(Some(vec![
+        ContentBlock::new_text("[sub-agent #2] finished:\n\nDone."),
+    ]))));
+
+    agent.run_single_iteration().await?;
+
+    let requests = mock_llm.get_requests();
+    let texts: Vec<String> = requests[0].messages.iter().map(message_text).collect();
+    assert_eq!(
+        texts,
+        [
+            "Original request",
+            "[sub-agent #2] finished:\n\nDone.",
+            "Follow-up question"
+        ],
+        "the notification is its own message, ahead of what the user typed"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_compaction_retries_once_when_the_model_answers_with_tool_calls() -> Result<()> {
     let tool_only = LLMResponse {
         content: vec![ContentBlock::new_tool_use(

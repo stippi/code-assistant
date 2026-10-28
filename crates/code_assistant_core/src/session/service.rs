@@ -871,9 +871,24 @@ impl SessionService {
         self.call_session(session_id.clone(), move |ctx| async move {
             let content_blocks =
                 user_message_blocks(&ctx, &session_id, &message, &attachments).await?;
-            let mut manager = ctx.manager.lock().await;
-            manager.queue_structured_user_message(&session_id, content_blocks)?;
-            manager.get_pending_message(&session_id)
+            {
+                let manager = ctx.manager.lock().await;
+                if manager.queue_user_message_while_running(&session_id, content_blocks)? {
+                    return manager.get_pending_message(&session_id);
+                }
+            }
+            // The run ended before the frontend learned of it: the message
+            // starts a turn instead of waiting for one.
+            send_user_message_impl(
+                &ctx,
+                &session_id,
+                &message,
+                &attachments,
+                None,
+                RunOptions::default(),
+            )
+            .await?;
+            Ok(None)
         })
         .await
     }
@@ -947,7 +962,8 @@ impl SessionService {
 
     /// Deliver a background notification (see [`crate::session::monitor`]):
     /// like a wakeup, `message` starts a turn when the session is idle and
-    /// is queued as the pending message while an agent runs. A session that
+    /// is queued for the running agent's next step — apart from the user's
+    /// pending message — while an agent runs. A session that
     /// no longer exists swallows it silently.
     pub async fn inject_notification(&self, session_id: String, message: String) -> Result<()> {
         self.call_session(session_id.clone(), move |ctx| async move {
@@ -955,7 +971,8 @@ impl SessionService {
                 debug!("Notification for unknown session {session_id} dropped");
                 return Ok(());
             }
-            send_or_queue_user_message_impl(&ctx, &session_id, &message, &[]).await
+            send_or_queue_notification_impl(&ctx, &session_id, &message).await?;
+            Ok(())
         })
         .await
     }
@@ -2062,8 +2079,8 @@ async fn append_and_run(
     Ok(())
 }
 
-/// Shared by [`SessionService::send_or_queue_user_message`] and the wakeup
-/// path: decide send-vs-queue by the session's actual activity state.
+/// Behind [`SessionService::send_or_queue_user_message`]: decide
+/// send-vs-queue by the session's actual activity state.
 async fn send_or_queue_user_message_impl(
     ctx: &ServiceCtx,
     session_id: &str,
@@ -2083,17 +2100,19 @@ async fn send_or_queue_user_message_impl(
 
     if running {
         let content_blocks = user_message_blocks(ctx, session_id, message, attachments).await?;
-        let mut manager = ctx.manager.lock().await;
-        manager.queue_structured_user_message(session_id, content_blocks)?;
-        if let Some(summary) = manager.get_pending_message(session_id)? {
-            ctx.notify_session(
-                session_id,
-                UiEvent::UpdatePendingMessage {
-                    message: Some(summary),
-                },
-            );
+        let manager = ctx.manager.lock().await;
+        // Unless the run ended meanwhile; then the message starts a turn.
+        if manager.queue_user_message_while_running(session_id, content_blocks)? {
+            if let Some(summary) = manager.get_pending_message(session_id)? {
+                ctx.notify_session(
+                    session_id,
+                    UiEvent::UpdatePendingMessage {
+                        message: Some(summary),
+                    },
+                );
+            }
+            return Ok(());
         }
-        return Ok(());
     }
 
     send_user_message_impl(
@@ -2105,6 +2124,29 @@ async fn send_or_queue_user_message_impl(
         RunOptions::default(),
     )
     .await
+}
+
+/// Like [`send_or_queue_user_message_impl`] for a background notification
+/// (wakeup, monitor event, finished sub-agent): an idle session gets it as
+/// the message starting a turn; a running agent finds it in its own queue,
+/// so it never mixes with what the user queued. Returns whether it was
+/// queued.
+async fn send_or_queue_notification_impl(
+    ctx: &ServiceCtx,
+    session_id: &str,
+    message: &str,
+) -> Result<bool> {
+    let queued = {
+        let mut manager = ctx.manager.lock().await;
+        manager.ensure_session_loaded(session_id)?;
+        manager.queue_notification_while_running(session_id, message)?
+    };
+    if queued {
+        return Ok(true);
+    }
+
+    send_user_message_impl(ctx, session_id, message, &[], None, RunOptions::default()).await?;
+    Ok(false)
 }
 
 async fn try_send_user_message_if_idle_impl(
@@ -2214,7 +2256,8 @@ async fn inject_wakeup_impl(
         // The wakeup is still delivered.
         Err(e) => warn!("Failed to record that wakeup {wakeup_id} fired: {e}"),
     }
-    send_or_queue_user_message_impl(ctx, session_id, message, &[]).await
+    send_or_queue_notification_impl(ctx, session_id, message).await?;
+    Ok(())
 }
 
 /// Sub-agent transcripts are written by their sub-agent only.
@@ -2275,7 +2318,25 @@ async fn deliver_sub_agent_result_impl(
             finished.agent_id
         ),
     }
-    send_or_queue_user_message_impl(ctx, session_id, &finished.message(), &[]).await?;
+    let queued = send_or_queue_notification_impl(ctx, session_id, &finished.message()).await?;
+    // Started a turn: the result is in the history, its agent is done. A
+    // queued one leaves the list when the running agent takes it.
+    if !queued {
+        let manager = ctx.manager.lock().await;
+        if let Some(instance) = manager.get_session(session_id)
+            && instance
+                .running_sub_agents
+                .remove_delivered(&[finished.agent_id])
+        {
+            ctx.notify_session(
+                session_id,
+                UiEvent::UpdateRunningSubAgents {
+                    session_id: session_id.to_string(),
+                    agents: instance.running_sub_agents.list(),
+                },
+            );
+        }
+    }
     Ok(true)
 }
 
@@ -2600,6 +2661,20 @@ mod sub_agent_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The background notifications waiting for `session_id`'s next step,
+    /// as the transcript would show them.
+    pub(super) async fn queued_notifications(
+        manager: &Arc<Mutex<SessionManager>>,
+        session_id: &str,
+    ) -> Option<String> {
+        let manager = manager.lock().await;
+        let instance = manager.get_session(session_id).unwrap();
+        let pending = instance.pending_notifications.lock().unwrap();
+        pending
+            .as_deref()
+            .map(crate::utils::content::text_summary_from_blocks)
+    }
     use crate::mocks::{MockLLMProvider, PendingLLMProvider, create_test_response_text};
     use crate::persistence::FileSessionPersistence;
     use crate::session::SessionConfig;
@@ -3054,8 +3129,14 @@ mod tests {
     #[tokio::test]
     async fn queue_and_take_pending_message() {
         let tmp = tempfile::tempdir().unwrap();
-        let service = test_service(tmp.path());
+        let (service, manager) = test_service_with_manager(tmp.path());
         let id = service.create_session(None, None).await.unwrap();
+        manager
+            .lock()
+            .await
+            .get_session_mut(&id)
+            .unwrap()
+            .set_activity_state(crate::session::instance::SessionActivityState::AgentRunning);
 
         let pending = service
             .queue_user_message(id.clone(), "hello".to_string(), Vec::new())
@@ -3105,10 +3186,47 @@ mod tests {
             .await
             .unwrap();
 
-        let pending = service.take_pending_message(id).await.unwrap();
         assert_eq!(
-            pending.as_deref(),
+            queued_notifications(&manager, &id).await.as_deref(),
             Some(wakeup_message(1, "check").as_str())
+        );
+        assert_eq!(service.take_pending_message(id).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn notifications_stay_apart_from_the_users_pending_message() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (service, manager) = test_service_with_manager(tmp.path());
+        let id = service.create_session(None, None).await.unwrap();
+        manager
+            .lock()
+            .await
+            .get_session_mut(&id)
+            .unwrap()
+            .set_activity_state(crate::session::instance::SessionActivityState::AgentRunning);
+
+        service
+            .queue_user_message(id.clone(), "One more thing".into(), vec![])
+            .await
+            .unwrap();
+        let job = crate::session::monitor::job_exited_message(7, "make", Some(0));
+        service
+            .inject_notification(id.clone(), job.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            queued_notifications(&manager, &id).await.as_deref(),
+            Some(job.as_str())
+        );
+        // Editing the pending message takes only what the user typed.
+        assert_eq!(
+            service.take_pending_message(id.clone()).await.unwrap(),
+            Some("One more thing".to_string())
+        );
+        assert_eq!(
+            queued_notifications(&manager, &id).await.as_deref(),
+            Some(job.as_str())
         );
     }
 
@@ -3139,11 +3257,12 @@ mod tests {
             .await
             .unwrap();
 
-        let pending = service.take_pending_message(id).await.unwrap().unwrap();
+        let pending = queued_notifications(&manager, &id).await.unwrap();
         assert!(
             pending.contains(&first) && pending.contains(&second),
             "{pending}"
         );
+        assert_eq!(service.take_pending_message(id).await.unwrap(), None);
         let parsed = crate::session::monitor::parse_notification_messages(&pending).unwrap();
         assert_eq!(parsed.len(), 2);
     }
