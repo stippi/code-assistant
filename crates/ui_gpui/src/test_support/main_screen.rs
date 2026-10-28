@@ -191,6 +191,17 @@ impl MainScreenTest {
         self.settle();
     }
 
+    /// Move the mouse over the element rendered with `debug_selector(selector)`.
+    pub fn hover(&mut self, selector: &'static str) {
+        let bounds = self
+            .cx
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("nothing rendered as {selector}"));
+        self.cx
+            .simulate_mouse_move(bounds.center(), None, gpui_kit::Modifiers::none());
+        self.settle();
+    }
+
     /// Whether an element rendered with `debug_selector(selector)` is shown.
     pub fn shows(&mut self, selector: &'static str) -> bool {
         self.cx.debug_bounds(selector).is_some()

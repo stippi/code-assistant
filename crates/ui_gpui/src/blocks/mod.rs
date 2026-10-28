@@ -280,6 +280,7 @@ impl BlockView {
             BlockData::TextBlock(block) => Some(block.content.clone()),
             BlockData::ThinkingBlock(block) => Some(block.content.clone()),
             BlockData::CompactionSummary(block) => Some(block.summary.clone()),
+            BlockData::SubAgentResult(block) => Some(block.body.clone()),
             BlockData::ToolUse(_) | BlockData::ImageBlock(_) => None,
         };
         let markdown_sync = MarkdownSync::new(initial_markdown.as_deref().unwrap_or(""));
@@ -590,6 +591,7 @@ impl BlockView {
             BlockData::ToolUse(_) => true, // Tools can always toggle, even while generating
             BlockData::ThinkingBlock(_) => true,
             BlockData::CompactionSummary(_) => true,
+            BlockData::SubAgentResult(block) => !block.body.is_empty(),
             _ => false, // Other blocks don't have expansion
         }
     }
@@ -660,6 +662,14 @@ impl BlockView {
         if let Some(summary) = self.block_mut().as_compaction_mut() {
             let should_expand = !summary.is_expanded;
             summary.is_expanded = should_expand;
+            self.start_expand_collapse_animation(should_expand, cx);
+        }
+    }
+
+    fn toggle_sub_agent_result(&mut self, cx: &mut Context<Self>) {
+        if let Some(result) = self.block_mut().as_sub_agent_result_mut() {
+            let should_expand = !result.is_expanded;
+            result.is_expanded = should_expand;
             self.start_expand_collapse_animation(should_expand, cx);
         }
     }

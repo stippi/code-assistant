@@ -166,6 +166,17 @@ fn a_delivered_result_arrives_collapsed_and_expands_on_click(cx: &mut TestAppCon
 
     test.click("sub-agent-result-header");
     assert!(test.shows("sub-agent-result-body"));
+
+    // Like other blocks, the answer copies as its Markdown source, with a
+    // button shown while the pointer is over it.
+    assert!(!test.shows("copy-block-btn"));
+    test.hover("sub-agent-result-body");
+    test.click("copy-block-btn");
+    let copied = test
+        .cx
+        .update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text()));
+    assert_eq!(copied.as_deref(), Some("It is in a.rs"));
+
     test.click("sub-agent-result-header");
     assert!(!test.shows("sub-agent-result-body"));
 }
