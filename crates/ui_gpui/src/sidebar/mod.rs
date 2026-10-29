@@ -26,14 +26,20 @@ use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size};
 use gpui_kit::{
     AnyElement, App, AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement, SharedString, StatefulInteractiveElement, Styled, Subscription, Window,
-    div, prelude::*, px,
+    InteractiveElement, Pixels, SharedString, StatefulInteractiveElement, Styled, Subscription,
+    Window, div, prelude::*, px,
 };
 use project_picker::{ProjectPicker, ProjectPickerEvent, animated_surface};
 use projects_view::ProjectFolder;
 use std::collections::{HashMap, HashSet};
 use std::time::SystemTime;
 use tracing::debug;
+
+/// The sidebar's width, which follows the UI font size. Whole pixels, like
+/// every width beside the message list (see its `messages` container).
+pub fn sidebar_width(cx: &App) -> Pixels {
+    px((cx.theme().font_size / px(16.) * 260.).round())
+}
 
 /// Events emitted by the SessionSidebar component
 #[derive(Clone, Debug)]
@@ -584,12 +590,10 @@ impl Render for SessionSidebar {
             SidebarView::Inbox => self.render_inbox(cx),
             SidebarView::Projects => self.render_folders(cx),
         };
-        let scale = cx.theme().font_size / px(16.);
-
         div()
             .id("chat-sidebar")
             .flex_none()
-            .w(px(scale * 260.))
+            .w(sidebar_width(cx))
             .h_full()
             .bg(cx.theme().sidebar)
             .border_r_1()

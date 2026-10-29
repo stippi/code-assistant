@@ -870,6 +870,12 @@ impl Gpui {
                     let root_view = cx.new(|cx| {
                         RootView::new(messages_view, project_sidebar.clone(), window, cx)
                     });
+                    if frame_profile_mode == shared::frame_profile::Mode::Sidebar {
+                        let main_screen = root_view.read(cx).main_screen().clone();
+                        main_screen.update(cx, |screen, cx| {
+                            screen.start_profile_sidebar_sweep(window, cx)
+                        });
+                    }
 
                     // Wrap in Root component
                     cx.new(|cx| Root::new(root_view, window, cx))

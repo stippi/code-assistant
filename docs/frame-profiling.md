@@ -11,6 +11,7 @@ call site and nothing else.
 CODE_ASSISTANT_FRAME_PROFILE=1      cargo run --release   # collect and report
 CODE_ASSISTANT_FRAME_PROFILE=scroll cargo run --release   # + sweep the list by moving its offset
 CODE_ASSISTANT_FRAME_PROFILE=wheel  cargo run --release   # + sweep with dispatched scroll-wheel events
+CODE_ASSISTANT_FRAME_PROFILE=sidebar cargo run --release  # + open and close the sidebars in turn
 ```
 
 Every two seconds a report goes to stderr:
@@ -55,6 +56,20 @@ during the sweep say `scroll=yes`. `wheel` sends `ScrollWheelEvent`s through
 `Window::dispatch_event` at the list's center, so hit testing and the scroll
 handlers run like they do for a real wheel; `scroll` moves the `ListState`
 offset directly.
+
+`sidebar` waits 8 s, then toggles the left sidebar twice and the right
+sidebar twice, one toggle per second, for 40 s. Every animation logs one
+line once it is over:
+
+```
+[frame-profile] sidebar animation: frames=16 span=250ms interval p50=16.66ms max=17.7ms long=0 longest=[16.7 16.7 17.6 17.7 17.7]
+```
+
+`frames` are the frames drawn while the animation ran, `interval` the time
+between two of them (p50 and max), `long` how many intervals were at least
+half again as long as the median (a dropped frame on a steady display),
+`longest` the five longest intervals. On a 60 Hz display a smooth 250 ms
+animation shows 16 frames with every interval at 16.7 ms.
 
 ## A reproducible load
 
@@ -281,3 +296,48 @@ measure callbacks) drops by 0.25-0.37 ms, and `region.messages` prepaint by
 0.4-0.5 ms. What remains in the text prepaint is gpui's `TextLayout::layout`
 per fragment (a taffy leaf and closure per frame), which the PR does not
 address.
+
+## Sidebar animations (2026-10-29, branch perf/sidebar-animation)
+
+Opening or closing a sidebar was a 250 ms width animation that got two or
+three frames. Measured with the `sidebar` sweep (session "Setup Wizard UX
+Design", ~250 rows, 1649x1050 window on a 60 Hz display, release build):
+
+| | frames per animation | frame interval | draw per frame |
+|---|---|---|---|
+| before | 2-3 | 90-240 ms | 90-240 ms (`messages.list` prepaint, `row` 78-154 per frame) |
+| after | 16 | 16.7 ms, no long interval | mean 4.8 ms, p95 7.9 ms, max 19.7 ms |
+
+Two causes, in order of weight:
+
+1. **The message list measured every row on every frame.** The list is a
+   `measure_all` list (so the scrollbar is right and scrolling up from the
+   bottom does not discover zero-height rows), and gpui's list invalidates
+   every row height and lays out *all* rows again whenever its width
+   changes. The sidebar animation changed the messages column's width every
+   frame, so every frame laid out the whole session. Now the list is laid
+   out as wide as the window and centered in the clipping `messages`
+   container, so a sidebar changes what the container shows of the list,
+   not the list's width; a canvas records the container's width before the
+   list lays its rows out, and the rows cap their width by it, so a narrow
+   column still wraps its text (only the visible rows, every frame, which
+   the row layout compute of ~1 ms covers). The same holds for dragging the
+   review panel's resize handle.
+2. **The animation ticked on an 8 ms background timer** and notified the
+   view, which beats against the display's frame clock. It now advances in
+   `render` and asks for the next frame with
+   `Window::request_animation_frame`, so there is one tick per drawn frame
+   and the frame after the last tick draws the resting state (the timer
+   version never drew it). `App::reduce_motion` skips the animation. The
+   plan banner and the tool blocks had the same timer-driven state machine
+   and now share it: `shared::collapse_animation::CollapseAnimator`.
+
+One more cause, found after the first two were fixed: the list's bounds are
+rounded to the device pixel, and with the review panel at its persisted
+fractional width (842.2969 px) the centered list came out 1648.5 px wide in
+some frames and 1649 px in others, which is a width change and a full
+re-measure once per animation. All sidebar widths are whole pixels now
+(`animated_width`, `sidebar::sidebar_width`, the resize drag).
+
+The first animation after start still has two 80-130 ms frames: the rows
+it reveals are laid out and shaped for the first time.

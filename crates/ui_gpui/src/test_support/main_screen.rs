@@ -72,7 +72,8 @@ impl MainScreenTest {
     }
 
     /// Run everything that is due, including the event loop's pauses
-    /// between batches and debounced writes, then render.
+    /// between batches and debounced writes, then render, and play any
+    /// animation the render started to its end.
     pub fn settle(&mut self) {
         self.cx.run_until_parked();
         self.cx
@@ -81,6 +82,20 @@ impl MainScreenTest {
         self.cx.run_until_parked();
         self.cx.update(|window, _| window.refresh());
         self.cx.run_until_parked();
+        // Tests have no frame loop: deliver the frames an animation asks
+        // for, each after more clock than any collapse animation lasts, so
+        // it rests on the next one. Spinners ask for frames forever, hence
+        // the cap.
+        for _ in 0..3 {
+            let requested = self.cx.update(|window, cx| window.simulate_next_frame(cx));
+            if requested == 0 {
+                break;
+            }
+            self.cx
+                .executor()
+                .advance_clock(std::time::Duration::from_millis(400));
+            self.cx.run_until_parked();
+        }
     }
 
     /// Settle until `condition` holds, for work done on the core's threads.

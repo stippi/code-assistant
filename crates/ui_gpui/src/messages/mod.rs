@@ -15,8 +15,8 @@ use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::{ActiveTheme, Icon};
 use gpui_kit::{
     App, Bounds, Context, Entity, FocusHandle, Focusable, ListAlignment, ListOffset, ListState,
-    MouseButton, MouseMoveEvent, MouseUpEvent, Pixels, SharedString, Task, Window, div, list,
-    prelude::*, px, rems,
+    MouseButton, MouseMoveEvent, MouseUpEvent, Pixels, SharedString, Task, Window, canvas, div,
+    list, prelude::*, px, rems,
 };
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -115,8 +115,10 @@ pub struct MessagesView {
     running_sub_agents: Vec<RunningSubAgentInfo>,
 
     // -- Edge auto-scroll state (drag-to-select near a viewport edge) --
-    /// Bounds of the message list viewport in window coordinates, captured
-    /// during prepaint. Used to detect when a held drag reaches an edge.
+    /// Bounds of the message list's viewport (the `messages` container, not
+    /// the wider list element) in window coordinates, recorded by a canvas
+    /// at the start of the container's prepaint. The rows size themselves by
+    /// its width, and a held drag reaching its edge auto-scrolls.
     list_bounds: Rc<Cell<Bounds<Pixels>>>,
     /// Desired edge auto-scroll velocity in px/frame (sign matches
     /// `set_offset_from_scrollbar`: negative scrolls down, positive up, 0 =
@@ -960,7 +962,7 @@ impl Focusable for MessagesView {
 }
 
 impl Render for MessagesView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // If no session is connected, show a centered hint instead of the
         // message list.
         let has_session = self.current_session_id.lock().unwrap().is_some();
@@ -1071,22 +1073,27 @@ impl Render for MessagesView {
                     activity_indicator::render_activity_indicator(this, cx)
                 };
                 let scale = cx.theme().font_size / px(16.0);
+                // The list is wider than its viewport (see the `messages`
+                // container), so a narrow column limits the rows, not the
+                // list's width.
+                let mut max_width = px(MAX_MESSAGE_WIDTH * scale);
+                let viewport_width = this.list_bounds.get().size.width;
+                if viewport_width > px(0.) && viewport_width < max_width {
+                    max_width = viewport_width;
+                }
                 let row = div()
                     .w_full()
                     .flex()
                     .justify_center()
-                    .child(
-                        div()
-                            .max_w(px(MAX_MESSAGE_WIDTH * scale))
-                            .w_full()
-                            .child(inner),
-                    )
+                    .child(div().max_w(max_width).w_full().child(inner))
                     .into_any_element();
                 frame_profile::timed(frame_profile::ROW, row)
             }),
         )
         .flex_grow(1.0)
-        .w_full();
+        // As wide as the window, whatever the sidebars leave of it: see the
+        // `messages` container below.
+        .w(window.viewport_size().width);
         let message_list =
             frame_profile::timed(frame_profile::LIST, message_list.into_any_element());
 
@@ -1135,19 +1142,13 @@ impl Render for MessagesView {
 
         div()
             .on_children_prepainted({
-                let list_bounds = self.list_bounds.clone();
                 let list_state = self.list_state.clone();
                 let message_queue = self.message_queue.clone();
                 let show_previous_button = self.show_previous_button.clone();
                 let show_previous_since = self.show_previous_since.clone();
                 let follow_tail = self.follow_tail;
                 let entity = cx.entity().downgrade();
-                move |bounds_vec: Vec<Bounds<Pixels>>, _window, app| {
-                    if let Some(first) = bounds_vec.first()
-                        && list_bounds.get() != *first
-                    {
-                        list_bounds.set(*first);
-                    }
+                move |_bounds: Vec<Bounds<Pixels>>, _window, app| {
                     // Before layout the list may still be anchored past its
                     // last item, which made a render-time check flicker. Here
                     // the anchor is resolved; re-render only on a change.
@@ -1192,7 +1193,14 @@ impl Render for MessagesView {
             .flex_col()
             .items_center()
             .size_full()
-            .overflow_hidden() // Prevent width fluctuation that invalidates list item heights
+            // The list below is laid out as wide as the window and centered
+            // here, so a sidebar opening, closing or being resized changes
+            // what this container shows of the list, not the list's width.
+            // A width change makes the list (a `measure_all` list) measure
+            // every row again, which took 100-250 ms per frame for a long
+            // session. The rows size themselves by this container's width,
+            // which the canvas records before the list lays them out.
+            .overflow_hidden()
             .bg(cx.theme().popover)
             .text_size(rems(1.0))
             // Edge auto-scroll: while the left button is held and the pointer
@@ -1221,6 +1229,19 @@ impl Render for MessagesView {
                 cx.listener(|this, _event: &MouseUpEvent, _window, _cx| {
                     this.stop_edge_scroll();
                 }),
+            )
+            .child(
+                canvas(
+                    {
+                        let list_bounds = self.list_bounds.clone();
+                        move |bounds, _, _| list_bounds.set(bounds)
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
             )
             .child(message_list)
             .when(show_scroll_button || show_previous_button, |el| {

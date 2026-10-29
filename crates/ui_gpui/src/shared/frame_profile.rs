@@ -16,6 +16,8 @@
 //!                                      by moving its scroll offset
 //! CODE_ASSISTANT_FRAME_PROFILE=wheel   report and sweep with scroll-wheel events
 //!                                      dispatched through the window
+//! CODE_ASSISTANT_FRAME_PROFILE=sidebar report and open/close the left and right
+//!                                      sidebars in turn
 //! ```
 
 use gpui_kit::{
@@ -51,6 +53,9 @@ pub enum Mode {
     /// Collect, report, and sweep the list with dispatched scroll-wheel
     /// events, so hit testing and the scroll handlers run too.
     Wheel,
+    /// Collect, report, and open and close the sidebars in turn, logging
+    /// the frame intervals of every animation.
+    Sidebar,
 }
 
 impl Mode {
@@ -59,6 +64,7 @@ impl Mode {
             None | Some("" | "0" | "off" | "false") => Mode::Off,
             Some("scroll") => Mode::Scroll,
             Some("wheel") => Mode::Wheel,
+            Some("sidebar") => Mode::Sidebar,
             Some(_) => Mode::Report,
         }
     }
@@ -88,9 +94,47 @@ pub fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
-/// Marks reports as taken while a scroll sweep runs.
+/// Marks reports as taken while a sweep runs.
 pub fn set_scrolling(scrolling: bool) {
     SCROLLING.store(scrolling, Ordering::Relaxed);
+}
+
+/// One line describing how evenly the frames of one animation were drawn:
+/// the number of frames, the span they cover, the median and maximum
+/// interval between two frames, and how many intervals were at least half
+/// again as long as the median (a dropped frame on a steady display).
+pub fn animation_report(label: &str, frames: &[Instant]) -> String {
+    if frames.len() < 2 {
+        return format!(
+            "[frame-profile] {label} animation: frames={}\n",
+            frames.len()
+        );
+    }
+    let mut intervals: Vec<Duration> = frames.windows(2).map(|w| w[1] - w[0]).collect();
+    let span = *frames.last().unwrap() - frames[0];
+    intervals.sort();
+    let p50 = intervals[intervals.len() / 2];
+    let max = *intervals.last().unwrap();
+    let long = intervals
+        .iter()
+        .filter(|i| i.as_secs_f64() >= p50.as_secs_f64() * 1.5)
+        .count();
+    let mut longest: Vec<String> = intervals
+        .iter()
+        .rev()
+        .take(5)
+        .map(|i| format!("{:.1}", i.as_secs_f64() * 1e3))
+        .collect();
+    longest.reverse();
+    format!(
+        "[frame-profile] {label} animation: frames={} span={:.0}ms interval p50={:.2}ms max={:.1}ms long={} longest=[{}]\n",
+        frames.len(),
+        span.as_secs_f64() * 1e3,
+        p50.as_secs_f64() * 1e3,
+        max.as_secs_f64() * 1e3,
+        long,
+        longest.join(" "),
+    )
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -472,6 +516,25 @@ mod tests {
         assert_eq!(Mode::parse(Some("true")), Mode::Report);
         assert_eq!(Mode::parse(Some(" scroll ")), Mode::Scroll);
         assert_eq!(Mode::parse(Some("wheel")), Mode::Wheel);
+        assert_eq!(Mode::parse(Some("sidebar")), Mode::Sidebar);
+    }
+
+    #[test]
+    fn animation_report_counts_long_intervals() {
+        let start = Instant::now();
+        let ms = |n: u64| start + Duration::from_millis(n);
+        // 8 ms frames with one 24 ms gap
+        let frames = [ms(0), ms(8), ms(16), ms(40), ms(48), ms(56)];
+        let report = animation_report("test", &frames);
+        assert!(report.contains("frames=6"), "{report}");
+        assert!(report.contains("span=56ms"), "{report}");
+        assert!(report.contains("p50=8.00ms"), "{report}");
+        assert!(report.contains("max=24.0ms"), "{report}");
+        assert!(report.contains("long=1"), "{report}");
+        assert_eq!(
+            animation_report("test", &frames[..1]),
+            "[frame-profile] test animation: frames=1\n"
+        );
     }
 
     #[test]

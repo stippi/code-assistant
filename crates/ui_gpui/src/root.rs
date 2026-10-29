@@ -83,6 +83,11 @@ impl RootView {
         }
     }
 
+    /// The main screen this root switches to and from.
+    pub fn main_screen(&self) -> &Entity<MainScreen> {
+        &self.main_screen
+    }
+
     fn on_main_screen_event(
         &mut self,
         _main_screen: &Entity<MainScreen>,

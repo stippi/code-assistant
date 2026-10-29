@@ -4,7 +4,7 @@
 //! helper methods that produce GPUI elements for each block variant (text,
 //! thinking, tool-use, compaction, image).
 
-use super::{AnimationState, BlockData, BlockView, ToolBlockState, ToolUseBlock};
+use super::{BlockData, BlockView, ToolBlockState, ToolUseBlock};
 use crate::shared::{file_icons, frame_profile};
 use code_assistant_core::ui::ToolStatus;
 
@@ -206,16 +206,7 @@ impl BlockView {
         let can_expand = has_output;
 
         // Animation scale for smooth expand/collapse
-        let animation_scale = match &self.animation_state {
-            AnimationState::Animating { height_scale, .. } => *height_scale,
-            AnimationState::Idle => {
-                if is_expanded {
-                    1.0
-                } else {
-                    0.0
-                }
-            }
-        };
+        let animation_scale = self.animator.scale(!is_expanded);
 
         // Chevron icon (only visible on hover, via group)
         let chevron_icon = if is_expanded {
@@ -440,16 +431,7 @@ impl BlockView {
 
         let mut container = div().mt_0p5().w_full().flex().flex_col().child(header);
 
-        let animation_scale = match &self.animation_state {
-            AnimationState::Animating { height_scale, .. } => *height_scale,
-            AnimationState::Idle => {
-                if block.is_expanded {
-                    1.0
-                } else {
-                    0.0
-                }
-            }
-        };
+        let animation_scale = self.animator.scale(!block.is_expanded);
         if expandable && (block.is_expanded || animation_scale > 0.0) {
             let group_name =
                 SharedString::from(format!("sub-agent-result-block-{}", cx.entity_id()));
@@ -536,6 +518,7 @@ impl gpui_kit::Render for BlockView {
         window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        self.animator.tick(window, cx);
         if !frame_profile::enabled() {
             return self.render_block(window, cx);
         }
@@ -708,16 +691,7 @@ impl BlockView {
                             }),
                     );
 
-                let scale = match &self.animation_state {
-                    AnimationState::Animating { height_scale, .. } => *height_scale,
-                    AnimationState::Idle => {
-                        if block.is_collapsed {
-                            0.0
-                        } else {
-                            1.0
-                        }
-                    }
-                };
+                let scale = self.animator.scale(block.is_collapsed);
 
                 let mut container = div().w_full().mt_0p5().child(header);
                 if can_expand && (!block.is_collapsed || scale > 0.0) {
@@ -757,13 +731,9 @@ impl BlockView {
                                 let theme = cx.theme().clone();
 
                                 // Build animation context from BlockView state
-                                let scale = match &self.animation_state {
-                                    AnimationState::Animating { height_scale, .. } => *height_scale,
-                                    AnimationState::Idle => match block.state {
-                                        ToolBlockState::Collapsed => 0.0,
-                                        ToolBlockState::Expanded => 1.0,
-                                    },
-                                };
+                                let scale = self
+                                    .animator
+                                    .scale(block.state == ToolBlockState::Collapsed);
 
                                 let current_project = self.current_project.lock().unwrap().clone();
                                 let markdown_state = self.markdown_entity(cx);
@@ -909,16 +879,7 @@ impl BlockView {
                 container = container.child(header);
 
                 // Animated expand/collapse for the summary content
-                let animation_scale = match &self.animation_state {
-                    AnimationState::Animating { height_scale, .. } => *height_scale,
-                    AnimationState::Idle => {
-                        if is_expanded {
-                            1.0
-                        } else {
-                            0.0
-                        }
-                    }
-                };
+                let animation_scale = self.animator.scale(!is_expanded);
 
                 if is_expanded || animation_scale > 0.0 {
                     let group_name =
