@@ -18,17 +18,14 @@ only.
   (or *Settings → Plugins → Add*) clones the repository, reads its manifest,
   shows what it contributes and what it can do, and pins the commit. Updates
   are explicit and show what changed.
-- **Marketplaces** are git repositories too: a `marketplace.json` lists
-  plugins (each a git URL or a folder in the same repository). Adding a
-  marketplace makes its plugins installable by name.
+- **Marketplaces** are git repositories too: one repository holding
+  several plugins in folders, listed in a `marketplace.json`. Adding a
+  marketplace makes its plugins installable by name. A marketplace does not
+  point to other repositories.
 - **One manifest, many contributions.** `plugin.json` declares skills, MCP
   servers, file renderers, provider templates, managed providers, hooks,
   slash commands and more. Each contribution type feeds an existing seam;
   the plugin host only discovers, validates and switches them on and off.
-- **Claude Code compatible where it overlaps.** A repository with a
-  `.claude-plugin/plugin.json` installs too: its skills, `.mcp.json`,
-  commands and (a subset of) hooks work; parts we do not support are listed
-  as ignored.
 - **Trust is explicit and pinned.** Installing shows the capabilities
   (launches processes, opens network hosts, adds a provider, ...). A
   project can declare the plugins it wants; that goes through the same kind
@@ -40,8 +37,7 @@ only.
 Goals:
 
 - Extend the app without recompiling it, by people who do not write Rust.
-- Reuse the formats people already have: Agent Skills, `.mcp.json`, Claude
-  Code plugins and marketplaces.
+- Reuse the formats the app already reads: Agent Skills and `.mcp.json`.
 - Make every contribution switchable globally, per project and per session,
   the way MCP servers and built-in tool groups already are
   (`docs/builtin-tool-toggles.md`).
@@ -56,6 +52,9 @@ Non-goals (first release):
 - Plugins changing the GPUI layout freely. They contribute into fixed
   slots (renderer dropdown, settings forms, tools menu).
 - A hosted plugin registry. Git is the distribution channel.
+- Compatibility with Claude Code plugins and marketplaces
+  (`.claude-plugin/`). The concept borrows their ideas, not their format;
+  reading their manifests can be added later if it proves useful.
 
 ## Installing
 
@@ -67,7 +66,7 @@ Non-goals (first release):
 | Git URL + ref | `https://github.com/acme/diagrams#v1.2.0` | tag, branch or commit |
 | Shorthand | `acme/diagrams` | GitHub |
 | Subfolder | `https://github.com/acme/tools#main:plugins/drawio` | monorepos |
-| Marketplace entry | `drawio@acme` | after `plugin marketplace add acme/plugins` |
+| Marketplace entry | `diagrams@acme` | a folder of a marketplace repository, after `plugin marketplace add acme/plugins` |
 | Local folder | `~/dev/my-plugin` | for development; linked, not copied, reloaded on change |
 
 Cloning uses the user's git setup (shell out to `git`, so SSH keys,
@@ -94,8 +93,14 @@ credential helpers and corporate proxies work for private repositories).
       "ref": "v1.2.0",
       "commit": "3f9c1e2…",
       "enabled": true,
-      "granted": ["process", "network:embed.diagrams.net"],
-      "marketplace": "acme"
+      "granted": ["process", "network:embed.diagrams.net"]
+    },
+    "mermaid": {
+      "marketplace": "acme",               // installed from a marketplace folder
+      "path": "plugins/mermaid",
+      "commit": "a71d0b4…",                // the marketplace's commit
+      "enabled": true,
+      "granted": ["process"]
     }
   }
 }
@@ -124,20 +129,36 @@ project)* and *Deny*; trust is stored by project path and file fingerprint
 
 ### Marketplaces
 
-A marketplace is a repository with `.code-assistant-plugin/marketplace.json`
-(or Claude Code's `.claude-plugin/marketplace.json`):
+A marketplace is a repository that holds several plugins, each in its own
+folder, listed in `.code-assistant-plugin/marketplace.json` at its root:
 
 ```json
 {
   "name": "acme",
   "owner": { "name": "ACME Platform Team" },
   "plugins": [
-    { "name": "diagrams", "source": "./plugins/diagrams", "description": "draw.io and Mermaid" },
-    { "name": "acme-gateway", "source": "https://github.com/acme/gateway-plugin", "description": "ACME LLM gateway" }
+    { "name": "diagrams", "path": "plugins/diagrams", "description": "draw.io renderer and a diagram skill" },
+    { "name": "mermaid", "path": "plugins/mermaid", "description": "Mermaid renderer" },
+    { "name": "acme-gateway", "path": "plugins/acme-gateway", "description": "ACME LLM gateway" }
   ]
 }
 ```
 
+- Entries are folders inside the marketplace repository only; there are no
+  links to other repositories. A plugin that lives in its own repository is
+  installed by its URL instead. This keeps one clone, one pin and one
+  review per marketplace, and a marketplace cannot pull in code from places
+  the user never saw.
+- Each folder is a complete plugin with its own `plugin.json`; the
+  marketplace's `name` for an entry must match the plugin's `name`.
+- Plugins from a marketplace share its clone and are pinned to the
+  marketplace's commit. Updating the marketplace fetches once and offers
+  the updates of the installed plugins whose folders changed (each with its
+  manifest diff, as above).
+- Removing a marketplace asks whether to keep its installed plugins (they
+  stay pinned and stop receiving updates) or remove them.
+
+`marketplaces.json` stores each marketplace's source, ref and commit.
 *Settings → Plugins* gets a *Browse* tab listing the plugins of all added
 marketplaces with an *Install* button.
 
@@ -177,8 +198,7 @@ without being listed.
 
 Paths inside the manifest and in contributed files may use
 `${PLUGIN_ROOT}` (the checkout) and `${PLUGIN_DATA}` (the writable data
-folder). `${CLAUDE_PLUGIN_ROOT}` is accepted as an alias, so Claude Code
-plugins work unchanged.
+folder).
 
 Validation is strict like the skills frontmatter: an unknown top-level key
 or an invalid contribution disables that contribution with a visible
@@ -444,7 +464,7 @@ Where the pieces land:
 
 ### 6. Hooks
 
-User-defined commands at points of the agent loop, the Claude Code model:
+User-defined commands at points of the agent loop:
 
 ```json
 {
@@ -471,8 +491,7 @@ so they count as the `process` capability.
 
 `commands/<name>.md`: a Markdown prompt with optional frontmatter
 (`description`, `argument-hint`, `model`), inserted by typing
-`/<name> args` in the composer, `$ARGUMENTS` replaced. Claude Code's
-`commands/` folder has exactly this shape. Needs a small composer feature
+`/<name> args` in the composer, `$ARGUMENTS` replaced. Needs a small composer feature
 (completion popover for `/`), useful without plugins too
 (`.agents/commands/` in a project).
 
@@ -480,8 +499,7 @@ so they count as the `process` capability.
 
 `agents/<name>.md`: a named sub-agent (system prompt addition, allowed
 tools by tag, default model and effort) that `spawn_agent` can be asked to
-use by name. Builds on the sub-agent feature; Claude Code's `agents/`
-folder maps onto it.
+use by name. Builds on the sub-agent feature.
 
 ## More suggestions
 
@@ -556,7 +574,7 @@ ui_gpui                    Settings → Plugins; renderer table built at runtime
                            web renderer view (screencast + host bridge)
 code_assistant_core
   plugin_host::store       clone/fetch/pin, plugins.json, marketplaces, trust
-  plugin_host::manifest    plugin.json + .claude-plugin parsing, validation
+  plugin_host::manifest    plugin.json + marketplace.json parsing, validation
   plugin_host::catalog     enabled plugins → contributions, app-scoped
                            UiEvent::PluginsChanged
   skills::loader           + Plugin scope
@@ -579,7 +597,6 @@ a checkout is deleted once no live registry or view references it.
 1. **Store and manifest.** Install from git URL and local folder, pin,
    update, remove; `plugins.json`; CLI and a minimal *Settings → Plugins*
    list. Contributions: skills and MCP servers (both have loaders already).
-   Claude Code plugin manifests read alongside ours.
 2. **Marketplaces** and the *Browse* tab; project `.agents/plugins.json`
    with the trust prompt.
 3. **Renderer table at runtime** and command renderers (Mermaid as the
@@ -595,10 +612,6 @@ a checkout is deleted once no live registry or view references it.
 
 ## Open questions
 
-- **Manifest location.** Our own `.code-assistant-plugin/` plus reading
-  `.claude-plugin/`, or only `.claude-plugin/` with extra keys? One folder is
-  simpler for authors; Claude Code rejects unknown keys only loosely, but
-  that may change.
 - **Signing.** Git commit signatures (GPG/SSH, verified against pinned
   keys) or a detached signature over the manifest in a release asset?
   Commit signatures need no extra tooling for authors.
