@@ -4,7 +4,8 @@ The Files view of the right panel shows a file in the text editor. Some
 files read better another way: Markdown rendered as in the chat, SVG
 files drawn, later perhaps draw.io diagrams. A *renderer* is such a way.
 When the open file has one or more, a dropdown in the viewer's header
-switches between them and **Text**, which every file has.
+switches between them and **Text**, which every text file has. Images
+(PNG, JPEG, …) are not text; they show with their renderer only.
 
 ## Behavior
 
@@ -73,6 +74,24 @@ the model as PNG on white, the longer edge at least 1024 px (an icon large
 enough to make out) and at most `MAX_IMAGE_EDGE`. System fonts load once,
 and only for drawings with text.
 
+## Raster images
+
+`file_renderers/raster.rs` shows PNG, JPEG, GIF, WebP, BMP, TIFF, ICO
+and PNM files (listed as **Image**). The editor cannot hold them, so this
+renderer reads the file itself (`FileRenderer::reads_file`): when the
+viewer's read finds a binary file, or one too large for the editor, and a
+renderer that reads files takes its name, the viewer shows that renderer
+instead of a notice, with no **Text** entry and so no dropdown. A reload
+on disk changes asks the view to read the file again
+(`RendererView::reload`).
+
+The view reads the bytes in the background, takes the format from them
+(not the extension) and hands them to GPUI, which decodes them (animated
+GIFs play). The image is scaled down to fit and never up, one image pixel
+to one point; a line under it tells its pixel size, format and file size.
+Like SVG it starts on white with the same background button. It takes no
+comments.
+
 ## Adding a renderer
 
 No plugin system: a renderer is compiled in and listed in a static table.
@@ -83,6 +102,8 @@ No plugin system: a renderer is compiled in and listed in a static table.
    ```rust
    pub trait RendererView: Render + EventEmitter<CommentChange> + Sized {
        fn set_text(&mut self, text: &str, cx: &mut Context<Self>);
+       // Optional, for renderers that read the file themselves:
+       fn reload(&mut self, cx: &mut Context<Self>);
        // Optional; the defaults do nothing, and the reveals return false
        // (cannot show it), which opens the file in the editor instead:
        fn set_comments(&mut self, comments: &[LineComment], cx: &mut Context<Self>);
@@ -93,9 +114,11 @@ No plugin system: a renderer is compiled in and listed in a static table.
    ```
 
 2. A `FileRenderer` entry in `RENDERERS`: a stable `id` (stored in
-   `ui_state`), the dropdown `label`, `accepts(path)` and `create(file,
-   root, window, cx)`, which returns the view boxed as a `RendererHandle` (blanket
-   implemented for `Entity<V: RendererView>`).
+   `ui_state`), the dropdown `label`, `accepts(path)`, `reads_file`
+   (it shows files the editor cannot hold and reads them itself, see
+   *Raster images*) and `create(file, root, window, cx)`, which returns
+   the view boxed as a `RendererHandle` (blanket implemented for
+   `Entity<V: RendererView>`).
 
 Comment changes the view emits reach the composer through the viewer.
 
@@ -107,10 +130,9 @@ Comment changes the view emits reach the composer through the viewer.
   its pick with `.svg` unless `file_kind` learns double extensions. Editing
   in draw.io itself would need a web view, which the app does not embed yet (the browser
   panel shows a CDP screencast of an external browser).
-- **Binary files** (images, PDFs). `FileViewer` only loads text today and
-  shows a notice for binary files. A renderer for them would need a flag on
-  `FileRenderer` saying it reads the file itself, so the viewer skips the
-  text load and lets it show a file the editor cannot.
+- **Other binary files** (PDFs). A renderer with `reads_file` set, like
+  the raster one. Only the first such renderer that takes a file shows
+  it; a second kind for the same files would need picks for them too.
 - **Renderers from outside the app** (as extensions). The table could also
   hold entries built from configuration, for example a command that turns a
   file into SVG or HTML; the view would show its output. Not needed for
