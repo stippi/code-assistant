@@ -28,9 +28,7 @@ use gpui_kit::{
 };
 
 use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size};
-use std::cell::Cell;
 use std::collections::HashMap;
-use std::rc::Rc;
 use std::time::{Duration, Instant};
 use tracing::{debug, error, warn};
 
@@ -39,10 +37,18 @@ use tracing::{debug, error, warn};
 // ---------------------------------------------------------------------------
 
 const SIDEBAR_ANIMATION_DURATION_MS: f32 = 250.0;
-const SIDEBAR_ANIMATION_FRAME_MS: u64 = 8; // ~120 FPS
 
 /// Fixed width of the right (review) sidebar when fully expanded.
 const RIGHT_SIDEBAR_WIDTH: f32 = 440.0;
+
+/// A sidebar's width on screen at an animation scale: whole pixels, so the
+/// message list (laid out as wide as the window and centered in what the
+/// sidebars leave) lands on the same half pixel every frame. A fractional
+/// column width shifted the list's rounded bounds by half a pixel, which
+/// made it measure every row again.
+fn animated_width(full: Pixels, scale: f32) -> Pixels {
+    px((f32::from(full) * scale).round())
+}
 
 /// Return the argument text for a syntactically separate `/goal` command.
 /// Prefixes such as `/goals` remain ordinary input.
@@ -69,9 +75,9 @@ enum SidebarAnimationState {
     },
 }
 
-/// Drives the width animation for one collapsible sidebar. Multiple animators
-/// can share a single ticking task on [`MainScreen`]; each tracks its own
-/// easing state independently.
+/// Drives the width animation for one collapsible sidebar. [`MainScreen`]
+/// advances both animators once per drawn frame and asks for the next frame
+/// while one of them is still running; each tracks its own easing state.
 #[derive(Clone, Debug)]
 struct SidebarAnimator {
     state: SidebarAnimationState,
@@ -87,8 +93,11 @@ impl SidebarAnimator {
     /// Begin animating towards expanded (`true`) or collapsed (`false`).
     /// Reverses smoothly if an animation is already in flight.
     fn start(&mut self, should_expand: bool) {
+        self.start_at(should_expand, Instant::now());
+    }
+
+    fn start_at(&mut self, should_expand: bool, now: Instant) {
         let target = if should_expand { 1.0 } else { 0.0 };
-        let now = Instant::now();
 
         match &self.state {
             SidebarAnimationState::Animating {
@@ -123,15 +132,25 @@ impl SidebarAnimator {
         }
     }
 
+    /// Ends an animation in flight; [`Self::scale`] then gives the resting
+    /// value.
+    fn stop(&mut self) {
+        self.state = SidebarAnimationState::Idle;
+    }
+
     /// Advance one frame. Returns `true` while still animating.
     fn tick(&mut self) -> bool {
+        self.tick_at(Instant::now())
+    }
+
+    fn tick_at(&mut self, now: Instant) -> bool {
         match &mut self.state {
             SidebarAnimationState::Animating {
                 width_scale,
                 target,
                 start_time,
             } => {
-                let elapsed = start_time.elapsed().as_millis() as f32;
+                let elapsed = now.saturating_duration_since(*start_time).as_secs_f32() * 1000.;
                 let progress = (elapsed / SIDEBAR_ANIMATION_DURATION_MS).min(1.0);
                 // ease-out cubic
                 let eased = 1.0 - (1.0 - progress).powi(3);
@@ -148,6 +167,10 @@ impl SidebarAnimator {
             }
             SidebarAnimationState::Idle => false,
         }
+    }
+
+    fn is_animating(&self) -> bool {
+        matches!(self.state, SidebarAnimationState::Animating { .. })
     }
 
     /// Current animation scale: 0.0 = fully collapsed, 1.0 = fully expanded.
@@ -220,8 +243,10 @@ pub struct MainScreen {
     // Sidebar animation
     left_animator: SidebarAnimator,
     right_animator: SidebarAnimator,
-    sidebar_content_width: Rc<Cell<Pixels>>,
-    sidebar_animation_task: Option<Task<()>>,
+    /// Profiling aids (see [`frame_profile`]): the sweep toggling the
+    /// sidebars, and the draw times of the animation in flight.
+    profile_sweep_task: Option<Task<()>>,
+    profile_animation_frames: Vec<Instant>,
 
     /// UI zoom scale factor (1.0 = 100%, multiplied with the base font size)
     ui_scale: f32,
@@ -355,11 +380,11 @@ impl MainScreen {
 
             left_animator: SidebarAnimator::new(),
             right_animator: SidebarAnimator::new(),
-            sidebar_content_width: Rc::new(Cell::new(px(0.0))),
-            sidebar_animation_task: None,
+            profile_sweep_task: None,
+            profile_animation_frames: Vec::new(),
 
             ui_scale: initial_scale,
-            right_sidebar_width: px(initial_sidebar_width),
+            right_sidebar_width: px(initial_sidebar_width.round()),
             right_sidebar_resizing: false,
             voice_transcript_open: false,
             sidebar_sessions_synced: false,
@@ -390,11 +415,24 @@ impl MainScreen {
         _window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) {
+        self.toggle_project_sidebar(cx);
+    }
+
+    fn toggle_project_sidebar(&mut self, cx: &mut Context<Self>) {
         let should_expand = self.sidebar_collapsed;
         self.sidebar_collapsed = !self.sidebar_collapsed;
-        self.left_animator.start(should_expand);
-        self.ensure_sidebar_animation_task(cx);
+        Self::animate_sidebar(&mut self.left_animator, should_expand, cx);
         cx.notify();
+    }
+
+    /// Starts a sidebar's width animation, or jumps when the system asks
+    /// for reduced motion.
+    fn animate_sidebar(animator: &mut SidebarAnimator, should_expand: bool, cx: &App) {
+        if cx.reduce_motion() {
+            animator.stop();
+        } else {
+            animator.start(should_expand);
+        }
     }
 
     pub fn on_toggle_right_sidebar(
@@ -508,8 +546,7 @@ impl MainScreen {
     fn toggle_right_sidebar(&mut self, cx: &mut Context<Self>) {
         let should_expand = self.right_sidebar_collapsed;
         self.right_sidebar_collapsed = !self.right_sidebar_collapsed;
-        self.right_animator.start(should_expand);
-        self.ensure_sidebar_animation_task(cx);
+        Self::animate_sidebar(&mut self.right_animator, should_expand, cx);
 
         // When opening, make sure the panel reflects the current session and
         // has fresh data. When closing, detach it so it stops watching and
@@ -528,12 +565,6 @@ impl MainScreen {
         }
 
         cx.notify();
-    }
-
-    fn ensure_sidebar_animation_task(&mut self, cx: &mut Context<Self>) {
-        if self.sidebar_animation_task.is_none() {
-            self.start_sidebar_animation_task(cx);
-        }
     }
 
     fn on_open_settings(
@@ -576,39 +607,74 @@ impl MainScreen {
 
     // ── Sidebar animation ─────────────────────────────────────────────────
 
-    /// Ticking task shared by both sidebar animators. Runs until neither the
-    /// left nor the right animator is still animating.
-    fn start_sidebar_animation_task(&mut self, cx: &mut Context<Self>) {
-        let task = cx.spawn(async move |weak_entity, async_cx| {
-            loop {
-                async_cx
-                    .background_executor()
-                    .timer(Duration::from_millis(SIDEBAR_ANIMATION_FRAME_MS))
-                    .await;
+    /// Advances the sidebar animations by one drawn frame and asks for the
+    /// next one while either still runs. Called at the start of `render`, so
+    /// every frame the window draws shows the scale for its own time, and
+    /// the frame after the last tick draws the resting state.
+    fn tick_sidebar_animations(&mut self, window: &gpui_kit::Window) {
+        self.record_profile_frame();
+        let left = self.left_animator.tick();
+        let right = self.right_animator.tick();
+        if left || right {
+            window.request_animation_frame();
+        }
+    }
 
-                let should_continue = weak_entity.update(async_cx, |view, cx| {
-                    let left = view.left_animator.tick();
-                    let right = view.right_animator.tick();
-                    let cont = left || right;
-                    if cont {
-                        cx.notify();
+    /// Profiling aid: after a settle time, opens and closes the left and the
+    /// right sidebar in turn for a while, so frame reports cover the sidebar
+    /// animations without anyone at the mouse, and logs every animation's
+    /// frame intervals (see [`frame_profile`]).
+    pub fn start_profile_sidebar_sweep(
+        &mut self,
+        window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) {
+        const SETTLE: Duration = Duration::from_secs(8);
+        const SWEEP: Duration = Duration::from_secs(40);
+        const PAUSE: Duration = Duration::from_millis(1000);
+
+        let task = cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(SETTLE).await;
+            frame_profile::set_scrolling(true);
+            let end = Instant::now() + SWEEP;
+            let mut step = 0u32;
+            while Instant::now() < end {
+                let toggled = this.update_in(cx, |view, _window, cx| {
+                    view.flush_profile_frames();
+                    if step % 4 < 2 {
+                        view.toggle_project_sidebar(cx);
+                    } else {
+                        view.toggle_right_sidebar(cx);
                     }
-                    cont
                 });
-
-                if let Ok(should_continue) = should_continue {
-                    if !should_continue {
-                        let _ = weak_entity.update(async_cx, |view, _cx| {
-                            view.sidebar_animation_task = None;
-                        });
-                        break;
-                    }
-                } else {
+                if toggled.is_err() {
                     break;
                 }
+                step += 1;
+                cx.background_executor().timer(PAUSE).await;
             }
+            let _ = this.update_in(cx, |view, _window, _cx| view.flush_profile_frames());
+            frame_profile::set_scrolling(false);
         });
-        self.sidebar_animation_task = Some(task);
+        self.profile_sweep_task = Some(task);
+    }
+
+    /// Profiling aid: remembers when a frame of a running sidebar animation
+    /// was drawn.
+    fn record_profile_frame(&mut self) {
+        if frame_profile::enabled()
+            && (self.left_animator.is_animating() || self.right_animator.is_animating())
+        {
+            self.profile_animation_frames.push(Instant::now());
+        }
+    }
+
+    /// Profiling aid: logs the frame intervals of the last animation.
+    fn flush_profile_frames(&mut self) {
+        if !self.profile_animation_frames.is_empty() {
+            let frames = std::mem::take(&mut self.profile_animation_frames);
+            eprint!("{}", frame_profile::animation_report("sidebar", &frames));
+        }
     }
 
     /// Current left (project) sidebar animation scale.
@@ -1653,8 +1719,8 @@ impl MainScreen {
         // Animate to the restored state if it differs from the current one.
         if restored_open == self.right_sidebar_collapsed {
             // (collapsed == !open) — they differ, so kick the animation.
-            self.right_animator.start(restored_open);
-            self.ensure_sidebar_animation_task(cx);
+            Self::animate_sidebar(&mut self.right_animator, restored_open, cx);
+            cx.notify();
         }
         self.right_sidebar_collapsed = !restored_open;
 
@@ -1988,6 +2054,7 @@ impl Render for MainScreen {
 
         let new_project_dialog = self.new_project_dialog.clone();
         let about_dialog = self.about_dialog.clone();
+        self.tick_sidebar_animations(window);
         let sidebar_scale = self.sidebar_animation_scale();
         let right_sidebar_scale = self.right_sidebar_animation_scale();
         let permission_prompts = self.render_permission_prompts(cx);
@@ -2213,41 +2280,16 @@ impl Render for MainScreen {
                     .min_h_0()
                     .flex()
                     .flex_row() // 2-column layout: chat | messages+input
-                    // Left sidebar: Chat sessions (animated width)
+                    // Left sidebar: Chat sessions (animated width). The clip
+                    // animates; the sidebar keeps its full width inside.
                     .when(sidebar_scale > 0.0, {
-                        let sidebar_content_width = self.sidebar_content_width.clone();
-                        let width_for_render = sidebar_content_width.clone();
                         let sidebar = self.project_sidebar.clone();
+                        let width =
+                            animated_width(crate::sidebar::sidebar_width(cx), sidebar_scale);
                         move |el| {
-                            el.child(
-                                div()
-                                    .flex_none()
-                                    .overflow_hidden()
-                                    .when(sidebar_scale < 1.0, move |d| {
-                                        let w = width_for_render.get();
-                                        if w > px(0.0) {
-                                            d.w(w * sidebar_scale)
-                                        } else {
-                                            d.w(px(0.0))
-                                        }
-                                    })
-                                    .on_children_prepainted({
-                                        move |bounds_vec: Vec<gpui_kit::Bounds<Pixels>>,
-                                              _window,
-                                              _app| {
-                                            if let Some(first) = bounds_vec.first() {
-                                                let new_w = first.size.width;
-                                                if sidebar_content_width.get() != new_w {
-                                                    sidebar_content_width.set(new_w);
-                                                }
-                                            }
-                                        }
-                                    })
-                                    .child(frame_profile::timed(
-                                        "region.sidebar",
-                                        sidebar.into_any_element(),
-                                    )),
-                            )
+                            el.child(div().flex_none().overflow_hidden().w(width).child(
+                                frame_profile::timed("region.sidebar", sidebar.into_any_element()),
+                            ))
                         }
                     })
                     .child(
@@ -2311,7 +2353,7 @@ impl Render for MainScreen {
                         // The clip animates; the content keeps its full width and
                         // slides in, so text does not re-wrap on every frame.
                         let content_width = self.right_sidebar_width;
-                        let sidebar_width = content_width * right_sidebar_scale;
+                        let sidebar_width = animated_width(content_width, right_sidebar_scale);
                         let resizing = self.right_sidebar_resizing;
                         let handle_mouse_down =
                             cx.listener(|this, ev: &gpui_kit::MouseDownEvent, _window, cx| {
@@ -2384,7 +2426,7 @@ impl Render for MainScreen {
                                 let delta = f32::from(ev.position.x) - this.resize_start_x;
                                 let new_width =
                                     (this.resize_start_width - delta).clamp(320.0, 1800.0);
-                                this.right_sidebar_width = px(new_width);
+                                this.right_sidebar_width = px(new_width.round());
                                 cx.notify();
                             },
                         ))
@@ -2409,6 +2451,67 @@ impl Render for MainScreen {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod sidebar_animator_tests {
+    use super::*;
+
+    fn ms(start: Instant, n: u64) -> Instant {
+        start + Duration::from_millis(n)
+    }
+
+    #[test]
+    fn eases_out_and_rests_at_the_target() {
+        let start = Instant::now();
+        let mut animator = SidebarAnimator::new();
+        assert!(!animator.is_animating());
+        assert_eq!(animator.scale(true), 0.0);
+        assert_eq!(animator.scale(false), 1.0);
+
+        animator.start_at(true, start);
+        assert!(animator.is_animating());
+        assert_eq!(animator.scale(true), 0.0);
+
+        assert!(animator.tick_at(ms(start, 125)));
+        let half = animator.scale(true);
+        assert!(
+            half > 0.5 && half < 1.0,
+            "ease-out is past half way: {half}"
+        );
+        assert!(animator.tick_at(ms(start, 200)));
+        assert!(animator.scale(true) > half);
+
+        assert!(!animator.tick_at(ms(start, 250)));
+        assert!(!animator.is_animating());
+        assert_eq!(animator.scale(false), 1.0);
+    }
+
+    #[test]
+    fn reversing_keeps_the_current_scale() {
+        let start = Instant::now();
+        let mut animator = SidebarAnimator::new();
+        animator.start_at(false, start);
+        animator.tick_at(ms(start, 100));
+        let scale = animator.scale(true);
+        assert!(scale > 0.0 && scale < 1.0);
+
+        animator.start_at(true, ms(start, 100));
+        assert_eq!(animator.scale(true), scale);
+        animator.tick_at(ms(start, 101));
+        assert!(animator.scale(true) >= scale);
+        assert!(!animator.tick_at(ms(start, 400)));
+        assert_eq!(animator.scale(false), 1.0);
+    }
+
+    #[test]
+    fn stop_rests_right_away() {
+        let mut animator = SidebarAnimator::new();
+        animator.start(true);
+        animator.stop();
+        assert!(!animator.is_animating());
+        assert_eq!(animator.scale(true), 0.0);
+    }
+}
 
 #[cfg(test)]
 mod goal_command_tests {
