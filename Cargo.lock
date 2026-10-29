@@ -11853,6 +11853,7 @@ dependencies = [
  "sandbox",
  "serde",
  "serde_json",
+ "shlex",
  "similar",
  "tempfile",
  "terminal",
