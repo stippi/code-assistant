@@ -15,6 +15,30 @@ pub enum SandboxModeArg {
     WorkspaceWrite,
 }
 
+/// What `code-assistant plugin` does.
+#[derive(Subcommand, Debug)]
+pub enum PluginCommand {
+    /// Install a plugin from a git repository or a local folder
+    Add {
+        /// A git URL (`https://…`, `git@…`, `file://…`), GitHub's
+        /// `owner/repo`, either followed by `#branch-or-tag`, or a folder
+        source: String,
+    },
+    /// List the installed plugins
+    List,
+    /// Fetch a plugin (or all git plugins) again from its repository
+    Update {
+        /// The plugin's name; all plugins when omitted
+        name: Option<String>,
+    },
+    /// Uninstall a plugin
+    Remove { name: String },
+    /// Switch a plugin on
+    Enable { name: String },
+    /// Switch a plugin off
+    Disable { name: String },
+}
+
 #[derive(Subcommand, Debug)]
 pub enum Mode {
     /// Run as MCP server
@@ -48,6 +72,12 @@ pub enum Mode {
     McpLogout {
         /// Name of the server; removes its logins for every URL
         server: String,
+    },
+
+    /// Install, list, update or remove plugins
+    Plugin {
+        #[command(subcommand)]
+        command: PluginCommand,
     },
 
     /// Run as ACP (Agent Client Protocol) agent
@@ -347,5 +377,24 @@ mod tests {
             }
             _ => panic!("Expected mcp-login mode"),
         }
+    }
+
+    #[test]
+    fn test_plugin_mode() {
+        let args = Args::try_parse_from(["test", "plugin", "add", "acme/tools#v1"])
+            .expect("Failed to parse plugin add");
+        match args.mode {
+            Some(Mode::Plugin {
+                command: PluginCommand::Add { source },
+            }) => assert_eq!(source, "acme/tools#v1"),
+            other => panic!("Expected plugin add, got {other:?}"),
+        }
+        let args = Args::try_parse_from(["test", "plugin", "update"]).unwrap();
+        assert!(matches!(
+            args.mode,
+            Some(Mode::Plugin {
+                command: PluginCommand::Update { name: None }
+            })
+        ));
     }
 }

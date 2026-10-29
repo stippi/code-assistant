@@ -3,6 +3,7 @@ mod cli;
 mod codex_commands;
 mod logging;
 mod mcp_commands;
+mod plugin_commands;
 
 // The domain layer lives in `code_assistant_core`; re-exported under the
 // historical module paths so call sites keep using `crate::session::…` etc.
@@ -62,6 +63,7 @@ fn main() -> Result<()> {
             block_on(mcp_commands::run_mcp_login(&server, &path))
         }
         Some(Mode::McpLogout { server }) => mcp_commands::run_mcp_logout(&server),
+        Some(Mode::Plugin { command }) => plugin_commands::run(command),
         Some(Mode::Server { verbose }) => {
             #[cfg(feature = "mcp-server")]
             {

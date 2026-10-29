@@ -44,8 +44,10 @@ committed file serves both tools.
 
 ## Merge semantics
 
-The effective server set for a session is the global config overlaid by the
-project's `.mcp.json`, **merged at the server level by name — project wins**.
+The effective server set for a session is the global config, overlaid by the
+servers of enabled plugins ([plugins.md](plugins.md#mcp-servers)), overlaid by
+the project's `.mcp.json`, **merged at the server level by name — project
+wins**.
 A colliding name takes the project file's entire server definition; the
 global definition of that name contributes nothing, so there is never a
 tool-level collision (tool names `mcp__<server>__<tool>` derive from the

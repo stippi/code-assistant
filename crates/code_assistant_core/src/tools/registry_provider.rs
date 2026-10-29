@@ -243,10 +243,12 @@ impl ConfigToolRegistry {
         // none of the config files, so include it here or the cached
         // (pre-auth, tool-less) registry would be reused until restart.
         let oauth = crate::tools::mcp::mcp_oauth_fingerprint();
+        // Installing, updating or switching a plugin changes its servers.
+        let plugins = crate::plugin_host::catalog().fingerprint().to_string();
         let (dir, local) = local_mcp_dir
             .map(|dir| (dir.display().to_string(), read(dir.join(".mcp.json"))))
             .unwrap_or_default();
-        format!("{tools}\u{0}{mcp}\u{0}{oauth}\u{0}{dir}\u{0}{local}")
+        format!("{tools}\u{0}{mcp}\u{0}{oauth}\u{0}{plugins}\u{0}{dir}\u{0}{local}")
     }
 }
 

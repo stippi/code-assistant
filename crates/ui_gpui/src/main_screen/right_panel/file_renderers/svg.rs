@@ -79,6 +79,7 @@ pub struct SvgPreview {
 }
 
 impl EventEmitter<CommentChange> for SvgPreview {}
+impl EventEmitter<super::RendererEdit> for SvgPreview {}
 
 impl SvgPreview {
     fn new(file: PathBuf) -> Self {

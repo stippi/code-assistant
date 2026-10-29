@@ -791,6 +791,8 @@ impl Gpui {
             // Flush pending debounced writes (UI settings + per-session UI
             // state) before the process exits, closing the debounce window.
             cx.on_app_quit(|cx| {
+                // Servers plugin file viewers started end with the app.
+                code_assistant_core::plugin_host::viewer::server::stop_all();
                 let settings = cx
                     .try_global::<UiSettingsGlobal>()
                     .map(|global| global.0.clone());

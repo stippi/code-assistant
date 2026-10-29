@@ -19,6 +19,7 @@ pub mod goals;
 pub mod injection;
 pub mod line_comments;
 pub mod persistence;
+pub mod plugin_host;
 pub mod plugins;
 pub mod session;
 pub mod session_query;

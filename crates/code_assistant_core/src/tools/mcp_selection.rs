@@ -113,14 +113,23 @@ fn project_key(project_root: &Path) -> String {
 }
 
 /// The servers available in `project_dir`, each with whether it is on by
-/// default: the enabled global servers plus the project's `.mcp.json` ones,
-/// which replace a global server of the same name.
+/// default: the enabled global servers, the enabled plugins' servers and the
+/// project's `.mcp.json` ones; a later source replaces an earlier server of
+/// the same name.
 fn available_servers(project_dir: Option<&Path>) -> BTreeMap<String, bool> {
     let mut servers = BTreeMap::new();
     if let Ok(config) = load_mcp_servers_config_raw() {
         for (name, server) in config.enabled_servers() {
             servers.insert(name.clone(), !server.off_in_new_sessions);
         }
+    }
+    for name in crate::plugin_host::catalog()
+        .mcp_servers()
+        .config
+        .servers
+        .into_keys()
+    {
+        servers.insert(name, true);
     }
     if let Some(dir) = project_dir
         && let Ok(content) = std::fs::read_to_string(dir.join(".mcp.json"))

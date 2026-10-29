@@ -91,6 +91,17 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
   `SessionService::restart_mcp_server`) without restarting the app
 - Details: `docs/mcp-client-mode.md`, `docs/project-scoped-mcp-servers.md`
 
+### Plugins
+- Git repositories (or local folders) with `.code-assistant-plugin/plugin.json`
+  contributing provider templates, MCP servers (read-only, merged between
+  global and project servers) and web file viewers
+  (`code_assistant_core::plugin_host`: `store` installs/updates, `catalog` is
+  what the app reads, `viewer` opens a page in a headless Chrome tab and
+  starts its server)
+- *Settings → Plugins*, `code-assistant plugin add|list|update|remove`;
+  viewers show in the Files view through `file_renderers::Renderer::Plugin`
+  (feature `browser-panel`); see `docs/plugins.md`
+
 ### Built-in Tool Toggles
 - Groups of built-in tools (browser, web, terminal, sub-agents, wakeups,
   session history) switch on/off like MCP servers: globally in `tools.json`
@@ -181,8 +192,9 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
   inside a tokio `block_on` (tokio's cooperation budget would never renew on
   the main thread), so `main` is not `#[tokio::main]`
 - The Files view can show a file other ways than as text (rendered
-  Markdown, drawn SVG), picked in a dropdown above the file; renderers are a
-  static table in `main_screen/right_panel/file_renderers/`:
+  Markdown, drawn SVG, a plugin's web viewer), picked in a dropdown above the
+  file; built-in renderers are a static table in
+  `main_screen/right_panel/file_renderers/`, plugin viewers follow them:
   `docs/file-renderers.md`
 - Frame profiling of the GPUI frontend (opt-in via
   `CODE_ASSISTANT_FRAME_PROFILE`, sweep runner and `sample` analysis in

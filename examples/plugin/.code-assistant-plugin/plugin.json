@@ -1,0 +1,41 @@
+{
+  "name": "example",
+  "version": "0.1.0",
+  "description": "Example plugin: provider templates, a read-only MCP server and a draw.io file viewer",
+  "author": "code-assistant",
+  "providerTemplates": [
+    {
+      "id": "ollama-local",
+      "label": "Ollama (this machine)",
+      "description": "Models served by Ollama on localhost.",
+      "provider": "ollama",
+      "config": { "base_url": "http://localhost:11434" }
+    },
+    {
+      "id": "litellm-proxy",
+      "label": "LiteLLM proxy",
+      "description": "An OpenAI-compatible LiteLLM proxy on localhost:4000; paste its virtual key as API key.",
+      "provider": "openai",
+      "config": { "base_url": "http://localhost:4000/v1" }
+    }
+  ],
+  "mcpServers": {
+    "fetch": {
+      "command": "uvx",
+      "args": ["mcp-server-fetch"]
+    }
+  },
+  "fileViewers": [
+    {
+      "id": "drawio",
+      "label": "draw.io",
+      "files": ["*.drawio", "*.drawio.svg"],
+      "url": "http://localhost:8080/?offline=1&https=0",
+      "protocol": "drawio",
+      "start": {
+        "command": "scripts/start-drawio.sh",
+        "timeoutSeconds": 300
+      }
+    }
+  ]
+}

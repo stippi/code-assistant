@@ -1,7 +1,12 @@
 //! Providers settings section — list configured providers, add/edit/remove.
+//!
+//! Adding a provider can start from a template an enabled plugin offers: it
+//! fills in the label, the provider type and the config (base URL, extra
+//! fields), and saving offers the template's models in the picker.
 
 use super::provider_forms::ProviderFormHolder;
 use super::provider_suggestions::{self, ProviderSuggestion, UserEnvironment};
+use code_assistant_core::plugin_host::PluginProviderTemplate;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::select::{Select, SelectEvent, SelectItem, SelectState};
 use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size};
@@ -52,6 +57,25 @@ impl SelectItem for ProviderTypeItem {
     }
 }
 
+/// Item for the template dropdown; the empty value is "no template".
+#[derive(Clone, Debug)]
+struct TemplateItem {
+    key: String,
+    title: String,
+}
+
+impl SelectItem for TemplateItem {
+    type Value = String;
+
+    fn title(&self) -> SharedString {
+        SharedString::from(self.title.clone())
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.key
+    }
+}
+
 const PROVIDER_TYPES: &[(&str, &str)] = &[
     ("anthropic", "Anthropic"),
     ("openai", "OpenAI"),
@@ -88,6 +112,12 @@ pub struct ProvidersSection {
     _provider_type_subscription: gpui_kit::Subscription,
     // Provider-specific form
     form_holder: ProviderFormHolder,
+    /// Templates of the enabled plugins, read when the add dialog opens.
+    templates: Vec<PluginProviderTemplate>,
+    template_select: Entity<SelectState<Vec<TemplateItem>>>,
+    _template_subscription: gpui_kit::Subscription,
+    /// The template the provider being added started from.
+    active_template: Option<PluginProviderTemplate>,
     // Onboarding suggestions
     suggestions: Vec<ProviderSuggestion>,
     /// Index of the suggestion currently being configured (expanded with input fields).
@@ -118,6 +148,11 @@ impl ProvidersSection {
 
         let form_holder = ProviderFormHolder::new("anthropic", window, cx);
 
+        let template_select =
+            cx.new(|cx| SelectState::new(Vec::<TemplateItem>::new(), None, window, cx));
+        let template_subscription =
+            cx.subscribe_in(&template_select, window, Self::on_template_changed);
+
         // Detect user environment and get applicable suggestions
         let user_env = UserEnvironment::detect();
         let suggestions = if providers.is_empty() {
@@ -135,6 +170,10 @@ impl ProvidersSection {
             provider_type_select,
             _provider_type_subscription: provider_type_subscription,
             form_holder,
+            templates: Vec::new(),
+            template_select,
+            _template_subscription: template_subscription,
+            active_template: None,
             suggestions,
             active_suggestion: None,
             suggestion_field_inputs: Vec::new(),
@@ -153,6 +192,66 @@ impl ProvidersSection {
             self.form_holder.switch_to(provider_id, window, cx);
             cx.notify();
         }
+    }
+
+    fn on_template_changed(
+        &mut self,
+        _: &Entity<SelectState<Vec<TemplateItem>>>,
+        event: &SelectEvent<Vec<TemplateItem>>,
+        window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) {
+        let SelectEvent::Confirm(Some(key)) = event else {
+            return;
+        };
+        let template = self.templates.iter().find(|t| t.key() == *key).cloned();
+        self.apply_template(template, window, cx);
+    }
+
+    /// Start the new provider from `template`, or from scratch for `None`.
+    fn apply_template(
+        &mut self,
+        template: Option<PluginProviderTemplate>,
+        window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (label, provider_type) = match &template {
+            Some(t) => (t.template.label.clone(), t.template.provider.clone()),
+            None => (String::new(), "anthropic".to_string()),
+        };
+        self.form_label_input.update(cx, |state, cx| {
+            state.set_value(SharedString::from(label), window, cx);
+        });
+        self.provider_type_select.update(cx, |state, cx| {
+            state.set_selected_value(&provider_type, window, cx);
+        });
+        self.form_holder.switch_to(&provider_type, window, cx);
+        self.form_holder.reset(window, cx);
+        if let Some(t) = &template {
+            self.form_holder.prefill(&t.template.config, window, cx);
+        }
+        self.form_provider_type = provider_type;
+        self.active_template = template;
+        cx.notify();
+    }
+
+    /// Offer the enabled plugins' templates in the add dialog.
+    fn reload_templates(&mut self, window: &mut gpui_kit::Window, cx: &mut Context<Self>) {
+        self.templates = code_assistant_core::plugin_host::catalog().provider_templates();
+        self.active_template = None;
+        let items: Vec<TemplateItem> = std::iter::once(TemplateItem {
+            key: String::new(),
+            title: "None — configure by hand".to_string(),
+        })
+        .chain(self.templates.iter().map(|t| TemplateItem {
+            key: t.key(),
+            title: format!("{} (plugin {})", t.template.label, t.plugin),
+        }))
+        .collect();
+        self.template_select.update(cx, |state, cx| {
+            state.set_items(items, window, cx);
+            state.set_selected_value(&String::new(), window, cx);
+        });
     }
 
     /// Load providers from the configuration file.
@@ -431,6 +530,11 @@ impl ProvidersSection {
             FormMode::Editing(key) => Some(key.clone()),
             _ => None,
         };
+        let adding = self.form_mode == FormMode::Adding;
+        let template_description = self
+            .active_template
+            .as_ref()
+            .and_then(|t| t.template.description.clone());
 
         div()
             .flex()
@@ -441,6 +545,37 @@ impl ProvidersSection {
             .pt_2()
             .border_t_1()
             .border_color(cx.theme().border)
+            // Template picker (adding, when plugins offer templates)
+            .when(adding && !self.templates.is_empty(), |el| {
+                el.child(
+                    self.render_form_row(
+                        "Template",
+                        div()
+                            .child(
+                                Select::new(&self.template_select)
+                                    .with_size(Size::Small)
+                                    .icon(
+                                        Icon::default()
+                                            .path("icons/chevron_up_down.svg")
+                                            .with_size(Size::XSmall)
+                                            .text_color(cx.theme().muted_foreground),
+                                    )
+                                    .min_w(px(200.)),
+                            )
+                            .into_any_element(),
+                        cx,
+                    ),
+                )
+                .when_some(template_description, |el, description| {
+                    el.child(
+                        div()
+                            .pl(px(83.))
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(SharedString::from(description)),
+                    )
+                })
+            })
             // Form rows (label + widget side by side)
             // Label field
             .child(self.render_form_row(
@@ -591,6 +726,7 @@ impl ProvidersSection {
             )
             .on_click(cx.listener(|this, _, window, cx| {
                 this.form_mode = FormMode::Adding;
+                this.reload_templates(window, cx);
                 this.form_provider_type = "anthropic".to_string();
                 this.provider_type_select.update(cx, |state, cx| {
                     state.set_selected_value(&"anthropic".to_string(), window, cx);
@@ -632,6 +768,18 @@ impl ProvidersSection {
 
         // Get config from the provider-specific form
         let mut config = self.form_holder.to_config_json(cx);
+
+        // A template's fields the form does not show (extra headers, flags)
+        // are kept; what the form shows wins.
+        let template = match self.form_mode {
+            FormMode::Adding => self.active_template.clone(),
+            _ => None,
+        };
+        if let Some(template) = &template {
+            for (field, value) in &template.template.config {
+                config.entry(field.clone()).or_insert_with(|| value.clone());
+            }
+        }
 
         // When editing, preserve fields that weren't overwritten
         if let FormMode::Editing(ref existing_key) = self.form_mode
@@ -693,7 +841,7 @@ impl ProvidersSection {
         );
         entry.insert("config".to_string(), serde_json::Value::Object(config));
 
-        map.insert(key, serde_json::Value::Object(entry));
+        map.insert(key.clone(), serde_json::Value::Object(entry));
 
         // Ensure parent directory exists
         if let Some(parent) = config_path.parent() {
@@ -706,7 +854,13 @@ impl ProvidersSection {
                     warn!("Failed to write providers.json: {}", e);
                 } else {
                     debug!("Saved provider to {}", config_path.display());
+                    if let Some(template) = &template
+                        && let Err(e) = offer_template_models(&key, &template.template.models)
+                    {
+                        warn!("Failed to offer the template's models: {e:#}");
+                    }
                     self.form_mode = FormMode::Hidden;
+                    self.active_template = None;
                     self.reload();
                 }
             }
@@ -1062,6 +1216,25 @@ impl ProvidersSection {
                     ),
             )
     }
+}
+
+/// Offer `models` of provider `key` in the model picker; the first becomes
+/// the default model when there is none yet.
+fn offer_template_models(key: &str, models: &[String]) -> anyhow::Result<()> {
+    if models.is_empty() {
+        return Ok(());
+    }
+    let mut selection = llm::model_selection::ModelSelection::load_or_import()?;
+    for model in models {
+        selection.set_enabled(key, model, true);
+    }
+    selection.save()?;
+    let mut default_model = code_assistant_core::session::default_model::DefaultModelConfig::load();
+    if default_model.model.is_none() {
+        default_model.model = Some(llm::provider_config::ModelConfig::key_for(key, &models[0]));
+        default_model.save()?;
+    }
+    Ok(())
 }
 
 impl Focusable for ProvidersSection {

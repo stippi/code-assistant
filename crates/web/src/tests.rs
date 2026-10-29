@@ -1760,3 +1760,27 @@ async fn persistent_profile_reaps_an_orphan_and_refuses_a_second_opener() {
         .expect("reopen after close");
     again.close().await;
 }
+
+/// A page's scripts reach the embedder: the init script runs before the
+/// page's own, and a bound function hands strings over, after navigations too.
+#[tokio::test]
+async fn init_scripts_and_bindings_talk_to_the_embedder() {
+    let session = BrowserSession::open(BrowserLaunchConfig::default(), "bridge")
+        .await
+        .unwrap();
+    let tab = session.active_tab().unwrap();
+    let mut binding = tab.bind("__host").await.unwrap();
+    tab.add_init_script("window.__early = 'set before the page';")
+        .await
+        .unwrap();
+    for round in 0..2 {
+        let page = format!("data:text/html,<script>__host(window.__early + ' {round}')</script>");
+        tab.navigate(&page).await.unwrap();
+        let payload = tokio::time::timeout(std::time::Duration::from_secs(10), binding.next())
+            .await
+            .expect("the page calls the binding")
+            .unwrap();
+        assert_eq!(payload, format!("set before the page {round}"));
+    }
+    session.close().await;
+}
