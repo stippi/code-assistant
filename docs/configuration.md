@@ -185,6 +185,14 @@ over HTTP (streamable transport):
 }
 ```
 
+## Plugins
+
+Plugins add provider templates, read-only MCP servers and file viewers (such
+as draw.io for `.drawio` files). Install them in *Settings → Plugins* or with
+`code-assistant plugin add <git-url | owner/repo[#ref] | folder>`; they live
+in `~/.config/code-assistant/plugins/`. See [plugins.md](plugins.md) and the
+example in [`examples/plugin`](../examples/plugin).
+
 ## Advanced CLI options
 
 <details>

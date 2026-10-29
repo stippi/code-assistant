@@ -76,6 +76,7 @@ pub struct RasterPreview {
 }
 
 impl EventEmitter<CommentChange> for RasterPreview {}
+impl EventEmitter<super::RendererEdit> for RasterPreview {}
 
 impl RasterPreview {
     fn new(file: PathBuf) -> Self {

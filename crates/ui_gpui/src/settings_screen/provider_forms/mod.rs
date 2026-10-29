@@ -264,6 +264,30 @@ impl ProviderFormHolder {
         }
     }
 
+    /// Fill the active form with a template's config for a new provider:
+    /// like [`load_config`](Self::load_config), but not as an edit of an
+    /// existing entry (the API key is asked for, not kept).
+    pub fn prefill(
+        &self,
+        config: &serde_json::Map<String, Value>,
+        window: &mut Window,
+        cx: &mut Context<super::providers_section::ProvidersSection>,
+    ) {
+        self.load_config(config, window, cx);
+        if let Some(form) = &self.default_form {
+            form.update(cx, |form, cx| {
+                form.is_editing = false;
+                cx.notify();
+            });
+        }
+        if let Some(form) = &self.vertex_form {
+            form.update(cx, |form, cx| {
+                form.is_editing = false;
+                cx.notify();
+            });
+        }
+    }
+
     /// Reset the active form.
     pub fn reset(
         &self,

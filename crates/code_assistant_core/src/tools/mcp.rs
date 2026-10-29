@@ -142,10 +142,12 @@ pub fn mcp_oauth_credential_store(
 }
 
 /// The configuration of server `name` as an agent run sees it: the global
-/// `mcp-servers.json`, overridden by the project-local `.mcp.json` in
-/// `local_mcp_dir` when given. Errors if neither defines the server.
+/// `mcp-servers.json`, overridden by the enabled plugins' servers and then by
+/// the project-local `.mcp.json` in `local_mcp_dir` when given. Errors if
+/// none defines the server.
 pub fn resolve_mcp_server(name: &str, local_mcp_dir: Option<&Path>) -> Result<McpServerConfig> {
     let mut config = load_mcp_servers_config()?;
+    config.merge(crate::plugin_host::catalog().mcp_servers().config);
     if let Some(local) = local_mcp_dir.and_then(load_local_mcp_json) {
         config.merge(local);
     }
@@ -378,8 +380,9 @@ fn load_local_mcp_json_reporting(dir: &Path) -> Option<(McpServersConfig, Vec<Mc
     }
 }
 
-/// Connect to all enabled servers from `mcp-servers.json` (plus, when
-/// `local_mcp_dir` is set, the project-local `.mcp.json` in that directory)
+/// Connect to all enabled servers from `mcp-servers.json`, the enabled
+/// plugins (which replace a global server of the same name) and, when
+/// `local_mcp_dir` is set, the project-local `.mcp.json` in that directory
 /// and register their enabled tools with code-assistant's scope tags.
 /// Connections are obtained from `pool`, so servers shared with a previous
 /// build (e.g. the global set, unchanged when only a project differs) stay
@@ -398,6 +401,15 @@ pub async fn register_configured_mcp_tools_in(
                 return Vec::new();
             }
         };
+    let plugins = crate::plugin_host::catalog().mcp_servers();
+    if !plugins.config.servers.is_empty() {
+        tracing::info!(
+            "Merged {} server(s) from plugins",
+            plugins.config.servers.len()
+        );
+    }
+    config.merge(plugins.config);
+    skipped.extend(plugins.skipped);
     if let Some(dir) = local_mcp_dir
         && let Some((local, local_skipped)) = load_local_mcp_json_reporting(dir)
     {
@@ -573,6 +585,47 @@ mod tests {
 
             let error = resolve_mcp_server("local", None).unwrap_err();
             assert!(error.to_string().contains("No MCP server named 'local'"));
+        });
+    }
+
+    /// An enabled plugin's servers join the global ones (replacing one of the
+    /// same name) and go away when the plugin is switched off.
+    #[test]
+    fn resolve_mcp_server_includes_plugin_servers() {
+        let config = tempfile::tempdir().unwrap();
+        let plugin = tempfile::tempdir().unwrap();
+        std::fs::write(
+            config.path().join("mcp-servers.json"),
+            r#"{ "servers": { "shared": { "url": "https://global.example.com/shared" } } }"#,
+        )
+        .unwrap();
+        let manifest = plugin.path().join(crate::plugin_host::MANIFEST_PATH);
+        std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        std::fs::write(
+            manifest,
+            r#"{ "name": "tools", "mcpServers": {
+                "shared": { "type": "http", "url": "https://plugin.example.com/shared" },
+                "extra": { "type": "http", "url": "https://plugin.example.com/extra" }
+            } }"#,
+        )
+        .unwrap();
+        temp_env::with_var("CODE_ASSISTANT_CONFIG_DIR", Some(config.path()), || {
+            let url = |name: &str| {
+                resolve_mcp_server(name, None)
+                    .ok()
+                    .map(|server| match server.transport {
+                        McpTransport::Http { url, .. } => url,
+                        other => panic!("expected an HTTP server, got {other:?}"),
+                    })
+            };
+            assert_eq!(url("extra"), None);
+            let store = crate::plugin_host::PluginStore::new();
+            store.install(plugin.path().to_str().unwrap()).unwrap();
+            assert_eq!(url("extra").unwrap(), "https://plugin.example.com/extra");
+            assert_eq!(url("shared").unwrap(), "https://plugin.example.com/shared");
+            store.set_enabled("tools", false).unwrap();
+            assert_eq!(url("extra"), None);
+            assert_eq!(url("shared").unwrap(), "https://global.example.com/shared");
         });
     }
 

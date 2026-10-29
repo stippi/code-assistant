@@ -5,6 +5,9 @@
 //! The section edits the *raw* config (env values keep their `${VAR}`
 //! placeholders); only the discovery connection resolves them. Servers are
 //! connected when the app starts, so config changes apply after a restart.
+//!
+//! Servers that enabled plugins add are listed below the configured ones,
+//! read-only: they change with the plugin (*Settings → Plugins*).
 
 use code_assistant_core::tools::mcp::{
     self, DiscoveredTool, McpServerConfig, McpServersConfig, McpTransport,
@@ -43,9 +46,17 @@ enum DiscoveryState {
     Authenticating,
 }
 
+/// A server an enabled plugin adds.
+struct PluginServer {
+    name: String,
+    plugin: String,
+    server: McpServerConfig,
+}
+
 pub struct McpSection {
     focus_handle: FocusHandle,
     config: McpServersConfig,
+    plugin_servers: Vec<PluginServer>,
     /// Names of servers whose cards are expanded.
     expanded: HashSet<String>,
     /// Discovery state per server, filled lazily when a card is expanded.
@@ -85,6 +96,7 @@ impl McpSection {
         Self {
             focus_handle: cx.focus_handle(),
             config: load_config(),
+            plugin_servers: load_plugin_servers(),
             expanded: HashSet::new(),
             discovered: HashMap::new(),
             form_mode: FormMode::Hidden,
@@ -101,6 +113,7 @@ impl McpSection {
     /// Reload the configuration from disk.
     pub fn reload(&mut self) {
         self.config = load_config();
+        self.plugin_servers = load_plugin_servers();
         self.discovered.clear();
     }
 
@@ -168,15 +181,13 @@ impl McpSection {
             let server_name = name.clone();
             let result = cx
                 .background_spawn(async move {
-                    // The runtime config resolves ${ENV_VAR} placeholders.
-                    let config = mcp::load_mcp_servers_config()?;
-                    let server = config.servers.get(&server_name).ok_or_else(|| {
-                        anyhow::anyhow!("server '{server_name}' not found in config")
-                    })?;
+                    // The runtime config resolves ${ENV_VAR} placeholders
+                    // and includes the plugins' servers.
+                    let server = mcp::resolve_mcp_server(&server_name, None)?;
                     let runtime = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()?;
-                    runtime.block_on(mcp::discover_server_tools(&server_name, server))
+                    runtime.block_on(mcp::discover_server_tools(&server_name, &server))
                 })
                 .await;
             this.update(cx, |this, cx| {
@@ -368,16 +379,7 @@ impl McpSection {
         let name_for_expand = name.to_string();
         let name_for_switch = name.to_string();
 
-        let summary = match &server.transport {
-            McpTransport::Stdio { command, args, .. } => {
-                if args.is_empty() {
-                    command.clone()
-                } else {
-                    format!("{} {}", command, join_args(args))
-                }
-            }
-            McpTransport::Http { url, .. } => url.clone(),
-        };
+        let summary = transport_summary(&server.transport);
 
         div()
             .flex()
@@ -465,8 +467,6 @@ impl McpSection {
     ) -> impl IntoElement {
         let name_for_edit = name.to_string();
         let name_for_delete = name.to_string();
-        let name_for_retry = name.to_string();
-        let name_for_auth = name.to_string();
         let name_for_new_sessions = name.to_string();
         let view = cx.entity();
 
@@ -567,104 +567,234 @@ impl McpSection {
                     ),
             )
             // Tool list by discovery state
-            .child(match self.discovered.get(name) {
-                None | Some(DiscoveryState::Loading) => div()
-                    .py_2()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("Connecting to server…")
-                    .into_any_element(),
-                Some(DiscoveryState::Authenticating) => div()
-                    .py_2()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("Authenticating… complete the login in your browser.")
-                    .into_any_element(),
-                Some(DiscoveryState::NeedsAuth) => div()
+            .child(self.render_discovery(name, Some(server), cx))
+    }
+
+    /// A server an enabled plugin adds: shown like a configured one, but
+    /// without switches, edit or delete — it changes with its plugin.
+    fn render_plugin_server_card(
+        &self,
+        entry: &PluginServer,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let name = entry.name.as_str();
+        let is_expanded = self.expanded.contains(name);
+        let name_for_expand = name.to_string();
+        let shadows = self.config.servers.contains_key(name);
+        div()
+            .flex()
+            .flex_col()
+            .rounded_lg()
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().secondary)
+            .child(
+                div()
+                    .id(SharedString::from(format!(
+                        "mcp-plugin-server-header-{name}"
+                    )))
                     .flex()
-                    .flex_col()
-                    .gap_2()
-                    .py_2()
+                    .items_center()
+                    .gap_3()
+                    .px_4()
+                    .py_3()
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _window, cx| {
+                        this.toggle_expanded(&name_for_expand, cx);
+                    }))
                     .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("This server requires authorization."),
+                        Icon::default()
+                            .path(SharedString::from(if is_expanded {
+                                "icons/chevron_down.svg"
+                            } else {
+                                "icons/chevron_right.svg"
+                            }))
+                            .with_size(Size::Small)
+                            .text_color(cx.theme().muted_foreground),
                     )
                     .child(
                         div()
-                            .id(SharedString::from(format!("mcp-auth-{name}")))
-                            .self_start()
-                            .px_3()
-                            .py_1()
-                            .rounded_md()
-                            .cursor_pointer()
-                            .text_xs()
-                            .bg(cx.theme().primary)
-                            .text_color(cx.theme().primary_foreground)
-                            .hover(|s| s.opacity(0.9))
-                            .child("Authenticate")
-                            .on_click(cx.listener(move |this, _, _window, cx| {
-                                this.start_authentication(name_for_auth.clone(), cx);
-                            })),
-                    )
-                    .into_any_element(),
-                Some(DiscoveryState::Failed(error)) => div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .py_2()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(gpui_kit::hsla(0.0, 0.7, 0.5, 1.0))
-                            .child(SharedString::from(format!("Connection failed: {error}"))),
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(gpui_kit::FontWeight::MEDIUM)
+                                    .text_color(cx.theme().foreground)
+                                    .child(SharedString::from(name.to_string())),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .truncate()
+                                    .child(SharedString::from(transport_summary(
+                                        &entry.server.transport,
+                                    ))),
+                            ),
                     )
                     .child(
                         div()
-                            .id(SharedString::from(format!("mcp-retry-{name}")))
-                            .self_start()
+                            .flex_none()
                             .px_2()
-                            .py_1()
+                            .py(px(1.))
                             .rounded_md()
-                            .cursor_pointer()
+                            .bg(cx.theme().muted)
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .hover(|s| s.bg(cx.theme().muted))
-                            .child("Retry")
-                            .on_click(cx.listener(move |this, _, _window, cx| {
-                                this.start_discovery(name_for_retry.clone(), cx);
-                                cx.notify();
-                            })),
-                    )
-                    .into_any_element(),
-                Some(DiscoveryState::Loaded(tools)) if tools.is_empty() => div()
-                    .py_2()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("The server offers no tools.")
-                    .into_any_element(),
-                Some(DiscoveryState::Loaded(tools)) => div()
-                    .flex()
-                    .flex_col()
-                    .children(
-                        tools
-                            .iter()
-                            .map(|tool| self.render_tool_row(name, server, tool, cx)),
-                    )
-                    .into_any_element(),
+                            .child(SharedString::from(format!("plugin {}", entry.plugin))),
+                    ),
+            )
+            .when(is_expanded, |el| {
+                el.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .px_4()
+                        .pb_3()
+                        .pt_2()
+                        .border_t_1()
+                        .border_color(cx.theme().border)
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(SharedString::from(format!(
+                                    "Added by the plugin '{}' and not editable here. Switch it \
+                                     per session in the input row, or turn the plugin off in \
+                                     Settings → Plugins.{}",
+                                    entry.plugin,
+                                    if shadows {
+                                        " It replaces the configured server of the same name."
+                                    } else {
+                                        ""
+                                    }
+                                ))),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_weight(gpui_kit::FontWeight::MEDIUM)
+                                .text_color(cx.theme().muted_foreground)
+                                .child("TOOLS"),
+                        )
+                        .child(self.render_discovery(name, None, cx)),
+                )
             })
+    }
+
+    /// The server's tools by discovery state; `server` is `None` for a
+    /// read-only (plugin) server, whose tools cannot be switched here.
+    fn render_discovery(
+        &self,
+        name: &str,
+        server: Option<&McpServerConfig>,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        let name_for_retry = name.to_string();
+        let name_for_auth = name.to_string();
+        match self.discovered.get(name) {
+            None | Some(DiscoveryState::Loading) => div()
+                .py_2()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child("Connecting to server…")
+                .into_any_element(),
+            Some(DiscoveryState::Authenticating) => div()
+                .py_2()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child("Authenticating… complete the login in your browser.")
+                .into_any_element(),
+            Some(DiscoveryState::NeedsAuth) => div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .py_2()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("This server requires authorization."),
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(format!("mcp-auth-{name}")))
+                        .self_start()
+                        .px_3()
+                        .py_1()
+                        .rounded_md()
+                        .cursor_pointer()
+                        .text_xs()
+                        .bg(cx.theme().primary)
+                        .text_color(cx.theme().primary_foreground)
+                        .hover(|s| s.opacity(0.9))
+                        .child("Authenticate")
+                        .on_click(cx.listener(move |this, _, _window, cx| {
+                            this.start_authentication(name_for_auth.clone(), cx);
+                        })),
+                )
+                .into_any_element(),
+            Some(DiscoveryState::Failed(error)) => div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .py_2()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(gpui_kit::hsla(0.0, 0.7, 0.5, 1.0))
+                        .child(SharedString::from(format!("Connection failed: {error}"))),
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(format!("mcp-retry-{name}")))
+                        .self_start()
+                        .px_2()
+                        .py_1()
+                        .rounded_md()
+                        .cursor_pointer()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .hover(|s| s.bg(cx.theme().muted))
+                        .child("Retry")
+                        .on_click(cx.listener(move |this, _, _window, cx| {
+                            this.start_discovery(name_for_retry.clone(), cx);
+                            cx.notify();
+                        })),
+                )
+                .into_any_element(),
+            Some(DiscoveryState::Loaded(tools)) if tools.is_empty() => div()
+                .py_2()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child("The server offers no tools.")
+                .into_any_element(),
+            Some(DiscoveryState::Loaded(tools)) => div()
+                .flex()
+                .flex_col()
+                .children(
+                    tools
+                        .iter()
+                        .map(|tool| self.render_tool_row(name, server, tool, cx)),
+                )
+                .into_any_element(),
+        }
     }
 
     fn render_tool_row(
         &self,
         server_name: &str,
-        server: &McpServerConfig,
+        server: Option<&McpServerConfig>,
         tool: &DiscoveredTool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let view = cx.entity();
-        let enabled = server.is_tool_enabled(&tool.name);
+        let enabled = server.map(|server| server.is_tool_enabled(&tool.name));
         let server_for_click = server_name.to_string();
         let tool_for_click = tool.name.clone();
 
@@ -696,21 +826,23 @@ impl McpSection {
                         )
                     }),
             )
-            .child(
-                Switch::new(SharedString::from(format!(
-                    "mcp-tool-{server_name}-{}",
-                    tool.name
-                )))
-                .checked(enabled)
-                .with_size(Size::Small)
-                .on_click(move |_new_value, _window, app| {
-                    let server = server_for_click.clone();
-                    let tool = tool_for_click.clone();
-                    view.update(app, |this, cx| {
-                        this.toggle_tool(&server, &tool, cx);
-                    });
-                }),
-            )
+            .when_some(enabled, |el, enabled| {
+                el.child(
+                    Switch::new(SharedString::from(format!(
+                        "mcp-tool-{server_name}-{}",
+                        tool.name
+                    )))
+                    .checked(enabled)
+                    .with_size(Size::Small)
+                    .on_click(move |_new_value, _window, app| {
+                        let server = server_for_click.clone();
+                        let tool = tool_for_click.clone();
+                        view.update(app, |this, cx| {
+                            this.toggle_tool(&server, &tool, cx);
+                        });
+                    }),
+                )
+            })
     }
 
     /// The add/edit form: name, a transport selector, and the fields for the
@@ -953,6 +1085,34 @@ impl McpSection {
     }
 }
 
+/// How a server is reached, in one line: its command line or URL.
+fn transport_summary(transport: &McpTransport) -> String {
+    match transport {
+        McpTransport::Stdio { command, args, .. } => {
+            if args.is_empty() {
+                command.clone()
+            } else {
+                format!("{} {}", command, join_args(args))
+            }
+        }
+        McpTransport::Http { url, .. } => url.clone(),
+    }
+}
+
+fn load_plugin_servers() -> Vec<PluginServer> {
+    let servers = code_assistant_core::plugin_host::catalog().mcp_servers();
+    servers
+        .config
+        .servers
+        .into_iter()
+        .map(|(name, server)| PluginServer {
+            plugin: servers.owners.get(&name).cloned().unwrap_or_default(),
+            name,
+            server,
+        })
+        .collect()
+}
+
 fn load_config() -> McpServersConfig {
     mcp::load_mcp_servers_config_raw().unwrap_or_else(|e| {
         warn!("Failed to load mcp-servers.json: {e:#}");
@@ -1133,6 +1293,23 @@ impl Render for McpSection {
                 el.child(div().flex().flex_col().gap_2().children(servers.iter().map(
                     |(name, server)| self.render_server_card(name, server, cx).into_any_element(),
                 )))
+            })
+            .when(!self.plugin_servers.is_empty(), |el| {
+                el.child(
+                    div()
+                        .pt_2()
+                        .text_xs()
+                        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                        .text_color(cx.theme().muted_foreground)
+                        .child("FROM PLUGINS"),
+                )
+                .child(
+                    div().flex().flex_col().gap_2().children(
+                        self.plugin_servers.iter().map(|entry| {
+                            self.render_plugin_server_card(entry, cx).into_any_element()
+                        }),
+                    ),
+                )
             })
             // Add dialog overlay
             .when(self.form_mode == FormMode::Adding, |el| {
