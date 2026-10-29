@@ -1,0 +1,14 @@
+{{/* Previous/next within the page's docs area, in nav order. */}}
+{{ $area := partial "area.html" . }}
+{{ $all := slice }}
+{{ range partial "area-sections.html" $area }}{{ range .Pages }}{{ $all = $all | append . }}{{ end }}{{ end }}
+{{ $prev := false }}{{ $next := false }}{{ $found := false }}
+{{ range $all }}
+  {{ if $found }}{{ if not $next }}{{ $next = . }}{{ end }}{{ else if eq . $ }}{{ $found = true }}{{ else }}{{ $prev = . }}{{ end }}
+{{ end }}
+{{ if $found }}
+<div class="pager">
+  {{ with $prev }}<a href="{{ .RelPermalink }}"><small>← Previous</small>{{ .LinkTitle }}</a>{{ else }}<span></span>{{ end }}
+  {{ with $next }}<a class="next" href="{{ .RelPermalink }}"><small>Next →</small>{{ .LinkTitle }}</a>{{ end }}
+</div>
+{{ end }}

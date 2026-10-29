@@ -7,3 +7,6 @@ tarpaulin-report.html
 .DS_Store
 code-assistant
 .models
+/site/public
+/site/resources
+/site/.hugo_build.lock

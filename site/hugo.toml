@@ -1,0 +1,45 @@
+baseURL = "https://stippi.github.io/code-assistant/"
+locale = "en"
+title = "Code Assistant"
+enableGitInfo = false
+disableKinds = ["taxonomy", "term", "rss"]
+
+[params]
+  description = "An open-source AI coding agent written in Rust, with a native app, a terminal mode and editor integration. You can see every tool call and what it gave back to the model."
+  repo = "https://github.com/stippi/code-assistant"
+  editBase = "https://github.com/stippi/code-assistant/edit/main/site/content/"
+  releases = "https://github.com/stippi/code-assistant/releases/latest"
+
+[outputs]
+  home = ["HTML", "JSON"]
+
+[markup]
+  [markup.goldmark.renderer]
+    unsafe = true
+  [markup.highlight]
+    noClasses = false
+    style = "github"
+  [markup.tableOfContents]
+    startLevel = 2
+    endLevel = 3
+
+[menus]
+  [[menus.main]]
+    name = "Tour"
+    url = "/#tour"
+    weight = 10
+  [[menus.main]]
+    name = "Guides"
+    params = { area = "guides" }
+    pageRef = "/docs"
+    weight = 20
+  [[menus.main]]
+    name = "Configure"
+    params = { area = "configure" }
+    pageRef = "/docs/configure"
+    weight = 30
+  [[menus.main]]
+    name = "Reference"
+    params = { area = "reference" }
+    pageRef = "/docs/reference"
+    weight = 40

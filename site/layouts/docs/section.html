@@ -1,0 +1,19 @@
+{{ define "main" }}
+<div class="docs">
+  {{ partial "docs-nav.html" . }}
+  <main class="doc">
+    {{ if and (ne .RelPermalink ("docs/" | relURL)) (eq (partial "area.html" .) "guides") }}<div class="crumbs"><a href="{{ "docs/" | relURL }}">Guides</a></div>{{ end }}
+    <h1>{{ .Title }}</h1>
+    {{ with .Params.lede }}<p class="lede">{{ . | markdownify }}</p>{{ end }}
+    <div class="prose">{{ .Content }}</div>
+    {{ if .Pages }}
+    <div class="page-cards">
+      {{ range .Pages }}
+      <a href="{{ .RelPermalink }}"><b>{{ .Title }}{{ with .Params.only }}<span class="only">{{ . }}</span>{{ end }}</b><span>{{ with .Params.lede }}{{ . | plainify }}{{ else }}{{ .Summary | plainify | truncate 140 }}{{ end }}</span></a>
+      {{ end }}
+    </div>
+    {{ end }}
+  </main>
+  <aside class="toc"></aside>
+</div>
+{{ end }}

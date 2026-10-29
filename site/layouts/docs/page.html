@@ -1,0 +1,16 @@
+{{ define "main" }}
+<div class="docs">
+  {{ partial "docs-nav.html" . }}
+  <main class="doc">
+    {{ $area := partial "area.html" . }}
+    <div class="crumbs">{{ if eq $area "guides" }}<a href="{{ "docs/" | relURL }}">Guides</a>{{ with .Parent }}{{ if ne .RelPermalink ("docs/" | relURL) }} / <a href="{{ .RelPermalink }}">{{ .Title }}</a>{{ end }}{{ end }}{{ else }}{{ with .Parent }}<a href="{{ .RelPermalink }}">{{ .Title }}</a>{{ end }}{{ end }}</div>
+    <h1>{{ .Title }}</h1>
+    {{ with .Params.lede }}<p class="lede">{{ . | markdownify }}</p>{{ end }}
+    {{ partial "doc-meta.html" . }}
+    <div class="prose">{{ .Content }}</div>
+    {{ partial "pager.html" . }}
+    <div class="edit-link"><a href="{{ site.Params.editBase }}{{ .File.Path }}">✎ Edit this page on GitHub</a></div>
+  </main>
+  <aside class="toc">{{ if gt (len .TableOfContents) 40 }}<b>On this page</b>{{ .TableOfContents }}{{ end }}</aside>
+</div>
+{{ end }}

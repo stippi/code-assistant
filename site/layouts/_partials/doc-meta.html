@@ -1,0 +1,9 @@
+{{ $names := dict "app" "App" "tui" "Terminal" "acp" "Editor (ACP)" }}
+{{ with .Params.frontends }}
+{{ $have := . }}
+<div class="meta">
+  {{ range slice "app" "tui" "acp" }}
+    {{ if in $have . }}<span class="pill avail">✓ {{ index $names . }}</span>{{ else }}<span class="pill na">{{ index $names . }}</span>{{ end }}
+  {{ end }}
+</div>
+{{ end }}

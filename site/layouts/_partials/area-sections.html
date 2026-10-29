@@ -1,0 +1,7 @@
+{{- /* The docs sections of one area, in nav order. */ -}}
+{{- $area := . -}}
+{{- $out := slice -}}
+{{- range (site.GetPage "/docs").Sections -}}
+  {{- if eq (.Params.area | default "guides") $area }}{{ $out = $out | append . }}{{ end -}}
+{{- end -}}
+{{- return $out -}}

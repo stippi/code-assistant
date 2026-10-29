@@ -1,0 +1,12 @@
+{{- /* The selector row under the input; on="<label>" highlights one. Optional inner HTML: a menu below it. */ -}}
+{{- $on := .Get "on" -}}
+<div class="mock"><div class="selectors">
+{{- range slice "Claude Sonnet" "Effort: medium" "Ask Before Writes" "Workspace Write" "Tools" "⎇ Local" -}}
+{{- $key := index (split . ":") 0 -}}
+<span class="sel{{ if or (eq $on .) (eq $on $key) }} on{{ end }}">{{ . }}</span>
+{{- end -}}
+</div>
+{{- with .Inner }}{{ . | safeHTML }}{{ end -}}
+{{- with .Get "caption" }}<div class="caption">{{ . }}</div>{{ end -}}
+</div>
+{{- /* chomp */ -}}

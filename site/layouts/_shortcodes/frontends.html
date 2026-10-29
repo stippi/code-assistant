@@ -1,0 +1,5 @@
+{{- /* Tabs for App / Terminal / Editor. Children: {{< fe "app" >}}…{{< /fe >}}. The tab choice is site-wide. */ -}}
+<div class="fe-group"><div class="fe-tabs" role="tablist"><button role="tab" data-fe-pick="app" aria-selected="true">🖥 App</button><button role="tab" data-fe-pick="tui" aria-selected="false">⌨ Terminal</button><button role="tab" data-fe-pick="acp" aria-selected="false">🧩 Editor (ACP)</button></div>
+{{ .Inner }}
+<div class="fe-missing">{{ with .Get "missing" }}{{ . | markdownify }}{{ else }}Not available in this frontend.{{ end }}</div></div>
+{{- /* chomp */ -}}

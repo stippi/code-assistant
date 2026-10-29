@@ -1,0 +1,5 @@
+{{/* A terminal transcript. Markup inside: [dim]…[/], [acc]…[/], [amb]…[/] for colors. */}}
+{{- $t := trim .Inner "\n" | htmlEscape -}}
+{{- $t = replaceRE `\[(dim|acc|amb)\]` `<span class="$1">` $t -}}
+{{- $t = replace $t "[/]" "</span>" -}}
+<div class="term-block">{{ $t | safeHTML }}</div>

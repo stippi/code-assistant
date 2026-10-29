@@ -1,0 +1,53 @@
+{{ define "main" }}
+{{ $h := hugo.Data.home }}
+<div class="wrap">
+  <section class="hero">
+    <h1>{{ $h.hero.title | safeHTML }}</h1>
+    <p>{{ $h.hero.text }}</p>
+    <div class="cta">
+      {{ range $h.hero.buttons }}<a class="button{{ if .primary }} primary{{ end }}" href="{{ if hasPrefix .href "http" }}{{ .href }}{{ else }}{{ .href | relURL }}{{ end }}">{{ .label }}</a>{{ end }}
+    </div>
+    <div class="platforms">{{ $h.hero.platforms }}</div>
+  </section>
+  <div id="tour">{{ partial "tour.html" (dict "docs" false) }}</div>
+</div>
+
+<section class="band alt" id="ways">
+  <div class="wrap">
+    <div class="eyebrow">{{ $h.ways.eyebrow }}</div>
+    <h2>{{ $h.ways.title }}</h2>
+    <p class="sub">{{ $h.ways.text }}</p>
+    <div class="grid4">
+      {{ range $h.ways.items }}
+      <a class="tile" href="{{ .href | relURL }}"><div class="ico">{{ .icon }}</div><h3>{{ .title }}</h3><p>{{ .text }}</p><pre>{{ .command }}</pre></a>
+      {{ end }}
+    </div>
+  </div>
+</section>
+
+<section class="band" id="features">
+  <div class="wrap">
+    <div class="eyebrow">{{ $h.features.eyebrow }}</div>
+    <h2>{{ $h.features.title }}</h2>
+    <p class="sub">{{ $h.features.text }}</p>
+    <div class="grid3">
+      {{ range $h.features.items }}
+      <a class="tile" href="{{ .href | relURL }}"><h3>{{ .title }}</h3><p>{{ .text | markdownify }}</p><span class="more">Read more →</span></a>
+      {{ end }}
+    </div>
+  </div>
+</section>
+
+<section class="band alt" id="config">
+  <div class="wrap split">
+    <div>
+      <div class="eyebrow">{{ $h.config.eyebrow }}</div>
+      <h2>{{ $h.config.title }}</h2>
+      <p class="sub">{{ $h.config.text | markdownify }}</p>
+      <ul class="checks">{{ range $h.config.points }}<li>{{ . | markdownify }}</li>{{ end }}</ul>
+      <a class="button" href="{{ "docs/configure/" | relURL }}">Configuration guide →</a>
+    </div>
+    <div>{{ highlight $h.config.snippet "jsonc" "" }}</div>
+  </div>
+</section>
+{{ end }}

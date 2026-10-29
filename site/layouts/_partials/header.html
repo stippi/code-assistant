@@ -1,0 +1,24 @@
+<header class="site">
+  <div class="inner">
+    {{ if not .IsHome }}<button class="icon-btn menu-btn" data-menu-toggle aria-label="Open navigation">☰</button>{{ end }}
+    <a class="brand" href="{{ "" | relURL }}"><img src="{{ "images/logo.svg" | relURL }}" alt=""><span class="brand-name">{{ site.Title }}</span></a>
+    <nav class="main" aria-label="Main">
+      {{ $area := partial "area.html" . }}
+      {{ range site.Menus.main }}
+        <a href="{{ .URL }}"{{ if and $area (eq .Params.area $area) }} class="on" aria-current="true"{{ end }}>{{ .Name }}</a>
+      {{ end }}
+      <a href="{{ site.Params.repo }}">GitHub</a>
+    </nav>
+    <div class="header-tools">
+      <button class="icon-btn search-btn" data-search-open aria-label="Search"><span>⌕</span><span class="label">Search</span><kbd>⌘K</kbd></button>
+      {{ if not .IsHome }}
+      <div class="fe-switch" role="group" aria-label="Show instructions for">
+        <button data-fe-pick="app" aria-pressed="true" title="Native app">🖥<span class="lbl"> App</span></button>
+        <button data-fe-pick="tui" aria-pressed="false" title="Terminal (TUI)">⌨<span class="lbl"> Terminal</span></button>
+        <button data-fe-pick="acp" aria-pressed="false" title="Editor via ACP">🧩<span class="lbl"> Editor</span></button>
+      </div>
+      {{ end }}
+      <button class="icon-btn" data-theme-toggle aria-label="Toggle dark mode">◐</button>
+    </div>
+  </div>
+</header>

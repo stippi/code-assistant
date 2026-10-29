@@ -1,0 +1,2 @@
+{{/* Numbered step: {{< step 1 "Title" >}}Markdown{{< /step >}} */}}
+<div class="step-block"><div class="num">{{ .Get 0 }}</div><div class="body">{{ with .Get 1 }}<h3 id="{{ . | anchorize }}">{{ . }}</h3>{{ end }}{{ .Inner | .Page.RenderString (dict "display" "block") }}</div></div>

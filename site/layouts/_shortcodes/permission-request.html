@@ -1,0 +1,3 @@
+{{- $text := .Get "text" | default "The agent wants to run <code>cargo test</code>" -}}
+<div class="mock"><div class="req">⚠ <span>{{ $text | safeHTML }}</span><span class="btns"><span class="b p">Allow once</span><span class="b">Always (session)</span><span class="b">Deny</span></span></div>{{ with .Get "caption" }}<div class="caption">{{ . }}</div>{{ end }}</div>
+{{- /* chomp */ -}}

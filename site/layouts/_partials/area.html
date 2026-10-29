@@ -1,0 +1,9 @@
+{{- /* The docs area a page belongs to (guides, configure, reference): the
+       `area` of its section's _index.md. The docs overview counts as guides. */ -}}
+{{- $area := "" -}}
+{{- if eq .Section "docs" -}}
+  {{- $area = "guides" -}}
+  {{- $s := cond .IsSection . .CurrentSection -}}
+  {{- with $s.Params.area }}{{ $area = . }}{{ end -}}
+{{- end -}}
+{{- return $area -}}

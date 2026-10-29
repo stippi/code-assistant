@@ -1,0 +1,23 @@
+{{ $current := . }}
+{{ $area := partial "area.html" . }}
+{{ $sections := partial "area-sections.html" $area }}
+<nav class="docs-nav" aria-label="{{ $area | title }}">
+  {{ if eq $area "guides" }}
+    {{ with site.GetPage "/docs" }}<ul><li><a href="{{ .RelPermalink }}"{{ if eq . $current }} class="on" aria-current="page"{{ end }}>Overview</a></li></ul>{{ end }}
+  {{ end }}
+  {{ range $sections }}
+  {{ if eq $area "guides" }}<h4><a href="{{ .RelPermalink }}">{{ .Title }}</a></h4>{{ end }}
+  <ul>
+    {{ if ne $area "guides" }}<li><a href="{{ .RelPermalink }}"{{ if eq . $current }} class="on" aria-current="page"{{ end }}>Overview</a></li>{{ end }}
+    {{ range .Pages }}
+    <li><a href="{{ .RelPermalink }}"{{ if eq . $current }} class="on" aria-current="page"{{ end }}>{{ .LinkTitle }}{{ with .Params.only }}<span class="only">{{ . }}</span>{{ end }}</a></li>
+    {{ end }}
+  </ul>
+  {{ end }}
+  <h4 class="other-areas">Also see</h4>
+  <ul>
+    {{ range slice (dict "area" "guides" "path" "/docs" "label" "Guides") (dict "area" "configure" "path" "/docs/configure" "label" "Configure") (dict "area" "reference" "path" "/docs/reference" "label" "Reference") }}
+      {{ if ne .area $area }}{{ with site.GetPage .path }}<li><a href="{{ .RelPermalink }}">{{ .Title | default "" }} →</a></li>{{ end }}{{ end }}
+    {{ end }}
+  </ul>
+</nav>

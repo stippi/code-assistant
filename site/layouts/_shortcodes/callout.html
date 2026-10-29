@@ -1,0 +1,3 @@
+{{/* {{< callout tip "Title" >}}Markdown{{< /callout >}}; kinds: note (default), tip, warn */}}
+{{- $kind := .Get 0 | default "note" -}}
+<div class="callout {{ $kind }}">{{ with .Get 1 }}<span class="t">{{ . }}</span>{{ end }}{{ .Inner | .Page.RenderString (dict "display" "block") }}</div>

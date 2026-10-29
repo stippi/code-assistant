@@ -1,0 +1,169 @@
+# Text of the landing page. The layout is in layouts/home.html.
+
+hero:
+  title: A coding agent<br>you can <em>actually follow</em>.
+  text: >-
+    Code Assistant is an open-source AI coding agent written in Rust. It reads,
+    searches, edits and runs commands in your codebase. Each tool call shows
+    what it gave back to the model, so when it goes off track you can see why.
+  buttons:
+    - label: Download
+      href: https://github.com/stippi/code-assistant/releases/latest
+      primary: true
+    - label: Get started
+      href: docs/start/install/
+    - label: Take the tour ↓
+      href: "#tour"
+  platforms: macOS · Linux · Windows · Native app, terminal, Zed and other ACP editors, MCP server
+
+tour:
+  # x/y place each hotspot on the window drawing, in percent.
+  steps:
+    - title: The inbox
+      text: >-
+        The Active view of the sidebar is an inbox. It shows sessions that need you first: waiting for approval,
+        waiting for an answer, unread, or rate-limited. A session settles on its
+        own after some idle days or once its branch is merged. Switch to
+        Projects to see every session by folder.
+      href: docs/organize/sessions/
+      x: 10
+      y: 70
+      wide: true
+    - title: Every tool call, in full
+      text: >-
+        Tool calls show up as cards, not as a short note like “called 5 tools”.
+        Open one to see what the model got back: the search matches, the diff,
+        the command output.
+      href: docs/work/conversation/
+      x: 52
+      y: 21
+    - title: Sub-agents above the input
+      text: >-
+        Sub-agents can run in the background, even after the turn that started
+        them has ended. The panel above the input shows each one with its
+        running time, a link to its transcript and a Cancel button.
+      href: docs/long/sub-agents/
+      x: 62
+      y: 74
+    - title: The selector row
+      text: >-
+        Everything about this session sits under the input: model, reasoning
+        effort, permissions, sandbox, tools and MCP servers, and the worktree.
+      href: docs/work/models/
+      x: 64
+      y: 87.5
+    - title: Review what changed
+      text: >-
+        The right panel shows the diff of the working tree or of the branch,
+        file by file, and updates while the agent edits. Comment on a line and
+        the comment goes with your next message.
+      href: docs/work/review/
+      x: 86
+      y: 56
+      wide: true
+    - title: Files, browser and voice
+      text: >-
+        Switch the right panel to browse project files (Markdown and SVG
+        rendered) or to watch the agent's browser live. Turn on Voice to talk to
+        an assistant that knows all your conversations.
+      href: docs/work/browser/
+      x: 56.5
+      y: 0.8
+      wide: true
+
+ways:
+  eyebrow: One agent, four frontends
+  title: Run it the way you work
+  text: >-
+    All frontends use the same agent, tools and configuration. Pick the one
+    that fits the moment.
+  items:
+    - icon: 🖥
+      title: Native app
+      text: The full experience, with the inbox, review panel, live browser and voice.
+      command: code-assistant
+      href: docs/start/frontends/#the-app
+    - icon: ⌨
+      title: Terminal
+      text: A fast TUI with slash commands, permission prompts and sub-agents.
+      command: code-assistant --tui
+      href: docs/frontends/terminal/
+    - icon: 🧩
+      title: In your editor
+      text: An Agent Client Protocol agent for Zed and other ACP clients.
+      command: code-assistant acp
+      href: docs/frontends/acp/
+    - icon: 🔌
+      title: MCP server
+      text: Offers its file and search tools to Claude Desktop and other MCP clients.
+      command: code-assistant server
+      href: docs/frontends/mcp-server/
+
+features:
+  eyebrow: Features
+  title: Built for long, real sessions
+  text: Small details that keep an agent working well after the first hour.
+  items:
+    - title: Format-on-save that stays in sync
+      text: >-
+        Your formatter runs after each edit, and the model's view of the edit is
+        updated to match. Later edits keep working, and the agent doesn't have
+        to read the file again.
+      href: docs/configure/projects/#format-on-save
+    - title: Sub-agents and background work
+      text: >-
+        Hand research to sub-agents, start monitors and background jobs, and
+        schedule wakeups. The session picks up again when something happens.
+      href: docs/long/background/
+    - title: Permissions and sandbox
+      text: >-
+        Choose when the agent asks before it acts, from never to always, and
+        limit where its commands can write.
+      href: docs/work/permissions/
+    - title: Real browser, safe logins
+      text: >-
+        It drives Chromium to test your web app. You do the login yourself in a
+        real window, so the agent never sees your password.
+      href: docs/work/browser/
+    - title: MCP, skills and AGENTS.md
+      text: >-
+        Connect MCP servers (also per project with `.mcp.json`), let the agent
+        load skills when it needs them, and give it your repository's
+        guidelines.
+      href: docs/configure/mcp/
+    - title: Reads your documents
+      text: >-
+        Word, Excel, PowerPoint and PDF files are read as Markdown. A file's
+        encoding and line endings stay exactly as they were.
+      href: docs/work/attachments/
+
+config:
+  eyebrow: Configure
+  title: Settings first, JSON when you want it
+  text: >-
+    On first launch the app opens **Settings**: pick a provider, paste a key,
+    choose a model. Everything is stored as plain JSON in
+    `~/.config/code-assistant/`, so you can also edit it by hand or keep it in
+    version control.
+  points:
+    - "**Providers:** Anthropic, OpenAI (also with a ChatGPT subscription), Vertex AI, Ollama, OpenRouter, Groq, Cerebras, Mistral, AI Core"
+    - "**Models:** found automatically, with the reasoning effort levels each model supports"
+    - "**Projects:** format-on-save per file pattern"
+    - "**MCP servers:** stdio or HTTP, with OAuth login"
+  snippet: |-
+    // ~/.config/code-assistant/providers.json
+    {
+      "anthropic-main": {
+        "label": "Anthropic Claude",
+        "provider": "anthropic",
+        "config": { "api_key": "${ANTHROPIC_API_KEY}" }
+      }
+    }
+
+    // ~/.config/code-assistant/projects.json
+    {
+      "my-app": {
+        "path": "/Users/me/work/my-app",
+        "format_on_save": { "**/*.ts": "prettier --write {path}" }
+      }
+    }

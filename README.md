@@ -9,6 +9,8 @@ mode, and integrations for editors and MCP clients. It runs an autonomous agent
 loop over your codebase — reading, searching, editing files, and running
 commands — while keeping you in the loop about what it is actually doing.
 
+**📖 Documentation: [stippi.github.io/code-assistant](https://stippi.github.io/code-assistant/)**
+
 ## Getting started
 
 The quickest way to try it is a prebuilt download — no toolchain required:

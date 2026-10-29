@@ -1,0 +1,13 @@
+<footer class="site">
+  <div class="wrap">
+    <div class="cols">
+      {{ $docs := site.GetPage "/docs" }}
+      {{ range first 4 $docs.Sections }}
+      <div><b>{{ .Title }}</b>
+        {{ range first 5 .Pages }}<a href="{{ .RelPermalink }}">{{ .LinkTitle }}</a>{{ end }}
+      </div>
+      {{ end }}
+    </div>
+    <div class="fine">Code Assistant is open source. <a style="display:inline" href="{{ site.Params.repo }}">Source on GitHub</a> · <a style="display:inline" href="{{ site.Params.releases }}">Latest release</a></div>
+  </div>
+</footer>

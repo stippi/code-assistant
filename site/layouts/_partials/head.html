@@ -1,0 +1,15 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ if .IsHome }}{{ site.Title }}: a coding agent you can follow{{ else }}{{ .Title }} · {{ site.Title }}{{ end }}</title>
+<meta name="description" content="{{ with .Description }}{{ . }}{{ else }}{{ with .Params.lede }}{{ . | plainify }}{{ else }}{{ site.Params.description }}{{ end }}{{ end }}">
+<link rel="icon" href="{{ "images/logo.svg" | relURL }}" type="image/svg+xml">
+<script>
+  try { const t = localStorage.getItem("ca-theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
+{{ $css := resources.Get "css/main.css" }}
+{{ $syntax := resources.Get "css/syntax.css" }}
+{{ $bundle := slice $css $syntax | resources.Concat "css/site.css" | minify | fingerprint }}
+<link rel="stylesheet" href="{{ $bundle.RelPermalink }}" integrity="{{ $bundle.Data.Integrity }}">
+<meta property="og:title" content="{{ .Title }}">
+<meta property="og:description" content="{{ site.Params.description }}">
+<meta property="og:type" content="website">

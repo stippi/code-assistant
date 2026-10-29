@@ -1,0 +1,56 @@
+{{/* The app window drawing with numbered hotspots. Texts come from data/home.yaml (tour.steps). */}}
+{{ $steps := slice }}
+{{ range hugo.Data.home.tour.steps }}{{ $steps = $steps | append (dict "title" .title "text" .text "href" (.href | relURL)) }}{{ end }}
+<div class="tour{{ if .docs }} in-docs{{ end }}" data-tour>
+  <script type="application/json">{{ $steps | jsonify | safeJS }}</script>
+  <div class="window" aria-label="Drawing of the app window">
+    <div class="titlebar"><span class="dots"><span></span><span></span><span></span></span><span class="title">◧ ◐ − 100% +</span>
+      <span class="right"><span class="seg">🎙 Voice</span><span class="seg on">Review</span><span class="seg">Files</span><span class="seg">Browser</span><span class="seg">⚙</span></span></div>
+    <div class="panes">
+      <div class="side">
+        <div class="tabs"><span class="seg on">Active</span><span class="seg">Projects</span></div>
+        <div class="row"><b>Bump dependencies</b><small>web-shop · <span class="badge b-warn">Needs approval</span></small></div>
+        <div class="row sel"><b>Fix flaky retry test</b><small>api-client · <span class="b-run">● Working</span></small></div>
+        <div class="row"><b>Document MCP setup</b><small>api-client · Unread</small></div>
+        <div class="row"><b>Profile the sidebar</b><small>web-shop · 2 days</small></div>
+      </div>
+      <div class="chat">
+        <div class="msgs">
+          <div class="user">The retry test fails about one run in ten. Find out why and fix it.</div>
+          <div class="card"><div class="h">🔍 <b>Search files</b> “retry_after” <span class="ok">3 matches</span></div></div>
+          <div class="card"><div class="h">✎ <b>Edit</b> src/client/retry.rs <span class="ok">+2 −1</span></div>
+            <div class="diff"><div class="d">-    sleep(Duration::from_millis(jitter)).await;</div><div class="a">+    let delay = backoff.next_delay(attempt);</div><div class="a">+    tokio::time::sleep(delay).await;</div></div></div>
+          <div class="card"><div class="h">▶ <b>cargo test retry</b> <span class="ok">exit 0</span></div>
+            <div class="term">test client::retry::tests::retries_with_backoff ... ok<br>test result: ok. 12 passed; 0 failed</div></div>
+        </div>
+        <div class="composer">
+          <div class="agents">⑂ Sub-agent · 0:42 · Open · Cancel</div>
+          <div class="input">Type your message...</div>
+          <div class="selectors"><span class="sel">Claude Sonnet</span><span class="sel">Effort: medium</span><span class="sel">Ask Before Writes</span><span class="sel">Workspace Write</span><span class="sel">Tools · 2 MCP</span><span class="sel">⎇ fix/retry</span></div>
+        </div>
+      </div>
+      <div class="rpanel">
+        <div style="color:var(--muted);margin-bottom:6px">Review · Working tree ▾</div>
+        <div class="file"><span>src/client/retry.rs</span><span><span class="n">+2</span> <span class="m">−1</span></span></div>
+        <div class="file"><span>src/client/backoff.rs</span><span><span class="n">+14</span> <span class="m">−0</span></span></div>
+        <div class="diff" style="margin-top:8px;border:1px solid var(--border);border-radius:6px"><div class="a">+ pub fn next_delay(&amp;mut self,</div><div class="a">+     attempt: u32) -&gt; Duration {</div><div>  …</div></div>
+        <div style="margin-top:8px;border:1px solid var(--border);border-radius:6px;padding:6px;color:var(--muted)">💬 Comment on line 12: “cap this at 30s?”</div>
+      </div>
+    </div>
+    {{ range $i, $s := hugo.Data.home.tour.steps }}
+    <button class="hot{{ if .wide }} wide{{ end }}" data-i="{{ $i }}" style="left:{{ .x }}%;top:{{ .y }}%" aria-label="{{ .title }}">{{ add $i 1 }}</button>
+    {{ end }}
+  </div>
+  {{ if .docs }}
+  <ol class="tour-list">{{ range hugo.Data.home.tour.steps }}<li><b><a href="{{ .href | relURL }}">{{ .title }}</a></b><span>{{ .text }}</span></li>{{ end }}</ol>
+  <div hidden><div class="step"></div><h3></h3><p class="body"></p><a class="link"></a><button class="prev"></button><button class="next"></button></div>
+  {{ else }}
+  <div class="explain" aria-live="polite">
+    <div class="step"></div>
+    <h3></h3>
+    <p class="body"></p>
+    <p><a class="link" href="#">Read the guide →</a></p>
+    <div class="nav"><button class="prev" type="button">← Back</button><button class="next" type="button">Next →</button></div>
+  </div>
+  {{ end }}
+</div>
