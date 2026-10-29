@@ -35,7 +35,7 @@ use rmcp::transport::auth::{
 use rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -50,6 +50,10 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(300);
 /// and refresh). Kept off the transport client so it never cuts long-lived
 /// SSE streams short.
 const OAUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+/// How many of a stdio server's last stderr lines a failed connect reports.
+const STDERR_TAIL_LINES: usize = 20;
+/// How long a failed connect waits for a dying server's stderr to close.
+const STDERR_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 
 type Service = RunningService<RoleClient, ()>;
 
@@ -176,7 +180,9 @@ impl McpServerConnection {
     }
 
     /// Launch `command` as a child process and run the MCP initialize
-    /// handshake over its stdio.
+    /// handshake over its stdio. The server's stderr goes to the log; when
+    /// the handshake fails, its last lines are added to the error, since a
+    /// server that exits early usually says why there.
     async fn connect_stdio(
         name: &str,
         command: &str,
@@ -185,9 +191,30 @@ impl McpServerConnection {
     ) -> Result<Self> {
         let mut process = tokio::process::Command::new(command);
         process.args(args).envs(env);
-        let transport = rmcp::transport::child_process::TokioChildProcess::new(process)
-            .with_context(|| format!("failed to launch MCP server '{name}' ({command})"))?;
-        Self::connect_transport(name, transport).await
+        let (transport, stderr) =
+            rmcp::transport::child_process::TokioChildProcess::builder(process)
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .with_context(|| format!("failed to launch MCP server '{name}' ({command})"))?;
+        let tail = Arc::new(std::sync::Mutex::new(VecDeque::new()));
+        let mut stderr_task = stderr
+            .map(|stderr| tokio::spawn(forward_stderr(name.to_string(), stderr, tail.clone())));
+
+        let error = match Self::connect_transport(name, transport).await {
+            Ok(connection) => return Ok(connection),
+            Err(error) => error,
+        };
+        // The server is likely exiting; give its stderr a moment to close so
+        // the tail is complete.
+        if let Some(task) = &mut stderr_task {
+            let _ = tokio::time::timeout(STDERR_DRAIN_TIMEOUT, task).await;
+        }
+        let tail = tail.lock().unwrap_or_else(|e| e.into_inner());
+        if tail.is_empty() {
+            return Err(error);
+        }
+        let lines = tail.iter().cloned().collect::<Vec<_>>().join("\n");
+        Err(anyhow!("{error:#}\nstderr of '{command}':\n{lines}"))
     }
 
     /// Open a session with an HTTP (streamable) MCP server at `url`, sending
@@ -544,6 +571,26 @@ fn rejected_for_authorization(error: &ServiceError) -> bool {
         source = current.source();
     }
     false
+}
+
+/// Log a stdio server's stderr line by line, keeping the last
+/// [`STDERR_TAIL_LINES`] in `tail` for a failed connect to report. Runs until
+/// the server closes its stderr, which also keeps the pipe from filling up.
+async fn forward_stderr(
+    name: String,
+    stderr: tokio::process::ChildStderr,
+    tail: Arc<std::sync::Mutex<VecDeque<String>>>,
+) {
+    use tokio::io::AsyncBufReadExt;
+    let mut lines = tokio::io::BufReader::new(stderr).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        tracing::debug!("MCP server '{name}' stderr: {line}");
+        let mut tail = tail.lock().unwrap_or_else(|e| e.into_inner());
+        if tail.len() == STDERR_TAIL_LINES {
+            tail.pop_front();
+        }
+        tail.push_back(line);
+    }
 }
 
 /// Build the streamable HTTP transport config for `url`, attaching any custom
