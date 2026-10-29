@@ -54,6 +54,19 @@ impl ModelItem {
     }
 }
 
+impl ModelItem {
+    /// An entry standing for no particular model (e.g. "the session's
+    /// model"); its key is empty.
+    pub fn placeholder(name: &str) -> Self {
+        Self {
+            key: String::new(),
+            name: name.to_string(),
+            provider_label: String::new(),
+            icon_path: None,
+        }
+    }
+}
+
 impl SelectItem for ModelItem {
     type Value = String;
 

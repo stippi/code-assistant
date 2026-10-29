@@ -39,7 +39,8 @@ pub(crate) struct RunConfig {
     pub session: SessionConfig,
     pub model: Option<SessionModelConfig>,
     pub task: RunTask,
-    /// Builds sub-agents' LLM clients; `None` uses the configured providers.
+    /// Builds the LLM clients of sub-agents and of the auto-mode reviewer;
+    /// `None` uses the configured providers.
     pub sub_agent_llm: Option<crate::session::service::LlmClientFactory>,
 }
 
@@ -1408,6 +1409,18 @@ impl SessionManager {
                 .map(|instance| instance.permissions.clone())
                 .unwrap_or_default();
             permissions.tier = session_config.permission_tier;
+            permissions.reviewer =
+                (permissions.tier == tools_core::PermissionTier::Auto).then(|| {
+                    Arc::new(crate::session::auto_mode::LlmToolCallReviewer::new(
+                        crate::session::auto_mode::AutoModeConfig::load(),
+                        &model_for_subagent.model_name,
+                        session_config
+                            .worktree_path
+                            .clone()
+                            .or_else(|| session_config.init_path.clone()),
+                        sub_agent_llm.clone(),
+                    )) as Arc<dyn tools_core::ToolCallReviewer>
+                });
             permissions
         };
 
