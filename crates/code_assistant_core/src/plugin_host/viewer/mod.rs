@@ -518,12 +518,10 @@ mod tests {
                     modifiers: 0,
                 });
                 let changed = tokio::time::timeout(std::time::Duration::from_secs(20), async {
-                    loop {
-                        match viewer.events.recv().await {
-                            Some(ViewerEvent::TextChanged(text)) => return text,
-                            Some(ViewerEvent::Failed(e)) => panic!("{e}"),
-                            None => panic!("the viewer closed"),
-                        }
+                    match viewer.events.recv().await {
+                        Some(ViewerEvent::TextChanged(text)) => text,
+                        Some(ViewerEvent::Failed(e)) => panic!("{e}"),
+                        None => panic!("the viewer closed"),
                     }
                 })
                 .await
