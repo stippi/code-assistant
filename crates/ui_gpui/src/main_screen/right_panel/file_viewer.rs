@@ -17,7 +17,9 @@
 //!
 //! A file can also be shown by a renderer ([`file_renderers`]), such as
 //! rendered Markdown. The editor still holds the text then, so loading and
-//! saving work the same; the renderer gets the editor's text.
+//! saving work the same; the renderer gets the editor's text. A file the
+//! editor cannot hold (an image) shows with a renderer that reads it
+//! itself, when there is one.
 
 use super::file_renderers::{self, RendererHandle};
 use crate::Gpui;
@@ -49,6 +51,9 @@ enum ViewerState {
     /// Text read from disk, waiting for `render` to put it into the editor.
     Loaded(String),
     Editing,
+    /// Not text (or too large), shown by a renderer that reads the file
+    /// itself ([`file_renderers::for_unreadable`]).
+    Rendered,
     Binary,
     TooLarge(u64),
     Failed(String),
@@ -141,6 +146,13 @@ impl FileViewer {
     /// The ways the shown file can be shown, as `(id, label)`, the text
     /// editor first.
     pub fn renderer_options(&self) -> Vec<(&'static str, &'static str)> {
+        if matches!(self.state, ViewerState::Rendered) {
+            return self
+                .chosen_renderer()
+                .map(|r| (r.id, r.label))
+                .into_iter()
+                .collect();
+        }
         let others = self
             .path
             .as_deref()
@@ -158,6 +170,9 @@ impl FileViewer {
     }
 
     fn chosen_renderer(&self) -> Option<&'static file_renderers::FileRenderer> {
+        if matches!(self.state, ViewerState::Rendered) {
+            return file_renderers::for_unreadable(self.path.as_deref()?);
+        }
         if self.text_override {
             return None;
         }
@@ -283,6 +298,15 @@ impl FileViewer {
                         this.root = Some(file.root);
                         match file.content {
                             FileContent::Text(text) => this.loaded(text, cx),
+                            FileContent::Binary | FileContent::TooLarge { .. }
+                                if file_renderers::for_unreadable(&path).is_some() =>
+                            {
+                                this.state = ViewerState::Rendered;
+                                // A view made before reads the file again.
+                                if let Some((_, renderer)) = &this.renderer {
+                                    renderer.reload(cx);
+                                }
+                            }
                             FileContent::Binary => this.state = ViewerState::Binary,
                             FileContent::TooLarge { size } => {
                                 this.state = ViewerState::TooLarge(size)
@@ -376,9 +400,8 @@ impl FileViewer {
     fn sync_renderer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let wanted = self
             .chosen_renderer()
-            .filter(|_| matches!(self.state, ViewerState::Editing));
-        let (Some(wanted), Some(editor), Some(file), Some(root)) =
-            (wanted, &self.editor, self.file(), self.root.clone())
+            .filter(|_| matches!(self.state, ViewerState::Editing | ViewerState::Rendered));
+        let (Some(wanted), Some(file), Some(root)) = (wanted, self.file(), self.root.clone())
         else {
             if self.renderer.take().is_some() {
                 self._renderer_subscription = None;
@@ -392,9 +415,10 @@ impl FileViewer {
         {
             return;
         }
-        let text = editor.read(cx).value();
         let renderer = (wanted.create)(file, root, window, cx);
-        renderer.set_text(&text, cx);
+        if let Some(editor) = self.editor.as_ref().filter(|_| !wanted.reads_file) {
+            renderer.set_text(&editor.read(cx).value(), cx);
+        }
         renderer.set_comments(&self.comments, cx);
         self._renderer_subscription = Some(renderer.forward_comments(cx));
         self.renderer = Some((wanted.id, renderer));
@@ -418,6 +442,10 @@ impl FileViewer {
             .pending_line
             .take()
             .filter(|&line| !renderer.reveal_line(line, window, cx));
+        // Without text there is no editor to show them in.
+        if matches!(self.state, ViewerState::Rendered) {
+            return;
+        }
         if comment.is_some() || line.is_some() {
             self.pending_reveal = comment;
             self.pending_line = line;
@@ -847,6 +875,10 @@ impl Render for FileViewer {
                 self.notice(format!("File too large to show ({} KB)", size / 1024), cx)
             }
             ViewerState::Failed(error) => self.notice(error.clone(), cx),
+            ViewerState::Rendered => match &self.renderer {
+                Some((_, renderer)) => renderer.view().into_any_element(),
+                None => self.notice("Loading…", cx),
+            },
             ViewerState::Editing => match (&self.renderer, &self.editor) {
                 (Some((_, renderer)), _) => renderer.view().into_any_element(),
                 (None, Some(editor)) => Editor::new(editor)

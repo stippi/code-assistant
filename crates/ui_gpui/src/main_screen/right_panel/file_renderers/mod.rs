@@ -6,7 +6,11 @@
 //! entity implementing [`RendererView`]. The [`FileViewer`] keeps loading,
 //! editing and saving the file; a renderer gets the file's current text and
 //! the draft's comments and reports comments made in it. The text editor is
-//! always offered as [`TEXT`] and is not an entry here.
+//! offered as [`TEXT`] for every text file and is not an entry here.
+//!
+//! Files the editor cannot hold (binary or too large, such as images) can
+//! only show with a renderer that reads the file itself
+//! ([`FileRenderer::reads_file`]); without one they show a notice.
 //!
 //! A file shows with the first renderer that takes it, unless the user
 //! picked another way (the text editor, too) for its kind of file
@@ -18,12 +22,18 @@
 //! [`FileViewer`]: super::file_viewer::FileViewer
 
 mod markdown;
+mod raster;
 mod svg;
 
 use super::file_viewer::FileViewer;
 use crate::comments::CommentChange;
 use code_assistant_core::line_comments::LineComment;
-use gpui_kit::{AnyView, App, Context, Entity, EventEmitter, Render, Subscription, Window};
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::{Icon, Sizable, Size};
+use gpui_kit::{
+    AnyView, App, ClickEvent, Context, Entity, EventEmitter, Render, SharedString, Subscription,
+    Window,
+};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -38,6 +48,9 @@ pub struct FileRenderer {
     pub label: &'static str,
     /// Whether it can show the file at this `/`-separated path.
     pub accepts: fn(path: &str) -> bool,
+    /// It reads the file itself and shows files the editor cannot hold
+    /// (binary or too large) instead of text files; it never gets text.
+    pub reads_file: bool,
     /// Create the view for the file at the absolute path `file` in the
     /// project at `root`.
     pub create: fn(
@@ -49,11 +62,19 @@ pub struct FileRenderer {
 }
 
 /// Every renderer besides the text editor.
-pub const RENDERERS: &[FileRenderer] = &[markdown::RENDERER, svg::RENDERER];
+pub const RENDERERS: &[FileRenderer] = &[markdown::RENDERER, svg::RENDERER, raster::RENDERER];
 
-/// The renderers that can show `path`, besides the text editor.
+/// The renderers that can show `path` from its text, besides the text
+/// editor.
 pub fn for_path(path: &str) -> impl Iterator<Item = &'static FileRenderer> + '_ {
-    RENDERERS.iter().filter(move |r| (r.accepts)(path))
+    RENDERERS
+        .iter()
+        .filter(move |r| !r.reads_file && (r.accepts)(path))
+}
+
+/// The renderer that shows `path` when the editor cannot hold it.
+pub fn for_unreadable(path: &str) -> Option<&'static FileRenderer> {
+    RENDERERS.iter().find(|r| r.reads_file && (r.accepts)(path))
 }
 
 /// The renderer with `id`, when it can show `path`.
@@ -88,12 +109,43 @@ pub fn has_extension(path: &str, extensions: &[&str]) -> bool {
         .is_some_and(|e| extensions.iter().any(|x| e.eq_ignore_ascii_case(x)))
 }
 
+/// The button in a drawing's corner that switches between a white page
+/// and the theme's background behind it.
+pub fn background_button(
+    themed: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Button {
+    Button::new("renderer-background")
+        .icon(
+            Icon::default()
+                .path(SharedString::from(if themed {
+                    "icons/theme_light.svg"
+                } else {
+                    "icons/theme_dark.svg"
+                }))
+                .with_size(Size::XSmall),
+        )
+        .xsmall()
+        .ghost()
+        .tooltip(if themed {
+            "White background"
+        } else {
+            "Theme background"
+        })
+        .on_click(on_click)
+}
+
 /// The view of a renderer. Everything but the text is optional; a view
 /// that cannot show a line or a comment leaves the defaults, and the file
 /// then opens in the text editor for it.
 pub trait RendererView: Render + EventEmitter<CommentChange> + Sized {
-    /// The file's text, at first and whenever it changes.
+    /// The file's text, at first and whenever it changes. Not called for
+    /// a renderer that reads the file itself.
     fn set_text(&mut self, text: &str, cx: &mut Context<Self>);
+
+    /// The file changed on disk; a renderer that reads the file itself
+    /// reads it again.
+    fn reload(&mut self, _cx: &mut Context<Self>) {}
 
     /// Every comment of the draft, to mark those on this file.
     fn set_comments(&mut self, _comments: &[LineComment], _cx: &mut Context<Self>) {}
@@ -123,6 +175,7 @@ pub trait RendererView: Render + EventEmitter<CommentChange> + Sized {
 pub trait RendererHandle {
     fn view(&self) -> AnyView;
     fn set_text(&self, text: &str, cx: &mut App);
+    fn reload(&self, cx: &mut App);
     fn set_comments(&self, comments: &[LineComment], cx: &mut App);
     fn reveal_line(&self, line: usize, window: &mut Window, cx: &mut App) -> bool;
     fn reveal_comment(&self, comment: LineComment, window: &mut Window, cx: &mut App) -> bool;
@@ -138,6 +191,10 @@ impl<V: RendererView> RendererHandle for Entity<V> {
 
     fn set_text(&self, text: &str, cx: &mut App) {
         self.update(cx, |view, cx| view.set_text(text, cx));
+    }
+
+    fn reload(&self, cx: &mut App) {
+        self.update(cx, |view, cx| view.reload(cx));
     }
 
     fn set_comments(&self, comments: &[LineComment], cx: &mut App) {
@@ -176,6 +233,12 @@ mod tests {
         assert_eq!(ids("docs/flow.drawio.svg"), ["svg"]);
         assert!(ids("src/lib.rs").is_empty());
         assert!(ids("Makefile").is_empty());
+        assert!(ids("shot.png").is_empty(), "images are not text");
+        let unreadable = |path| for_unreadable(path).map(|r| r.id);
+        assert_eq!(unreadable("shot.PNG"), Some("raster"));
+        assert_eq!(unreadable("photo.jpeg"), Some("raster"));
+        assert_eq!(unreadable("logo.svg"), None);
+        assert_eq!(unreadable("app.bin"), None);
         assert!(find("markdown", "a.md").is_some());
         assert!(find("markdown", "a.rs").is_none());
     }

@@ -8,13 +8,12 @@
 //! switches to the theme's background for drawings made for dark ones.
 //! Draw.io's `.drawio.svg` files show their diagram this way too.
 
-use super::{FileRenderer, RendererHandle, RendererView, has_extension};
+use super::{FileRenderer, RendererHandle, RendererView, background_button, has_extension};
 use crate::comments::CommentChange;
-use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size};
+use gpui_kit::component::ActiveTheme;
 use gpui_kit::{
-    App, Context, EventEmitter, ImageSource, Pixels, Render, RenderImage, SharedString, Task,
-    Window, canvas, div, img, prelude::*, px, size, white,
+    App, Context, EventEmitter, ImageSource, Pixels, Render, RenderImage, Task, Window, canvas,
+    div, img, prelude::*, px, size, white,
 };
 use std::cell::Cell;
 use std::path::PathBuf;
@@ -27,6 +26,7 @@ pub const RENDERER: FileRenderer = FileRenderer {
     id: "svg",
     label: "Image",
     accepts: |path| has_extension(path, &["svg"]),
+    reads_file: false,
     create,
 };
 
@@ -277,29 +277,17 @@ impl Render for SvgPreview {
                 ),
             )
             .child(
-                div().absolute().top(px(6.)).right(px(6.)).child(
-                    Button::new("svg-background")
-                        .icon(
-                            Icon::default()
-                                .path(SharedString::from(if themed {
-                                    "icons/theme_light.svg"
-                                } else {
-                                    "icons/theme_dark.svg"
-                                }))
-                                .with_size(Size::XSmall),
-                        )
-                        .xsmall()
-                        .ghost()
-                        .tooltip(if themed {
-                            "White background"
-                        } else {
-                            "Theme background"
-                        })
-                        .on_click(cx.listener(|this, _, _, cx| {
+                div()
+                    .absolute()
+                    .top(px(6.))
+                    .right(px(6.))
+                    .child(background_button(
+                        themed,
+                        cx.listener(|this, _, _, cx| {
                             this.themed_background = !this.themed_background;
                             cx.notify();
-                        })),
-                ),
+                        }),
+                    )),
             )
     }
 }
