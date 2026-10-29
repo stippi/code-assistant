@@ -249,6 +249,26 @@ async fn a_vanished_server_reads_as_closed() {
     .expect("the connection should notice its server is gone");
 }
 
+/// A stdio server that dies before the handshake explains itself on stderr;
+/// that output belongs in the connection error, not just in the app's log.
+#[tokio::test]
+#[cfg(unix)]
+async fn stdio_failure_reports_the_servers_stderr() {
+    let config = server_config(json!({
+        "command": "sh",
+        "args": ["-c", "echo 'first line' >&2; echo 'error: no such package' >&2; exit 1"]
+    }));
+    let error = McpServerConnection::connect("broken", &config, None)
+        .await
+        .err()
+        .expect("a server that exits must not connect");
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("first line\nerror: no such package"),
+        "expected the server's stderr in the error, got: {message}"
+    );
+}
+
 /// Smoke test against a real child process: code-assistant's own MCP server
 /// mode. Ignored by default because it needs the workspace binary built
 /// first (`cargo build -p code-assistant --no-default-features`).

@@ -266,7 +266,7 @@ impl McpSection {
 
         let (command, args, env) = match server.map(|s| &s.transport) {
             Some(McpTransport::Stdio { command, args, env }) => {
-                (command.clone(), args.join(" "), format_map(env))
+                (command.clone(), join_args(args), format_map(env))
             }
             _ => (String::new(), String::new(), String::new()),
         };
@@ -309,13 +309,10 @@ impl McpSection {
                     warn!("A stdio MCP server needs a command");
                     return;
                 }
-                let args: Vec<String> = self
-                    .form_args_input
-                    .read(cx)
-                    .value()
-                    .split_whitespace()
-                    .map(str::to_string)
-                    .collect();
+                let Some(args) = split_args(&self.form_args_input.read(cx).value()) else {
+                    warn!("The MCP server arguments have an unbalanced quote");
+                    return;
+                };
                 let env = parse_map(&self.form_env_input.read(cx).value());
                 McpTransport::Stdio { command, args, env }
             }
@@ -376,7 +373,7 @@ impl McpSection {
                 if args.is_empty() {
                     command.clone()
                 } else {
-                    format!("{} {}", command, args.join(" "))
+                    format!("{} {}", command, join_args(args))
                 }
             }
             McpTransport::Http { url, .. } => url.clone(),
@@ -963,6 +960,17 @@ fn load_config() -> McpServersConfig {
     })
 }
 
+/// Split the arguments input the way a shell would, so quotes group words
+/// instead of ending up in the arguments. `None` for an unbalanced quote.
+fn split_args(text: &str) -> Option<Vec<String>> {
+    shlex::split(text)
+}
+
+/// Join arguments for the input, quoting those `split_args` would break up.
+fn join_args(args: &[String]) -> String {
+    shlex::try_join(args.iter().map(String::as_str)).unwrap_or_else(|_| args.join(" "))
+}
+
 /// Render a `KEY=value` map as one sorted `KEY=value` line per entry, for
 /// display in a multi-line input.
 fn format_map(map: &HashMap<String, String>) -> String {
@@ -1130,5 +1138,36 @@ impl Render for McpSection {
             .when(self.form_mode == FormMode::Adding, |el| {
                 el.child(self.render_add_dialog(cx))
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_args_strips_shell_quotes() {
+        let args = split_args(r#"--index "https://example.com/simple" "tam-mcp@0.2.3""#);
+        assert_eq!(
+            args,
+            Some(vec![
+                "--index".to_string(),
+                "https://example.com/simple".to_string(),
+                "tam-mcp@0.2.3".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn split_args_rejects_unbalanced_quotes() {
+        assert_eq!(split_args(r#"--index "https://example.com"#), None);
+    }
+
+    #[test]
+    fn join_args_round_trips_arguments_with_spaces() {
+        let args = vec!["--name".to_string(), "two words".to_string()];
+        let text = join_args(&args);
+        assert_eq!(text, "--name 'two words'");
+        assert_eq!(split_args(&text), Some(args));
     }
 }
