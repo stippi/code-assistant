@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use tools_core::permissions::PermissionTier;
 
 // New session management architecture
+pub mod auto_mode;
 pub mod browsers;
 pub mod default_model;
 pub mod effort;
@@ -385,7 +386,7 @@ mod tests {
                 "initial_project": "demo",
                 "tool_syntax": "Yaml",
                 "sandbox_policy": {"mode": "future-policy"},
-                "permission_tier": "auto",
+                "permission_tier": "ask-the-oracle",
                 "branch": "feature/x"
             }"#,
         )

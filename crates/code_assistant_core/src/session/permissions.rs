@@ -64,7 +64,8 @@ pub fn permission_options_for(reason: &PermissionRequestReason<'_>) -> Vec<Permi
             ),
         ],
         PermissionRequestReason::ExecuteCommand { .. }
-        | PermissionRequestReason::ToolInvocation { .. } => vec![
+        | PermissionRequestReason::ToolInvocation { .. }
+        | PermissionRequestReason::AutoModeBlocked { .. } => vec![
             PermissionOption::new(
                 PermissionDecision::GrantedOnce,
                 "Allow once",
@@ -214,6 +215,14 @@ impl SessionPermissionMediator {
                 serde_json::json!({
                     "type": "tool_invocation",
                     "params": params,
+                }),
+            ),
+            PermissionRequestReason::AutoModeBlocked { params, reason } => (
+                format!("Auto mode held back `{}`: {reason}", request.tool_name),
+                serde_json::json!({
+                    "type": "auto_mode_blocked",
+                    "params": params,
+                    "reason": reason,
                 }),
             ),
             PermissionRequestReason::TrustLocalMcp {

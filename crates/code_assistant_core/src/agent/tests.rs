@@ -2641,6 +2641,102 @@ async fn test_granted_session_asks_only_once_per_tool() -> Result<()> {
     Ok(())
 }
 
+/// Runs an agent under auto mode whose one tool call is `execute_command`,
+/// asking to leave the sandbox if `escalate`; `verdict` is the reviewer's
+/// answer. Returns the reviewer's requests and how often the user was asked.
+async fn run_auto_mode_command(verdict: &str, escalate: bool) -> Result<(Vec<LLMRequest>, usize)> {
+    let mock_llm = MockLLMProvider::new(vec![
+        Ok(create_test_response_text("Done.")),
+        Ok(create_test_response(
+            "cmd-1",
+            "execute_command",
+            serde_json::json!({
+                "project": "test",
+                "command_line": "cargo test",
+                "ask_user_approval": escalate
+            }),
+            "Running the tests",
+        )),
+    ]);
+    let reviewer_llm = MockLLMProvider::new(vec![Ok(create_test_response_text(verdict))]);
+    let mediator = Arc::new(ScriptedPermissionMediator::new(
+        tools_core::PermissionDecision::GrantedOnce,
+    ));
+    let mut permissions = tools_core::ToolPermissions::new(tools_core::PermissionTier::Auto);
+    permissions.reviewer = Some(Arc::new(
+        crate::session::auto_mode::LlmToolCallReviewer::new(
+            Default::default(),
+            "test-model",
+            None,
+            Some(reviewer_llm.clone().into_factory()),
+        ),
+    ));
+
+    let components = AgentComponents {
+        llm_provider: Box::new(mock_llm),
+        project_manager: Arc::new(MockProjectManager::new()),
+        command_executor: Arc::new(create_command_executor_mock()),
+        ui: Arc::new(MockUI::default()),
+        state_persistence: Box::new(NoOpStatePersistence),
+        permission_handler: Some(mediator.clone()),
+        permissions,
+        tool_registry: crate::tools::test_registry(),
+        sub_agent_runner: None,
+        wakeups: None,
+        monitors: None,
+        pty_sessions: None,
+        browser_sessions: None,
+        terminal_interrupts: None,
+        session_source: None,
+        hooks_factory: None,
+    };
+
+    let mut agent = Agent::new(components, permission_test_session_config());
+    agent.disable_naming_reminders();
+    agent
+        .start_with_task("Please run the test suite".to_string())
+        .await?;
+    Ok((reviewer_llm.get_requests(), mediator.call_count()))
+}
+
+#[tokio::test]
+async fn test_auto_mode_runs_calls_the_reviewer_allows() -> Result<()> {
+    let (reviews, asked) = run_auto_mode_command(
+        r#"{"decision": "allow", "reason": "Tests were requested."}"#,
+        false,
+    )
+    .await?;
+    assert_eq!(asked, 0);
+    assert_eq!(reviews.len(), 1);
+    let MessageContent::Text(prompt) = &reviews[0].messages[0].content else {
+        panic!("review prompt is plain text");
+    };
+    assert!(prompt.contains("Please run the test suite"));
+    assert!(prompt.contains("cargo test"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_auto_mode_allow_covers_the_sandbox_escalation() -> Result<()> {
+    let (reviews, asked) =
+        run_auto_mode_command(r#"{"decision": "allow", "reason": "Requested."}"#, true).await?;
+    assert_eq!(reviews.len(), 1);
+    assert_eq!(asked, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_auto_mode_asks_the_user_about_blocked_calls() -> Result<()> {
+    let (reviews, asked) = run_auto_mode_command(
+        r#"{"decision": "block", "reason": "Not requested."}"#,
+        false,
+    )
+    .await?;
+    assert_eq!(reviews.len(), 1);
+    assert_eq!(asked, 1);
+    Ok(())
+}
+
 fn compaction_test_agent(
     responses: Vec<Result<LLMResponse, anyhow::Error>>,
 ) -> (Agent, MockLLMProvider) {

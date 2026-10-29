@@ -103,7 +103,9 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
 ### Permission Tiers
 - Per-session setting deciding when the agent asks before running a tool:
   `bypass-all` (default), `write-tools` (ask for anything not tagged
-  `read_only`), `all-tools` (ask always)
+  `read_only`), `all-tools` (ask always), `auto` (a model configured
+  centrally in `auto-mode.json` reviews calls, the user is asked only about
+  those it blocks; `session::auto_mode`)
 - Gate lives in the agent loop (`tools_core::ToolPermissions`); prompts go
   through the `PermissionMediator` seam; see `docs/permission-tiers.md`
 

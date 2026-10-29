@@ -71,6 +71,7 @@ impl PermissionSelector {
             PermissionOption::new("Ask Before Outward Actions", PermissionTier::OutwardTools),
             PermissionOption::new("Ask Before Writes", PermissionTier::WriteTools),
             PermissionOption::new("Ask For All Tools", PermissionTier::AllTools),
+            PermissionOption::new("Auto Mode", PermissionTier::Auto),
         ]
     }
 

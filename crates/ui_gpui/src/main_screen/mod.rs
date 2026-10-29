@@ -1460,8 +1460,7 @@ impl MainScreen {
                                     div()
                                         .text_xs()
                                         .text_color(cx.theme().muted_foreground)
-                                        .overflow_hidden()
-                                        .text_ellipsis()
+                                        .line_clamp(4)
                                         .child(request.summary.clone()),
                                 ),
                         )

@@ -99,6 +99,14 @@ impl AcpPermissionMediator {
                     serde_json::to_string_pretty(params).unwrap_or_else(|_| params.to_string())
                 )
             }
+            PermissionRequestReason::AutoModeBlocked { params, reason } => {
+                format!(
+                    "Auto mode held back `{}`: {}\nParameters: {}",
+                    tool_name,
+                    reason,
+                    serde_json::to_string_pretty(params).unwrap_or_else(|_| params.to_string())
+                )
+            }
             PermissionRequestReason::TrustLocalMcp {
                 project_dir,
                 server_names,
@@ -127,6 +135,11 @@ impl AcpPermissionMediator {
             PermissionRequestReason::ToolInvocation { params } => json!({
                 "type": "tool_invocation",
                 "params": params,
+            }),
+            PermissionRequestReason::AutoModeBlocked { params, reason } => json!({
+                "type": "auto_mode_blocked",
+                "params": params,
+                "reason": reason,
             }),
             PermissionRequestReason::TrustLocalMcp {
                 project_dir,
