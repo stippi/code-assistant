@@ -6,6 +6,7 @@ pub mod right_panel;
 mod status_popover;
 mod voice_control;
 
+use crate::shared::collapse_animation::CollapseAnimator;
 use crate::shared::{frame_profile, ui_state};
 use crate::sidebar::{SessionSidebar, SessionSidebarEvent};
 
@@ -36,7 +37,7 @@ use tracing::{debug, error, warn};
 // Sidebar animation helpers
 // ---------------------------------------------------------------------------
 
-const SIDEBAR_ANIMATION_DURATION_MS: f32 = 250.0;
+const SIDEBAR_ANIMATION_DURATION: Duration = Duration::from_millis(250);
 
 /// Fixed width of the right (review) sidebar when fully expanded.
 const RIGHT_SIDEBAR_WIDTH: f32 = 440.0;
@@ -63,130 +64,6 @@ fn goal_command_args(input: &str) -> Option<&str> {
     command
         .eq_ignore_ascii_case("/goal")
         .then(|| rest.trim_start())
-}
-
-#[derive(Clone, Debug, PartialEq)]
-enum SidebarAnimationState {
-    Idle,
-    Animating {
-        width_scale: f32,
-        target: f32, // 0.0 = collapsing, 1.0 = expanding
-        start_time: Instant,
-    },
-}
-
-/// Drives the width animation for one collapsible sidebar. [`MainScreen`]
-/// advances both animators once per drawn frame and asks for the next frame
-/// while one of them is still running; each tracks its own easing state.
-#[derive(Clone, Debug)]
-struct SidebarAnimator {
-    state: SidebarAnimationState,
-}
-
-impl SidebarAnimator {
-    fn new() -> Self {
-        Self {
-            state: SidebarAnimationState::Idle,
-        }
-    }
-
-    /// Begin animating towards expanded (`true`) or collapsed (`false`).
-    /// Reverses smoothly if an animation is already in flight.
-    fn start(&mut self, should_expand: bool) {
-        self.start_at(should_expand, Instant::now());
-    }
-
-    fn start_at(&mut self, should_expand: bool, now: Instant) {
-        let target = if should_expand { 1.0 } else { 0.0 };
-
-        match &self.state {
-            SidebarAnimationState::Animating {
-                width_scale,
-                target: current_target,
-                ..
-            } if *current_target != target => {
-                // Reverse mid-animation: keep current scale, adjust start for smooth transition
-                let current_progress = if target == 1.0 {
-                    *width_scale
-                } else {
-                    1.0 - *width_scale
-                };
-                let adjusted_start = now
-                    - Duration::from_millis(
-                        (current_progress * SIDEBAR_ANIMATION_DURATION_MS) as u64,
-                    );
-                self.state = SidebarAnimationState::Animating {
-                    width_scale: *width_scale,
-                    target,
-                    start_time: adjusted_start,
-                };
-            }
-            _ => {
-                let initial = if should_expand { 0.0 } else { 1.0 };
-                self.state = SidebarAnimationState::Animating {
-                    width_scale: initial,
-                    target,
-                    start_time: now,
-                };
-            }
-        }
-    }
-
-    /// Ends an animation in flight; [`Self::scale`] then gives the resting
-    /// value.
-    fn stop(&mut self) {
-        self.state = SidebarAnimationState::Idle;
-    }
-
-    /// Advance one frame. Returns `true` while still animating.
-    fn tick(&mut self) -> bool {
-        self.tick_at(Instant::now())
-    }
-
-    fn tick_at(&mut self, now: Instant) -> bool {
-        match &mut self.state {
-            SidebarAnimationState::Animating {
-                width_scale,
-                target,
-                start_time,
-            } => {
-                let elapsed = now.saturating_duration_since(*start_time).as_secs_f32() * 1000.;
-                let progress = (elapsed / SIDEBAR_ANIMATION_DURATION_MS).min(1.0);
-                // ease-out cubic
-                let eased = 1.0 - (1.0 - progress).powi(3);
-
-                *width_scale = if *target == 1.0 { eased } else { 1.0 - eased };
-
-                if progress >= 1.0 {
-                    *width_scale = *target;
-                    self.state = SidebarAnimationState::Idle;
-                    false
-                } else {
-                    true
-                }
-            }
-            SidebarAnimationState::Idle => false,
-        }
-    }
-
-    fn is_animating(&self) -> bool {
-        matches!(self.state, SidebarAnimationState::Animating { .. })
-    }
-
-    /// Current animation scale: 0.0 = fully collapsed, 1.0 = fully expanded.
-    /// `collapsed` supplies the resting value when no animation is running.
-    fn scale(&self, collapsed: bool) -> f32 {
-        match &self.state {
-            SidebarAnimationState::Animating { width_scale, .. } => *width_scale,
-            SidebarAnimationState::Idle => {
-                if collapsed {
-                    0.0
-                } else {
-                    1.0
-                }
-            }
-        }
-    }
 }
 
 /// Events emitted by MainScreen to its parent (the AppShell/RootView).
@@ -241,8 +118,8 @@ pub struct MainScreen {
     sidebar_sessions_synced: bool,
 
     // Sidebar animation
-    left_animator: SidebarAnimator,
-    right_animator: SidebarAnimator,
+    left_animator: CollapseAnimator,
+    right_animator: CollapseAnimator,
     /// Profiling aids (see [`frame_profile`]): the sweep toggling the
     /// sidebars, and the draw times of the animation in flight.
     profile_sweep_task: Option<Task<()>>,
@@ -378,8 +255,8 @@ impl MainScreen {
             right_panel_session_id: None,
             question_prompt: None,
 
-            left_animator: SidebarAnimator::new(),
-            right_animator: SidebarAnimator::new(),
+            left_animator: CollapseAnimator::new(SIDEBAR_ANIMATION_DURATION),
+            right_animator: CollapseAnimator::new(SIDEBAR_ANIMATION_DURATION),
             profile_sweep_task: None,
             profile_animation_frames: Vec::new(),
 
@@ -421,18 +298,8 @@ impl MainScreen {
     fn toggle_project_sidebar(&mut self, cx: &mut Context<Self>) {
         let should_expand = self.sidebar_collapsed;
         self.sidebar_collapsed = !self.sidebar_collapsed;
-        Self::animate_sidebar(&mut self.left_animator, should_expand, cx);
+        self.left_animator.start(should_expand, cx);
         cx.notify();
-    }
-
-    /// Starts a sidebar's width animation, or jumps when the system asks
-    /// for reduced motion.
-    fn animate_sidebar(animator: &mut SidebarAnimator, should_expand: bool, cx: &App) {
-        if cx.reduce_motion() {
-            animator.stop();
-        } else {
-            animator.start(should_expand);
-        }
     }
 
     pub fn on_toggle_right_sidebar(
@@ -546,7 +413,7 @@ impl MainScreen {
     fn toggle_right_sidebar(&mut self, cx: &mut Context<Self>) {
         let should_expand = self.right_sidebar_collapsed;
         self.right_sidebar_collapsed = !self.right_sidebar_collapsed;
-        Self::animate_sidebar(&mut self.right_animator, should_expand, cx);
+        self.right_animator.start(should_expand, cx);
 
         // When opening, make sure the panel reflects the current session and
         // has fresh data. When closing, detach it so it stops watching and
@@ -607,17 +474,12 @@ impl MainScreen {
 
     // ── Sidebar animation ─────────────────────────────────────────────────
 
-    /// Advances the sidebar animations by one drawn frame and asks for the
-    /// next one while either still runs. Called at the start of `render`, so
-    /// every frame the window draws shows the scale for its own time, and
-    /// the frame after the last tick draws the resting state.
-    fn tick_sidebar_animations(&mut self, window: &gpui_kit::Window) {
+    /// Advances the sidebar animations by one drawn frame (see
+    /// [`CollapseAnimator`]).
+    fn tick_sidebar_animations(&mut self, window: &gpui_kit::Window, cx: &App) {
         self.record_profile_frame();
-        let left = self.left_animator.tick();
-        let right = self.right_animator.tick();
-        if left || right {
-            window.request_animation_frame();
-        }
+        self.left_animator.tick(window, cx);
+        self.right_animator.tick(window, cx);
     }
 
     /// Profiling aid: after a settle time, opens and closes the left and the
@@ -1719,7 +1581,7 @@ impl MainScreen {
         // Animate to the restored state if it differs from the current one.
         if restored_open == self.right_sidebar_collapsed {
             // (collapsed == !open) — they differ, so kick the animation.
-            Self::animate_sidebar(&mut self.right_animator, restored_open, cx);
+            self.right_animator.start(restored_open, cx);
             cx.notify();
         }
         self.right_sidebar_collapsed = !restored_open;
@@ -2054,7 +1916,7 @@ impl Render for MainScreen {
 
         let new_project_dialog = self.new_project_dialog.clone();
         let about_dialog = self.about_dialog.clone();
-        self.tick_sidebar_animations(window);
+        self.tick_sidebar_animations(window, cx);
         let sidebar_scale = self.sidebar_animation_scale();
         let right_sidebar_scale = self.right_sidebar_animation_scale();
         let permission_prompts = self.render_permission_prompts(cx);
@@ -2451,67 +2313,6 @@ impl Render for MainScreen {
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod sidebar_animator_tests {
-    use super::*;
-
-    fn ms(start: Instant, n: u64) -> Instant {
-        start + Duration::from_millis(n)
-    }
-
-    #[test]
-    fn eases_out_and_rests_at_the_target() {
-        let start = Instant::now();
-        let mut animator = SidebarAnimator::new();
-        assert!(!animator.is_animating());
-        assert_eq!(animator.scale(true), 0.0);
-        assert_eq!(animator.scale(false), 1.0);
-
-        animator.start_at(true, start);
-        assert!(animator.is_animating());
-        assert_eq!(animator.scale(true), 0.0);
-
-        assert!(animator.tick_at(ms(start, 125)));
-        let half = animator.scale(true);
-        assert!(
-            half > 0.5 && half < 1.0,
-            "ease-out is past half way: {half}"
-        );
-        assert!(animator.tick_at(ms(start, 200)));
-        assert!(animator.scale(true) > half);
-
-        assert!(!animator.tick_at(ms(start, 250)));
-        assert!(!animator.is_animating());
-        assert_eq!(animator.scale(false), 1.0);
-    }
-
-    #[test]
-    fn reversing_keeps_the_current_scale() {
-        let start = Instant::now();
-        let mut animator = SidebarAnimator::new();
-        animator.start_at(false, start);
-        animator.tick_at(ms(start, 100));
-        let scale = animator.scale(true);
-        assert!(scale > 0.0 && scale < 1.0);
-
-        animator.start_at(true, ms(start, 100));
-        assert_eq!(animator.scale(true), scale);
-        animator.tick_at(ms(start, 101));
-        assert!(animator.scale(true) >= scale);
-        assert!(!animator.tick_at(ms(start, 400)));
-        assert_eq!(animator.scale(false), 1.0);
-    }
-
-    #[test]
-    fn stop_rests_right_away() {
-        let mut animator = SidebarAnimator::new();
-        animator.start(true);
-        animator.stop();
-        assert!(!animator.is_animating());
-        assert_eq!(animator.scale(true), 0.0);
-    }
-}
 
 #[cfg(test)]
 mod goal_command_tests {

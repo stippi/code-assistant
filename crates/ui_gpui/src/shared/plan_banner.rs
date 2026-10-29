@@ -1,3 +1,4 @@
+use super::collapse_animation::CollapseAnimator;
 use super::file_icons;
 use code_assistant_core::types::{PlanItemStatus, PlanState};
 use gpui_kit::prelude::*;
@@ -5,28 +6,13 @@ use gpui_kit::prelude::*;
 use gpui_kit::component::{ActiveTheme, StyledExt};
 use gpui_kit::{
     Animation, AnimationExt, Bounds, ClickEvent, Context, EventEmitter, Pixels, Render,
-    SharedString, Task, Transformation, Window, div, percentage, px, rems,
+    SharedString, Transformation, Window, div, percentage, px, rems,
 };
 use std::cell::Cell;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-// ---------------------------------------------------------------------------
-// Animation helpers (same approach as tool blocks in elements.rs)
-// ---------------------------------------------------------------------------
-
-const ANIMATION_DURATION_MS: f32 = 250.0;
-const ANIMATION_FRAME_MS: u64 = 8; // ~120 FPS
-
-#[derive(Clone, Debug, PartialEq)]
-enum AnimationState {
-    Idle,
-    Animating {
-        height_scale: f32,
-        target: f32, // 0.0 = collapsing, 1.0 = expanding
-        start_time: Instant,
-    },
-}
+const ANIMATION_DURATION: Duration = Duration::from_millis(250);
 
 // ---------------------------------------------------------------------------
 // PlanBanner
@@ -40,10 +26,8 @@ pub enum PlanBannerEvent {
 pub struct PlanBanner {
     plan: Option<PlanState>,
     collapsed: bool,
-    // Animation
-    animation_state: AnimationState,
+    animator: CollapseAnimator,
     content_height: Rc<Cell<Pixels>>,
-    animation_task: Option<Task<()>>,
 }
 
 impl Default for PlanBanner {
@@ -51,9 +35,8 @@ impl Default for PlanBanner {
         Self {
             plan: None,
             collapsed: false,
-            animation_state: AnimationState::Idle,
+            animator: CollapseAnimator::new(ANIMATION_DURATION),
             content_height: Rc::new(Cell::new(px(0.0))),
-            animation_task: None,
         }
     }
 }
@@ -69,8 +52,7 @@ impl PlanBanner {
 
         // Only reset animation when the collapsed state is forced externally
         // (e.g. session switch) — NOT during a user-initiated toggle animation.
-        let is_animating = !matches!(self.animation_state, AnimationState::Idle);
-        if !is_animating && self.collapsed != collapsed {
+        if !self.animator.is_animating() && self.collapsed != collapsed {
             self.collapsed = collapsed;
         }
 
@@ -85,125 +67,21 @@ impl PlanBanner {
         cx.emit(PlanBannerEvent::Toggle {
             collapsed: self.collapsed,
         });
-        self.start_animation(should_expand, cx);
+        self.animator.start(should_expand, cx);
         cx.notify();
-    }
-
-    fn start_animation(&mut self, should_expand: bool, cx: &mut Context<Self>) {
-        let target = if should_expand { 1.0 } else { 0.0 };
-        let now = Instant::now();
-
-        match &self.animation_state {
-            AnimationState::Animating {
-                height_scale,
-                target: current_target,
-                ..
-            } if *current_target != target => {
-                // Reverse: keep current scale, adjust start for smooth transition
-                let current_progress = if target == 1.0 {
-                    *height_scale
-                } else {
-                    1.0 - *height_scale
-                };
-                let adjusted_start =
-                    now - Duration::from_millis((current_progress * ANIMATION_DURATION_MS) as u64);
-                self.animation_state = AnimationState::Animating {
-                    height_scale: *height_scale,
-                    target,
-                    start_time: adjusted_start,
-                };
-            }
-            _ => {
-                let initial = if should_expand { 0.0 } else { 1.0 };
-                self.animation_state = AnimationState::Animating {
-                    height_scale: initial,
-                    target,
-                    start_time: now,
-                };
-            }
-        }
-
-        if self.animation_task.is_none() {
-            self.start_animation_task(cx);
-        }
-    }
-
-    fn start_animation_task(&mut self, cx: &mut Context<Self>) {
-        let task = cx.spawn(async move |weak_entity, async_cx| {
-            loop {
-                async_cx
-                    .background_executor()
-                    .timer(Duration::from_millis(ANIMATION_FRAME_MS))
-                    .await;
-
-                let should_continue = weak_entity.update(async_cx, |view, cx| {
-                    view.update_animation();
-                    match &view.animation_state {
-                        AnimationState::Idle => false,
-                        _ => {
-                            cx.notify();
-                            true
-                        }
-                    }
-                });
-
-                if let Ok(should_continue) = should_continue {
-                    if !should_continue {
-                        let _ = weak_entity.update(async_cx, |view, _cx| {
-                            view.animation_task = None;
-                        });
-                        break;
-                    }
-                } else {
-                    break;
-                }
-            }
-        });
-        self.animation_task = Some(task);
-    }
-
-    fn update_animation(&mut self) {
-        match &mut self.animation_state {
-            AnimationState::Animating {
-                height_scale,
-                target,
-                start_time,
-            } => {
-                let elapsed = start_time.elapsed().as_millis() as f32;
-                let progress = (elapsed / ANIMATION_DURATION_MS).min(1.0);
-                // ease-out cubic
-                let eased = 1.0 - (1.0 - progress).powi(3);
-
-                *height_scale = if *target == 1.0 { eased } else { 1.0 - eased };
-
-                if progress >= 1.0 {
-                    *height_scale = *target;
-                    self.animation_state = AnimationState::Idle;
-                }
-            }
-            AnimationState::Idle => {}
-        }
     }
 
     /// Current animation scale: 0.0 = items fully hidden, 1.0 = items fully visible
     fn animation_scale(&self) -> f32 {
-        match &self.animation_state {
-            AnimationState::Animating { height_scale, .. } => *height_scale,
-            AnimationState::Idle => {
-                if self.collapsed {
-                    0.0
-                } else {
-                    1.0
-                }
-            }
-        }
+        self.animator.scale(self.collapsed)
     }
 }
 
 impl EventEmitter<PlanBannerEvent> for PlanBanner {}
 
 impl Render for PlanBanner {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.animator.tick(window, cx);
         let Some(plan) = self.plan.as_ref() else {
             return div().into_any_element();
         };

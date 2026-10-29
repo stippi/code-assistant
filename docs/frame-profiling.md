@@ -328,7 +328,9 @@ Two causes, in order of weight:
    `render` and asks for the next frame with
    `Window::request_animation_frame`, so there is one tick per drawn frame
    and the frame after the last tick draws the resting state (the timer
-   version never drew it). `App::reduce_motion` skips the animation.
+   version never drew it). `App::reduce_motion` skips the animation. The
+   plan banner and the tool blocks had the same timer-driven state machine
+   and now share it: `shared::collapse_animation::CollapseAnimator`.
 
 One more cause, found after the first two were fixed: the list's bounds are
 rounded to the device pixel, and with the review panel at its persisted

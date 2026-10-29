@@ -11,6 +11,7 @@ use gpui_kit::component::text::{SelectionFormat, TextView, TextViewState};
 use gpui_kit::prelude::*;
 use gpui_kit::{App, ClipboardItem, Context, Entity, FocusHandle, Pixels, SharedString, Task, px};
 
+use crate::shared::collapse_animation::CollapseAnimator;
 use crate::tool_cards::diff_prepare::{DiffInput, PreparedDiff, SYNC_DIFF_MAX_BYTES};
 use crate::tool_cards::diff_syntax::language_for_path;
 
@@ -20,6 +21,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub use code_assistant_core::ui::ui_events::MessageRole;
+
+/// How long a block's output takes to expand or collapse.
+const ANIMATION_DURATION: Duration = Duration::from_millis(300);
 
 /// State of a tool block for rendering and interaction
 #[derive(Debug, Clone, PartialEq)]
@@ -85,35 +89,6 @@ impl ToolDiffModeState {
             store.set_tool_diff_mode(session_id, tool_id, diff_mode)
         });
     }
-}
-
-/// Animation configuration for expand/collapse
-#[derive(Clone)]
-pub struct AnimationConfig {
-    /// Animation frame rate (in milliseconds per frame)
-    pub frame_ms: u64,
-    /// Animation duration in milliseconds
-    pub duration_ms: f32,
-}
-
-impl Default for AnimationConfig {
-    fn default() -> Self {
-        Self {
-            frame_ms: 8,        // ~120 FPS
-            duration_ms: 300.0, // 300ms constant animation time
-        }
-    }
-}
-
-/// Animation state for expand/collapse
-#[derive(Clone, Debug, PartialEq)]
-enum AnimationState {
-    Idle,
-    Animating {
-        height_scale: f32,
-        target: f32, // 0.0 for collapsing, 1.0 for expanding
-        start_time: std::time::Instant,
-    },
 }
 
 /// How a text differs from the one last given to a [`TextViewState`].
@@ -200,11 +175,8 @@ pub struct BlockView {
     markdown_sync: MarkdownSync,
     diff_cache: Option<DiffCache>,
     is_generating: bool, // Universal generating state for all block types
-    // Animation state
-    animation_state: AnimationState,
+    animator: CollapseAnimator,
     content_height: Rc<Cell<Pixels>>,
-
-    animation_task: Option<Task<()>>,
     /// Current project for parameter filtering (used to detect cross-project tool calls)
     #[allow(dead_code)]
     current_project: Arc<Mutex<String>>,
@@ -294,9 +266,8 @@ impl BlockView {
             markdown_sync,
             diff_cache: None,
             is_generating: true, // Default to generating when first created
-            animation_state: AnimationState::Idle,
+            animator: CollapseAnimator::new(ANIMATION_DURATION),
             content_height: Rc::new(Cell::new(px(0.0))),
-            animation_task: None,
             current_project,
             session_id,
             write_file_diff_mode,
@@ -675,115 +646,8 @@ impl BlockView {
     }
 
     fn start_expand_collapse_animation(&mut self, should_expand: bool, cx: &mut Context<Self>) {
-        let target = if should_expand { 1.0 } else { 0.0 };
-        let now = std::time::Instant::now();
-
-        // Update animation state
-        match &self.animation_state.clone() {
-            AnimationState::Animating {
-                height_scale,
-                target: current_target,
-                ..
-            } if *current_target != target => {
-                // Reverse direction: keep current height_scale, but adjust start_time for smooth transition
-                let current_progress = if target == 1.0 {
-                    *height_scale
-                } else {
-                    1.0 - *height_scale
-                };
-                let adjusted_start_time =
-                    now - std::time::Duration::from_millis((current_progress * 300.0) as u64);
-
-                self.animation_state = AnimationState::Animating {
-                    height_scale: *height_scale,
-                    target,
-                    start_time: adjusted_start_time,
-                };
-            }
-            _ => {
-                // Start new animation
-                let initial_height_scale = if should_expand { 0.0 } else { 1.0 };
-                self.animation_state = AnimationState::Animating {
-                    height_scale: initial_height_scale,
-                    target,
-                    start_time: now,
-                };
-            }
-        }
-
-        // Start animation task if not already running
-        if self.animation_task.is_none() {
-            self.start_animation_task(cx);
-        }
-    }
-
-    fn start_animation_task(&mut self, cx: &mut Context<Self>) {
-        let config = AnimationConfig::default();
-        let task = cx.spawn(async move |weak_entity, async_app_cx| {
-            loop {
-                async_app_cx
-                    .background_executor()
-                    .timer(Duration::from_millis(config.frame_ms))
-                    .await;
-
-                let should_continue = weak_entity.update(async_app_cx, |view, cx| {
-                    view.update_animation(&config);
-
-                    // Check if animation should continue
-                    match &view.animation_state {
-                        AnimationState::Idle => false,
-                        _ => {
-                            cx.notify();
-                            true
-                        }
-                    }
-                });
-
-                if let Ok(should_continue) = should_continue {
-                    if !should_continue {
-                        // Animation finished, clean up task
-                        let _ = weak_entity.update(async_app_cx, |view, _cx| {
-                            view.animation_task = None;
-                        });
-                        break;
-                    }
-                } else {
-                    // Entity was dropped, stop animation
-                    break;
-                }
-            }
-        });
-
-        self.animation_task = Some(task);
-    }
-
-    fn update_animation(&mut self, config: &AnimationConfig) {
-        match &mut self.animation_state {
-            AnimationState::Animating {
-                height_scale,
-                target,
-                start_time,
-            } => {
-                let elapsed = start_time.elapsed().as_millis() as f32;
-                let progress = (elapsed / config.duration_ms).min(1.0);
-
-                // Easing function (ease_out_cubic for smooth deceleration)
-                let eased_progress = 1.0 - (1.0 - progress).powi(3);
-
-                *height_scale = if *target == 1.0 {
-                    eased_progress // Animate from 0.0 -> 1.0
-                } else {
-                    1.0 - eased_progress // Animate from 1.0 -> 0.0
-                };
-
-                // Stop when animation complete
-                if progress >= 1.0 {
-                    *height_scale = *target;
-                    self.animation_state = AnimationState::Idle;
-                }
-            }
-            AnimationState::Idle => {}
-        }
+        self.animator.start(should_expand, cx);
+        cx.notify();
     }
 }
 
