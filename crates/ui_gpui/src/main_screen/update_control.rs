@@ -4,6 +4,7 @@
 
 use super::MainScreen;
 use crate::Gpui;
+use crate::shared::context_indicator::ContextIndicator;
 use code_assistant_core::updates::{UpdateState, UpdateStatus, UpdateStep};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::tooltip::Tooltip;
@@ -17,10 +18,17 @@ enum Action {
     Restart,
 }
 
+/// The chip's leading mark: an icon, or while downloading a ring that
+/// fills up (like the context indicator), so the chip keeps its width.
+enum Mark {
+    Icon(&'static str),
+    Progress(f32),
+}
+
 struct Chip {
     label: String,
     tooltip: String,
-    icon: &'static str,
+    mark: Mark,
     failed: bool,
     action: Option<Action>,
 }
@@ -41,7 +49,7 @@ fn chip(state: &UpdateState) -> Option<Chip> {
                 Some(message) => Chip {
                     label: "Update failed".into(),
                     tooltip: format!("{message}\n\nClick to download {version} again."),
-                    icon: "icons/circle_alert.svg",
+                    mark: Mark::Icon("icons/circle_alert.svg"),
                     failed: true,
                     action: Some(Action::Download),
                 },
@@ -51,19 +59,22 @@ fn chip(state: &UpdateState) -> Option<Chip> {
                         "Version {version} is available (this is {}). Click to download it.",
                         state.current_version
                     ),
-                    icon: "icons/arrow_down.svg",
+                    mark: Mark::Icon("icons/arrow_down.svg"),
                     failed: false,
                     action: Some(Action::Download),
                 },
             }
         }
-        UpdateStatus::Downloading { version, .. } => Chip {
-            label: format!("Downloading {}%", state.download_percent().unwrap_or(0)),
-            tooltip: format!("Downloading version {version}"),
-            icon: "icons/arrow_down.svg",
-            failed: false,
-            action: None,
-        },
+        UpdateStatus::Downloading { version, .. } => {
+            let percent = state.download_percent().unwrap_or(0);
+            Chip {
+                label: "Downloading".into(),
+                tooltip: format!("Downloading version {version}: {percent}%"),
+                mark: Mark::Progress(f32::from(percent) / 100.0),
+                failed: false,
+                action: None,
+            }
+        }
         UpdateStatus::Downloaded { version } => {
             let tooltip = match (error(UpdateStep::Install), &state.not_applied) {
                 (Some(message), _) => format!("Installing {version} failed: {message}"),
@@ -75,7 +86,7 @@ fn chip(state: &UpdateState) -> Option<Chip> {
             Chip {
                 label: "Restart to update".into(),
                 tooltip,
-                icon: "icons/refresh_cw.svg",
+                mark: Mark::Icon("icons/refresh_cw.svg"),
                 failed: error(UpdateStep::Install).is_some(),
                 action: Some(Action::Restart),
             }
@@ -83,7 +94,7 @@ fn chip(state: &UpdateState) -> Option<Chip> {
         UpdateStatus::Installing { version } => Chip {
             label: "Installing…".into(),
             tooltip: format!("Installing version {version}"),
-            icon: "icons/refresh_cw.svg",
+            mark: Mark::Icon("icons/refresh_cw.svg"),
             failed: false,
             action: None,
         },
@@ -102,6 +113,20 @@ impl MainScreen {
         };
         let tooltip = SharedString::from(chip.tooltip);
         let clickable = chip.action.is_some();
+        let scale = cx.theme().font_size / px(16.0);
+        let mark = match chip.mark {
+            Mark::Icon(path) => Icon::default()
+                .path(SharedString::from(path))
+                .with_size(Size::XSmall)
+                .text_color(color)
+                .into_any_element(),
+            Mark::Progress(ratio) => ContextIndicator::new(ratio)
+                .size(px(12.0 * scale))
+                .stroke_width(px(2.0 * scale))
+                .bg_color(color.opacity(0.25))
+                .progress_color(color)
+                .into_any_element(),
+        };
         Some(
             div()
                 .id("update-chip")
@@ -120,12 +145,7 @@ impl MainScreen {
                     el.cursor_pointer().hover(|s| s.bg(cx.theme().muted))
                 })
                 .when(self.update_confirm_open, |el| el.bg(cx.theme().muted))
-                .child(
-                    Icon::default()
-                        .path(SharedString::from(chip.icon))
-                        .with_size(Size::XSmall)
-                        .text_color(color),
-                )
+                .child(mark)
                 .child(SharedString::from(chip.label))
                 .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
                 .when_some(chip.action, |el, action| {
@@ -293,14 +313,17 @@ mod tests {
     }
 
     #[test]
-    fn downloading_shows_progress_and_takes_no_click() {
+    fn downloading_fills_a_ring_and_takes_no_click() {
         let chip = chip(&state(UpdateStatus::Downloading {
             version: v("0.2.19"),
             received: 42,
             total: 100,
         }))
         .unwrap();
-        assert_eq!(chip.label, "Downloading 42%");
+        // The label stays the same, so the chip keeps its width.
+        assert_eq!(chip.label, "Downloading");
+        assert!(matches!(chip.mark, Mark::Progress(ratio) if (ratio - 0.42).abs() < 1e-6));
+        assert!(chip.tooltip.ends_with("42%"), "{}", chip.tooltip);
         assert!(chip.action.is_none());
     }
 
