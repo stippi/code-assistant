@@ -282,6 +282,10 @@ pub struct Gpui {
     /// Voice mode: the handle (absent when the build has no audio), its
     /// status and the transcript of the current voice conversation.
     voice: app::voice::VoiceState,
+
+    /// Self-update: the handle (absent unless the app checks for updates)
+    /// and the last state it published.
+    updates: app::updates::UpdatesState,
 }
 
 /// State for a pending message edit
@@ -603,6 +607,7 @@ impl Gpui {
             skills: Arc::new(Mutex::new(Vec::new())),
 
             voice: app::voice::VoiceState::default(),
+            updates: app::updates::UpdatesState::default(),
         }
     }
 

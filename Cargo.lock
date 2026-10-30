@@ -1675,6 +1675,7 @@ dependencies = [
  "agent_core",
  "agent_orchestration",
  "anyhow",
+ "app_update",
  "async-channel",
  "async-trait",
  "axum 0.7.9",
@@ -1717,6 +1718,7 @@ dependencies = [
  "transmutation",
  "urlencoding",
  "web",
+ "zip",
 ]
 
 [[package]]

@@ -70,6 +70,7 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
     // broadcast stream (see ui_gpui's event bridge).
     #[cfg(feature = "voice")]
     let voice_events = events.clone();
+    let update_events = events.clone();
     let (service, service_worker) = SessionService::new(
         multi_session_manager,
         Arc::new(AgentRuntimeOptions {
@@ -98,6 +99,21 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
         );
         gui.set_voice_service(voice);
         worker
+    };
+
+    // Self-update: checks for newer releases on the backend runtime. Only
+    // release builds carry a feed (docs/self-update.md).
+    let update_worker = match code_assistant_core::updates::UpdateConfig::from_environment() {
+        Ok(config) => {
+            let (updates, worker) =
+                code_assistant_core::updates::UpdateService::new(config, update_events);
+            gui.set_update_service(updates);
+            Some(worker)
+        }
+        Err(e) => {
+            warn!("Self-update unavailable: {e:#}");
+            None
+        }
     };
 
     let gui_for_thread = gui.clone();
@@ -166,6 +182,9 @@ pub fn run(config: AgentRunConfig) -> Result<()> {
             let worker = tokio::spawn(service_worker);
             #[cfg(feature = "voice")]
             tokio::spawn(voice_worker);
+            if let Some(update_worker) = update_worker {
+                tokio::spawn(update_worker);
+            }
 
             // Pre-warm the registry (connects configured MCP servers) in the
             // background: remote servers take seconds, and the sidebar's

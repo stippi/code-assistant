@@ -28,6 +28,7 @@ pub mod tool_dialects;
 pub mod tools;
 pub mod types;
 pub mod ui;
+pub mod updates;
 pub mod utils;
 pub mod version;
 pub mod voice;

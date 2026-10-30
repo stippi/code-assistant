@@ -476,4 +476,9 @@ pub enum UiEvent {
     VoiceTranscript {
         entry: crate::voice::TranscriptEntry,
     },
+
+    // === Self-update (app-scoped) ===
+    /// The self-update's state changed (a check, download progress, an
+    /// install).
+    UpdateStateChanged { state: crate::updates::UpdateState },
 }
