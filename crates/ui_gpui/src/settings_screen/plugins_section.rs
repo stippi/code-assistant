@@ -1,5 +1,7 @@
 //! Plugins settings section — install a plugin from a git repository (or a
-//! local folder), and switch, update or remove the installed ones. Backed by
+//! local folder), and switch, update or remove the installed ones. A
+//! repository holding a marketplace is added as one instead; its plugins are
+//! listed with a switch that installs and enables them. Backed by
 //! `<config_dir>/plugins/` (`code_assistant_core::plugin_host::PluginStore`).
 //!
 //! Installing and updating run git, so they run off the main thread; the
@@ -7,7 +9,9 @@
 //! templates show in the next *Add provider*, MCP servers join the next agent
 //! run, file renderers the Files view.
 
-use code_assistant_core::plugin_host::{PluginListing, PluginSource, PluginStore};
+use code_assistant_core::plugin_host::{
+    Added, MarketplaceListing, PluginListing, PluginSource, PluginStore,
+};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme, Sizable, Size};
@@ -21,17 +25,23 @@ use std::collections::HashSet;
 enum Busy {
     Installing,
     Updating(String),
+    UpdatingMarketplace(String),
+    /// Installing `<plugin>@<marketplace>` from its switch.
+    InstallingFrom(String),
 }
 
 pub struct PluginsSection {
     focus_handle: FocusHandle,
     plugins: Vec<PluginListing>,
+    marketplaces: Vec<MarketplaceListing>,
     source_input: Entity<InputState>,
     busy: Option<Busy>,
     /// The outcome of the last install, update or removal.
     message: Option<Result<String, String>>,
     /// Plugins whose removal waits for a second click.
     confirm_remove: HashSet<String>,
+    /// Marketplaces whose removal waits for a second click.
+    confirm_remove_marketplace: HashSet<String>,
     _task: Option<Task<()>>,
 }
 
@@ -39,23 +49,57 @@ impl PluginsSection {
     pub fn new(window: &mut gpui_kit::Window, cx: &mut Context<Self>) -> Self {
         let source_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("Git URL, owner/repo, …#branch-or-tag, or a local folder")
+                .placeholder("Plugin or marketplace: git URL, owner/repo, …#branch, or a folder")
         });
+        let store = PluginStore::new();
         Self {
             focus_handle: cx.focus_handle(),
-            plugins: PluginStore::new().list(),
+            plugins: store.list(),
+            marketplaces: store.list_marketplaces(),
             source_input,
             busy: None,
             message: None,
             confirm_remove: HashSet::new(),
+            confirm_remove_marketplace: HashSet::new(),
             _task: None,
         }
     }
 
-    /// Reload the installed plugins from disk.
+    /// Reload the installed plugins and added marketplaces from disk.
     pub fn reload(&mut self) {
-        self.plugins = PluginStore::new().list();
+        let store = PluginStore::new();
+        self.plugins = store.list();
+        self.marketplaces = store.list_marketplaces();
         self.confirm_remove.clear();
+        self.confirm_remove_marketplace.clear();
+    }
+
+    /// Run `job` (git work) off the main thread; its outcome becomes the
+    /// message.
+    fn run_job(
+        &mut self,
+        busy: Busy,
+        job: impl FnOnce() -> anyhow::Result<String> + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy.is_some() {
+            return;
+        }
+        self.busy = Some(busy);
+        self.message = None;
+        cx.notify();
+        let job = cx.background_spawn(async move { job() });
+        self._task = Some(cx.spawn(async move |this, cx| {
+            let result = job.await;
+            this.update(cx, |this, cx| {
+                this.busy = None;
+                this.message = Some(result.map_err(|e| format!("{e:#}")));
+                this.reload();
+                crate::shared::custom_renderers::reload(cx);
+                cx.notify();
+            })
+            .ok();
+        }));
     }
 
     fn install(&mut self, window: &mut gpui_kit::Window, cx: &mut Context<Self>) {
@@ -66,17 +110,23 @@ impl PluginsSection {
         self.busy = Some(Busy::Installing);
         self.message = None;
         cx.notify();
-        let job = cx.background_spawn(async move { PluginStore::new().install(&source) });
+        let job = cx.background_spawn(async move { PluginStore::new().add(&source) });
         self._task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = job.await;
             this.update_in(cx, |this, window, cx| {
                 this.busy = None;
                 this.message = Some(match result {
-                    Ok(listing) => {
+                    Ok(added) => {
                         this.source_input.update(cx, |input, cx| {
                             input.set_value(SharedString::default(), window, cx)
                         });
-                        Ok(format!("Installed '{}'.", listing.name))
+                        Ok(match added {
+                            Added::Plugin(listing) => format!("Installed '{}'.", listing.name),
+                            Added::Marketplace(listing) => format!(
+                                "Added marketplace '{}': switch on the plugins you want below.",
+                                listing.name
+                            ),
+                        })
                     }
                     Err(e) => Err(format!("{e:#}")),
                 });
@@ -89,30 +139,74 @@ impl PluginsSection {
     }
 
     fn update(&mut self, name: String, cx: &mut Context<Self>) {
-        if self.busy.is_some() {
+        self.run_job(
+            Busy::Updating(name.clone()),
+            move || {
+                PluginStore::new()
+                    .update(&name)
+                    .map(|_| format!("Updated '{name}'."))
+                    .map_err(|e| e.context(format!("Could not update '{name}'")))
+            },
+            cx,
+        );
+    }
+
+    fn update_marketplace(&mut self, name: String, cx: &mut Context<Self>) {
+        self.run_job(
+            Busy::UpdatingMarketplace(name.clone()),
+            move || {
+                PluginStore::new()
+                    .update_marketplace(&name)
+                    .map(|_| format!("Updated marketplace '{name}' and its plugins."))
+                    .map_err(|e| e.context(format!("Could not update marketplace '{name}'")))
+            },
+            cx,
+        );
+    }
+
+    fn remove_marketplace(&mut self, name: &str, cx: &mut Context<Self>) {
+        if !self.confirm_remove_marketplace.remove(name) {
+            self.confirm_remove_marketplace.insert(name.to_string());
+            cx.notify();
             return;
         }
-        self.busy = Some(Busy::Updating(name.clone()));
-        self.message = None;
-        cx.notify();
-        let job = cx.background_spawn({
-            let name = name.clone();
-            async move { PluginStore::new().update(&name) }
+        self.message = Some(match PluginStore::new().remove_marketplace(name) {
+            Ok(()) => Ok(format!(
+                "Removed marketplace '{name}' and the plugins installed from it."
+            )),
+            Err(e) => Err(format!("Could not remove marketplace '{name}': {e:#}")),
         });
-        self._task = Some(cx.spawn(async move |this, cx| {
-            let result = job.await;
-            this.update(cx, |this, cx| {
-                this.busy = None;
-                this.message = Some(match result {
-                    Ok(_) => Ok(format!("Updated '{name}'.")),
-                    Err(e) => Err(format!("Could not update '{name}': {e:#}")),
-                });
-                this.reload();
-                crate::shared::custom_renderers::reload(cx);
-                cx.notify();
-            })
-            .ok();
-        }));
+        self.reload();
+        crate::shared::custom_renderers::reload(cx);
+        cx.notify();
+    }
+
+    /// A marketplace plugin's switch: on installs it (once) and enables it,
+    /// off disables it and keeps it installed.
+    fn switch_marketplace_plugin(
+        &mut self,
+        plugin: String,
+        marketplace: String,
+        on: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.plugins.iter().any(|p| p.name == plugin) {
+            self.set_enabled(&plugin, on, cx);
+            return;
+        }
+        if !on {
+            return;
+        }
+        let source = format!("{plugin}@{marketplace}");
+        self.run_job(
+            Busy::InstallingFrom(source.clone()),
+            move || {
+                PluginStore::new()
+                    .install(&source)
+                    .map(|listing| format!("Installed '{}'.", listing.name))
+            },
+            cx,
+        );
     }
 
     fn remove(&mut self, name: &str, cx: &mut Context<Self>) {
@@ -199,6 +293,176 @@ impl PluginsSection {
             .hover(|s| s.bg(cx.theme().muted))
             .child(label)
             .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
+    }
+
+    fn render_marketplace_card(
+        &self,
+        marketplace: &MarketplaceListing,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let name = marketplace.name.clone();
+        let view = cx.entity();
+        let mut source = marketplace.installed.source.display();
+        if let Some(commit) = &marketplace.installed.commit {
+            source.push_str(&format!(" · {}", &commit[..commit.len().min(10)]));
+        }
+        if matches!(marketplace.installed.source, PluginSource::Local { .. }) {
+            source.push_str(" · linked folder");
+        }
+        let updating = self.busy == Some(Busy::UpdatingMarketplace(name.clone()));
+        let confirming = self.confirm_remove_marketplace.contains(&name);
+        let header = div()
+            .flex()
+            .items_center()
+            .gap_3()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_sm()
+                    .font_weight(gpui_kit::FontWeight::MEDIUM)
+                    .text_color(cx.theme().foreground)
+                    .child(SharedString::from(name.clone())),
+            )
+            .child(self.render_action(
+                format!("marketplace-update-{name}"),
+                if updating { "Updating…" } else { "Update" },
+                false,
+                cx,
+                {
+                    let name = name.clone();
+                    move |this, cx| this.update_marketplace(name.clone(), cx)
+                },
+            ))
+            .child(self.render_action(
+                format!("marketplace-remove-{name}"),
+                if confirming {
+                    "Remove with its plugins?"
+                } else {
+                    "Remove"
+                },
+                true,
+                cx,
+                {
+                    let name = name.clone();
+                    move |this, cx| this.remove_marketplace(&name, cx)
+                },
+            ));
+        let body = match &marketplace.manifest {
+            Ok(manifest) => div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .when_some(manifest.description.clone(), |el, description| {
+                    el.child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().foreground)
+                            .child(SharedString::from(description)),
+                    )
+                })
+                .children(manifest.plugins.iter().map(|entry| {
+                    let installed = self.plugins.iter().find(|p| p.name == entry.name);
+                    let from_here = installed.is_none_or(|p| {
+                        p.installed.source
+                            == PluginSource::Marketplace {
+                                marketplace: name.clone(),
+                            }
+                    });
+                    let installing =
+                        self.busy == Some(Busy::InstallingFrom(format!("{}@{name}", entry.name)));
+                    let title = match &entry.version {
+                        Some(version) => format!("{} {version}", entry.name),
+                        None => entry.name.clone(),
+                    };
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_weight(gpui_kit::FontWeight::MEDIUM)
+                                        .text_color(cx.theme().foreground)
+                                        .child(SharedString::from(title)),
+                                )
+                                .when_some(entry.description.clone(), |el, description| {
+                                    el.child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(SharedString::from(description)),
+                                    )
+                                }),
+                        )
+                        .when(installing, |el| {
+                            el.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("Installing…"),
+                            )
+                        })
+                        .child(if from_here {
+                            let plugin = entry.name.clone();
+                            let marketplace = name.clone();
+                            let view = view.clone();
+                            Switch::new(SharedString::from(format!(
+                                "marketplace-plugin-{name}-{}",
+                                entry.name
+                            )))
+                            .checked(installed.is_some_and(|p| p.installed.enabled))
+                            .with_size(Size::Small)
+                            .on_click(move |on, _window, app| {
+                                let on = *on;
+                                view.update(app, |this, cx| {
+                                    this.switch_marketplace_plugin(
+                                        plugin.clone(),
+                                        marketplace.clone(),
+                                        on,
+                                        cx,
+                                    )
+                                });
+                            })
+                            .into_any_element()
+                        } else {
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("Installed from elsewhere")
+                                .into_any_element()
+                        })
+                })),
+            Err(error) => div()
+                .text_xs()
+                .text_color(cx.theme().danger)
+                .child(SharedString::from(format!("Not loaded: {error}"))),
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .px_4()
+            .py_3()
+            .rounded_lg()
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().secondary)
+            .child(header)
+            .child(body)
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .truncate()
+                    .child(SharedString::from(source)),
+            )
     }
 
     fn render_plugin_card(
@@ -334,6 +598,7 @@ impl Render for PluginsSection {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let plugins = self.plugins.clone();
+        let marketplaces = self.marketplaces.clone();
         div()
             .flex()
             .flex_col()
@@ -354,9 +619,11 @@ impl Render for PluginsSection {
                     .text_color(cx.theme().muted_foreground)
                     .child(
                         "Plugins add provider templates, MCP servers and file renderers. Install \
-                         one from its git repository; it is cloned with your git setup, so \
-                         private repositories work too. Plugins can start programs on this \
-                         computer — install only plugins you trust.",
+                         one from its git repository, or add a marketplace — a repository \
+                         listing several plugins — and switch on the ones you want. Repositories \
+                         are cloned with your git setup (credential helpers, SSH agent), so \
+                         private ones work too. Plugins can start programs on this computer — \
+                         install only plugins you trust.",
                     ),
             )
             .child(self.render_install_row(cx))
@@ -371,6 +638,34 @@ impl Render for PluginsSection {
                         .text_color(color)
                         .whitespace_normal()
                         .child(SharedString::from(text)),
+                )
+            })
+            .when(!marketplaces.is_empty(), |el| {
+                el.child(
+                    div()
+                        .pt_2()
+                        .text_xs()
+                        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                        .text_color(cx.theme().muted_foreground)
+                        .child("MARKETPLACES"),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .children(marketplaces.iter().map(|marketplace| {
+                            self.render_marketplace_card(marketplace, cx)
+                                .into_any_element()
+                        })),
+                )
+                .child(
+                    div()
+                        .pt_2()
+                        .text_xs()
+                        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                        .text_color(cx.theme().muted_foreground)
+                        .child("INSTALLED"),
                 )
             })
             .when(plugins.is_empty(), |el| {

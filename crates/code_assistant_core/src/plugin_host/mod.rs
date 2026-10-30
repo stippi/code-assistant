@@ -9,13 +9,17 @@
 //!   turning a file into an image or a web editor editing it in place, with
 //!   an optional script that starts a server they need ([`server`]).
 //!
-//! [`store`] installs, updates and removes plugins; [`catalog`] is what the
-//! rest of the app reads. See `docs/plugins.md`.
+//! A marketplace ([`marketplace`]) is a repository listing several plugins
+//! in its folders; they install as `<plugin>@<marketplace>`.
+//!
+//! [`store`] installs, updates and removes plugins and marketplaces;
+//! [`catalog`] is what the rest of the app reads. See `docs/plugins.md`.
 //!
 //! (Not to be confused with [`crate::plugins`], the compiled-in agent hooks.)
 
 pub mod catalog;
 pub mod manifest;
+pub mod marketplace;
 pub mod server;
 pub mod store;
 
@@ -26,5 +30,9 @@ pub use manifest::{
     MANIFEST_PATH, PluginFileRenderer, PluginManifest, ProviderTemplate, RendererKind,
     RendererOutput, ServerStart, ServerStop,
 };
+pub use marketplace::{MARKETPLACE_PATH, MarketplaceEntry, MarketplaceManifest};
 pub use server::{ServerLease, ServerTarget};
-pub use store::{InstalledPlugin, PluginListing, PluginRecord, PluginSource, PluginStore};
+pub use store::{
+    Added, GitLoginRequired, InstalledMarketplace, InstalledPlugin, MarketplaceListing,
+    PluginListing, PluginRecord, PluginSource, PluginStore,
+};
