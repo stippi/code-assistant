@@ -100,6 +100,15 @@ pub(super) struct Cache<K, V> {
     inner: Arc<Inner<K, V>>,
 }
 
+/// Another handle on the same entries.
+impl<K, V> Clone for Cache<K, V> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
 impl<K, V> Cache<K, V>
 where
     K: Hash + Eq + Clone + Send + Sync + 'static,

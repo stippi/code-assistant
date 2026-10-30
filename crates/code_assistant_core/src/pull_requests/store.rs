@@ -65,11 +65,11 @@ impl Default for PullRequestSource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// A push drops the pull request's diffs when a detail read first sees the
+/// new head (see [`PullRequests::detail`]); the head is not part of the key,
+/// so a diff read before the detail arrived still serves later reads.
 struct DiffKey {
     pr: PullRequestRef,
-    /// The head the pull request's detail showed when the diff was read, so
-    /// a push reads the diff anew. Not set for a commit's diff.
-    head: Option<String>,
     commit: Option<String>,
     cursor: Option<String>,
 }
@@ -266,12 +266,17 @@ impl PullRequests {
     pub async fn detail(&self, pr: PullRequestRef) -> Result<Fetched<Detail>> {
         self.seed(&self.details, Kind::Detail, &pr).await;
         let snapshots = self.snapshots.clone();
+        let (details, diffs) = (self.details.clone(), self.diffs.clone());
         read(
             &self.details,
             pr,
             &self.client,
             move |client, pr| async move {
                 let detail = client.detail(&pr).await?;
+                let held_head = details.peek(&pr, |held| held.head_sha.clone()).flatten();
+                if held_head.is_some() && held_head != detail.head_sha {
+                    diffs.invalidate(|key| key.pr == pr && key.commit.is_none());
+                }
                 snapshots.save(Kind::Detail, &pr, &detail);
                 Ok(detail)
             },
@@ -309,19 +314,7 @@ impl PullRequests {
         commit: Option<String>,
         cursor: Option<String>,
     ) -> Result<Fetched<DiffPage>> {
-        let head = match commit {
-            Some(_) => None,
-            None => self
-                .details
-                .peek(&pr, |detail| detail.head_sha.clone())
-                .flatten(),
-        };
-        let key = DiffKey {
-            pr,
-            head,
-            commit,
-            cursor,
-        };
+        let key = DiffKey { pr, commit, cursor };
         read(&self.diffs, key, &self.client, |client, key| async move {
             let cursor = key.cursor.as_deref();
             match &key.commit {

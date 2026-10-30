@@ -287,6 +287,52 @@ async fn ticking_files_viewed_keeps_the_diff() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_diff_read_alongside_the_detail_serves_later_reads() {
+    let h = harness();
+    h.fake
+        .on_graphql("PullRequestCore")
+        .data(core(|pr| pr["headRefOid"] = HEAD.into()));
+    h.fake
+        .on_rest(Method::Get, DIFF_PATH)
+        .respond(FakeResponse::text(200, "diff --git a/a.rs b/a.rs\n"));
+
+    // Opening a pull request prefetches its diff while the detail (and so
+    // the head) is still on its way.
+    let (detail, diff) = tokio::join!(h.store.detail(pr()), h.store.diff(pr(), None, None));
+    detail.unwrap();
+    diff.unwrap();
+    h.store.diff(pr(), None, None).await.unwrap();
+    assert_eq!(h.requests(DIFF_PATH), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_push_seen_by_a_detail_revalidation_reads_the_diff_anew() {
+    let mut h = harness();
+    h.fake
+        .on_graphql("PullRequestCore")
+        .once()
+        .data(core(|pr| pr["headRefOid"] = HEAD.into()));
+    h.fake
+        .on_graphql("PullRequestCore")
+        .data(core(|pr| pr["headRefOid"] = PUSHED.into()));
+    h.fake
+        .on_rest(Method::Get, DIFF_PATH)
+        .respond(FakeResponse::text(200, "diff --git a/a.rs b/a.rs\n"));
+
+    h.store.detail(pr()).await.unwrap();
+    tokio::time::advance(Duration::from_secs(30)).await;
+    h.store.diff(pr(), None, None).await.unwrap();
+
+    // The detail goes stale and its background read sees the push; the
+    // diff, still within its own time to live, must not be served.
+    tokio::time::advance(Duration::from_secs(31)).await;
+    h.store.detail(pr()).await.unwrap();
+    assert!(changed(PullRequestPart::Detail)(&h.next_event().await));
+    h.store.diff(pr(), None, None).await.unwrap();
+    assert_eq!(h.requests(DIFF_PATH), 2);
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_push_reads_the_diff_anew() {
     let h = harness();
     h.fake

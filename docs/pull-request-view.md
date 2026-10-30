@@ -104,8 +104,10 @@ deleted modes, binary markers, `\ No newline at end of file`, CRLF) and
   `call_io`, outside the session lanes. Agent runs get the client through
   `RunConfig::github` for the post-run lifecycle refresh.
 - **Read cache** (`pull_requests/cache.rs`), one LRU per part, keyed by
-  the PR (lists by `(repo, query)`, diffs by `(pr, head sha of the held
-  detail, commit, cursor)`), with in-flight coalescing (concurrent identical
+  the PR (lists by `(repo, query)`, diffs by `(pr, commit, cursor)`; a
+  detail read that sees a new head drops the PR's diffs, so a diff
+  prefetched alongside the first detail read still counts), with in-flight
+  coalescing (concurrent identical
   reads share one request, run on a task of its own so it lands even when
   the readers are gone) and these TTLs:
 
