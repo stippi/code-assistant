@@ -156,6 +156,17 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
   worktree session) and stack rebases (`git::stack_rebase`, scratch repo)
   are git-crate work the core drives
 
+### Self-update
+- Release builds (the workflow compiles in `CODE_ASSISTANT_UPDATE_FEED`)
+  read `update-manifest.json` from the latest GitHub release; all other
+  builds never update themselves (`version::update_feed()`)
+- Layer-0 `app_update`: manifest, download (resumed with `Range`, retried,
+  sha256-checked), swap next to the installation (macOS bundle after a
+  codesign/team check, bare executable, Windows rename trick), cleanup
+- `code_assistant_core::updates::UpdateService`: checks after 15 s and every
+  4 h, download on click, app-scoped `UiEvent::UpdateStateChanged`; the GPUI
+  title-bar chip installs and calls `cx.restart()`; see `docs/self-update.md`
+
 ### Session Storage
 - One folder per session below `sessions/`, the ID is its path:
   `<project-slug>/<YYYY-MM-DD>-<NNN>` (`persistence::layout`)

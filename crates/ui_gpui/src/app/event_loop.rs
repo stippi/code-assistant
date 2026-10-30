@@ -1209,6 +1209,10 @@ impl Gpui {
                 self.append_voice_transcript(entry);
                 cx.refresh();
             }
+            UiEvent::UpdateStateChanged { state } => {
+                self.apply_update_state(state);
+                cx.refresh();
+            }
             UiEvent::ConfigChanged => {
                 debug!("UI: ConfigChanged event — config files modified on disk");
                 self.refresh_voice_configured();

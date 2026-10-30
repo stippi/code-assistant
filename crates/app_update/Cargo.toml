@@ -1,0 +1,33 @@
+[package]
+name = "app_update"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+anyhow = "1.0"
+futures = "0.3"
+reqwest = { version = "0.13", default-features = false, features = [
+    "rustls",
+    "charset",
+    "http2",
+    "system-proxy",
+    "stream",
+] }
+semver = { version = "1.0", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.11.0"
+tokio = { version = "1.48", features = ["fs", "io-util", "process", "time", "rt"] }
+tracing = "0.1"
+zip = { version = "8.6", default-features = false, features = ["deflate"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# sysctlbyname("sysctl.proc_translated"): running under Rosetta
+libc = "0.2"
+
+[dev-dependencies]
+axum = "0.7"
+bytes = "1.10"
+tempfile = "3.23"
+tokio = { version = "1.48", features = ["full"] }

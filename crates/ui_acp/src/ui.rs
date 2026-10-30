@@ -1032,6 +1032,9 @@ impl UserInterface for ACPUserUI {
             UiEvent::PullRequestChanged { .. } | UiEvent::PullRequestListChanged { .. } => {
                 // The pull request view is GPUI-specific.
             }
+            UiEvent::UpdateStateChanged { .. } => {
+                // Only the GPUI app updates itself.
+            }
         }
         Ok(())
     }
