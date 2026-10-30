@@ -5,9 +5,7 @@
 
 use super::PullRequestIntent;
 use super::detail::{DetailTab, DetailView};
-use super::presentation::{
-    GLYPH_SIZE, check_status_glyph, checks_glyph, hairline, summarize_checks,
-};
+use super::presentation::{GLYPH_SIZE, check_status_glyph, checks_glyph, summarize_checks};
 use super::timeline::TimelineTab;
 use crate::shared::segmented_switch::segmented_switch;
 use github::model::{Activity, Check, ChecksState};
@@ -33,7 +31,7 @@ pub fn render_tab_row(
         .items_center()
         .gap_2()
         .border_b_1()
-        .border_color(hairline(cx))
+        .border_color(cx.theme().border)
         .child(segmented_switch(
             "pr-tab",
             DetailTab::ALL,

@@ -334,13 +334,6 @@ pub fn diff_stat(additions: u64, deletions: u64, cx: &App) -> Option<AnyElement>
     )
 }
 
-/// Hairlines and control outlines. The theme's `border` (and `input`) sit
-/// below our dark background, so the view takes the title bar's border,
-/// which shows in both modes.
-pub fn hairline(cx: &App) -> Hsla {
-    cx.theme().title_bar_border
-}
-
 /// A small glyph: `svg` sized for a row.
 pub const GLYPH_SIZE: Pixels = px(14.);
 

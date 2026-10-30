@@ -18,6 +18,11 @@ pub fn custom_dark_theme() -> gpui_kit::component::theme::ThemeColor {
     colors.sidebar = rgb(0x252525).into(); // Sidebar background
     colors.sidebar_border = rgb(0x404040).into(); // Sidebar border
 
+    // Hairlines and control outlines; the stock dark values sit below the
+    // background above and would not show.
+    colors.border = rgb(0x404040).into();
+    colors.input = rgb(0x404040).into();
+
     // Text colors
     colors.foreground = rgba(0xFAFAFAFF).into(); // Main text
     colors.muted_foreground = rgb(0xAAAAAA).into(); // Secondary text

@@ -19,7 +19,7 @@ use super::actions::{
 };
 use super::avatar::avatar;
 use super::preferences;
-use super::presentation::{Tone, diff_stat, format_count, hairline, relative_time};
+use super::presentation::{Tone, diff_stat, format_count, relative_time};
 use chrono::{DateTime, Utc};
 use github::PullRequestRef;
 use github::model::{
@@ -601,7 +601,7 @@ impl Render for DetailHeader {
             .flex_col()
             .gap_1p5()
             .border_b_1()
-            .border_color(hairline(cx))
+            .border_color(cx.theme().border)
             .child(
                 div()
                     .h(px(28.))

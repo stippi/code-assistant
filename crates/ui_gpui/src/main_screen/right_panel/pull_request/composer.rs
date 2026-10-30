@@ -12,7 +12,6 @@
 
 use super::actions::{Confirmable, InlineConfirm, can};
 use super::data::PullRequestData;
-use super::presentation::hairline;
 use super::review_draft::{ReviewDrafts, review_drafts};
 use crate::shared::dismiss::{TriggerBounds, dismiss_layer};
 use crate::shared::segmented_switch::segmented_switch;
@@ -367,7 +366,7 @@ impl Composer {
             .justify_center()
             .rounded_full()
             .border_1()
-            .border_color(hairline(cx))
+            .border_color(theme.border)
             .bg(theme.popover)
             .shadow_md()
             .cursor_pointer()
@@ -414,7 +413,7 @@ impl Composer {
             .flex()
             .flex_col()
             .gap_2()
-            .child(Textarea::new(input).border_color(hairline(cx)))
+            .child(Textarea::new(input))
             .child(
                 div()
                     .flex()
@@ -497,7 +496,7 @@ impl Composer {
             .flex()
             .flex_col()
             .gap_2()
-            .child(Textarea::new(input).border_color(hairline(cx)))
+            .child(Textarea::new(input))
             .child(
                 div()
                     .flex()
@@ -619,7 +618,7 @@ impl Composer {
             .gap_3()
             .rounded_lg()
             .border_1()
-            .border_color(hairline(cx))
+            .border_color(theme.border)
             .bg(theme.popover)
             .shadow_lg()
             .capture_action(cx.listener(|this, _: &Escape, _, cx| {
