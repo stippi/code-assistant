@@ -140,28 +140,30 @@ impl Client {
     pub async fn list(&self, repo: &RepoRef, query: &ListQuery) -> Result<ListPage> {
         ensure_addressable(repo)?;
         let limit = query.limit.clamp(1, MAX_ROWS);
-        match query.cursor.as_deref() {
+        let mut page = match query.cursor.as_deref() {
             Some(cursor) => {
                 if let Some(after) = cursor.strip_prefix(SEARCH_CURSOR) {
-                    self.search_page(repo, query, limit, Some(after)).await
+                    self.search_page(repo, query, limit, Some(after)).await?
                 } else if let Some(after) = cursor.strip_prefix(LIST_CURSOR) {
-                    self.fallback_page(repo, query, limit, Some(after)).await
+                    self.fallback_page(repo, query, limit, Some(after)).await?
                 } else {
-                    Err(Error::Invalid(
+                    return Err(Error::Invalid(
                         "The list cursor was not one this client handed out.".into(),
-                    ))
+                    ));
                 }
             }
             None => {
                 let page = self.search_page(repo, query, limit, None).await?;
                 let has_text = query.text.as_deref().is_some_and(|t| !t.trim().is_empty());
                 if page.entries.is_empty() && !has_text {
-                    self.fallback_page(repo, query, limit, None).await
+                    self.fallback_page(repo, query, limit, None).await?
                 } else {
-                    Ok(page)
+                    page
                 }
             }
-        }
+        };
+        self.mark_stacks(repo, &mut page.entries).await;
+        Ok(page)
     }
 
     async fn search_page(
@@ -301,7 +303,7 @@ impl Client {
     /// Runs an aliased per-pull-request operation for all `prs`, batched per
     /// host, and returns one answer per reference, in order. A reference
     /// GitHub cannot address fails on its own without a request.
-    async fn batched(
+    pub(crate) async fn batched(
         &self,
         prs: &[PullRequestRef],
         operation: &'static str,

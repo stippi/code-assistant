@@ -549,8 +549,13 @@ async fn lists_through_search_with_an_opaque_cursor() {
         ..query
     };
     client.list(&repo(), &next).await.unwrap();
+    let searches: Vec<_> = fake
+        .requests()
+        .into_iter()
+        .filter(|r| r.operation.as_deref() == Some("PullRequestSearch"))
+        .collect();
     assert_eq!(
-        fake.requests()[1].variables.as_ref().unwrap()["after"],
+        searches[1].variables.as_ref().unwrap()["after"],
         "Y3Vyc29yOjI="
     );
 }
@@ -1119,4 +1124,177 @@ async fn polling_a_forks_checks_revalidates_its_workflow_runs_too() {
     let checks = fake.client().checks(&pr()).await.unwrap();
     assert_eq!(checks.workflow_approvals, Some(0));
     assert!(fake.requests().iter().any(|r| r.path == workflows));
+}
+
+// --- Stacks ------------------------------------------------------------------
+
+const STACKS: &str = "repos/stippi/code-assistant/stacks";
+
+fn stack_json(layers: Value) -> Value {
+    json!({"id": 9, "number": 3, "url": "https://api.github.com/s/3",
+           "html_url": "https://github.com/stippi/code-assistant/stacks/3",
+           "base": "main", "pull_requests": layers})
+}
+
+#[tokio::test]
+async fn reads_a_stack_with_its_layers_details() {
+    let fake = FakeTransport::new();
+    fake.on_rest(Method::Get, &format!("{STACKS}?pull_request=291"))
+        .respond(
+            FakeResponse::json(
+                200,
+                json!([stack_json(json!([
+                    {"number": 290, "head": {"ref": "a"}, "state": "open"},
+                    {"number": 291, "head": {"ref": "b"}, "state": "open"}
+                ]))]),
+            )
+            .header("etag", "\"s-1\""),
+        );
+    fake.on_rest(Method::Get, &format!("{STACKS}/3"))
+        .json(stack_json(json!([
+            {"number": 290, "head": {"ref": "a", "sha": "aaa"}, "state": "open", "title": "A"},
+            {"number": 291, "head": {"ref": "b", "sha": "bbb"}, "state": "open", "draft": true}
+        ])));
+    let stack = fake.client().stack(&pr()).await.unwrap().unwrap();
+    assert_eq!(stack.number, 3);
+    assert_eq!(stack.layers[0].title.as_deref(), Some("A"));
+    assert_eq!(stack.layers[1].head_sha.as_deref(), Some("bbb"));
+    assert_eq!(stack.layers[1].is_draft, Some(true));
+
+    // No stack, or no stacks on the host.
+    let none = FakeTransport::new();
+    none.on_rest(Method::Get, &format!("{STACKS}?pull_request=291"))
+        .respond(FakeResponse::status(404));
+    assert_eq!(none.client().stack(&pr()).await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn marks_where_listed_pull_requests_sit_in_their_stacks() {
+    let fake = FakeTransport::new();
+    fake.on_graphql("PullRequestSearch")
+        .data(fixture("pull_request_search.json"));
+    fake.on_graphql("PullRequestStackMembership").data(json!({
+        "a0_repository": {"pullRequest": {"stack": {"number": 3, "size": 2, "baseRefName": "main"}, "stackEntry": {"position": 2}}},
+        "a1_repository": {"pullRequest": {"stack": null, "stackEntry": null}}
+    }));
+    let query = ListQuery {
+        limit: 2,
+        ..ListQuery::default()
+    };
+    let page = fake.client().list(&repo(), &query).await.unwrap();
+    let stack = page.entries[0].stack.as_ref().expect("in a stack");
+    assert_eq!((stack.number, stack.position, stack.size), (3, 2, 2));
+    assert_eq!(page.entries[1].stack, None);
+}
+
+fn stack_heads() -> Vec<github::model::StackHead> {
+    vec![
+        github::model::StackHead {
+            number: 290,
+            head_sha: "aaa".into(),
+        },
+        github::model::StackHead {
+            number: 291,
+            head_sha: "bbb".into(),
+        },
+    ]
+}
+
+fn open_stack(fake: &FakeTransport) {
+    fake.on_rest(Method::Get, &format!("{STACKS}?pull_request=291"))
+        .json(json!([stack_json(json!([
+            {"number": 290, "head": {"ref": "a", "sha": "aaa"}, "state": "open"},
+            {"number": 291, "head": {"ref": "b", "sha": "bbb"}, "state": "open"}
+        ]))]));
+}
+
+#[tokio::test(start_paused = true)]
+async fn merges_a_stack_and_follows_github_until_it_settles() {
+    let fake = FakeTransport::new();
+    open_stack(&fake);
+    let merge = "repos/stippi/code-assistant/pulls/291/merge-async";
+    fake.on_rest(Method::Put, merge)
+        .json(json!({"status": "pending", "details": {"uuid": "u-1"}}));
+    fake.on_rest(Method::Get, &format!("{merge}/u-1"))
+        .once()
+        .json(json!({"status": "pending", "details": {"uuid": "u-1"}}));
+    fake.on_rest(Method::Get, &format!("{merge}/u-1"))
+        .json(json!({"status": "enqueued", "details": {}}));
+    fake.client()
+        .merge_stack(&pr(), 3, &stack_heads(), MergeMethod::Squash)
+        .await
+        .unwrap();
+    let put = fake
+        .requests()
+        .into_iter()
+        .find(|r| r.method == Method::Put)
+        .unwrap();
+    assert_eq!(
+        put.body,
+        Some(json!({"merge_method": "squash", "merge_action": "default", "sha": "bbb"}))
+    );
+
+    // A head moved since the viewer saw it: nothing is merged.
+    let moved = FakeTransport::new();
+    open_stack(&moved);
+    let mut heads = stack_heads();
+    heads[0].head_sha = "old".into();
+    let refused = moved
+        .client()
+        .merge_stack(&pr(), 3, &heads, MergeMethod::Merge)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refused.to_string(),
+        "The stack changed. Refresh it before trying again."
+    );
+    assert!(moved.requests().iter().all(|r| r.method != Method::Put));
+}
+
+#[tokio::test]
+async fn a_stack_rebase_needs_every_branch_writable() {
+    let fake = FakeTransport::new();
+    open_stack(&fake);
+    fake.on_graphql("PullRequestBranchAccess").data(json!({
+        "a0_repository": {"pullRequest": {"headRepository": {"viewerPermission": "WRITE"}, "maintainerCanModify": false}},
+        "a1_repository": {"pullRequest": {"headRepository": {"viewerPermission": "READ"}, "maintainerCanModify": true}}
+    }));
+    let plan = fake
+        .client()
+        .stack_rebase(&pr(), 3, &stack_heads())
+        .await
+        .unwrap();
+    assert_eq!(
+        plan.remote_url,
+        "https://github.com/stippi/code-assistant.git"
+    );
+    // base64("x-access-token:test-token")
+    assert_eq!(
+        plan.auth_header,
+        "AUTHORIZATION: basic eC1hY2Nlc3MtdG9rZW46dGVzdC10b2tlbg=="
+    );
+    assert_eq!(plan.base, "main");
+    let layers: Vec<_> = plan
+        .layers
+        .iter()
+        .map(|l| (l.number, l.branch.as_str()))
+        .collect();
+    assert_eq!(layers, [(290, "a"), (291, "b")]);
+
+    let locked = FakeTransport::new();
+    open_stack(&locked);
+    locked.on_graphql("PullRequestBranchAccess").data(json!({
+        "a0_repository": {"pullRequest": {"headRepository": {"viewerPermission": "WRITE"}, "maintainerCanModify": false}},
+        "a1_repository": {"pullRequest": {"headRepository": {"viewerPermission": "READ"}, "maintainerCanModify": false}}
+    }));
+    let refused = locked
+        .client()
+        .stack_rebase(&pr(), 3, &stack_heads())
+        .await
+        .unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .starts_with("You cannot update every branch")
+    );
 }

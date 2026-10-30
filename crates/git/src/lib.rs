@@ -5,6 +5,7 @@ mod merged;
 mod patch;
 pub mod pull_request;
 mod repository;
+pub mod stack_rebase;
 mod types;
 mod watch;
 pub mod worktree;

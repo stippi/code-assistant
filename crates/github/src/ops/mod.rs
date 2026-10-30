@@ -8,6 +8,7 @@ mod detail;
 mod diff;
 mod files;
 mod list;
+mod stacks;
 mod workflows;
 mod write;
 

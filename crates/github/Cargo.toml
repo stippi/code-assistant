@@ -26,6 +26,7 @@ thiserror = "2.0"
 tokio = { version = "1.48", features = ["process", "sync", "time"] }
 tracing = "0.1"
 urlencoding = "2.1"
+base64 = "0.22"
 
 [dev-dependencies]
 github = { path = ".", features = ["test-utils"] }

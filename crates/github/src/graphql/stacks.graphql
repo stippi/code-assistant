@@ -1,0 +1,29 @@
+# Stacked pull requests (GitHub's stacks): which stack a pull request is a layer of, and whether
+# the viewer may push to a layer's branch before rebasing the stack.
+
+query PullRequestStackMembership($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      stack {
+        number
+        size
+        baseRefName
+      }
+      stackEntry {
+        position
+      }
+    }
+  }
+}
+
+query PullRequestBranchAccess($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      headRepository {
+        viewerPermission
+      }
+      # A fork's branch is writable without repository access when its owner allows it.
+      maintainerCanModify
+    }
+  }
+}

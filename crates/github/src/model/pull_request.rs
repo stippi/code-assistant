@@ -77,6 +77,9 @@ pub struct ListEntry {
     pub has_team_review_request: bool,
     pub labels: Vec<Label>,
     pub checks_state: Option<ChecksState>,
+    /// Where it sits in its stack (github.com only).
+    #[serde(default)]
+    pub stack: Option<super::StackMembership>,
 }
 
 /// Line counts of one pull request, as `Client::list_stats` reads them.
