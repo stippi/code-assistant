@@ -1,11 +1,13 @@
 //! [`TestCore`]: the real session core for end-to-end tests.
 
 use code_assistant_core::persistence::FileSessionPersistence;
+use code_assistant_core::pull_requests::PullRequestSource;
 use code_assistant_core::session::event_stream::EventStream;
 use code_assistant_core::session::service::{
     AgentRuntimeOptions, LlmClientFactory, SessionService, default_project_manager_factory,
 };
 use code_assistant_core::session::{SessionConfig, SessionManager};
+use github::fake::FakeTransport;
 use std::future::Future;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -21,6 +23,16 @@ pub struct TestCore {
 
 impl TestCore {
     pub fn new(llm: LlmClientFactory) -> Self {
+        Self::build(llm, None)
+    }
+
+    /// A core whose GitHub answers come from `github` (scripted); its
+    /// snapshots stay in the temp dir.
+    pub fn with_github(llm: LlmClientFactory, github: &Arc<FakeTransport>) -> Self {
+        Self::build(llm, Some(github.client()))
+    }
+
+    fn build(llm: LlmClientFactory, github: Option<github::Client>) -> Self {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
@@ -44,7 +56,10 @@ impl TestCore {
             }),
             project_manager_factory: default_project_manager_factory(),
             llm_client_factory: Some(llm),
-            pull_requests: None,
+            pull_requests: github.map(|client| PullRequestSource {
+                client,
+                snapshot_dir: sessions_dir.path().join("pull-requests"),
+            }),
         };
         let (service, worker) = SessionService::new(manager, Arc::new(options), events);
         runtime.spawn(worker);

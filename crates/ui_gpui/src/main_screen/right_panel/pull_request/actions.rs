@@ -9,10 +9,10 @@
 
 use super::PullRequestIntent;
 use super::header::DetailHeader;
-use super::presentation::{Tone, checks_state, merge_method_label};
+use super::presentation::{Tone, merge_method_label};
 use github::model::{
-    Action, CheckStatus, ChecksState, Detail, MergeMethod, Mergeability, PullRequestAction,
-    PullRequestState, PullRequestUpdate, UpdateMethod,
+    Action, ChecksState, Detail, MergeMethod, Mergeability, PullRequestAction, PullRequestState,
+    PullRequestUpdate, UpdateMethod,
 };
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenu, PopupMenuItem};
@@ -62,22 +62,9 @@ pub fn resolve_merge_method(allowed: &[MergeMethod], picked: Option<MergeMethod>
         .unwrap_or(MergeMethod::Merge)
 }
 
-/// The checks verdict the controls go by. A workflow waiting for approval
-/// keeps a pull request pending even where the rollup forgot it.
-pub fn effective_checks_state(detail: &Detail) -> Option<ChecksState> {
-    let state = detail.checks_state.or_else(|| checks_state(&detail.checks));
-    let awaiting = detail
-        .checks
-        .iter()
-        .any(|check| check.status == CheckStatus::ActionRequired);
-    if awaiting && state != Some(ChecksState::Failing) {
-        Some(ChecksState::Pending)
-    } else {
-        state
-    }
-}
-
-pub fn primary_control(detail: &Detail) -> Option<PrimaryControl> {
+/// `checks` is the verdict over the head's checks (see
+/// [`PullRequestData::checks_state`](super::data::PullRequestData::checks_state)).
+pub fn primary_control(detail: &Detail, checks: Option<ChecksState>) -> Option<PrimaryControl> {
     match detail.state {
         PullRequestState::Merged => return Some(PrimaryControl::Merged),
         PullRequestState::Closed => return Some(PrimaryControl::Closed),
@@ -95,7 +82,7 @@ pub fn primary_control(detail: &Detail) -> Option<PrimaryControl> {
     if allowed_merge_methods(detail).is_empty() {
         return None;
     }
-    let unsettled = effective_checks_state(detail).is_some_and(|s| s != ChecksState::Passing);
+    let unsettled = checks.is_some_and(|s| s != ChecksState::Passing);
     if unsettled && detail.auto_merge_allowed && can(detail, PullRequestAction::EnableAutoMerge) {
         return Some(PrimaryControl::EnableAutoMerge);
     }
@@ -116,9 +103,9 @@ pub struct MenuEntries {
     pub delete_branch: bool,
 }
 
-pub fn menu_entries(detail: &Detail) -> MenuEntries {
+pub fn menu_entries(detail: &Detail, checks: Option<ChecksState>) -> MenuEntries {
     let open = detail.state == PullRequestState::Open;
-    let primary = primary_control(detail);
+    let primary = primary_control(detail, checks);
     let conflicting = detail.mergeability == Mergeability::Conflicting;
     let methods = allowed_merge_methods(detail).len();
     let armed = open && detail.auto_merge_enabled;
@@ -245,7 +232,8 @@ pub fn render_primary(
 ) -> Option<AnyElement> {
     let method = header.merge_method(detail);
     let confirm = header.confirm();
-    let control = primary_control(detail)?;
+    let control = primary_control(detail, header.checks_state())?;
+    let pending = header.pending();
     let confirmable = |key: Confirmable, label: String, action: Action, cx: &mut Context<_>| {
         let armed = confirm.is_armed(key);
         let label = if armed {
@@ -259,6 +247,7 @@ pub fn render_primary(
         Button::new("pr-primary")
             .primary()
             .xsmall()
+            .loading(pending)
             .icon(icon(if armed {
                 "icons/check.svg"
             } else {
@@ -293,6 +282,7 @@ pub fn render_primary(
         PrimaryControl::Ready => Button::new("pr-primary")
             .primary()
             .xsmall()
+            .loading(pending)
             .icon(icon("icons/git_pull_request.svg"))
             .label("Ready for review")
             .on_click(cx.listener(|this: &mut DetailHeader, _, _, cx| {
@@ -393,13 +383,19 @@ fn confirm_entry(
 }
 
 /// The ⋯ menu.
-pub fn render_more_menu(detail: &Detail, header: WeakEntity<DetailHeader>) -> AnyElement {
+/// The ⋯ menu; its button spins while `refreshing`.
+pub fn render_more_menu(
+    detail: &Detail,
+    refreshing: bool,
+    header: WeakEntity<DetailHeader>,
+) -> AnyElement {
     let detail = detail.clone();
     let closing = header.clone();
     Button::new("pr-more")
         .ghost()
         .xsmall()
         .icon(icon("icons/ellipsis.svg"))
+        .loading(refreshing)
         .dropdown_menu_with_anchor(gpui_kit::Anchor::TopRight, move |menu, _, cx| {
             more_menu(menu, &detail, &header, cx)
         })
@@ -417,10 +413,12 @@ fn more_menu(
     header: &WeakEntity<DetailHeader>,
     cx: &App,
 ) -> PopupMenu {
-    let entries = menu_entries(detail);
-    let method = header
-        .upgrade()
-        .map_or(MergeMethod::Merge, |h| h.read(cx).merge_method(detail));
+    let Some(state) = header.upgrade() else {
+        return menu;
+    };
+    let state = state.read(cx);
+    let entries = menu_entries(detail, state.checks_state());
+    let method = state.merge_method(detail);
     let item = |label: &str, icon_path: &'static str, intent: PullRequestIntent| {
         let header = header.clone();
         PopupMenuItem::new(SharedString::from(label.to_owned()))
@@ -554,14 +552,29 @@ fn more_menu(
 mod tests {
     use super::*;
     use crate::main_screen::right_panel::pull_request::fixtures::{check, detail, detail_with};
-    use github::model::{BaseComparison, MergeCapabilities};
+    use crate::main_screen::right_panel::pull_request::presentation::effective_checks_state;
+    use github::model::{BaseComparison, CheckStatus, MergeCapabilities};
+
+    fn primary(detail: &Detail) -> Option<PrimaryControl> {
+        primary_control(
+            detail,
+            effective_checks_state(detail.checks_state, &detail.checks),
+        )
+    }
+
+    fn entries(detail: &Detail) -> MenuEntries {
+        menu_entries(
+            detail,
+            effective_checks_state(detail.checks_state, &detail.checks),
+        )
+    }
 
     #[test]
     fn settled_pull_requests_show_their_state() {
         let merged = detail_with(1, |d| d.state = PullRequestState::Merged);
-        assert_eq!(primary_control(&merged), Some(PrimaryControl::Merged));
+        assert_eq!(primary(&merged), Some(PrimaryControl::Merged));
         let closed = detail_with(1, |d| d.state = PullRequestState::Closed);
-        assert_eq!(primary_control(&closed), Some(PrimaryControl::Closed));
+        assert_eq!(primary(&closed), Some(PrimaryControl::Closed));
     }
 
     #[test]
@@ -570,64 +583,43 @@ mod tests {
             d.mergeability = Mergeability::Conflicting;
             d.is_draft = true;
         });
-        assert_eq!(
-            primary_control(&conflicting),
-            Some(PrimaryControl::Conflicts)
-        );
+        assert_eq!(primary(&conflicting), Some(PrimaryControl::Conflicts));
     }
 
     #[test]
     fn a_draft_offers_ready_for_review_when_allowed() {
         let draft = detail_with(1, |d| d.is_draft = true);
-        assert_eq!(primary_control(&draft), Some(PrimaryControl::Ready));
+        assert_eq!(primary(&draft), Some(PrimaryControl::Ready));
         let draft = detail_with(1, |d| {
             d.is_draft = true;
             d.viewer_permissions.actions.clear();
         });
-        assert_eq!(primary_control(&draft), None);
+        assert_eq!(primary(&draft), None);
     }
 
     #[test]
     fn pending_checks_offer_auto_merge_passing_ones_merge() {
         let pending = detail_with(1, |d| d.checks = vec![check("ci", CheckStatus::Pending)]);
-        assert_eq!(
-            primary_control(&pending),
-            Some(PrimaryControl::EnableAutoMerge)
-        );
+        assert_eq!(primary(&pending), Some(PrimaryControl::EnableAutoMerge));
         let passing = detail_with(1, |d| d.checks = vec![check("ci", CheckStatus::Success)]);
-        assert_eq!(primary_control(&passing), Some(PrimaryControl::Merge));
+        assert_eq!(primary(&passing), Some(PrimaryControl::Merge));
         // Without checks there is nothing to wait for.
-        assert_eq!(primary_control(&detail(1)), Some(PrimaryControl::Merge));
+        assert_eq!(primary(&detail(1)), Some(PrimaryControl::Merge));
         let no_auto_merge = detail_with(1, |d| {
             d.checks_state = Some(ChecksState::Failing);
             d.auto_merge_allowed = false;
         });
-        assert_eq!(primary_control(&no_auto_merge), Some(PrimaryControl::Merge));
+        assert_eq!(primary(&no_auto_merge), Some(PrimaryControl::Merge));
         let armed = detail_with(1, |d| d.auto_merge_enabled = true);
-        assert_eq!(
-            primary_control(&armed),
-            Some(PrimaryControl::AutoMergeArmed)
-        );
-    }
-
-    #[test]
-    fn a_workflow_awaiting_approval_keeps_checks_pending() {
-        let awaiting = detail_with(1, |d| {
-            d.checks_state = Some(ChecksState::Passing);
-            d.checks = vec![check("build", CheckStatus::ActionRequired)];
-        });
-        assert_eq!(
-            effective_checks_state(&awaiting),
-            Some(ChecksState::Pending)
-        );
+        assert_eq!(primary(&armed), Some(PrimaryControl::AutoMergeArmed));
     }
 
     #[test]
     fn nothing_to_merge_with_offers_nothing() {
         let no_methods = detail_with(1, |d| d.merge_capabilities = MergeCapabilities::default());
-        assert_eq!(primary_control(&no_methods), None);
+        assert_eq!(primary(&no_methods), None);
         let no_permission = detail_with(1, |d| d.viewer_permissions.actions.clear());
-        assert_eq!(primary_control(&no_permission), None);
+        assert_eq!(primary(&no_permission), None);
     }
 
     #[test]
@@ -657,24 +649,24 @@ mod tests {
 
     #[test]
     fn menu_entries_follow_state_and_permissions() {
-        let open = menu_entries(&detail(1));
+        let open = entries(&detail(1));
         assert!(open.draft_toggle && open.enable_auto_merge && open.merge_methods && open.close);
         assert!(!open.merge_now && !open.reopen && !open.delete_branch);
 
-        let pending = menu_entries(&detail_with(1, |d| {
+        let pending = entries(&detail_with(1, |d| {
             d.checks_state = Some(ChecksState::Pending)
         }));
         // Auto-merge is the primary control, so merging at once moves here.
         assert!(pending.merge_now && !pending.enable_auto_merge);
 
-        let armed = menu_entries(&detail_with(1, |d| d.auto_merge_enabled = true));
+        let armed = entries(&detail_with(1, |d| d.auto_merge_enabled = true));
         assert!(armed.disable_auto_merge && armed.merge_now && !armed.enable_auto_merge);
 
-        let draft = menu_entries(&detail_with(1, |d| d.is_draft = true));
+        let draft = entries(&detail_with(1, |d| d.is_draft = true));
         // Ready for review is the primary control already.
         assert!(!draft.draft_toggle && !draft.merge_methods);
 
-        let closed = menu_entries(&detail_with(1, |d| d.state = PullRequestState::Closed));
+        let closed = entries(&detail_with(1, |d| d.state = PullRequestState::Closed));
         assert!(closed.reopen && closed.delete_branch && !closed.close);
     }
 

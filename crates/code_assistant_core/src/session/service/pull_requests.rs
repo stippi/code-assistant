@@ -274,6 +274,16 @@ impl SessionService {
             .await
     }
 
+    /// Drops the repository's cached lists; each is read anew on its next
+    /// read.
+    pub async fn pull_request_list_refresh(&self, repo: RepoRef) -> Result<()> {
+        self.call_io(move |ctx| async move {
+            ctx.pull_requests.refresh_list(&repo);
+            Ok(())
+        })
+        .await
+    }
+
     /// Drops every cached part of the pull request; each is read anew on its
     /// next read.
     pub async fn pull_request_refresh(&self, pr: PullRequestRef) -> Result<()> {

@@ -339,3 +339,36 @@ async fn a_cold_start_shows_the_snapshot_at_once_and_revalidates() {
     let current = second.store.detail(pr()).await.unwrap();
     assert_eq!(current.value.title, "Current");
 }
+
+#[tokio::test(start_paused = true)]
+async fn refreshing_a_repositorys_lists_reads_them_anew_and_announces_it() {
+    let mut h = harness();
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../github/tests/fixtures/pull_request_search.json"
+    );
+    let search = serde_json::from_str::<Value>(&std::fs::read_to_string(path).unwrap()).unwrap();
+    h.fake
+        .on_graphql("PullRequestSearch")
+        .data(search["data"].clone());
+    let repo = pr().repo;
+    let query = github::model::ListQuery {
+        limit: 25,
+        ..github::model::ListQuery::default()
+    };
+
+    h.store.list(repo.clone(), query.clone()).await.unwrap();
+    h.store.list(repo.clone(), query.clone()).await.unwrap();
+    assert_eq!(
+        h.requests("PullRequestSearch"),
+        1,
+        "the second read is cached"
+    );
+
+    h.store.refresh_list(&repo);
+    assert!(matches!(h.next_event().await,
+        UiEvent::PullRequestListChanged { repo: changed } if changed == repo));
+    let read = h.store.list(repo, query).await.unwrap();
+    assert!(!read.refreshing, "read anew, not served stale");
+    assert_eq!(h.requests("PullRequestSearch"), 2);
+}

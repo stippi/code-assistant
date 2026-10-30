@@ -209,6 +209,24 @@ pub fn checks_state(checks: &[Check]) -> Option<ChecksState> {
     }
 }
 
+/// The verdict the controls go by: the host's rollup, else the one over
+/// `checks`. A workflow waiting for approval keeps a pull request pending
+/// even where the rollup forgot it.
+pub fn effective_checks_state(
+    rollup: Option<ChecksState>,
+    checks: &[Check],
+) -> Option<ChecksState> {
+    let state = rollup.or_else(|| checks_state(checks));
+    let awaiting = checks
+        .iter()
+        .any(|check| check.status == CheckStatus::ActionRequired);
+    if awaiting && state != Some(ChecksState::Failing) {
+        Some(ChecksState::Pending)
+    } else {
+        state
+    }
+}
+
 fn plural(count: usize, one: &str, many: &str) -> String {
     format!("{count} {}", if count == 1 { one } else { many })
 }
@@ -396,6 +414,19 @@ mod tests {
         assert_eq!(
             summarize_checks(&[run.clone(), run, other]),
             "2 workflows and 1 check awaiting action"
+        );
+    }
+
+    #[test]
+    fn a_workflow_awaiting_approval_keeps_checks_pending() {
+        let awaiting = [check("build", CheckStatus::ActionRequired)];
+        assert_eq!(
+            effective_checks_state(Some(ChecksState::Passing), &awaiting),
+            Some(ChecksState::Pending)
+        );
+        assert_eq!(
+            effective_checks_state(Some(ChecksState::Failing), &awaiting),
+            Some(ChecksState::Failing)
         );
     }
 

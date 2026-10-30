@@ -55,6 +55,8 @@ pub struct PullRequestList {
     viewer: Option<String>,
     entries: Vec<ListEntry>,
     loaded: bool,
+    /// The session's repository is still being looked for.
+    resolving: bool,
     refreshing: bool,
     error: Option<String>,
     state: ListedState,
@@ -85,6 +87,7 @@ impl PullRequestList {
             viewer: None,
             entries: Vec::new(),
             loaded: false,
+            resolving: false,
             refreshing: false,
             error: None,
             state: ListedState::default(),
@@ -115,10 +118,6 @@ impl PullRequestList {
     }
 
     /// The signed-in login, which decides the groups.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "fed by the SessionService once wired")
-    )]
     pub fn set_viewer(&mut self, viewer: Option<String>, cx: &mut Context<Self>) {
         if self.viewer != viewer {
             self.viewer = viewer;
@@ -127,10 +126,6 @@ impl PullRequestList {
         }
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "fed by the SessionService once wired")
-    )]
     pub fn set_page(&mut self, page: ListPage, cx: &mut Context<Self>) {
         self.entries = page.entries;
         self.loaded = true;
@@ -139,11 +134,14 @@ impl PullRequestList {
         cx.notify();
     }
 
+    pub fn set_resolving(&mut self, resolving: bool, cx: &mut Context<Self>) {
+        if self.resolving != resolving {
+            self.resolving = resolving;
+            cx.notify();
+        }
+    }
+
     /// A newer listing is being read; the held one stays shown.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "fed by the SessionService once wired")
-    )]
     pub fn set_refreshing(&mut self, refreshing: bool, cx: &mut Context<Self>) {
         if self.refreshing != refreshing {
             self.refreshing = refreshing;
@@ -151,10 +149,6 @@ impl PullRequestList {
         }
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "fed by the SessionService once wired")
-    )]
     pub fn set_error(&mut self, error: Option<String>, cx: &mut Context<Self>) {
         self.error = error;
         cx.notify();
@@ -466,15 +460,17 @@ impl PullRequestList {
                             }),
                     )
                     .child(
-                        Button::new("pr-list-refresh")
-                            .outline()
-                            .small()
-                            .icon(Icon::default().path("icons/rotate_cw.svg"))
-                            .loading(self.refreshing)
-                            .tooltip("Refresh")
-                            .on_click(
-                                cx.listener(|_, _, _, cx| cx.emit(PullRequestIntent::Refresh)),
-                            ),
+                        div().debug_selector(|| "pr-list-refresh".into()).child(
+                            Button::new("pr-list-refresh")
+                                .outline()
+                                .small()
+                                .icon(Icon::default().path("icons/rotate_cw.svg"))
+                                .loading(self.refreshing)
+                                .tooltip("Refresh")
+                                .on_click(
+                                    cx.listener(|_, _, _, cx| cx.emit(PullRequestIntent::Refresh)),
+                                ),
+                        ),
                     ),
             )
     }
@@ -483,6 +479,8 @@ impl PullRequestList {
     fn render_note(&self, cx: &App) -> Option<AnyElement> {
         let text = if let Some(error) = &self.error {
             error.clone()
+        } else if self.repo.is_none() && self.resolving {
+            "Looking for the session's repository…".into()
         } else if self.repo.is_none() {
             "No GitHub repository for this session.".into()
         } else if !self.loaded {

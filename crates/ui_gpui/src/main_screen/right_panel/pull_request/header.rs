@@ -18,7 +18,7 @@ use super::presentation::{Tone, diff_stat, format_count, relative_time};
 use chrono::{DateTime, Utc};
 use github::PullRequestRef;
 use github::model::{
-    Action, Actor, Detail, ListEntry, MergeMethod, PullRequestUpdate, UpdateMethod,
+    Action, Actor, ChecksState, Detail, ListEntry, MergeMethod, PullRequestUpdate, UpdateMethod,
 };
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Escape, Input, InputEvent, InputState};
@@ -27,6 +27,7 @@ use gpui_kit::{
     AnyElement, Context, Entity, EventEmitter, FontWeight, Render, SharedString, Subscription,
     Task, Window, div, prelude::*, px, svg,
 };
+use std::sync::Arc;
 use std::time::Duration;
 
 /// How long an armed control waits for its confirming click.
@@ -54,7 +55,12 @@ struct Facts {
 
 pub struct DetailHeader {
     pr: PullRequestRef,
-    detail: Option<Detail>,
+    detail: Option<Arc<Detail>>,
+    checks_state: Option<ChecksState>,
+    /// A newer detail is being read.
+    refreshing: bool,
+    /// An action runs.
+    pending: bool,
     seed: Option<ListEntry>,
     /// The list is there to go back to.
     show_back: bool,
@@ -74,6 +80,9 @@ impl DetailHeader {
         Self {
             pr,
             detail: None,
+            checks_state: None,
+            refreshing: false,
+            pending: false,
             seed,
             show_back,
             title_editor: None,
@@ -84,12 +93,50 @@ impl DetailHeader {
         }
     }
 
-    pub fn set_detail(&mut self, detail: Detail, cx: &mut Context<Self>) {
-        if self.saved_title.as_deref() == Some(detail.title.as_str()) {
+    /// What the page read: the detail, the checks' verdict, and whether a
+    /// newer state is being read.
+    pub fn set_data(
+        &mut self,
+        detail: Option<Arc<Detail>>,
+        checks_state: Option<ChecksState>,
+        refreshing: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(detail) = &detail
+            && self.saved_title.as_deref() == Some(detail.title.as_str())
+        {
             self.saved_title = None;
         }
-        self.detail = Some(detail);
+        self.detail = detail;
+        self.checks_state = checks_state;
+        self.refreshing = refreshing;
         cx.notify();
+    }
+
+    pub fn checks_state(&self) -> Option<ChecksState> {
+        self.checks_state
+    }
+
+    #[cfg(test)]
+    pub fn shown_title(&self) -> SharedString {
+        self.facts().title
+    }
+
+    pub fn pending(&self) -> bool {
+        self.pending
+    }
+
+    /// While an action runs, the primary control waits.
+    pub fn set_pending(&mut self, pending: bool, cx: &mut Context<Self>) {
+        self.pending = pending;
+        cx.notify();
+    }
+
+    /// The saved title did not make it: show the detail's again.
+    pub fn title_rejected(&mut self, cx: &mut Context<Self>) {
+        if self.saved_title.take().is_some() {
+            cx.notify();
+        }
     }
 
     pub fn emit(&mut self, intent: PullRequestIntent, cx: &mut Context<Self>) {
@@ -201,7 +248,7 @@ impl DetailHeader {
         cx.notify();
     }
 
-    fn save_title(&mut self, title: String, cx: &mut Context<Self>) {
+    pub(super) fn save_title(&mut self, title: String, cx: &mut Context<Self>) {
         let unchanged = self.facts().title.as_ref() == title;
         if !title.is_empty() && !unchanged {
             self.saved_title = Some(title.clone());
@@ -460,7 +507,11 @@ impl Render for DetailHeader {
                 .gap_1()
                 .child(actions::render_checkout(facts.number, weak.clone()))
                 .children(actions::render_primary(self, detail, cx))
-                .child(actions::render_more_menu(detail, weak.clone()))
+                .child(actions::render_more_menu(
+                    detail,
+                    self.refreshing,
+                    weak.clone(),
+                ))
         });
         div()
             .flex_none()
@@ -500,6 +551,7 @@ mod tests {
     use crate::main_screen::right_panel::pull_request::fixtures::{
         detail, detail_with, entry, repo,
     };
+    use crate::main_screen::right_panel::pull_request::presentation::effective_checks_state;
     use github::model::{ChecksState, PullRequestState};
     use gpui_kit::{TestAppContext, VisualTestContext};
     use std::cell::RefCell;
@@ -532,7 +584,10 @@ mod tests {
             .detach()
         });
         if let Some(detail) = detail {
-            view.update(cx, |view, cx| view.set_detail(detail, cx));
+            let checks = effective_checks_state(detail.checks_state, &detail.checks);
+            view.update(cx, |view, cx| {
+                view.set_data(Some(Arc::new(detail)), checks, false, cx)
+            });
         }
         cx.run_until_parked();
         (view, intents, cx)
@@ -636,6 +691,12 @@ mod tests {
         view.read_with(cx, |view, _| {
             assert!(view.title_editor.is_none());
             assert_eq!(view.facts().title.as_ref(), "A better title");
+        });
+
+        // Refused: the old title is back.
+        view.update(cx, |view, cx| view.title_rejected(cx));
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.facts().title, detail(290).title.as_str())
         });
     }
 }

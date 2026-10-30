@@ -523,6 +523,13 @@ impl PullRequests {
         self.invalidate(pr, &parts);
     }
 
+    /// The repository's lists are read anew on their next read.
+    pub fn refresh_list(&self, repo: &RepoRef) {
+        self.lists.invalidate(|(listed, _)| listed == repo);
+        self.events
+            .publish_app(UiEvent::PullRequestListChanged { repo: repo.clone() });
+    }
+
     /// After a write, failed or not (GitHub may have applied part of it),
     /// the parts it changes are read anew.
     fn written(

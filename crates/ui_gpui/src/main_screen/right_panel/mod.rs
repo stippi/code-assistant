@@ -222,8 +222,10 @@ impl RightPanel {
     /// Re-request data for the active view.
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         self.review_view.update(cx, |v, cx| v.reload(cx));
-        if self.active_view == RightPanelView::Files {
-            self.files_view.update(cx, |v, cx| v.reload(cx));
+        match self.active_view {
+            RightPanelView::Files => self.files_view.update(cx, |v, cx| v.reload(cx)),
+            RightPanelView::PullRequest => self.pull_request.update(cx, |v, cx| v.reload(cx)),
+            _ => {}
         }
     }
 }

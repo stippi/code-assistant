@@ -34,6 +34,45 @@ pub(crate) fn render_diff_chunk(
     rem_size: Pixels,
     selection: Option<RowSelection>,
 ) -> AnyElement {
+    let rows = render_diff_chunk_rows(diff, chunk, numbers, theme, rem_size, selection);
+    let Some(hunk) = diff.hunks.get(chunk.hunk) else {
+        return rows;
+    };
+    let header = (chunk.lines.start == 0)
+        .then_some(hunk.header.as_ref())
+        .flatten();
+    if !chunk.starts_later_hunk() && header.is_none() {
+        return rows;
+    }
+    let (_, ctx_color) = unchanged_row_colors(theme);
+    let separator = div().w_full().flex().text_color(ctx_color.opacity(0.5));
+    let separator = match header {
+        Some(header) => separator
+            .px_3()
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_ellipsis()
+            .child(SharedString::from(format!("⋯  {header}"))),
+        None => separator.justify_center().child("⋯"),
+    };
+    div()
+        .flex()
+        .flex_col()
+        .child(separator)
+        .child(rows)
+        .into_any()
+}
+
+/// The rows of one chunk as [`render_diff_chunk`] draws them, without the
+/// separator: for views that draw hunk boundaries themselves.
+pub(crate) fn render_diff_chunk_rows(
+    diff: &PreparedFileDiff,
+    chunk: &DiffChunk,
+    numbers: GutterNumbers,
+    theme: &Theme,
+    rem_size: Pixels,
+    selection: Option<RowSelection>,
+) -> AnyElement {
     let Some(hunk) = diff.hunks.get(chunk.hunk) else {
         return div().into_any();
     };
@@ -68,30 +107,7 @@ pub(crate) fn render_diff_chunk(
         old_width: diff.chunked.old_width,
         new_width: diff.chunked.new_width,
     };
-    let rows = render_diff_rows(lines, theme, Some(gutter), rem_size, syntax, selection);
-    let header = (chunk.lines.start == 0)
-        .then_some(hunk.header.as_ref())
-        .flatten();
-    if !chunk.starts_later_hunk() && header.is_none() {
-        return rows;
-    }
-    let (_, ctx_color) = unchanged_row_colors(theme);
-    let separator = div().w_full().flex().text_color(ctx_color.opacity(0.5));
-    let separator = match header {
-        Some(header) => separator
-            .px_3()
-            .overflow_hidden()
-            .whitespace_nowrap()
-            .text_ellipsis()
-            .child(SharedString::from(format!("⋯  {header}"))),
-        None => separator.justify_center().child("⋯"),
-    };
-    div()
-        .flex()
-        .flex_col()
-        .child(separator)
-        .child(rows)
-        .into_any()
+    render_diff_rows(lines, theme, Some(gutter), rem_size, syntax, selection)
 }
 
 /// Build the element tree for already-computed diff lines of a snippet.
