@@ -5,14 +5,17 @@
 //! pull request (actions, updates, refresh).
 
 use super::PullRequestIntent;
+use super::actions::{Confirmable, InlineConfirm, workflow_approvals};
 use super::code::CodeTab;
 use super::composer::Composer;
 use super::data::PullRequestData;
+use super::header::CONFIRM_TIMEOUT;
 use super::header::DetailHeader;
 use super::preferences;
 use super::summary::SummaryTab;
-use super::tab_bar::{checks_slot, render_tab_row, timeline_slot};
+use super::tab_bar::{approve_workflows_slot, checks_slot, render_tab_row, timeline_slot};
 use super::timeline::{OpenCommit, TimelineTab};
+use anyhow::Context as _;
 use github::PullRequestRef;
 use github::model::{Action, ListEntry, PullRequestUpdate};
 use gpui_kit::component::{ActiveTheme, Icon, Sizable, button::Button, button::ButtonVariants};
@@ -48,6 +51,12 @@ pub struct DetailView {
     timeline: Entity<TimelineTab>,
     code: Entity<CodeTab>,
     composer: Entity<Composer>,
+    /// The tab row's "Approve workflows to run" waits for its second click.
+    confirm: InlineConfirm,
+    _confirm_timeout: Option<Task<()>>,
+    approving: bool,
+    /// The checks popover lists the completed checks too.
+    checks_show_all: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -107,6 +116,10 @@ impl DetailView {
             timeline,
             code,
             composer,
+            confirm: InlineConfirm::default(),
+            _confirm_timeout: None,
+            approving: false,
+            checks_show_all: false,
             _subscriptions: subscriptions,
         }
     }
@@ -195,11 +208,69 @@ impl DetailView {
         PullRequestData::refresh(&self.data, cx);
     }
 
+    /// The first click on "Approve workflows to run" arms it for a while,
+    /// the second approves.
+    pub fn click_approve_workflows(&mut self, cx: &mut Context<Self>) {
+        if self.approving {
+            return;
+        }
+        if !self.confirm.click(Confirmable::ApproveWorkflows) {
+            self._confirm_timeout = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(CONFIRM_TIMEOUT).await;
+                this.update(cx, |this, cx| this.disarm(cx)).ok();
+            }));
+            cx.notify();
+            return;
+        }
+        self._confirm_timeout = None;
+        self.approving = true;
+        let write = PullRequestData::write(&self.data, cx, |service, pr| async move {
+            service
+                .pull_request_action(pr, Action::ApproveWorkflows)
+                .await
+                .context("Could not approve workflows")
+        });
+        cx.spawn(async move |this, cx| {
+            write.await.ok();
+            this.update(cx, |this, cx| {
+                this.approving = false;
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    pub fn checks_show_all(&self) -> bool {
+        self.checks_show_all
+    }
+
+    pub fn toggle_checks_show_all(&mut self, cx: &mut Context<Self>) {
+        self.checks_show_all = !self.checks_show_all;
+        cx.notify();
+    }
+
+    pub fn disarm(&mut self, cx: &mut Context<Self>) {
+        self._confirm_timeout = None;
+        if self.confirm.disarm() {
+            cx.notify();
+        }
+    }
+
     /// What the tab row shows on its right for the shown tab.
     fn tab_slot(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         match self.tab {
             DetailTab::Summary => {
                 let data = self.data.read(cx);
+                let approvals = data.detail.as_deref().map_or(0, |detail| {
+                    workflow_approvals(detail, data.checks.as_deref())
+                });
+                if approvals > 0 || self.approving {
+                    let armed = self.confirm.is_armed(Confirmable::ApproveWorkflows);
+                    let view = cx.entity().downgrade();
+                    return Some(approve_workflows_slot(armed, self.approving, view, cx));
+                }
                 let checks = data.current_checks().to_vec();
                 let state = data.checks_state();
                 checks_slot(&checks, state, cx.entity().downgrade(), cx)
@@ -413,6 +484,32 @@ mod tests {
         assert!(cx.debug_bounds("pr-error").is_some());
         let header = view.read_with(cx, |view, _| view.header.clone());
         header.read_with(cx, |header, _| assert!(!header.pending()));
+    }
+
+    #[gpui_kit::test]
+    fn runs_of_a_fork_are_approved_with_a_second_click(cx: &mut TestAppContext) {
+        let (view, cx) = page(cx);
+        assert!(cx.debug_bounds("pr-approve-workflows").is_none());
+        let data = view.read_with(cx, |view, _| view.data().clone());
+        data.update(cx, |data, cx| {
+            let mut waiting = detail(290);
+            waiting.workflow_approvals = Some(2);
+            waiting
+                .viewer_permissions
+                .actions
+                .push(github::model::PullRequestAction::ApproveWorkflows);
+            data.detail = Some(Arc::new(waiting));
+            cx.notify();
+        });
+        cx.run_until_parked();
+        click(cx, "pr-approve-workflows");
+        view.read_with(cx, |view, _| {
+            assert!(view.confirm.is_armed(Confirmable::ApproveWorkflows))
+        });
+        click(cx, "pr-approve-workflows");
+        // No session service: refused, shown, and the button is free again.
+        assert!(cx.debug_bounds("pr-error").is_some());
+        view.read_with(cx, |view, _| assert!(!view.approving));
     }
 
     #[gpui_kit::test]

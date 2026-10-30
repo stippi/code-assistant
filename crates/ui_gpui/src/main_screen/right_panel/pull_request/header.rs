@@ -37,7 +37,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// How long an armed control waits for its confirming click.
-const CONFIRM_TIMEOUT: Duration = Duration::from_secs(3);
+pub const CONFIRM_TIMEOUT: Duration = Duration::from_secs(3);
 
 struct TitleEditor {
     input: Entity<InputState>,

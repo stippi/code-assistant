@@ -342,6 +342,7 @@ mod tests {
                 head_sha: None,
                 checks: vec![check("ci", CheckStatus::Success)],
                 checks_state: None,
+                workflow_approvals: None,
             }));
         });
         data.read_with(cx, |data, _| {

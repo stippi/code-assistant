@@ -8,6 +8,7 @@ mod detail;
 mod diff;
 mod files;
 mod list;
+mod workflows;
 mod write;
 
 use crate::client::Client;

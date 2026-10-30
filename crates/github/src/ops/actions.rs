@@ -74,6 +74,7 @@ impl Client {
         }
         match action {
             Action::DeleteBranch => self.delete_branch(pr).await,
+            Action::ApproveWorkflows => self.approve_workflows(pr).await,
             Action::UpdateBranch(method) => self.update_branch(pr, method).await,
             Action::Merge(method) | Action::EnableAutoMerge(method) => {
                 let state = self.action_state(pr).await?;

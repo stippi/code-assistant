@@ -103,6 +103,10 @@ pub enum Error {
     #[error("The named subject does not belong to this pull request.")]
     SubjectScope,
 
+    /// Not asked of GitHub: what it would do is not what was meant.
+    #[error("{0}")]
+    Refused(String),
+
     #[error("{}", branch_deletion_message(*.0))]
     BranchDeletionRefused(BranchDeletionRefusal),
 

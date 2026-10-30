@@ -137,6 +137,7 @@ pub fn detail(number: u64) -> Detail {
         auto_merge_enabled: false,
         auto_merge_method: None,
         maintainer_can_modify: false,
+        workflow_approvals: None,
     }
 }
 

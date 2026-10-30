@@ -11,8 +11,8 @@ use super::PullRequestIntent;
 use super::header::DetailHeader;
 use super::presentation::{Tone, merge_method_label};
 use github::model::{
-    Action, ChecksState, Detail, MergeMethod, Mergeability, PullRequestAction, PullRequestState,
-    PullRequestUpdate, UpdateMethod,
+    Action, Checks, ChecksState, Detail, MergeMethod, Mergeability, PullRequestAction,
+    PullRequestState, PullRequestUpdate, UpdateMethod,
 };
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenu, PopupMenuItem};
@@ -38,6 +38,19 @@ pub enum PrimaryControl {
 /// The actions the host lets the viewer take.
 pub fn can(detail: &Detail, action: PullRequestAction) -> bool {
     detail.viewer_permissions.actions.contains(&action)
+}
+
+/// How many workflow runs of an open pull request from a fork wait for
+/// the viewer to approve them (0 when there is nothing they may approve).
+/// `checks` is the newer read of the runs, when the checks poll made one.
+pub fn workflow_approvals(detail: &Detail, checks: Option<&Checks>) -> u64 {
+    if detail.state != PullRequestState::Open || !can(detail, PullRequestAction::ApproveWorkflows) {
+        return 0;
+    }
+    checks
+        .and_then(|checks| checks.workflow_approvals)
+        .or(detail.workflow_approvals)
+        .unwrap_or(0)
 }
 
 /// Merge methods the repository allows, in GitHub's order.
@@ -164,6 +177,7 @@ pub enum Confirmable {
     Merge,
     EnableAutoMerge,
     Close,
+    ApproveWorkflows,
 }
 
 /// Which control waits for its confirming click.
@@ -567,6 +581,35 @@ mod tests {
             detail,
             effective_checks_state(detail.checks_state, &detail.checks),
         )
+    }
+
+    #[test]
+    fn only_an_open_forks_runs_the_viewer_may_approve_are_offered() {
+        let waiting = |d: &mut Detail| {
+            d.workflow_approvals = Some(2);
+            d.viewer_permissions
+                .actions
+                .push(PullRequestAction::ApproveWorkflows);
+        };
+        assert_eq!(workflow_approvals(&detail_with(1, waiting), None), 2);
+        let polled = Checks {
+            state: PullRequestState::Open,
+            head_sha: None,
+            checks: Vec::new(),
+            checks_state: None,
+            workflow_approvals: Some(0),
+        };
+        assert_eq!(
+            workflow_approvals(&detail_with(1, waiting), Some(&polled)),
+            0
+        );
+        let merged = detail_with(1, |d| {
+            waiting(d);
+            d.state = PullRequestState::Merged;
+        });
+        assert_eq!(workflow_approvals(&merged, None), 0);
+        let reader = detail_with(1, |d| d.workflow_approvals = Some(2));
+        assert_eq!(workflow_approvals(&reader, None), 0);
     }
 
     #[test]

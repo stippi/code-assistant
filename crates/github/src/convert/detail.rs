@@ -56,6 +56,7 @@ pub(crate) fn viewer_permissions(access: &ViewerAccess) -> ViewerPermissions {
     }
     if access.can_write {
         actions.push(PullRequestAction::Merge);
+        actions.push(PullRequestAction::ApproveWorkflows);
         if access.auto_merge_allowed && !access.can_merge_now {
             actions.push(PullRequestAction::EnableAutoMerge);
         }
@@ -391,6 +392,7 @@ pub(crate) fn core(data: CoreData, host: &str) -> Option<(Detail, bool)> {
             .as_ref()
             .and_then(|r| merge_method(r.merge_method.as_deref())),
         maintainer_can_modify: pr.maintainer_can_modify,
+        workflow_approvals: None,
     };
     Some((detail, more_checks))
 }
@@ -529,6 +531,7 @@ mod tests {
             [
                 PullRequestAction::DeleteBranch,
                 PullRequestAction::Merge,
+                PullRequestAction::ApproveWorkflows,
                 PullRequestAction::EnableAutoMerge,
                 PullRequestAction::DisableAutoMerge,
                 PullRequestAction::Ready,

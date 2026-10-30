@@ -43,4 +43,7 @@ pub struct Checks {
     pub head_sha: Option<String>,
     pub checks: Vec<Check>,
     pub checks_state: Option<ChecksState>,
+    /// See `Detail::workflow_approvals`.
+    #[serde(default)]
+    pub workflow_approvals: Option<u64>,
 }

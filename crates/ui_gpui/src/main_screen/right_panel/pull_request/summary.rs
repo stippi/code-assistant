@@ -31,7 +31,7 @@ use super::conversation::{
 use super::data::PullRequestData;
 use super::detail::TabScroll;
 use super::preferences;
-use super::presentation::{GLYPH_SIZE, check_status_glyph};
+use super::presentation::{GLYPH_SIZE, check_status_glyph, group_checks};
 use candidates::{OpenPicker, PickerKind};
 use chrono::{DateTime, Utc};
 use github::model::{Activity, CheckStatus, Detail, PullRequestUpdate, Reaction, ReactionContent};
@@ -654,7 +654,15 @@ impl SummaryTab {
 
     fn render_checks(&self, cx: &mut Context<Self>) -> AnyElement {
         let header = self.checks_header(false, cx);
-        let checks = self.data.read(cx).current_checks().to_vec();
+        // In the popover's order: needing attention, running, completed.
+        let checks: Vec<_> = {
+            let groups = group_checks(self.data.read(cx).current_checks());
+            (groups.attention.into_iter())
+                .chain(groups.running)
+                .chain(groups.completed)
+                .cloned()
+                .collect()
+        };
         let pr = self.data.read(cx).pr.clone();
         let theme = cx.theme();
         let muted = theme.muted_foreground;
@@ -1238,8 +1246,9 @@ mod tests {
         let (_, cx) = window(cx, move |cx| SummaryTab::new(data, cx));
         let inbox = agent_inbox(cx);
         click(cx, "pr-section-Checks");
-        assert!(cx.debug_bounds("pr-check-agent-0").is_none(), "it passed");
-        click(cx, "pr-check-agent-1");
+        // The failed check is listed first, the passed one has no button.
+        assert!(cx.debug_bounds("pr-check-agent-1").is_none(), "it passed");
+        click(cx, "pr-check-agent-0");
         assert_eq!(
             inbox.borrow().as_slice(),
             ["Check \"test\" on stippi/code-assistant#290: Failed"]
