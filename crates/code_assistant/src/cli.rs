@@ -18,15 +18,17 @@ pub enum SandboxModeArg {
 /// What `code-assistant plugin` does.
 #[derive(Subcommand, Debug)]
 pub enum PluginCommand {
-    /// Install a plugin from a git repository or a local folder
+    /// Install a plugin, or add a marketplace, from a git repository or a
+    /// local folder; or install `<plugin>@<marketplace>`
     Add {
         /// A git URL (`https://…`, `git@…`, `file://…`), GitHub's
-        /// `owner/repo`, either followed by `#branch-or-tag`, or a folder
+        /// `owner/repo`, either followed by `#branch-or-tag`, a folder, or
+        /// `<plugin>@<marketplace>`
         source: String,
     },
     /// List the installed plugins
     List,
-    /// Fetch a plugin (or all git plugins) again from its repository
+    /// Fetch a plugin (or all git plugins and marketplaces) again
     Update {
         /// The plugin's name; all plugins when omitted
         name: Option<String>,
@@ -37,6 +39,29 @@ pub enum PluginCommand {
     Enable { name: String },
     /// Switch a plugin off
     Disable { name: String },
+    /// Manage marketplaces: repositories listing plugins in their folders
+    #[command(subcommand)]
+    Marketplace(MarketplaceCommand),
+}
+
+/// What `code-assistant plugin marketplace` does.
+#[derive(Subcommand, Debug)]
+pub enum MarketplaceCommand {
+    /// Add a marketplace from a git repository or a local folder
+    Add {
+        /// A git URL or GitHub's `owner/repo`, optionally followed by
+        /// `#branch-or-tag`, or a folder
+        source: String,
+    },
+    /// List the added marketplaces and their plugins
+    List,
+    /// Fetch a marketplace (or all) again, updating its installed plugins
+    Update {
+        /// The marketplace's name; all marketplaces when omitted
+        name: Option<String>,
+    },
+    /// Remove a marketplace and the plugins installed from it
+    Remove { name: String },
 }
 
 #[derive(Subcommand, Debug)]
@@ -389,6 +414,14 @@ mod tests {
             }) => assert_eq!(source, "acme/tools#v1"),
             other => panic!("Expected plugin add, got {other:?}"),
         }
+        let args =
+            Args::try_parse_from(["test", "plugin", "marketplace", "update", "acme"]).unwrap();
+        assert!(matches!(
+            args.mode,
+            Some(Mode::Plugin {
+                command: PluginCommand::Marketplace(MarketplaceCommand::Update { name: Some(_) })
+            })
+        ));
         let args = Args::try_parse_from(["test", "plugin", "update"]).unwrap();
         assert!(matches!(
             args.mode,

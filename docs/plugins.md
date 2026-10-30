@@ -1,8 +1,9 @@
 # Plugins
 
 A plugin is a git repository (or a local folder) with a manifest at
-`.code-assistant-plugin/plugin.json`. Installing it adds what the manifest
-contributes:
+`.code-assistant-plugin/plugin.json`, or a folder of a marketplace: a
+repository listing several plugins (see [Marketplaces](#marketplaces)).
+Installing it adds what the manifest contributes:
 
 - **Provider templates**: prefilled providers offered when adding one.
 - **MCP servers**: added to every session while the plugin is on, not
@@ -23,14 +24,18 @@ From *Settings → Plugins* (paste a source, *Install*) or the command line:
 code-assistant plugin add https://github.com/acme/code-assistant-plugin
 code-assistant plugin add acme/code-assistant-plugin#v1.2   # GitHub, at a tag or branch
 code-assistant plugin add ~/dev/my-plugin                    # a local folder, linked
+code-assistant plugin add acme/plugins                       # a marketplace: added, not installed
+code-assistant plugin add diagrams@acme                      # a plugin of an added marketplace
 code-assistant plugin list
-code-assistant plugin update [name]
+code-assistant plugin update [name]                          # no name: all plugins and marketplaces
 code-assistant plugin disable|enable|remove <name>
+code-assistant plugin marketplace add|list|update|remove …
 ```
 
 A source is an existing folder, a git URL (`https://`, `ssh://`, `git@…`,
 `file://`) or GitHub's `owner/repo`; a git source may end in `#ref` (a
-branch, tag or commit).
+branch, tag or commit). When the folder or repository holds a marketplace
+manifest, adding it adds the marketplace (`PluginStore::add` looks).
 
 - **Git plugins** are cloned shallowly with the user's own `git` (SSH keys,
   credential helpers and proxies work for private repositories, prompts are
@@ -44,6 +49,64 @@ branch, tag or commit).
 `<config_dir>/plugins/plugins.json` records each plugin's source, folder,
 commit and whether it is on. Plugins can start programs (MCP servers, renderer
 servers), so the settings page says to install only plugins you trust.
+
+## Marketplaces
+
+A marketplace is a repository holding several plugins, each in a folder of
+its own, listed in `.code-assistant-plugin/marketplace.json` at its root
+(the idea of Claude Code's `.claude-plugin/marketplace.json`, in this app's
+format):
+
+```jsonc
+{
+  "name": "acme",                       // [a-z0-9-], at most 64, unique
+  "description": "ACME's plugins",      // optional
+  "owner": { "name": "ACME Platform Team", "email": "…", "url": "…" },  // optional
+  "plugins": [
+    { "name": "diagrams", "source": "./plugins/diagrams", "description": "…" },
+    { "name": "gateway", "source": "./plugins/gateway", "version": "1.0.0" },
+    { "name": "root-plugin", "source": "./" }   // a plugin at the root itself
+  ]
+}
+```
+
+- Adding a marketplace clones (or links) it into
+  `<config_dir>/plugins/.marketplaces/<name>/` and records it in
+  `plugins/marketplaces.json`; nothing is installed yet.
+- Its plugins install as `<plugin>@<marketplace>`: *Settings → Plugins*
+  lists every added marketplace's plugins with a switch (on installs and
+  enables, off disables and keeps it installed).
+- Each `source` is a folder inside the repository with a complete plugin
+  (its own `plugin.json`, carrying the entry's name). Entries cannot point
+  to other repositories or leave the repository: one clone, one commit and
+  one review per marketplace, and one login for a private one.
+- Installed plugins live in the marketplace's clone and record its commit.
+  Updating a marketplace (or one of its plugins) fetches it once and points
+  its plugins at their folders in the new commit; a plugin it no longer
+  lists then fails to load and says so.
+- Removing a plugin keeps the clone; removing the marketplace removes the
+  plugins installed from it, and its clone (a linked folder is kept).
+- A plugin at the repository root is listed with `"source": "./"`. A
+  repository holding both manifests is added as the marketplace.
+
+## Private repositories
+
+Git runs as the user runs it, so it logs in the way the user's git does:
+credential helpers (the macOS keychain, Git Credential Manager,
+`gh auth setup-git`) for HTTPS, the SSH agent for SSH URLs. The app never
+asks for or keeps passwords or tokens.
+
+- In the app, git cannot prompt (`GIT_TERMINAL_PROMPT=0`). When a host
+  refuses for want of a login — or answers "repository not found", as
+  hosts do for private repositories — the clone fails with
+  `GitLoginRequired`, which names the repository and says how to give git
+  a login: log in once with git in a terminal so a credential helper keeps
+  it, or load an SSH key into the agent.
+- On a terminal, `code-assistant plugin …` lets git prompt when its helpers
+  have no login (`PluginStore::interactive`); a helper that stores logins
+  keeps the one typed there for the app and later updates.
+- Updates fetch with the same login, so a private marketplace or plugin
+  keeps updating as long as the helper holds it.
 
 ## The manifest
 
@@ -165,6 +228,11 @@ started are described in
   installing from a local git repository and a linked folder, updating,
   removing, switching, MCP server localization, renderer scripts and
   servers.
+- `plugin_host::marketplace` and `store`: marketplace parsing (sources stay
+  inside the repository), adding one from git or a folder, installing,
+  updating (a plugin that moved) and removing its plugins, a plugin whose
+  name differs from its entry, a server that answers 401 giving
+  `GitLoginRequired`.
 - `tools::mcp::tests::resolve_mcp_server_includes_plugin_servers`.
 - `plugin_host::server`: a running server is used, a start command runs
   until its address answers and stops with its last lease, a failing one is

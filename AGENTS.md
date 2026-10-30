@@ -97,7 +97,12 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
   global and project servers) and file renderers
   (`code_assistant_core::plugin_host`: `store` installs/updates, `catalog` is
   what the app reads, `server` starts a server a renderer needs)
-- *Settings → Plugins*, `code-assistant plugin add|list|update|remove`;
+- Marketplaces: a repository with `.code-assistant-plugin/marketplace.json`
+  listing plugins in its folders (`plugin_host::marketplace`); added once,
+  its plugins install as `<plugin>@<marketplace>` and share its clone
+- Private repositories log in through the user's git (credential helpers,
+  SSH agent); a refused login is `plugin_host::GitLoginRequired`
+- *Settings → Plugins*, `code-assistant plugin add|list|update|remove|marketplace`;
   renderers show in the Files view as `file_renderers::FileRenderer::Plugin`
   (`shared::custom_renderers`); see `docs/plugins.md`
 
