@@ -25,7 +25,7 @@ use super::file_renderers::{self, RendererHandle};
 use crate::Gpui;
 use crate::comments::editor::{CommentEditor, CommentEditorEvent};
 use crate::comments::{AnchorTracker, CommentChange, floating, selection_pill};
-use crate::tool_cards::diff_syntax::language_for_path;
+use crate::diff::syntax::language_for_path;
 use code_assistant_core::line_comments::{self, LineComment};
 use code_assistant_core::session::FileContent;
 use gpui_kit::component::button::{Button, ButtonVariants};

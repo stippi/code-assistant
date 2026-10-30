@@ -103,13 +103,13 @@ line_selection, comment_editor}.rs`, `review_view/comments.rs`,
   header at all.
 - **Review view** (`review_view.rs`) stacks changed files per repo with their
   hunks in a virtualized `list()`. Diff bodies are `DiffRows` elements
-  (`tool_cards/diff_rows.rs`), which support whole-line selection through
+  (`diff/rows.rs`), which support whole-line selection through
   `RowSelection` (`base_line`, `highlight`, `on_start`/`on_drag`/`on_end`).
   The view keeps one `DiffSelection { file, anchor, head }` and a Copy button.
   Selection indices are flat indices into the file's hunk lines, not file
   line numbers.
-- **Diff data.** `PreparedReviewDiff` holds hunks of lines with
-  syntax highlights (`tool_cards/diff_syntax.rs`, `diff_prepare.rs`); each
+- **Diff data.** `PreparedFileDiff` (`diff/prepare.rs`) holds hunks of
+  lines with syntax highlights (`diff/syntax.rs`); each
   diff line knows its old/new line numbers (the gutter shows them).
 - **Composer.** `InputArea` (`ui_gpui/src/input/mod.rs`) holds text plus
   `Vec<DraftAttachment>`; attachments render as `AttachmentView` tiles and

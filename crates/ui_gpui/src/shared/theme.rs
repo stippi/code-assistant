@@ -155,7 +155,7 @@ pub fn toggle_theme(window: Option<&mut gpui_kit::Window>, cx: &mut App) -> Them
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tool_cards::diff_card::{
+    use crate::diff::render::{
         added_row_colors, deleted_row_colors, diff_body_bg, word_emphasis_bg,
     };
     use gpui_kit::{Hsla, Rgba, TestAppContext};

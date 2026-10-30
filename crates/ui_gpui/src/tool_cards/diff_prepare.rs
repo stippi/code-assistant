@@ -8,12 +8,10 @@
 //! only changes colors: it always runs on a background thread, together with
 //! the line diff of inputs above [`SYNC_DIFF_MAX_BYTES`].
 
-use super::diff_card::{
-    DiffLine, compute_diff_lines, get_param, parse_diff_sections, parse_match_start_lines,
-    single_sided_hunk,
-};
-use super::diff_syntax::DiffSyntax;
+use super::diff_card::{get_param, parse_diff_sections, parse_match_start_lines};
 use crate::blocks::ToolUseBlock;
+use crate::diff::model::{DiffLine, compute_diff_lines, normalize_for_diff, single_sided_hunk};
+use crate::diff::syntax::DiffSyntax;
 use gpui_kit::component::highlighter::HighlightTheme;
 use similar::ChangeTag;
 use std::hash::{Hash, Hasher};
@@ -135,14 +133,19 @@ impl DiffInput {
     }
 
     /// Parse every section for highlighting; `None` without a grammar for
-    /// the file. Sections are snippets, so lines count from 1 on both sides.
+    /// the file. Sections are snippets, so lines count from 1 on both sides;
+    /// they are normalized like the line diff does.
     /// With `theme`, the line styles are computed right away too.
     /// CPU-heavy — call on a background thread.
     pub fn parse_syntax(&self, theme: Option<&HighlightTheme>) -> Option<Vec<DiffSyntax>> {
         self.sections
             .iter()
             .map(|s| {
-                let syntax = DiffSyntax::parse(&self.path, Some(&s.old), Some(&s.new))?;
+                let syntax = DiffSyntax::parse(
+                    &self.path,
+                    Some(&normalize_for_diff(&s.old)),
+                    Some(&normalize_for_diff(&s.new)),
+                )?;
                 if let Some(theme) = theme {
                     syntax.prime(theme);
                 }
