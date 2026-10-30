@@ -505,10 +505,12 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         // The server runs detached from the start command, like a container
-        // from `docker run`; the start command just stays.
+        // from `docker run`; the start command just stays. Python makes the
+        // new session itself: macOS has no `setsid` command.
         std::fs::write(
             dir.path().join("serve.sh"),
-            "#!/bin/sh\nsetsid python3 -m http.server \"$1\" --bind 127.0.0.1 &\n\
+            "#!/bin/sh\npython3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
+             python3 -m http.server \"$1\" --bind 127.0.0.1 &\n\
              echo $! > server.pid\nexec sleep 600\n",
         )
         .unwrap();
