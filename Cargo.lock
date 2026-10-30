@@ -1674,7 +1674,7 @@ dependencies = [
  "keepawake",
  "libc",
  "llm",
- "lru",
+ "lru 0.19.0",
  "mcp_client",
  "md5",
  "notify 7.0.0",
@@ -3383,7 +3383,7 @@ dependencies = [
  "chrono",
  "futures",
  "github",
- "lru",
+ "lru 0.19.0",
  "reqwest",
  "serde",
  "serde_json",
@@ -5474,6 +5474,9 @@ name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+dependencies = [
+ "foldhash 0.2.0",
+]
 
 [[package]]
 name = "hdrhistogram"
@@ -6643,6 +6646,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "234cf4f4a04dc1f57e24b96cc0cd600cf2af460d4161ac5ecdd0af8e1f3b2a38"
 dependencies = [
  "hashbrown 0.15.5",
+]
+
+[[package]]
+name = "lru"
+version = "0.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4a9f71e3591c7ec44d3e563e87bf14ddc2bada8519dca046e5b0e560cd004e2d"
+dependencies = [
+ "hashbrown 0.17.1",
 ]
 
 [[package]]
@@ -8937,7 +8949,7 @@ dependencies = [
  "indoc",
  "instability",
  "itertools 0.13.0",
- "lru",
+ "lru 0.12.5",
  "paste",
  "strum 0.26.3",
  "unicode-segmentation",

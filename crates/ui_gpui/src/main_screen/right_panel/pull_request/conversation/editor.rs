@@ -222,7 +222,7 @@ impl Render for MarkdownEditor {
                 }
                 let keystroke = &event.keystroke;
                 match keystroke.key.as_str() {
-                    "enter" if keystroke.modifiers.platform => this.submit(cx),
+                    "enter" if keystroke.modifiers.secondary() => this.submit(cx),
                     "escape" => this.cancel(cx),
                     _ => return,
                 }
@@ -320,7 +320,7 @@ mod tests {
     #[gpui_kit::test]
     fn cmd_enter_submits_the_trimmed_text(cx: &mut TestAppContext) {
         let (_, seen, cx) = editor("  Looks good  ", EditorOptions::REPLY, cx);
-        cx.simulate_keystrokes("cmd-enter");
+        cx.simulate_keystrokes("secondary-enter");
         assert_eq!(
             seen.borrow().as_slice(),
             [Seen::Submit("Looks good".into())]
@@ -334,7 +334,7 @@ mod tests {
             editor.set_previewing(true, window, cx)
         });
         cx.run_until_parked();
-        cx.simulate_keystrokes("cmd-enter");
+        cx.simulate_keystrokes("secondary-enter");
         cx.simulate_keystrokes("escape");
         assert_eq!(
             seen.borrow().as_slice(),

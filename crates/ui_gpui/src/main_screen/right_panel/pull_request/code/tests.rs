@@ -262,7 +262,7 @@ fn a_selection_becomes_a_pending_review_comment(cx: &mut TestAppContext) {
 
     cx.simulate_input("Rename this");
     // ⌘↵ adds it to the review.
-    cx.simulate_keystrokes("cmd-enter");
+    cx.simulate_keystrokes("secondary-enter");
     cx.run_until_parked();
 
     let pr = tab.read_with(cx, |tab, _| tab.pr.clone());

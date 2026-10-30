@@ -13,7 +13,7 @@ test-utils = []
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
-lru = "0.12"
+lru = "0.19"
 reqwest = { version = "0.13", default-features = false, features = [
     "rustls",
     "charset",
