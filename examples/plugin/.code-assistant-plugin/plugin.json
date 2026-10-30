@@ -50,7 +50,16 @@
       "kind": "web",
       "url": "http://localhost:8080/?embed=1&proto=json&spin=1&offline=1&https=0&saveAndExit=0&noSaveBtn=1&noExitBtn=1&dark={dark}",
       "start": {
-        "command": "scripts/start-drawio.sh",
+        "command": "docker",
+        "args": [
+          "run",
+          "--rm",
+          "--name",
+          "code-assistant-drawio",
+          "-p",
+          "127.0.0.1:8080:8080",
+          "jgraph/drawio"
+        ],
         "timeoutSeconds": 300
       }
     }

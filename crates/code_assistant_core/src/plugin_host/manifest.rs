@@ -376,10 +376,8 @@ mod tests {
             .find(|r| r.kind == RendererKind::Web)
             .unwrap();
         let start = drawio.start.as_ref().unwrap();
-        assert!(
-            start.program(&root).exists(),
-            "the start script ships along"
-        );
+        assert_eq!(start.program(&root), Path::new("docker"));
+        assert_eq!(drawio.server_url(), drawio.url.as_deref());
     }
 
     #[test]

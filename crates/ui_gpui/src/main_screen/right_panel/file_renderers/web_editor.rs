@@ -1,9 +1,10 @@
-//! Files edited in place by a web app in a webview over the view (macOS
-//! only for now). A renderer of this kind is set up in the settings
+//! Files edited in place by a web app in a webview over the view (macOS and
+//! Windows). A plugin contributes a renderer of this kind
 //! ([`WebEditor`](crate::shared::custom_renderers::WebEditor)): the
 //! editor's address, and scripts to inject into it.
 //!
-//! The webview is a native view (`wry`, WebKit) laid over the window where
+//! The webview is a native view (`wry`: WebKit on macOS, WebView2 on
+//! Windows) laid over the window where
 //! this view is painted, and hidden in frames that do not paint it
 //! ([`native_views`]). It loads a small page holding the editor in an
 //! iframe; the two talk JSON over `postMessage` (the *embed protocol*):

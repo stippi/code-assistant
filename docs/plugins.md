@@ -78,7 +78,7 @@ servers), so the settings page says to install only plugins you trust.
   }, {
     "label": "draw.io",
     "files": ["*.drawio"],
-    "kind": "web",                      // macOS for now
+    "kind": "web",                      // macOS and Windows
     "url": "http://localhost:8080/?embed=1&proto=json&dark={dark}",
     "scripts": [],                      // injected into the editor, from the plugin folder
     "start": {                          // optional: a server the renderer needs
@@ -144,7 +144,7 @@ started are described in
 - A **command** renderer runs a shell command in the project root that turns
   the file into an SVG or an image, again when the text changes.
 - A **web** renderer shows a web editor in a native webview over the view
-  (`wry`, macOS only for now; elsewhere it is not offered). It loads the
+  (`wry`; macOS and Windows, not offered on Linux). It loads the
   file and saves every autosave back through the editor's auto-save.
 - **`start`** runs the plugin's script when nothing answers at the
   renderer's address and waits for it; the server is shared, stops 5
