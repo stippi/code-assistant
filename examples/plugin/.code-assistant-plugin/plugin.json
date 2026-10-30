@@ -60,7 +60,14 @@
           "127.0.0.1:8080:8080",
           "jgraph/drawio"
         ],
-        "timeoutSeconds": 300
+        "timeoutSeconds": 300,
+        "stop": {
+          "command": "docker",
+          "args": [
+            "stop",
+            "code-assistant-drawio"
+          ]
+        }
       }
     }
   ]

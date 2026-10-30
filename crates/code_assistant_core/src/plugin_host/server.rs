@@ -6,8 +6,13 @@
 //! and the renderer waits until the address answers. A started server is
 //! shared by every view of that renderer, kept while one holds a
 //! [`ServerLease`] and for [`LINGER`] after the last one let go (switching
-//! between files does not restart it), then stopped with its whole process
-//! group; [`stop_all`] stops every one when the app quits.
+//! between files does not restart it), then stopped; [`stop_all`] stops every
+//! one when the app quits.
+//!
+//! Stopping runs the plugin's `stop` command first, when it has one (a
+//! container outlives the `docker run` that started it), gives the start
+//! command [`GRACE`] to exit, and then ends it: with its whole process group
+//! on Unix, the process alone on Windows.
 
 use super::manifest::{ServerStart, substitute_root};
 use anyhow::{Context, Result, anyhow, bail};
@@ -27,12 +32,23 @@ const CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 const POLL: Duration = Duration::from_millis(250);
 /// Lines of the server's output kept for an error message.
 const OUTPUT_TAIL: usize = 20;
+/// How long the start command may take to exit after the stop command.
+pub const GRACE: Duration = Duration::from_secs(5);
 
-/// A server the app started. Its process group is stopped on drop.
+/// A server the app started. Stopped on drop (in the background).
 pub struct StartedServer {
+    key: String,
     child: Mutex<Option<Child>>,
     /// The last lines it printed.
     output: Arc<Mutex<Vec<String>>>,
+    /// The plugin's stop command, ready to run.
+    stop: Mutex<Option<StopCommand>>,
+}
+
+/// A stop command with its arguments and environment filled in.
+struct StopCommand {
+    command: std::process::Command,
+    timeout: Duration,
 }
 
 impl std::fmt::Debug for StartedServer {
@@ -47,16 +63,84 @@ impl StartedServer {
     }
 }
 
-impl Drop for StartedServer {
-    fn drop(&mut self) {
-        if let Some(mut child) = self.child.lock().ok().and_then(|mut c| c.take()) {
-            stop(&mut child);
+impl StartedServer {
+    /// Stop the server on a thread of its own (the stop command may take a
+    /// while); `None` when it was stopped already.
+    fn shut_down(&self) -> Option<std::thread::JoinHandle<()>> {
+        let mut child = self.child.lock().ok()?.take()?;
+        let stop = self.stop.lock().ok().and_then(|mut stop| stop.take());
+        let key = self.key.clone();
+        let thread = std::thread::Builder::new()
+            .name(format!("stop {key}"))
+            .spawn(move || {
+                if let Some(stop) = stop {
+                    run_stop_command(&key, stop);
+                    wait_for_exit(&mut child, GRACE);
+                }
+                terminate(&mut child);
+            });
+        match thread {
+            Ok(thread) => Some(thread),
+            Err(e) => {
+                tracing::warn!("Could not stop the server of {}: {e}", self.key);
+                None
+            }
         }
     }
 }
 
-/// Stop `child` and what it started.
-fn stop(child: &mut Child) {
+impl Drop for StartedServer {
+    fn drop(&mut self) {
+        self.shut_down();
+    }
+}
+
+/// Run the plugin's stop command and wait for it, ending it when it takes
+/// too long.
+fn run_stop_command(key: &str, mut stop: StopCommand) {
+    tracing::info!("Stopping the server of {key}");
+    let mut process = match stop.command.spawn() {
+        Ok(process) => process,
+        Err(e) => {
+            tracing::warn!("Could not run the stop command of {key}: {e}");
+            return;
+        }
+    };
+    let deadline = Instant::now() + stop.timeout;
+    loop {
+        match process.try_wait() {
+            Ok(Some(status)) if status.success() => return,
+            Ok(Some(status)) => {
+                tracing::warn!("The stop command of {key} failed ({status})");
+                return;
+            }
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            _ => {
+                tracing::warn!("The stop command of {key} did not finish in time");
+                let _ = process.kill();
+                let _ = process.wait();
+                return;
+            }
+        }
+    }
+}
+
+/// Wait up to `grace` for `child` to exit by itself.
+fn wait_for_exit(child: &mut Child, grace: Duration) {
+    let deadline = Instant::now() + grace;
+    while Instant::now() < deadline {
+        if !matches!(child.try_wait(), Ok(None)) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// End `child` and what it started, if it still runs.
+fn terminate(child: &mut Child) {
+    if !matches!(child.try_wait(), Ok(None)) {
+        return;
+    }
     #[cfg(unix)]
     if let Some(pid) = child.id() {
         // The child leads its own process group (see `spawn`): signal all of it.
@@ -228,14 +312,37 @@ fn spawn(target: &ServerTarget) -> Result<StartedServer> {
             }
         });
     }
+    let stop = start.stop.as_ref().map(|stop| {
+        let mut command = std::process::Command::new(stop.program(root));
+        command
+            .args(stop.args.iter().map(|arg| substitute_root(arg, root)))
+            .envs(
+                stop.env
+                    .iter()
+                    .map(|(key, value)| (key, substitute_root(value, root))),
+            )
+            .env("PLUGIN_ROOT", root)
+            .env("SERVER_URL", &target.url)
+            .current_dir(root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        StopCommand {
+            command,
+            timeout: Duration::from_secs(stop.timeout_seconds.max(1)),
+        }
+    });
     Ok(StartedServer {
+        key: target.key.clone(),
         child: Mutex::new(Some(child)),
         output,
+        stop: Mutex::new(stop),
     })
 }
 
-/// Stop every server the app started (the app quits). Servers still in use
-/// stop too; their views go away with the app.
+/// Stop every server the app started (the app quits) and wait until they
+/// are stopped, each bounded by its stop command's timeout and [`GRACE`].
+/// Servers still in use stop too; their views go away with the app.
 pub fn stop_all() {
     let servers: Vec<Arc<StartedServer>> = STARTED
         .lock()
@@ -245,10 +352,9 @@ pub fn stop_all() {
         .flat_map(|started| started.into_values())
         .filter_map(|server| server.upgrade())
         .collect();
-    for server in servers {
-        if let Some(mut child) = server.child.lock().ok().and_then(|mut c| c.take()) {
-            stop(&mut child);
-        }
+    let stopping: Vec<_> = servers.iter().filter_map(|s| s.shut_down()).collect();
+    for thread in stopping {
+        let _ = thread.join();
     }
 }
 
@@ -319,6 +425,7 @@ mod tests {
                 args: args.to_vec(),
                 env: HashMap::new(),
                 timeout_seconds: 20,
+                stop: None,
             },
         }
     }
@@ -380,6 +487,57 @@ mod tests {
             assert!(Instant::now() < deadline, "the server keeps running");
             tokio::time::sleep(POLL).await;
         }
+    }
+
+    /// A server the start command only hands over to (a container, a
+    /// daemon) is stopped by the plugin's stop command, which runs before
+    /// the start command is ended.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_stop_command_stops_the_server() {
+        if std::process::Command::new("python3")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("skipping: no python3");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        // The server runs detached from the start command, like a container
+        // from `docker run`; the start command just stays.
+        std::fs::write(
+            dir.path().join("serve.sh"),
+            "#!/bin/sh\nsetsid python3 -m http.server \"$1\" --bind 127.0.0.1 &\n\
+             echo $! > server.pid\nexec sleep 600\n",
+        )
+        .unwrap();
+        let port = free_port();
+        let args = ["${PLUGIN_ROOT}/serve.sh".to_string(), port.to_string()];
+        let mut target = target(dir.path(), format!("http://127.0.0.1:{port}/"), "sh", &args);
+        target.start.stop = Some(crate::plugin_host::manifest::ServerStop {
+            command: "sh".into(),
+            args: vec![
+                "-c".into(),
+                "kill $(cat server.pid) && touch stopped".into(),
+            ],
+            env: HashMap::new(),
+            timeout_seconds: 10,
+        });
+        let mut lease = ensure(&target).await.unwrap();
+        let server = lease.server.take().expect("started");
+        let stopping = server.shut_down().expect("it was running");
+        tokio::task::spawn_blocking(move || stopping.join().unwrap())
+            .await
+            .unwrap();
+        assert!(dir.path().join("stopped").exists(), "the stop command ran");
+        let address = format!("127.0.0.1:{port}");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while answers(&address).await {
+            assert!(Instant::now() < deadline, "the server keeps running");
+            tokio::time::sleep(POLL).await;
+        }
+        assert!(server.shut_down().is_none(), "stopped once");
     }
 
     #[tokio::test]
