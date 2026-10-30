@@ -12,6 +12,7 @@
 
 use super::actions::{Confirmable, InlineConfirm, can};
 use super::data::PullRequestData;
+use super::presentation::hairline;
 use super::review_draft::{ReviewDrafts, review_drafts};
 use crate::shared::dismiss::{TriggerBounds, dismiss_layer};
 use crate::shared::segmented_switch::segmented_switch;
@@ -21,8 +22,8 @@ use gpui_kit::component::input::{Escape, InputEvent, Textarea, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme, Disableable, Icon, Sizable};
 use gpui_kit::{
-    Anchor, AnyElement, Context, Edges, Entity, Render, Subscription, Task, Window, anchored,
-    deferred, div, prelude::*, px, svg,
+    Anchor, AnyElement, Context, Edges, Entity, MouseButton, Render, Subscription, Task, Window,
+    anchored, deferred, div, prelude::*, px, svg,
 };
 use std::time::Duration;
 
@@ -355,13 +356,18 @@ impl Composer {
             .id("pr-composer")
             .debug_selector(|| "pr-composer".into())
             .relative()
+            .occlude()
+            // It floats over the tabs: what lies beneath (a diff line) must
+            // not take the press too.
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .size(px(36.))
             .flex()
             .items_center()
             .justify_center()
             .rounded_full()
             .border_1()
-            .border_color(theme.border)
+            .border_color(hairline(cx))
             .bg(theme.popover)
             .shadow_md()
             .cursor_pointer()
@@ -408,7 +414,7 @@ impl Composer {
             .flex()
             .flex_col()
             .gap_2()
-            .child(Textarea::new(input))
+            .child(Textarea::new(input).border_color(hairline(cx)))
             .child(
                 div()
                     .flex()
@@ -491,7 +497,7 @@ impl Composer {
             .flex()
             .flex_col()
             .gap_2()
-            .child(Textarea::new(input))
+            .child(Textarea::new(input).border_color(hairline(cx)))
             .child(
                 div()
                     .flex()
@@ -603,6 +609,8 @@ impl Composer {
         div()
             .id("pr-composer-popover")
             .occlude()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .w(px(420.))
             .mb_2()
             .p_3()
@@ -611,7 +619,7 @@ impl Composer {
             .gap_3()
             .rounded_lg()
             .border_1()
-            .border_color(theme.border)
+            .border_color(hairline(cx))
             .bg(theme.popover)
             .shadow_lg()
             .capture_action(cx.listener(|this, _: &Escape, _, cx| {
@@ -777,6 +785,54 @@ mod tests {
             assert_eq!(view.text(|f| &f.comment, cx), "Needs a test");
             assert_eq!(view.text(|f| &f.summary, cx), "Mostly fine");
         });
+    }
+
+    /// The composer over a surface that counts the presses reaching it.
+    struct Over {
+        composer: Entity<Composer>,
+        presses: std::rc::Rc<std::cell::Cell<usize>>,
+    }
+
+    impl Render for Over {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let presses = self.presses.clone();
+            div()
+                .size_full()
+                .relative()
+                .on_mouse_down(gpui_kit::MouseButton::Left, move |_, _, _| {
+                    presses.set(presses.get() + 1)
+                })
+                .child(
+                    div()
+                        .absolute()
+                        .top_4()
+                        .left_4()
+                        .child(self.composer.clone()),
+                )
+        }
+    }
+
+    #[gpui_kit::test]
+    fn a_press_on_the_composer_stays_there(cx: &mut TestAppContext) {
+        let presses = std::rc::Rc::new(std::cell::Cell::new(0));
+        let window = cx.update(|cx| {
+            gpui_kit::component::init(cx);
+            let presses = presses.clone();
+            cx.open_window(Default::default(), move |_, cx| {
+                let data = cx.new(|cx| PullRequestData::new(repo().pull_request(1), cx));
+                data.update(cx, |data, _| data.detail = Some(Arc::new(detail(1))));
+                let composer = cx.new(|cx| Composer::new(data, cx));
+                cx.new(|_| Over { composer, presses })
+            })
+            .unwrap()
+        });
+        let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
+        cx.run_until_parked();
+        let bounds = cx.debug_bounds("pr-composer").unwrap();
+        cx.simulate_click(bounds.center(), gpui_kit::Modifiers::none());
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("pr-comment-post").is_some(), "it opened");
+        assert_eq!(presses.get(), 0, "nothing beneath took the press");
     }
 
     #[gpui_kit::test]

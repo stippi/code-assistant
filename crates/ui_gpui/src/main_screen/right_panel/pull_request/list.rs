@@ -15,7 +15,8 @@ use super::list_logic::{
     facets, parse_query,
 };
 use super::presentation::{
-    GLYPH_SIZE, Tone, checks_glyph, conflict_glyph, diff_stat, relative_time, review_glyph,
+    GLYPH_SIZE, Tone, checks_glyph, conflict_glyph, diff_stat, hairline, relative_time,
+    review_glyph,
 };
 use chrono::Utc;
 use github::RepoRef;
@@ -417,6 +418,7 @@ impl PullRequestList {
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let list = cx.entity().downgrade();
         let sort_list = list.clone();
+        let line = hairline(cx);
         div()
             .flex_none()
             .px_4()
@@ -428,6 +430,7 @@ impl PullRequestList {
             .child(
                 Input::new(&self.search)
                     .with_size(Size::Small)
+                    .border_color(line)
                     .prefix(
                         Icon::default()
                             .path(SharedString::from("icons/magnifying_glass.svg"))
@@ -445,6 +448,7 @@ impl PullRequestList {
                         Button::new("pr-sort")
                             .outline()
                             .small()
+                            .border_color(line)
                             .icon(Icon::default().path("icons/arrow_up_down.svg"))
                             .label("Sort")
                             .dropdown_menu(move |menu, _, cx| sort_menu(menu, &sort_list, cx)),
@@ -453,6 +457,7 @@ impl PullRequestList {
                         Button::new("pr-filters")
                             .outline()
                             .small()
+                            .border_color(line)
                             .icon(Icon::default().path("icons/list_filter.svg"))
                             .label("Filters")
                             .dropdown_menu(move |menu, window, cx| {
@@ -464,6 +469,7 @@ impl PullRequestList {
                             Button::new("pr-list-refresh")
                                 .outline()
                                 .small()
+                                .border_color(line)
                                 .icon(Icon::default().path("icons/rotate_cw.svg"))
                                 .loading(self.refreshing)
                                 .tooltip("Refresh")
@@ -525,7 +531,7 @@ fn render_group_header(key: GroupKey, count: usize, cx: &App) -> AnyElement {
                 .text_color(muted.opacity(0.7))
                 .child(count.to_string()),
         )
-        .child(div().flex_1().h(px(1.)).ml_1().bg(cx.theme().border))
+        .child(div().flex_1().h(px(1.)).ml_1().bg(hairline(cx)))
         .into_any_element()
 }
 

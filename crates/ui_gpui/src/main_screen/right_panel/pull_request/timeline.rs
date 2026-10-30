@@ -13,8 +13,8 @@ mod logic;
 use super::PullRequestIntent;
 use super::avatar::avatar;
 use super::conversation::logic::{
-    ConversationItem, ReviewOutcome, conversation_items, is_verdict_stale, list_splice,
-    newest_commit_at,
+    ConversationItem, ReviewOutcome, conversation_items, is_verdict_stale, newest_commit_at,
+    splice_list,
 };
 use super::conversation::{CardStyle, CommentCard, Location, ThreadCard};
 use super::data::PullRequestData;
@@ -193,9 +193,7 @@ impl TimelineTab {
     fn rebuild_rows(&mut self) {
         let rows = timeline_rows(self.events.clone(), self.newest_first);
         let keys: Vec<String> = rows.iter().map(row_key).collect();
-        if let Some((range, count)) = list_splice(&self.keys, &keys) {
-            self.list.splice(range, count);
-        }
+        splice_list(&self.list, &self.keys, &keys);
         self.rows = rows;
         self.keys = keys;
     }

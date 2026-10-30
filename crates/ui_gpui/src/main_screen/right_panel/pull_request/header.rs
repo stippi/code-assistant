@@ -14,7 +14,7 @@ use super::actions::{
     resolve_merge_method,
 };
 use super::avatar::avatar;
-use super::presentation::{Tone, diff_stat, format_count, relative_time};
+use super::presentation::{Tone, diff_stat, format_count, hairline, relative_time};
 use chrono::{DateTime, Utc};
 use github::PullRequestRef;
 use github::model::{
@@ -522,7 +522,7 @@ impl Render for DetailHeader {
             .flex_col()
             .gap_1p5()
             .border_b_1()
-            .border_color(cx.theme().border)
+            .border_color(hairline(cx))
             .child(
                 div()
                     .h(px(28.))

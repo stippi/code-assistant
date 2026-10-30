@@ -161,6 +161,10 @@ pub fn gap_label(lines: usize, section: Option<&str>) -> String {
         1 => Some("1 unmodified line".to_owned()),
         n => Some(format!("{n} unmodified lines")),
     };
+    // A section is the raw `@@` context: one line, its spacing collapsed.
+    let section = section
+        .map(|s| s.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|s| !s.is_empty());
     match (count, section) {
         (Some(count), Some(section)) => format!("{count} · {section}"),
         (Some(count), None) => count,
@@ -208,6 +212,11 @@ mod tests {
             "4 unmodified lines · impl A {"
         );
         assert_eq!(gap_label(0, Some("impl A {")), "⋯ impl A {");
+        assert_eq!(
+            gap_label(2, Some("  Layer 5:\t   code   — CLI ")),
+            "2 unmodified lines · Layer 5: code — CLI"
+        );
+        assert_eq!(gap_label(2, Some("   ")), "2 unmodified lines");
     }
 
     #[test]

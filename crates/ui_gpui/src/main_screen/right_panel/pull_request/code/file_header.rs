@@ -7,7 +7,6 @@ use super::CodeTab;
 use crate::shared::theme::merged_violet;
 use git::ChangeStatus;
 use gpui_kit::component::ActiveTheme;
-use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::{AnyElement, App, Context, Hsla, SharedString, div, prelude::*, px, svg};
 
 fn status_icon(status: ChangeStatus, cx: &App) -> (&'static str, Hsla) {
@@ -91,21 +90,43 @@ impl CodeTab {
             )
             .on_click(cx.listener(move |this, _, _, cx| this.toggle_fold(ix, cx)));
 
+        // Drawn here rather than with the component's checkbox, whose box
+        // nearly vanishes on dark backgrounds.
+        let selector = format!("{prefix}-viewed-{ix}");
         let checkbox = div()
+            .id(SharedString::from(selector.clone()))
+            .debug_selector(move || selector)
             .flex_none()
-            .debug_selector({
-                let selector = format!("{prefix}-viewed-{ix}");
-                move || selector
-            })
+            .flex()
+            .items_center()
+            .gap_1p5()
+            .cursor_pointer()
             .child(
-                Checkbox::new(SharedString::from(format!("{prefix}-viewed-{ix}")))
-                    .label("Viewed")
-                    .checked(viewed)
-                    .on_click(cx.listener(move |this, checked: &bool, window, cx| {
-                        let extend = window.modifiers().shift;
-                        this.set_viewed(ix, *checked, extend, cx);
-                    })),
-            );
+                div()
+                    .size(px(14.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(3.))
+                    .border_1()
+                    .map(|d| match viewed {
+                        true => d.border_color(theme.primary).bg(theme.primary),
+                        false => d.border_color(muted.opacity(0.7)),
+                    })
+                    .when(viewed, |d| {
+                        d.child(
+                            svg()
+                                .size(px(10.))
+                                .path("icons/check.svg")
+                                .text_color(theme.primary_foreground),
+                        )
+                    }),
+            )
+            .child(div().text_color(muted).child("Viewed"))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                let extend = window.modifiers().shift;
+                this.set_viewed(ix, !viewed, extend, cx);
+            }));
 
         div()
             .w_full()

@@ -300,6 +300,7 @@ fn render_diff_rows(
                 text: dl.text.clone(),
                 highlights,
                 background: row_bg,
+                edge: row_edge(dl.tag, theme),
                 color: row_text_color(dl.tag, syntax.is_some(), theme),
                 gutter,
             }
@@ -381,6 +382,15 @@ fn row_colors(tag: ChangeTag, theme: &Theme) -> (Option<Hsla>, Hsla) {
         ChangeTag::Equal => unchanged_row_colors(theme),
         ChangeTag::Delete => deleted_row_colors(theme),
         ChangeTag::Insert => added_row_colors(theme),
+    }
+}
+
+/// The bar at the left edge of added and removed rows.
+fn row_edge(tag: ChangeTag, theme: &Theme) -> Option<Hsla> {
+    match tag {
+        ChangeTag::Insert => Some(theme.success.opacity(0.7)),
+        ChangeTag::Delete => Some(theme.danger.opacity(0.7)),
+        ChangeTag::Equal => None,
     }
 }
 

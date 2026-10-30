@@ -7,6 +7,7 @@ use chrono::{DateTime, Utc};
 use github::model::{
     Actor, Comment, CommentKind, Commit, ReviewState, ReviewThread, ThreadComment,
 };
+use gpui_kit::{ListOffset, ListState, px};
 use std::collections::{HashMap, HashSet};
 
 /// `body` without its surrounding whitespace; `None` when nothing but
@@ -386,6 +387,22 @@ pub fn list_splice<T: PartialEq>(old: &[T], new: &[T]) -> Option<(std::ops::Rang
     Some((prefix..old.len() - suffix, new.len() - prefix - suffix))
 }
 
+/// Tell `list` that its rows went from `old` to `new`. A list scrolled to
+/// its very top stays there: GPUI keeps the row seen first in view, so rows
+/// put in front of it (the first rows of an empty list among them) would
+/// scroll it down past them.
+pub fn splice_list<T: PartialEq>(list: &ListState, old: &[T], new: &[T]) {
+    let Some((range, count)) = list_splice(old, new) else {
+        return;
+    };
+    let top = list.logical_scroll_top();
+    let at_top = top.item_ix == 0 && top.offset_in_item == px(0.);
+    list.splice(range, count);
+    if at_top {
+        list.scroll_to(ListOffset::default());
+    }
+}
+
 /// The viewer may rewrite the description of their own pull request, or
 /// of any they may merge.
 pub fn can_edit_description(detail: &github::model::Detail, viewer: Option<&str>) -> bool {
@@ -708,6 +725,24 @@ mod tests {
         assert_eq!(list_splice(&[1, 1], &[1]), Some((1..2, 0)));
         assert_eq!(list_splice::<u8>(&[], &[]), None);
         assert_eq!(list_splice(&[1, 2], &[3]), Some((0..2, 1)));
+    }
+
+    #[test]
+    fn a_list_at_its_top_stays_there_when_rows_come_in_front() {
+        let list = ListState::new(0, gpui_kit::ListAlignment::Top, px(100.));
+        // As after a frame drawn with no rows.
+        list.scroll_to(ListOffset::default());
+        splice_list(&list, &[], &[1, 2, 3]);
+        assert_eq!(list.logical_scroll_top().item_ix, 0);
+        splice_list(&list, &[1, 2, 3], &[0, 1, 2, 3]);
+        assert_eq!(list.logical_scroll_top().item_ix, 0);
+        // Scrolled down, the row seen stays in view.
+        list.scroll_to(ListOffset {
+            item_ix: 2,
+            offset_in_item: px(0.),
+        });
+        splice_list(&list, &[0, 1, 2, 3], &[9, 0, 1, 2, 3]);
+        assert_eq!(list.logical_scroll_top().item_ix, 3);
     }
 
     #[test]

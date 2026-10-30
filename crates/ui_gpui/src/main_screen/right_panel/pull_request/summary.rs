@@ -18,7 +18,7 @@ use super::PullRequestIntent;
 use super::conversation::logic::{
     CommentFilter, ConversationItem, ReviewOutcome, ReviewerEntry, can_edit_description,
     comment_count, conversation_items, filter_items, is_verdict_stale, latest_review_outcomes,
-    list_splice, newest_commit_at, reviewer_entries,
+    newest_commit_at, reviewer_entries, splice_list,
 };
 use super::conversation::{
     CardStyle, CommentBody, CommentCard, EditorEvent, EditorOptions, Location, MarkdownEditor,
@@ -118,6 +118,8 @@ impl SummaryTab {
             label_picker: None,
             _data: observe,
         };
+        // The sections show before anything is read.
+        this.rebuild_rows();
         this.sync(cx);
         this
     }
@@ -219,9 +221,7 @@ impl SummaryTab {
             open: self.comments_open,
             note: self.activity.is_none() || ids.is_empty() || truncated,
         });
-        if let Some((range, count)) = list_splice(&self.rows, &rows) {
-            self.list.splice(range, count);
-        }
+        splice_list(&self.list, &self.rows, &rows);
         self.rows = rows;
     }
 
@@ -809,7 +809,7 @@ mod tests {
     };
     use super::picker::{Candidate, Leading, PickerEntry, PickerToggle};
     use super::*;
-    use crate::main_screen::right_panel::pull_request::fixtures::{actor, hours_ago};
+    use crate::main_screen::right_panel::pull_request::fixtures::{actor, detail_with, hours_ago};
     use github::model::ReviewState;
     use gpui_kit::{TestAppContext, VisualTestContext};
 
@@ -972,6 +972,33 @@ mod tests {
         });
         tab.update(cx, |tab, cx| tab.close_picker(PickerKind::Labels, cx));
         tab.read_with(cx, |tab, _| assert!(tab.label_picker.is_none()));
+    }
+
+    #[gpui_kit::test]
+    fn a_pull_request_opens_at_the_top(cx: &mut TestAppContext) {
+        // Nothing read yet when the tab first draws.
+        let data = super::super::conversation::fixtures::data(cx, Some("ann"));
+        let shown = data.clone();
+        let (tab, cx) = window(cx, move |cx| SummaryTab::new(shown, cx));
+        // The detail, then the conversation arrive while the tab shows.
+        let long = (0..80)
+            .map(|i| format!("Paragraph {i} of a long description."))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        data.update(cx, |data, cx| {
+            data.detail = Some(Arc::new(detail_with(290, |d| d.body = long)));
+            cx.notify();
+        });
+        cx.run_until_parked();
+        data.update(cx, |data, cx| {
+            data.activity = Some(Arc::new(activity(3)));
+            cx.notify();
+        });
+        cx.run_until_parked();
+        tab.read_with(cx, |tab, _| {
+            let top = tab.list.logical_scroll_top();
+            assert_eq!((top.item_ix, top.offset_in_item), (0, px(0.)));
+        });
     }
 
     #[gpui_kit::test]
