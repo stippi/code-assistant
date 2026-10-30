@@ -101,4 +101,34 @@ mod tests {
         assert_eq!(strip_date_suffix("gpt-5.6-sol"), "gpt-5.6-sol");
         assert_eq!(strip_date_suffix("qwen3.8:27b-mlx"), "qwen3.8:27b-mlx");
     }
+
+    #[test]
+    fn looks_up_luna_models_with_responses_capabilities() {
+        for id in ["gpt-5.6-luna", "gpt-6-luna"] {
+            let entry = lookup(id).unwrap();
+            assert_eq!(
+                entry.context_window,
+                Some(1_050_000),
+                "{id}: context window"
+            );
+            assert_eq!(entry.max_output, Some(128_000), "{id}: max output");
+            assert_eq!(
+                entry.edit_format,
+                Some(crate::provider_config::EditFormat::Diff),
+                "{id}: edit format"
+            );
+            let reasoning = entry.reasoning.as_ref().unwrap();
+            assert_eq!(
+                reasoning.style,
+                ReasoningStyle::OpenAiResponses,
+                "{id}: reasoning style"
+            );
+            assert_eq!(
+                reasoning.levels,
+                [Effort::Low, Effort::Medium, Effort::High, Effort::XHigh],
+                "{id}: supported reasoning levels"
+            );
+            assert_eq!(reasoning.default, Effort::High, "{id}: default effort");
+        }
+    }
 }
