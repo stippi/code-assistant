@@ -248,6 +248,15 @@ pub fn render_primary(
     let method = header.merge_method(detail);
     let confirm = header.confirm();
     let control = primary_control(detail, header.checks_state())?;
+    // A stack merges through its own controls (T3 Code); until the stack
+    // is known, no single merge either.
+    if matches!(
+        control,
+        PrimaryControl::Merge | PrimaryControl::EnableAutoMerge
+    ) && !header.stack().allows_single_merge()
+    {
+        return None;
+    }
     let pending = header.pending();
     let confirmable = |key: Confirmable, label: String, action: Action, cx: &mut Context<_>| {
         let armed = confirm.is_armed(key);
@@ -492,7 +501,11 @@ fn more_menu(
         return menu;
     };
     let state = state.read(cx);
-    let entries = menu_entries(detail, state.checks_state());
+    let mut entries = menu_entries(detail, state.checks_state());
+    if !state.stack().allows_single_merge() {
+        entries.merge_now = false;
+        entries.enable_auto_merge = false;
+    }
     let method = state.merge_method(detail);
     let item = |label: &str, icon_path: &'static str, intent: PullRequestIntent| {
         let header = header.clone();

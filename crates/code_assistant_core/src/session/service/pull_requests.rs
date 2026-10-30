@@ -11,7 +11,8 @@ use crate::session::pull_request::PullRequestSnapshot;
 use github::model::{
     Action, Activity, Checks, Detail, DiffFileContents, DiffPage, DiffStat, EditableCommentKind,
     FileChange, FilesViewed, LabelCandidates, ListPage, ListQuery, PullRequestUpdate,
-    ReactionContent, ReviewSubmission, Reviewer, ReviewerCandidates, ThreadCommentsPage, Viewer,
+    ReactionContent, ReviewSubmission, Reviewer, ReviewerCandidates, Stack, StackAction, StackHead,
+    ThreadCommentsPage, Viewer,
 };
 use github::{PullRequestRef, RepoRef};
 use std::time::SystemTime;
@@ -178,6 +179,28 @@ impl SessionService {
     ) -> Result<Fetched<DiffPage>> {
         self.call_io(move |ctx| async move { ctx.pull_requests.diff(pr, commit, cursor).await })
             .await
+    }
+
+    pub async fn pull_request_stack(&self, pr: PullRequestRef) -> Result<Fetched<Option<Stack>>> {
+        self.call_io(move |ctx| async move { ctx.pull_requests.stack(pr).await })
+            .await
+    }
+
+    /// Merge the stack through `pr`, or rebase the stack it tops, unless
+    /// GitHub's stack differs from what `expected` saw.
+    pub async fn pull_request_stack_action(
+        &self,
+        pr: PullRequestRef,
+        stack_number: u64,
+        expected: Vec<StackHead>,
+        action: StackAction,
+    ) -> Result<()> {
+        self.call_io(move |ctx| async move {
+            ctx.pull_requests
+                .stack_action(pr, stack_number, expected, action)
+                .await
+        })
+        .await
     }
 
     pub async fn pull_request_files_viewed(

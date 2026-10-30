@@ -28,6 +28,7 @@ mod markdown;
 pub mod preferences;
 mod presentation;
 pub mod review_draft;
+mod stack;
 mod summary;
 mod tab_bar;
 mod timeline;
@@ -532,6 +533,7 @@ mod tests {
         let data = view.read_with(cx, |view, _| view.data().clone());
         data.update(cx, |data, cx| {
             data.detail = Some(std::sync::Arc::new(detail));
+            data.stack = stack::StackView::known_alone();
             cx.notify();
         });
         cx.run_until_parked();

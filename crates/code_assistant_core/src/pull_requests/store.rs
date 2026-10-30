@@ -11,8 +11,8 @@ use futures::FutureExt;
 use github::model::{
     Action, Activity, Checks, Detail, DiffFileContents, DiffPage, DiffStat, EditableCommentKind,
     FileChange, FilesViewed, LabelCandidates, ListPage, ListQuery, PullRequestState,
-    PullRequestUpdate, ReactionContent, ReviewSubmission, Reviewer, ReviewerCandidates,
-    ThreadCommentsPage, Viewer,
+    PullRequestUpdate, ReactionContent, ReviewSubmission, Reviewer, ReviewerCandidates, Stack,
+    StackAction, StackHead, StackRebase, ThreadCommentsPage, Viewer,
 };
 use github::{Priority, PullRequestRef, RepoRef};
 use serde::Serialize;
@@ -36,6 +36,8 @@ const FILES_VIEWED_TTL: Duration = Duration::from_secs(15);
 const VIEWER_TTL: Duration = Duration::from_secs(10 * 60);
 const CANDIDATES_TTL: Duration = Duration::from_secs(10 * 60);
 const HEAD_TTL: Duration = Duration::from_secs(60);
+/// T3 Code reads a stack again after a minute.
+const STACK_TTL: Duration = Duration::from_secs(60);
 
 const PULL_REQUESTS_HELD: usize = 128;
 const LISTS_HELD: usize = 64;
@@ -89,11 +91,36 @@ pub struct PullRequests {
     activities: Cache<PullRequestRef, Activity>,
     diffs: Cache<DiffKey, DiffPage>,
     files_viewed: Cache<PullRequestRef, FilesViewed>,
+    /// The stack a pull request is a layer of (`None`: none).
+    stacks: Cache<PullRequestRef, Option<Stack>>,
     viewers: Cache<String, Viewer>,
     reviewer_candidates: Cache<PullRequestRef, ReviewerCandidates>,
     label_candidates: Cache<PullRequestRef, LabelCandidates>,
     /// The own pull request of a branch, by repository and branch name.
     heads: Cache<(RepoRef, String), Option<u64>>,
+}
+
+/// Rebase a stack as `plan` says, in a scratch repository.
+async fn rebase(plan: StackRebase) -> Result<()> {
+    let git = git::GitBinary::new()?;
+    let layers: Vec<git::stack_rebase::StackBranch> = plan
+        .layers
+        .into_iter()
+        .map(|layer| git::stack_rebase::StackBranch {
+            number: layer.number,
+            branch: layer.branch,
+            head_sha: layer.head_sha,
+        })
+        .collect();
+    git::stack_rebase::rebase_stack(
+        &git,
+        &plan.remote_url,
+        &plan.auth_header,
+        &plan.base,
+        &layers,
+    )
+    .await?;
+    Ok(())
 }
 
 /// Announces a pull request's part after a background refresh.
@@ -167,6 +194,10 @@ impl PullRequests {
             files_viewed: Cache::new(
                 policy(|_, _| FILES_VIEWED_TTL, PULL_REQUESTS_HELD),
                 announce(&events, PullRequestPart::FilesViewed, itself),
+            ),
+            stacks: Cache::new(
+                policy(|_, _| STACK_TTL, PULL_REQUESTS_HELD),
+                announce(&events, PullRequestPart::Stack, itself),
             ),
             viewers: Cache::new(policy(|_, _| VIEWER_TTL, VIEWERS_HELD), None),
             reviewer_candidates: Cache::new(policy(|_, _| CANDIDATES_TTL, CANDIDATES_HELD), None),
@@ -332,6 +363,13 @@ impl PullRequests {
             &self.client,
             |client, pr| async move { client.files_viewed(&pr).await },
         )
+        .await
+    }
+
+    pub async fn stack(&self, pr: PullRequestRef) -> Result<Fetched<Option<Stack>>> {
+        read(&self.stacks, pr, &self.client, |client, pr| async move {
+            client.stack(&pr).await
+        })
         .await
     }
 
@@ -502,6 +540,49 @@ impl PullRequests {
         self.written(&pr, &parts, written)
     }
 
+    /// Merge the stack through `pr`, or rebase the stack it tops; then
+    /// every layer `expected` names is read anew.
+    pub async fn stack_action(
+        &self,
+        pr: PullRequestRef,
+        stack_number: u64,
+        expected: Vec<StackHead>,
+        action: StackAction,
+    ) -> Result<()> {
+        let done: Result<()> = match action {
+            StackAction::Merge(method) => self
+                .interactive()
+                .merge_stack(&pr, stack_number, &expected, method)
+                .await
+                .map_err(Into::into),
+            StackAction::Rebase => {
+                match self
+                    .interactive()
+                    .stack_rebase(&pr, stack_number, &expected)
+                    .await
+                {
+                    Ok(plan) => rebase(plan).await,
+                    Err(e) => Err(e.into()),
+                }
+            }
+        };
+        let parts = [
+            PullRequestPart::Detail,
+            PullRequestPart::Checks,
+            PullRequestPart::Activity,
+            PullRequestPart::Diff,
+            PullRequestPart::Stack,
+        ];
+        let mut layers: Vec<u64> = expected.iter().map(|head| head.number).collect();
+        layers.push(pr.number);
+        layers.sort_unstable();
+        layers.dedup();
+        for number in layers {
+            self.invalidate(&pr.repo.pull_request(number), &parts);
+        }
+        done
+    }
+
     /// Every part of the pull request is read anew on its next read.
     pub fn refresh(&self, pr: &PullRequestRef) {
         self.reviewer_candidates.invalidate(|key| key == pr);
@@ -512,6 +593,7 @@ impl PullRequests {
             PullRequestPart::Activity,
             PullRequestPart::Diff,
             PullRequestPart::FilesViewed,
+            PullRequestPart::Stack,
         ];
         self.invalidate(pr, &parts);
     }
@@ -545,6 +627,7 @@ impl PullRequests {
                 PullRequestPart::Activity => self.activities.invalidate(|key| key == pr),
                 PullRequestPart::Diff => self.diffs.invalidate(|key| key.pr == *pr),
                 PullRequestPart::FilesViewed => self.files_viewed.invalidate(|key| key == pr),
+                PullRequestPart::Stack => self.stacks.invalidate(|key| key == pr),
             }
             self.events.publish_app(UiEvent::PullRequestChanged {
                 pr: pr.clone(),

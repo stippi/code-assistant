@@ -12,12 +12,15 @@ use super::data::{Notice, PullRequestData};
 use super::header::CONFIRM_TIMEOUT;
 use super::header::DetailHeader;
 use super::preferences;
+use super::presentation::merge_method_label;
+use super::stack::{StackActionKind, StackPlan, StackRequest, confirmation, layer_row};
 use super::summary::SummaryTab;
 use super::tab_bar::{approve_workflows_slot, checks_slot, render_tab_row, timeline_slot};
 use super::timeline::{OpenCommit, TimelineTab};
 use anyhow::Context as _;
 use code_assistant_core::pull_requests::{CheckoutPlace, PullRequestCheckout};
 use github::PullRequestRef;
+use github::model::StackAction;
 use github::model::{Action, ListEntry, PullRequestUpdate};
 use gpui_kit::component::{ActiveTheme, Icon, Sizable, button::Button, button::ButtonVariants};
 use gpui_kit::{
@@ -58,6 +61,10 @@ pub struct DetailView {
     approving: bool,
     /// The checks popover lists the completed checks too.
     checks_show_all: bool,
+    /// Merging or rebasing the stack waits for confirmation.
+    stack_confirm: Option<StackActionKind>,
+    /// A stack action runs.
+    stack_acting: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -89,6 +96,22 @@ impl DetailView {
             cx.subscribe(&header, |_, _, intent: &PullRequestIntent, cx| {
                 cx.emit(intent.clone())
             }),
+            cx.subscribe(
+                &header,
+                |this, _, request: &StackRequest, cx| match *request {
+                    StackRequest::Retry => this.data.update(cx, |data, cx| {
+                        data.read(
+                            code_assistant_core::pull_requests::PullRequestPart::Stack,
+                            cx,
+                        )
+                    }),
+                    StackRequest::Confirm(kind) if !this.stack_acting => {
+                        this.stack_confirm = Some(kind);
+                        cx.notify();
+                    }
+                    StackRequest::Confirm(_) => {}
+                },
+            ),
             cx.subscribe(&summary, |_, _, intent: &PullRequestIntent, cx| {
                 cx.emit(intent.clone())
             }),
@@ -121,6 +144,8 @@ impl DetailView {
             _confirm_timeout: None,
             approving: false,
             checks_show_all: false,
+            stack_confirm: None,
+            stack_acting: false,
             _subscriptions: subscriptions,
         }
     }
@@ -135,14 +160,197 @@ impl DetailView {
     }
 
     fn sync_header(&mut self, cx: &mut Context<Self>) {
-        let (detail, checks_state, refreshing) = {
+        let (detail, checks_state, refreshing, stack) = {
             let data = self.data.read(cx);
-            (data.detail.clone(), data.checks_state(), data.refreshing)
+            (
+                data.detail.clone(),
+                data.checks_state(),
+                data.refreshing,
+                data.stack.clone(),
+            )
         };
         self.header.update(cx, |header, cx| {
-            header.set_data(detail, checks_state, refreshing, cx)
+            header.set_data(detail, checks_state, refreshing, cx);
+            header.set_stack(stack, cx);
         });
         cx.notify();
+    }
+
+    /// Merge the stack through the shown layer, or rebase it from its
+    /// top, as confirmed; then every layer is read anew.
+    fn run_stack_action(&mut self, kind: StackActionKind, cx: &mut Context<Self>) {
+        self.stack_confirm = None;
+        let (detail, stack) = {
+            let data = self.data.read(cx);
+            (data.detail.clone(), data.stack.stack.clone())
+        };
+        let (Some(detail), Some(stack)) = (detail, stack) else {
+            return;
+        };
+        let Some(plan) = StackPlan::of(&stack, detail.number) else {
+            return;
+        };
+        let (target, heads) = plan.target(kind);
+        let action = match kind {
+            StackActionKind::Merge => {
+                StackAction::Merge(self.header.read(cx).merge_method(&detail))
+            }
+            StackActionKind::Rebase => StackAction::Rebase,
+        };
+        let (pr, number) = (self.pr.repo.pull_request(target), stack.number);
+        self.stack_acting = true;
+        let write = PullRequestData::write(&self.data, cx, move |service, _| async move {
+            service
+                .pull_request_stack_action(pr, number, heads, action)
+                .await
+                .context(match kind {
+                    StackActionKind::Merge => "Could not merge the stack",
+                    StackActionKind::Rebase => "Could not rebase the stack",
+                })
+        });
+        let data = self.data.downgrade();
+        cx.spawn(async move |this, cx| {
+            let done = write.await.is_ok();
+            this.update(cx, |this, cx| {
+                this.stack_acting = false;
+                cx.notify();
+            })
+            .ok();
+            if done {
+                data.update(cx, |data, cx| {
+                    data.notice = Some(match kind {
+                        StackActionKind::Merge => Notice {
+                            title: "Stack merge request completed".into(),
+                            detail: "GitHub merged the stack or added it to its merge queue."
+                                .into(),
+                            warning: false,
+                        },
+                        StackActionKind::Rebase => Notice {
+                            title: "Stack rebased".into(),
+                            detail: "".into(),
+                            warning: false,
+                        },
+                    });
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// "Merge 2 pull requests?": what the stack action does, the layers it
+    /// works on, Cancel and the action.
+    fn render_stack_confirm(
+        &self,
+        kind: StackActionKind,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let data = self.data.read(cx);
+        let detail = data.detail.clone()?;
+        let stack = data.stack.stack.clone()?;
+        let plan = StackPlan::of(&stack, detail.number)?;
+        let method = merge_method_label(self.header.read(cx).merge_method(&detail)).to_lowercase();
+        let (title, description) = confirmation(kind, &plan, &stack.base, &method, "GitHub");
+        let theme = cx.theme();
+        let rows = plan.layers(kind).iter().map(|layer| {
+            div()
+                .px_3()
+                .py_2()
+                .rounded_md()
+                .bg(theme.muted.opacity(0.5))
+                .child(layer_row(layer, false, true, cx))
+        });
+        let action = match kind {
+            StackActionKind::Merge => "Merge stack",
+            StackActionKind::Rebase => "Rebase stack",
+        };
+        let card = div()
+            .id("pr-stack-confirm-card")
+            .w_full()
+            .max_w(px(448.))
+            .p_4()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .rounded_lg()
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.background)
+            .shadow_lg()
+            .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+                cx.stop_propagation()
+            })
+            .child(
+                div()
+                    .text_base()
+                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                    .child(title),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(theme.muted_foreground)
+                    .child(description),
+            )
+            .child(
+                div()
+                    .id("pr-stack-confirm-layers")
+                    .max_h(px(192.))
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .children(rows),
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("pr-stack-cancel")
+                            .outline()
+                            .small()
+                            .label("Cancel")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.stack_confirm = None;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        div().debug_selector(|| "pr-stack-confirm".into()).child(
+                            Button::new("pr-stack-confirm")
+                                .primary()
+                                .small()
+                                .label(action)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.run_stack_action(kind, cx)
+                                })),
+                        ),
+                    ),
+            );
+        Some(
+            div()
+                .id("pr-stack-confirm")
+                .absolute()
+                .inset_0()
+                .p_4()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(gpui_kit::black().opacity(0.3))
+                .on_mouse_down(
+                    gpui_kit::MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        this.stack_confirm = None;
+                        cx.notify();
+                    }),
+                )
+                .child(card)
+                .into_any_element(),
+        )
     }
 
     /// Shown again (read anew) or hidden (the polling pauses).
@@ -493,6 +701,10 @@ impl Render for DetailView {
                     .right_4()
                     .child(self.composer.clone()),
             )
+            .children(
+                self.stack_confirm
+                    .and_then(|kind| self.render_stack_confirm(kind, cx)),
+            )
     }
 }
 
@@ -521,6 +733,7 @@ mod tests {
         let data = view.read_with(cx, |view, _| view.data().clone());
         data.update(cx, |data, cx| {
             data.detail = Some(Arc::new(detail(290)));
+            data.stack = super::super::stack::StackView::known_alone();
             cx.notify();
         });
         cx.run_until_parked();
@@ -652,6 +865,56 @@ mod tests {
         cx.run_until_parked();
         assert!(cx.debug_bounds("pr-error").is_some());
         assert!(cx.debug_bounds("pr-notice").is_none());
+    }
+
+    #[gpui_kit::test]
+    fn a_stack_merges_through_its_own_controls_after_a_confirmation(cx: &mut TestAppContext) {
+        use super::super::stack::StackView;
+        use github::model::{PullRequestState, Stack, StackLayer};
+        let (view, cx) = page(cx);
+        assert!(cx.debug_bounds("pr-primary").is_some());
+        let data = view.read_with(cx, |view, _| view.data().clone());
+        let layer = |number: u64| StackLayer {
+            number,
+            title: Some(format!("Layer {number}")),
+            is_draft: Some(false),
+            head_sha: Some(format!("sha{number}")),
+            head_branch: format!("b{number}"),
+            state: PullRequestState::Open,
+        };
+        data.update(cx, |data, cx| {
+            data.stack = StackView {
+                read: true,
+                stack: Some(Arc::new(Stack {
+                    id: "1".into(),
+                    number: 3,
+                    url: String::new(),
+                    base: "main".into(),
+                    layers: vec![layer(289), layer(290), layer(291)],
+                })),
+                fresh: true,
+                error: None,
+            };
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("pr-stack").is_some());
+        assert!(cx.debug_bounds("pr-primary").is_none(), "the stack merges");
+        click(cx, "pr-merge-stack");
+        assert!(cx.debug_bounds("pr-stack-confirm").is_some());
+        click(cx, "pr-stack-confirm");
+        // No session service: refused, shown; the confirmation is gone.
+        assert!(cx.debug_bounds("pr-stack-confirm").is_none());
+        assert!(cx.debug_bounds("pr-error").is_some());
+
+        // Without a stack, the single merge is back.
+        data.update(cx, |data, cx| {
+            data.stack.stack = None;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("pr-primary").is_some());
+        assert!(cx.debug_bounds("pr-stack").is_none());
     }
 
     #[gpui_kit::test]

@@ -418,3 +418,46 @@ async fn refreshing_a_repositorys_lists_reads_them_anew_and_announces_it() {
     assert!(!read.refreshing, "read anew, not served stale");
     assert_eq!(h.requests("PullRequestSearch"), 2);
 }
+
+#[tokio::test]
+async fn a_stack_action_reads_every_layer_anew_even_when_refused() {
+    let mut h = harness();
+    h.fake
+        .on_rest(
+            Method::Get,
+            "repos/stippi/code-assistant/stacks?pull_request=291",
+        )
+        .json(
+            json!([{"number": 4, "url": "u", "base": "main", "pull_requests": [
+                {"number": 290, "head": {"ref": "a", "sha": "aaa"}, "state": "open"},
+                {"number": 291, "head": {"ref": "b", "sha": "bbb"}, "state": "open"}
+            ]}]),
+        );
+    // The viewer saw stack 3: it changed since.
+    let expected = vec![
+        github::model::StackHead {
+            number: 290,
+            head_sha: "aaa".into(),
+        },
+        github::model::StackHead {
+            number: 291,
+            head_sha: "bbb".into(),
+        },
+    ];
+    let refused = h
+        .store
+        .stack_action(pr(), 3, expected, github::model::StackAction::Rebase)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refused.to_string(),
+        "The stack changed. Refresh it before trying again."
+    );
+    let events = h.drain_events().await;
+    for number in [290, 291] {
+        assert!(events.iter().any(|event| matches!(
+            event,
+            UiEvent::PullRequestChanged { pr, part: PullRequestPart::Stack } if pr.number == number
+        )));
+    }
+}

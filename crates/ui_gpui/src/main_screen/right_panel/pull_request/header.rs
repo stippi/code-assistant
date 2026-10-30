@@ -20,6 +20,7 @@ use super::actions::{
 use super::avatar::avatar;
 use super::preferences;
 use super::presentation::{Tone, diff_stat, format_count, relative_time};
+use super::stack::{self, StackRequest, StackView};
 use chrono::{DateTime, Utc};
 use github::PullRequestRef;
 use github::model::{
@@ -69,6 +70,8 @@ pub struct DetailHeader {
     pending: bool,
     /// A checkout runs.
     checking_out: bool,
+    /// The stack the pull request is a layer of.
+    stack: StackView,
     seed: Option<ListEntry>,
     /// The list is there to go back to.
     show_back: bool,
@@ -90,6 +93,7 @@ pub struct DetailHeader {
 const COPIED_FOR: Duration = Duration::from_millis(1500);
 
 impl EventEmitter<PullRequestIntent> for DetailHeader {}
+impl EventEmitter<StackRequest> for DetailHeader {}
 
 impl DetailHeader {
     /// `merge_method` is the one last used in the repository.
@@ -106,6 +110,7 @@ impl DetailHeader {
             refreshing: false,
             pending: false,
             checking_out: false,
+            stack: StackView::default(),
             seed,
             show_back,
             title_editor: None,
@@ -148,6 +153,21 @@ impl DetailHeader {
 
     pub fn checks_state(&self) -> Option<ChecksState> {
         self.checks_state
+    }
+
+    pub fn set_stack(&mut self, stack: StackView, cx: &mut Context<Self>) {
+        if self.stack != stack {
+            self.stack = stack;
+            cx.notify();
+        }
+    }
+
+    pub fn stack(&self) -> &StackView {
+        &self.stack
+    }
+
+    pub fn request_stack(&mut self, request: StackRequest, cx: &mut Context<Self>) {
+        cx.emit(request);
     }
 
     #[cfg(test)]
@@ -646,6 +666,7 @@ impl Render for DetailHeader {
                 .flex()
                 .items_center()
                 .gap_1()
+                .children(stack::render_stack_controls(self, detail, cx))
                 .child(actions::render_checkout(
                     facts.number,
                     self.checking_out,
@@ -736,7 +757,9 @@ mod tests {
         if let Some(detail) = detail {
             let checks = effective_checks_state(detail.checks_state, &detail.checks);
             view.update(cx, |view, cx| {
-                view.set_data(Some(Arc::new(detail)), checks, false, cx)
+                view.set_data(Some(Arc::new(detail)), checks, false, cx);
+                // In no stack.
+                view.set_stack(StackView::known_alone(), cx);
             });
         }
         cx.run_until_parked();

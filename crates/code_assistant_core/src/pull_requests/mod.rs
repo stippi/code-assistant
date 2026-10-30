@@ -49,6 +49,7 @@ pub enum PullRequestPart {
     Activity,
     Diff,
     FilesViewed,
+    Stack,
 }
 
 /// Where a session's pull requests live and which one is its own.

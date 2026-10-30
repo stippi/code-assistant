@@ -51,6 +51,7 @@ pub fn entry(number: u64, title: &str, author: &str) -> ListEntry {
         has_team_review_request: false,
         labels: Vec::new(),
         checks_state: None,
+        stack: None,
     }
 }
 
