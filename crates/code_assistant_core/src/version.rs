@@ -23,6 +23,12 @@ pub const RUSTC_VERSION: &str = env!("BUILD_RUSTC_VERSION");
 /// Target triple, e.g. `aarch64-apple-darwin`.
 pub const TARGET: &str = env!("BUILD_TARGET");
 
+/// Update manifest URL compiled into release builds; `None` for every other
+/// build, which never updates itself.
+pub fn update_feed() -> Option<&'static str> {
+    Some(env!("BUILD_UPDATE_FEED")).filter(|feed| !feed.is_empty())
+}
+
 /// `true` for optimized (non-debug) builds.
 pub fn is_release_build() -> bool {
     !cfg!(debug_assertions)
