@@ -108,7 +108,7 @@ impl CodeTab {
         let rows = chunk.lines.len();
         let selection = self.commit.is_none().then(|| {
             let marks = ChunkMarks {
-                highlight: self.selection.highlight(&file.path, chunk.flat_start, rows),
+                highlight: self.selection.highlight(&file.path),
                 color: theme.selection,
                 marked: self.pending_marks(file, chunk.flat_start, rows, cx),
                 mark_color: theme.warning,

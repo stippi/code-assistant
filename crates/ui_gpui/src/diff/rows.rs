@@ -1,16 +1,22 @@
 //! The rows of a diff as one element: backgrounds, gutter numbers and
-//! wrapped text painted directly, instead of three or four layout nodes per
-//! row. With a diff card in view, laying those nodes out was the largest
-//! part of a frame (see docs/frame-profiling.md); here taffy sees one node
-//! per chunk and the text system's line cache does the rest.
+//! text painted directly, instead of three or four layout nodes per row.
+//! With a diff card in view, laying those nodes out was the largest part of
+//! a frame (see docs/frame-profiling.md); here taffy sees one node per
+//! chunk and the text system's line cache does the rest.
+//!
+//! A row has one cell (stacked) or two side by side (split: the old file's
+//! line left, the new file's right, either may be empty). Text wraps, or
+//! stays on one line and scrolls sideways with a [`HScroll`] that all rows
+//! of a file share; the line numbers stay in place.
 
 use gpui_kit::{
-    App, AvailableSpace, Bounds, DispatchPhase, Element, GlobalElementId, HighlightStyle, Hsla,
-    InspectorElementId, IntoElement, LayoutId, Length, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, Point, ShapedLine, SharedString, Size, Style, TextAlign, TextRun,
-    TextStyle, Window, WrappedLine, fill, point, px, relative, size,
+    App, AvailableSpace, Bounds, ContentMask, DispatchPhase, Element, GlobalElementId,
+    HighlightStyle, Hsla, InspectorElementId, IntoElement, LayoutId, Length, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollWheelEvent, ShapedLine,
+    SharedString, Size, Style, TextAlign, TextRun, TextStyle, Window, WrappedLine, fill, point, px,
+    relative, size,
 };
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -27,7 +33,17 @@ pub(crate) struct DiffRow {
     pub gutter: Option<(SharedString, Hsla)>,
 }
 
-/// Horizontal layout of the rows, in pixels.
+/// One side of a row and the line it shows, counted from
+/// [`RowSelection::base_line`].
+pub(crate) struct RowCell {
+    pub row: DiffRow,
+    pub line: usize,
+}
+
+/// A row's cells: the left one only when stacked.
+pub(crate) type RowCells = [Option<RowCell>; 2];
+
+/// Horizontal layout of the rows (of each column), in pixels.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct RowGeometry {
     /// Width of the gutter column; zero without one.
@@ -45,14 +61,43 @@ impl RowGeometry {
     }
 }
 
+/// How far unwrapped rows are scrolled sideways, shared by all elements
+/// showing one file, and the widest text they have shown.
+#[derive(Clone, Default, Debug)]
+pub(crate) struct HScroll {
+    offset: Rc<Cell<Pixels>>,
+    widest: Rc<Cell<Pixels>>,
+}
+
+impl HScroll {
+    pub fn offset(&self) -> Pixels {
+        self.offset.get()
+    }
+
+    fn note_width(&self, width: Pixels) {
+        if width > self.widest.get() {
+            self.widest.set(width);
+        }
+    }
+
+    /// Scroll by `delta` (positive: the text moves right) where `visible`
+    /// of the widest text shows; whether the offset changed.
+    fn scroll_by(&self, delta: Pixels, visible: Pixels) -> bool {
+        let max = (self.widest.get() - visible).max(px(0.));
+        let offset = (self.offset.get() - delta).clamp(px(0.), max);
+        let changed = offset != self.offset.get();
+        self.offset.set(offset);
+        changed
+    }
+}
+
 /// Makes a [`DiffRows`] participate in whole-line text selection. The element
-/// maps a pointer position to a flat line index (`base_line` plus the row
-/// under the pointer) and reports it through the callbacks; the owner keeps
-/// the actual selection and hands back the local rows (`highlight`) to paint
-/// as selected. Selection is line-granular, which suits grabbing code to paste
-/// elsewhere and keeps painting trivial over a wrapped, virtualized list.
-/// Reports a flat line index (`base_line` + row) when selection starts or
-/// extends over a row.
+/// maps a pointer position to a flat line index (`base_line` plus the line
+/// of the cell under the pointer) and reports it through the callbacks; the
+/// owner keeps the actual selection and hands back the flat lines
+/// (`highlight`) to paint as selected. Selection is line-granular, which
+/// suits grabbing code to paste elsewhere and keeps painting trivial over a
+/// wrapped, virtualized list.
 pub(crate) type LineCallback = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 
 /// Reports that a selection drag has ended.
@@ -60,19 +105,20 @@ pub(crate) type EndCallback = Rc<dyn Fn(&mut Window, &mut App)>;
 
 #[derive(Clone)]
 pub(crate) struct RowSelection {
-    /// Flat line index of this element's first row (row 0).
+    /// What a cell's `line` counts from.
     pub base_line: usize,
-    /// Local rows (indices into `rows`) to paint as selected.
+    /// Flat lines to paint as selected.
     pub highlight: Range<usize>,
     /// Highlight color (usually the theme's selection background).
     pub color: Hsla,
-    /// Local rows carrying a comment, marked by a bar at the left edge.
+    /// Flat lines carrying a comment, marked by a bar at the left edge.
     pub marked: Vec<Range<usize>>,
     pub mark_color: Hsla,
-    /// Receives the window bounds of the last highlighted row when painted,
-    /// so the owner can float things next to the selection's end.
-    pub anchor: Option<Rc<std::cell::Cell<Option<Bounds<Pixels>>>>>,
-    /// Pointer pressed on a row: `base_line + row`.
+    /// Receives the window bounds of the row showing the last highlighted
+    /// line when painted, so the owner can float things next to the
+    /// selection's end.
+    pub anchor: Option<Rc<Cell<Option<Bounds<Pixels>>>>>,
+    /// Pointer pressed on a row: the flat line under it.
     pub on_start: LineCallback,
     /// Pointer dragged over a row while the button is held.
     pub on_drag: LineCallback,
@@ -81,23 +127,56 @@ pub(crate) struct RowSelection {
 }
 
 pub(crate) struct DiffRows {
-    rows: Rc<Vec<DiffRow>>,
+    rows: Rc<Vec<RowCells>>,
+    /// 1 (stacked) or 2 (split).
+    columns: usize,
     geometry: RowGeometry,
+    /// Fills the side of a split row that shows no line.
+    empty: Option<Hsla>,
+    /// `None`: lines wrap; else they scroll sideways together.
+    scroll: Option<HScroll>,
     /// Filled by the measure closure, read by prepaint and paint.
     cell: LayoutCell,
-    /// Present when the rows are selectable (the Review panel); drives
-    /// highlight painting and pointer handling in [`DiffRows::paint`].
+    /// Present when the rows are selectable; drives highlight painting and
+    /// pointer handling in [`DiffRows::paint`].
     selection: Option<RowSelection>,
 }
 
 impl DiffRows {
+    /// Stacked rows; row `i` shows line `i`.
     pub fn new(rows: Vec<DiffRow>, geometry: RowGeometry) -> Self {
+        let rows = rows
+            .into_iter()
+            .enumerate()
+            .map(|(line, row)| [Some(RowCell { row, line }), None])
+            .collect();
+        Self::with_cells(rows, 1, geometry)
+    }
+
+    /// Rows of two cells side by side; `empty` fills a missing one.
+    pub fn split(rows: Vec<RowCells>, geometry: RowGeometry, empty: Hsla) -> Self {
+        Self {
+            empty: Some(empty),
+            ..Self::with_cells(rows, 2, geometry)
+        }
+    }
+
+    fn with_cells(rows: Vec<RowCells>, columns: usize, geometry: RowGeometry) -> Self {
         Self {
             rows: Rc::new(rows),
+            columns,
             geometry,
+            empty: None,
+            scroll: None,
             cell: Rc::default(),
             selection: None,
         }
+    }
+
+    /// Keep each line on one row; they scroll sideways with `scroll`.
+    pub(crate) fn unwrapped(mut self, scroll: HScroll) -> Self {
+        self.scroll = Some(scroll);
+        self
     }
 
     /// Enable whole-line selection on these rows.
@@ -112,19 +191,24 @@ impl DiffRows {
     }
 }
 
-/// Map an absolute `y` to a flat line index: `base` plus the row whose band
-/// contains `y`, clamped to `[0, row_count)`. `tops` holds the absolute top of
-/// each row plus a final bottom (so it has `row_count + 1` entries).
-fn local_line(tops: &[Pixels], base: usize, row_count: usize, y: Pixels) -> usize {
+/// The row whose band contains the absolute `y`, clamped to
+/// `[0, row_count)`. `tops` holds the absolute top of each row plus a final
+/// bottom (so it has `row_count + 1` entries).
+fn row_at(tops: &[Pixels], row_count: usize, y: Pixels) -> usize {
     if row_count == 0 {
-        return base;
+        return 0;
     }
-    let row = tops[..row_count]
+    tops[..row_count]
         .iter()
         .rposition(|&top| y >= top)
         .unwrap_or(0)
-        .min(row_count - 1);
-    base + row
+        .min(row_count - 1)
+}
+
+/// The line of the cell in `column`, else of the row's other cell.
+fn line_of(cells: &RowCells, column: usize) -> Option<usize> {
+    let pick = |c: usize| cells.get(c).and_then(|cell| cell.as_ref()).map(|c| c.line);
+    pick(column).or_else(|| pick(1 - column.min(1)))
 }
 
 /// Shaped rows for one width.
@@ -134,22 +218,30 @@ pub(crate) struct RowsLayout {
     pub rows: Vec<RowLayout>,
     pub width: Pixels,
     pub height: Pixels,
+    /// The widest cell's text plus its padding.
+    pub widest: Pixels,
+}
+
+pub(crate) struct CellLayout {
+    pub lines: Vec<WrappedLine>,
+    pub gutter: Option<ShapedLine>,
 }
 
 pub(crate) struct RowLayout {
-    pub lines: Vec<WrappedLine>,
-    pub gutter: Option<ShapedLine>,
+    pub cells: [Option<CellLayout>; 2],
     pub height: Pixels,
 }
 
 impl RowLayout {
-    /// Visual lines after wrapping.
+    /// Visual lines of the first cell after wrapping.
     #[cfg(test)]
     pub fn line_count(&self) -> usize {
-        self.lines
-            .iter()
-            .map(|line| line.wrap_boundaries.len() + 1)
-            .sum()
+        self.cells[0].as_ref().map_or(0, |cell| {
+            cell.lines
+                .iter()
+                .map(|line| line.wrap_boundaries.len() + 1)
+                .sum()
+        })
     }
 }
 
@@ -202,9 +294,17 @@ impl RowTextStyle {
     }
 }
 
-fn layout_rows(
-    rows: &[DiffRow],
+/// What the rows are laid out by besides the width.
+#[derive(Clone, Copy)]
+struct Shape {
+    columns: usize,
     geometry: RowGeometry,
+    wrap: bool,
+}
+
+fn layout_rows(
+    rows: &[RowCells],
+    shape: Shape,
     width: Option<Pixels>,
     text: &RowTextStyle,
     window: &mut Window,
@@ -215,122 +315,158 @@ fn layout_rows(
         line_height,
     } = text;
     let (font_size, line_height) = (*font_size, *line_height);
-    let wrap_width = width.map(|width| (width - geometry.text_inset()).max(px(0.)));
+    let geometry = shape.geometry;
+    let column_width = width.map(|width| width / shape.columns as f32);
+    let wrap_width = column_width
+        .filter(|_| shape.wrap)
+        .map(|width| (width - geometry.text_inset()).max(px(0.)));
     let mut layout = RowsLayout {
         line_height,
         rows: Vec::with_capacity(rows.len()),
         width: width.unwrap_or_default(),
         height: px(0.),
+        widest: px(0.),
     };
-    for row in rows {
-        let mut style = text_style.clone();
-        style.color = row.color;
-        let runs = row_runs(row.text.len(), &style, &row.highlights);
-        let lines = window
-            .text_system()
-            .shape_text(row.text.clone(), font_size, &runs, wrap_width, None)
-            .map(|lines| lines.into_vec())
-            .unwrap_or_default();
-        let gutter = row.gutter.as_ref().map(|(text, color)| {
+    for cells in rows {
+        let mut height = line_height;
+        let mut laid = [None, None];
+        for (column, cell) in cells.iter().enumerate().take(shape.columns) {
+            let Some(RowCell { row, .. }) = cell else {
+                continue;
+            };
             let mut style = text_style.clone();
-            style.color = *color;
-            window.text_system().shape_line(
-                text.clone(),
-                font_size,
-                &[style.to_run(text.len())],
-                None,
-            )
-        });
-        let text_width = lines
-            .iter()
-            .map(|line| line.size(line_height).width)
-            .fold(px(0.), Pixels::max);
-        if width.is_none() {
-            layout.width = layout.width.max(text_width + geometry.text_inset());
-        }
-        let row_layout = RowLayout {
-            height: lines
+            style.color = row.color;
+            let runs = row_runs(row.text.len(), &style, &row.highlights);
+            let lines = window
+                .text_system()
+                .shape_text(row.text.clone(), font_size, &runs, wrap_width, None)
+                .map(|lines| lines.into_vec())
+                .unwrap_or_default();
+            let gutter = row.gutter.as_ref().map(|(text, color)| {
+                let mut style = text_style.clone();
+                style.color = *color;
+                window.text_system().shape_line(
+                    text.clone(),
+                    font_size,
+                    &[style.to_run(text.len())],
+                    None,
+                )
+            });
+            let text_width = lines
                 .iter()
-                .map(|line| line.size(line_height).height)
-                .fold(px(0.), |a, b| a + b)
-                .max(line_height),
-            lines,
-            gutter,
-        };
-        layout.height += row_layout.height;
-        layout.rows.push(row_layout);
+                .map(|line| line.size(line_height).width)
+                .fold(px(0.), Pixels::max);
+            layout.widest = layout
+                .widest
+                .max(text_width + geometry.content_left + geometry.content_right);
+            height = height.max(
+                lines
+                    .iter()
+                    .map(|line| line.size(line_height).height)
+                    .fold(px(0.), |a, b| a + b),
+            );
+            laid[column] = Some(CellLayout { lines, gutter });
+        }
+        layout.height += height;
+        layout.rows.push(RowLayout {
+            cells: laid,
+            height,
+        });
+    }
+    if width.is_none() {
+        layout.width = (layout.widest + geometry.gutter_width) * shape.columns as f32;
     }
     layout
 }
 
+/// Where a column's parts go, from the element's bounds.
+struct ColumnFrame {
+    left: Pixels,
+    width: Pixels,
+}
+
+#[allow(clippy::too_many_arguments)]
 fn paint_rows(
-    rows: &[DiffRow],
+    rows: &[RowCells],
     layout: &RowsLayout,
-    geometry: RowGeometry,
+    shape: Shape,
+    empty: Option<Hsla>,
+    scroll: Pixels,
     bounds: Bounds<Pixels>,
     selection: Option<&RowSelection>,
     window: &mut Window,
     cx: &mut App,
 ) {
+    let geometry = shape.geometry;
     let line_height = layout.line_height;
+    let column_width = bounds.size.width / shape.columns as f32;
+    let flat = |line: usize| selection.map_or(line, |sel| sel.base_line + line);
     let mut y = bounds.origin.y;
-    for (ix, (row, row_layout)) in rows.iter().zip(&layout.rows).enumerate() {
-        if let Some(background) = row.background {
-            window.paint_quad(fill(
-                Bounds::new(
-                    point(bounds.origin.x, y),
-                    size(bounds.size.width, row_layout.height),
-                ),
-                background,
-            ));
-        }
-        if let Some(edge) = row.edge {
-            window.paint_quad(fill(
-                Bounds::new(point(bounds.origin.x, y), size(px(2.), row_layout.height)),
-                edge,
-            ));
-        }
-        // Selection sits above the add/delete tint but below the glyphs, so
-        // the selected text stays readable.
-        if let Some(sel) = selection
-            && sel.highlight.contains(&ix)
-        {
-            window.paint_quad(fill(
-                Bounds::new(
-                    point(bounds.origin.x, y),
-                    size(bounds.size.width, row_layout.height),
-                ),
-                sel.color,
-            ));
-        }
-        if let Some(sel) = selection
-            && sel.marked.iter().any(|range| range.contains(&ix))
-        {
-            window.paint_quad(fill(
-                Bounds::new(point(bounds.origin.x, y), size(px(3.), row_layout.height)),
-                sel.mark_color,
-            ));
-        }
-        if let Some(gutter) = &row_layout.gutter {
-            _ = gutter.paint(
-                point(bounds.origin.x + geometry.gutter_left, y),
-                line_height,
-                TextAlign::Left,
-                None,
-                window,
-                cx,
+    for (cells, row_layout) in rows.iter().zip(&layout.rows) {
+        let height = row_layout.height;
+        for column in 0..shape.columns {
+            let frame = ColumnFrame {
+                left: bounds.origin.x + column_width * column as f32,
+                width: column_width,
+            };
+            let band = |width: Pixels| Bounds::new(point(frame.left, y), size(width, height));
+            let (Some(cell), Some(cell_layout)) = (&cells[column], &row_layout.cells[column])
+            else {
+                if let Some(empty) = empty {
+                    window.paint_quad(fill(band(frame.width), empty));
+                }
+                continue;
+            };
+            let row = &cell.row;
+            let line = flat(cell.line);
+            if let Some(background) = row.background {
+                window.paint_quad(fill(band(frame.width), background));
+            }
+            if let Some(edge) = row.edge {
+                window.paint_quad(fill(band(px(2.)), edge));
+            }
+            // Selection sits above the add/delete tint but below the glyphs,
+            // so the selected text stays readable.
+            if let Some(sel) = selection {
+                if sel.highlight.contains(&line) {
+                    window.paint_quad(fill(band(frame.width), sel.color));
+                }
+                if sel.marked.iter().any(|range| range.contains(&line)) {
+                    window.paint_quad(fill(band(px(3.)), sel.mark_color));
+                }
+            }
+            if let Some(gutter) = &cell_layout.gutter {
+                _ = gutter.paint(
+                    point(frame.left + geometry.gutter_left, y),
+                    line_height,
+                    TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
+            }
+            let code = Bounds::new(
+                point(frame.left + geometry.gutter_width, y),
+                size((frame.width - geometry.gutter_width).max(px(0.)), height),
             );
+            let mut origin: Point<Pixels> =
+                point(code.origin.x + geometry.content_left - scroll, y);
+            window.with_content_mask(Some(ContentMask { bounds: code }), |window| {
+                for line in &cell_layout.lines {
+                    _ = line.paint_background(
+                        origin,
+                        line_height,
+                        TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    );
+                    _ = line.paint(origin, line_height, TextAlign::Left, None, window, cx);
+                    origin.y += line.size(line_height).height;
+                }
+            });
         }
-        let mut origin: Point<Pixels> = point(
-            bounds.origin.x + geometry.gutter_width + geometry.content_left,
-            y,
-        );
-        for line in &row_layout.lines {
-            _ = line.paint_background(origin, line_height, TextAlign::Left, None, window, cx);
-            _ = line.paint(origin, line_height, TextAlign::Left, None, window, cx);
-            origin.y += line.size(line_height).height;
-        }
-        y += row_layout.height;
+        y += height;
     }
 }
 
@@ -342,10 +478,20 @@ impl IntoElement for DiffRows {
     }
 }
 
+impl DiffRows {
+    fn shape(&self) -> Shape {
+        Shape {
+            columns: self.columns,
+            geometry: self.geometry,
+            wrap: self.scroll.is_none(),
+        }
+    }
+}
+
 impl Element for DiffRows {
     type RequestLayoutState = LayoutCell;
-    /// Selectable rows take presses through a hitbox, so something floating
-    /// above them (a selection pill) keeps its clicks.
+    /// Selectable or scrolling rows take the pointer through a hitbox, so
+    /// something floating above them (a selection pill) keeps its clicks.
     type PrepaintState = Option<gpui_kit::Hitbox>;
 
     fn id(&self) -> Option<gpui_kit::ElementId> {
@@ -365,7 +511,7 @@ impl Element for DiffRows {
     ) -> (LayoutId, LayoutCell) {
         let cell = self.cell.clone();
         let rows = self.rows.clone();
-        let geometry = self.geometry;
+        let shape = self.shape();
         // The measure closure runs in taffy's layout pass, when the enclosing
         // elements' text styles are no longer on the window: read them now.
         let text = RowTextStyle::capture(window);
@@ -383,7 +529,7 @@ impl Element for DiffRows {
                     AvailableSpace::Definite(width) => Some(width),
                     _ => None,
                 });
-                let layout = layout_rows(&rows, geometry, width, &text, window);
+                let layout = layout_rows(&rows, shape, width, &text, window);
                 let measured = size(layout.width, layout.height);
                 *cell.borrow_mut() = Some(layout);
                 measured
@@ -401,8 +547,7 @@ impl Element for DiffRows {
         window: &mut Window,
         _: &mut App,
     ) -> Option<gpui_kit::Hitbox> {
-        self.selection
-            .is_some()
+        (self.selection.is_some() || self.scroll.is_some())
             .then(|| window.insert_hitbox(bounds, gpui_kit::HitboxBehavior::Normal))
     }
 
@@ -420,16 +565,44 @@ impl Element for DiffRows {
         let Some(layout) = borrow.as_ref() else {
             return;
         };
+        let shape = self.shape();
+        let offset = self.scroll.as_ref().map_or(px(0.), HScroll::offset);
 
         paint_rows(
             &self.rows,
             layout,
-            self.geometry,
+            shape,
+            self.empty,
+            offset,
             bounds,
             self.selection.as_ref(),
             window,
             cx,
         );
+
+        let column_width = bounds.size.width / shape.columns as f32;
+        if let Some(scroll) = self.scroll.clone() {
+            scroll.note_width(layout.widest);
+            let visible = column_width - shape.geometry.gutter_width;
+            let line_height = layout.line_height;
+            let hitbox = hitbox.clone();
+            window.on_mouse_event(move |e: &ScrollWheelEvent, phase, window, cx| {
+                let hovered = hitbox
+                    .as_ref()
+                    .map_or(bounds.contains(&e.position), |h| h.is_hovered(window));
+                if phase != DispatchPhase::Bubble || !hovered {
+                    return;
+                }
+                let delta = e.delta.pixel_delta(line_height);
+                // Mostly sideways: the rows take it, the list stays put.
+                if delta.x.abs() > delta.y.abs() {
+                    if scroll.scroll_by(delta.x, visible) {
+                        window.refresh();
+                    }
+                    cx.stop_propagation();
+                }
+            });
+        }
 
         // Pointer handling for selectable rows. The absolute top of each row
         // (plus a final bottom) lets the listeners below map a pointer y to a
@@ -444,11 +617,16 @@ impl Element for DiffRows {
             tops.push(y);
             if let Some(anchor) = &sel.anchor
                 && let Some(last) = sel.highlight.end.checked_sub(1)
-                && last < layout.rows.len()
+                && let Some(row) = self.rows.iter().position(|cells| {
+                    cells
+                        .iter()
+                        .flatten()
+                        .any(|cell| sel.base_line + cell.line == last)
+                })
             {
                 anchor.set(Some(Bounds::new(
-                    point(bounds.origin.x, tops[last]),
-                    size(bounds.size.width, tops[last + 1] - tops[last]),
+                    point(bounds.origin.x, tops[row]),
+                    size(bounds.size.width, tops[row + 1] - tops[row]),
                 )));
             }
             let tops = Rc::new(tops);
@@ -460,8 +638,19 @@ impl Element for DiffRows {
                 sel.on_end.clone(),
             );
             drop(borrow);
+            // The flat line under a pointer position.
+            let rows = self.rows.clone();
+            let columns = shape.columns;
+            let line_at = Rc::new(move |position: Point<Pixels>| {
+                let row = row_at(&tops, row_count, position.y);
+                let column = (((position.x - bounds.origin.x) / column_width).floor() as usize)
+                    .min(columns - 1);
+                rows.get(row)
+                    .and_then(|cells| line_of(cells, column))
+                    .map(|line| base + line)
+            });
 
-            let tops_down = tops.clone();
+            let line_down = line_at.clone();
             let hitbox = hitbox.clone();
             window.on_mouse_event(move |e: &MouseDownEvent, phase, window, cx| {
                 if phase == DispatchPhase::Bubble
@@ -469,26 +658,19 @@ impl Element for DiffRows {
                     && hitbox
                         .as_ref()
                         .map_or(bounds.contains(&e.position), |h| h.is_hovered(window))
+                    && let Some(line) = line_down(e.position)
                 {
-                    on_start(
-                        local_line(&tops_down, base, row_count, e.position.y),
-                        window,
-                        cx,
-                    );
+                    on_start(line, window, cx);
                 }
             });
 
-            let tops_move = tops.clone();
             window.on_mouse_event(move |e: &MouseMoveEvent, phase, window, cx| {
                 if phase == DispatchPhase::Bubble
                     && e.pressed_button == Some(MouseButton::Left)
                     && bounds.contains(&e.position)
+                    && let Some(line) = line_at(e.position)
                 {
-                    on_drag(
-                        local_line(&tops_move, base, row_count, e.position.y),
-                        window,
-                        cx,
-                    );
+                    on_drag(line, window, cx);
                 }
             });
 
@@ -510,17 +692,41 @@ mod tests {
     };
 
     #[test]
-    fn local_line_maps_y_to_a_row_and_clamps() {
-        // Three rows at tops 0,10,20 with bottom 30; base 100.
+    fn a_pointer_maps_to_a_row_and_a_cell() {
+        // Three rows at tops 0,10,20 with bottom 30.
         let tops = [px(0.), px(10.), px(20.), px(30.)];
-        assert_eq!(local_line(&tops, 100, 3, px(5.)), 100);
-        assert_eq!(local_line(&tops, 100, 3, px(10.)), 101);
-        assert_eq!(local_line(&tops, 100, 3, px(25.)), 102);
+        assert_eq!(row_at(&tops, 3, px(5.)), 0);
+        assert_eq!(row_at(&tops, 3, px(10.)), 1);
+        assert_eq!(row_at(&tops, 3, px(25.)), 2);
         // Above the first row and below the last clamp to the ends.
-        assert_eq!(local_line(&tops, 100, 3, px(-5.)), 100);
-        assert_eq!(local_line(&tops, 100, 3, px(999.)), 102);
-        // No rows: the base line.
-        assert_eq!(local_line(&[px(0.)], 7, 0, px(5.)), 7);
+        assert_eq!(row_at(&tops, 3, px(-5.)), 0);
+        assert_eq!(row_at(&tops, 3, px(999.)), 2);
+        assert_eq!(row_at(&[px(0.)], 0, px(5.)), 0);
+
+        let cell = |line| {
+            Some(RowCell {
+                row: rows(&["x"]).pop().unwrap(),
+                line,
+            })
+        };
+        assert_eq!(line_of(&[cell(4), cell(9)], 1), Some(9));
+        // An empty side stands for the other one.
+        assert_eq!(line_of(&[cell(4), None], 1), Some(4));
+        assert_eq!(line_of(&[None, cell(9)], 0), Some(9));
+        assert_eq!(line_of(&[None, None], 0), None);
+    }
+
+    #[test]
+    fn sideways_scrolling_stays_within_the_widest_text() {
+        let scroll = HScroll::default();
+        scroll.note_width(px(300.));
+        assert!(scroll.scroll_by(px(-50.), px(200.)));
+        assert_eq!(scroll.offset(), px(50.));
+        assert!(scroll.scroll_by(px(-500.), px(200.)));
+        assert_eq!(scroll.offset(), px(100.));
+        assert!(!scroll.scroll_by(px(-1.), px(200.)));
+        assert!(scroll.scroll_by(px(500.), px(200.)));
+        assert_eq!(scroll.offset(), px(0.));
     }
 
     #[test]
@@ -588,7 +794,8 @@ mod tests {
         let layout = cell.borrow();
         let layout = layout.as_ref().expect("measured");
         assert_eq!(layout.line_height, px(15.));
-        assert_eq!(layout.rows[0].lines[0].unwrapped_layout.font_size, px(10.));
+        let cell = layout.rows[0].cells[0].as_ref().unwrap();
+        assert_eq!(cell.lines[0].unwrapped_layout.font_size, px(10.));
     }
 
     #[gpui_kit::test]
@@ -616,5 +823,47 @@ mod tests {
         let lines = layout.rows[0].line_count();
         assert!(lines > 1, "{lines} lines");
         assert_eq!(layout.height, layout.line_height * lines as f32);
+    }
+
+    #[gpui_kit::test]
+    fn unwrapped_rows_keep_one_line_and_split_rows_take_the_taller_cell(cx: &mut TestAppContext) {
+        let (_, cx) = cx.add_window_view(|_, _| Root);
+        let cx: &mut VisualTestContext = cx;
+        let long = "x".repeat(200);
+        let (cell, _) = cx.draw(point(px(0.), px(0.)), size(px(120.), px(400.)), |_, _| {
+            DiffRows::new(rows(&[long.as_str()]), GEOMETRY).unwrapped(HScroll::default())
+        });
+        {
+            let layout = cell.borrow();
+            let layout = layout.as_ref().expect("measured");
+            assert_eq!(layout.rows[0].line_count(), 1);
+            assert!(layout.widest > px(120.));
+        }
+
+        let pair = |left: &str, right: &str| {
+            let mut texts = rows(&[left, right]);
+            let right = texts.pop().unwrap();
+            let left = texts.pop().unwrap();
+            [
+                Some(RowCell { row: left, line: 0 }),
+                Some(RowCell {
+                    row: right,
+                    line: 1,
+                }),
+            ]
+        };
+        let (cell, _) = cx.draw(point(px(0.), px(0.)), size(px(240.), px(400.)), |_, _| {
+            DiffRows::split(vec![pair("short", long.as_str())], GEOMETRY, white())
+        });
+        let layout = cell.borrow();
+        let layout = layout.as_ref().expect("measured");
+        let right = layout.rows[0].cells[1].as_ref().unwrap();
+        let wrapped: usize = right
+            .lines
+            .iter()
+            .map(|l| l.wrap_boundaries.len() + 1)
+            .sum();
+        assert!(wrapped > 1);
+        assert_eq!(layout.rows[0].height, layout.line_height * wrapped as f32);
     }
 }

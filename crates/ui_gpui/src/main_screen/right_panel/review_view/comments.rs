@@ -34,7 +34,7 @@ impl ReviewView {
         }
     }
 
-    /// Rows of a chunk (relative to it) covered by a comment.
+    /// Flat lines of a chunk covered by a comment.
     pub(super) fn chunk_marks(
         &self,
         key: &FileKey,
@@ -54,7 +54,7 @@ impl ReviewView {
                     .get(base_line + row)
                     .is_some_and(|&n| comments.iter().any(|c| covers(c, n)))
             })
-            .map(|row| row..row + 1)
+            .map(|row| base_line + row..base_line + row + 1)
             .collect()
     }
 

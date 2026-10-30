@@ -234,7 +234,7 @@ impl CodeTab {
         self.place_annotations(cx);
     }
 
-    /// Rows of a chunk (relative to it) a pending comment is on.
+    /// Flat lines of a chunk a pending comment is on.
     pub(super) fn pending_marks(
         &self,
         file: &LoadedFile,
@@ -259,7 +259,7 @@ impl CodeTab {
                     .and_then(|(side, line)| file.lines.row(super::anchors::LineRef { side, line }))
                     .unwrap_or(end);
                 let covered = start.max(chunk.start)..(end + 1).min(chunk.end);
-                (covered.start < covered.end).then(|| covered.start - base..covered.end - base)
+                (covered.start < covered.end).then_some(covered)
             })
             .collect()
     }
