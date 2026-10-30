@@ -194,7 +194,7 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
   Markdown, drawn SVG), picked in a dropdown above the file; built-in
   renderers are a static table in `main_screen/right_panel/file_renderers/`,
   plugins add theirs (`shared::custom_renderers`): commands, or web editors
-  in a native webview (`wry`, `shared::native_views`, macOS), behind
+  in a native webview (`wry`, `shared::native_views`, macOS and Windows), behind
   `server_gate` while a server they need starts: `docs/file-renderers.md`
 - Frame profiling of the GPUI frontend (opt-in via
   `CODE_ASSISTANT_FRAME_PROFILE`, sweep runner and `sample` analysis in

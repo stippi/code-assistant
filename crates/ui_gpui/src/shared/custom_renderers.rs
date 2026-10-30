@@ -68,7 +68,7 @@ pub struct CommandRenderer {
 }
 
 /// A web app editing the file in place, talking the embed protocol (macOS
-/// only for now; see `file_renderers::web_editor`).
+/// and Windows; see `file_renderers::web_editor`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WebEditor {
     /// The editor's address, with what it needs to talk the embed
@@ -125,7 +125,7 @@ impl CustomRenderer {
     pub fn is_supported(&self) -> bool {
         match self.kind {
             RendererKind::Command(_) => true,
-            RendererKind::Web(_) => cfg!(target_os = "macos"),
+            RendererKind::Web(_) => cfg!(any(target_os = "macos", target_os = "windows")),
         }
     }
 

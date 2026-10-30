@@ -11,7 +11,7 @@
 //! Renderers are compiled in ([`BUILT_IN`]) or come from enabled plugins
 //! ([`custom_renderers`]): a command that turns the file into an SVG or an
 //! image (shown by [`command`]), or a web app editing it in place
-//! (`web_editor`, macOS only). A plugin renderer that needs a server shows
+//! (`web_editor`, macOS and Windows). A plugin renderer that needs a server shows
 //! through [`server_gate`] until the server answers. Plugins' come first.
 //!
 //! A file shows with the first renderer that takes it, unless the user
@@ -28,7 +28,7 @@ mod command;
 mod markdown;
 mod server_gate;
 mod svg;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 mod web_editor;
 
 use super::file_viewer::FileViewer;
@@ -153,14 +153,14 @@ fn create_plugin(
         RendererKind::Command(command) => {
             command::create(label, command.clone(), file, root, window, cx)
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         RendererKind::Web(editor) => {
             let _ = (root, window);
             web_editor::create(label, editor.clone(), file, cx)
         }
         // Not offered elsewhere (`all`).
-        #[cfg(not(target_os = "macos"))]
-        RendererKind::Web(_) => unreachable!("web editors are macOS only"),
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        RendererKind::Web(_) => unreachable!("web editors are macOS and Windows only"),
     }
 }
 

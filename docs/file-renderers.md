@@ -163,8 +163,8 @@ How it runs (`shared/custom_renderers.rs`, view in
 ### Web editors
 
 A web app that edits the file in place, shown in a webview over the view
-(macOS only for now; elsewhere such renderers are not offered). View in
-`file_renderers/web_editor.rs`.
+(macOS: WebKit, Windows: WebView2; on Linux such renderers are not offered,
+see below). View in `file_renderers/web_editor.rs`.
 
 - **`url`** is the editor's address, with whatever it needs to talk the
   embed protocol below. `{dark}` becomes `1` in a dark theme, else `0`.
@@ -188,8 +188,7 @@ talk JSON strings over `postMessage`:
 Text from outside (a reload after the file changed on disk) is loaded into
 the editor again; the editor's own edits coming back are not.
 
-**Native view.** The webview (`wry`, WebKit) is a native view over the
-window, not part of GPUI's element tree (`shared/native_views.rs`):
+**Native view.** The webview (`wry`) is a native view over the window, not part of GPUI's element tree (`shared/native_views.rs`):
 
 - Its element moves it each time it is painted; a frame that does not paint
   it (another panel tab, the settings) hides it. The root view marks every
@@ -224,6 +223,11 @@ says how to start it:
   there), in its own process group, with `PLUGIN_ROOT` and `SERVER_URL`
   set. It should stay in the foreground (no daemonizing).
 - **`timeoutSeconds`** (default 120) is how long to wait for the server.
+
+On Windows the command is started as a program, so a shell script does not
+run as is: name a program (`docker` with its arguments, say) or a `.cmd`
+file through `cmd` (`"command": "cmd", "args": ["/C", "scripts/serve.cmd"]`).
+Stopping it there ends that process only, not what it started.
 
 Opening a file with such a renderer shows "Starting the server of …"
 (`file_renderers/server_gate.rs`) until something accepts connections at
@@ -271,10 +275,14 @@ it into the text editor, which saves it.
 - **Double extensions.** Picks are remembered by the last extension, so a
   pick for `.diagram.svg` is one for `.svg` too (and falls back where it
   does not apply) unless `file_kind` learns double extensions.
-- **Web editors elsewhere.** `wry` has webviews on Windows and Linux too;
-  the native view handling would need trying there. A web editor of SVG
-  files with an embedded source would also need the `export` action of
-  the protocol for saving.
+- **Web editors on Linux.** `wry`'s Linux webview (WebKitGTK) works as a
+  child window only on X11, not Wayland, and needs GTK initialized and its
+  loop driven next to GPUI's, which uses no GTK. The Windows path compiles
+  (cross-checked) but the native view handling (hiding under popups, focus)
+  was tried on macOS only.
+- **SVG with an embedded diagram.** A web editor of SVG files with an
+  embedded source would need the `export` action of the protocol for
+  saving.
 - **Offline web editors.** An editor served from a local folder through a
   custom protocol (`wry::WebViewBuilder::with_custom_protocol`) instead of
   an address.

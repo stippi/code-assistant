@@ -21,9 +21,10 @@ What it adds:
   *Tools* menu. Needs [uv](https://docs.astral.sh/uv/).
 - **File renderers** — in the Files view, `.dot` and `.gv` files show as
   graphs (`dot -Tsvg`, needs [Graphviz](https://graphviz.org)), and
-  `.drawio` files open in draw.io as a web editor (macOS for now); edits
-  are saved to the file. `scripts/start-drawio.sh` starts draw.io in
-  Docker when nothing answers at `localhost:8080`. A draw.io you run
+  `.drawio` files open in draw.io as a web editor (macOS and Windows); edits
+  are saved to the file. Its `start` command runs draw.io in Docker
+  (`jgraph/drawio`) when nothing answers at `localhost:8080`; a command,
+  not a shell script, so it works on Windows too. A draw.io you run
   yourself on that port is used as is.
 
 The manifest format is described in `docs/plugins.md`.
