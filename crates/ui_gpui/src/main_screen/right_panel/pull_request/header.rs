@@ -26,10 +26,10 @@ use github::PullRequestRef;
 use github::model::{
     Action, Actor, ChecksState, Detail, ListEntry, MergeMethod, PullRequestUpdate, UpdateMethod,
 };
-use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Escape, Input, InputEvent, InputState};
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{ActiveTheme, Icon, Sizable};
+use gpui_kit::component::{ActiveTheme, Sizable};
 use gpui_kit::{
     AnyElement, Context, Entity, EventEmitter, FontWeight, Render, SharedString, Subscription,
     Task, Window, div, prelude::*, px, svg,
@@ -74,7 +74,6 @@ pub struct DetailHeader {
     stack: StackView,
     seed: Option<ListEntry>,
     /// The list is there to go back to.
-    show_back: bool,
     title_editor: Option<TitleEditor>,
     /// A saved title, shown until the detail has it.
     saved_title: Option<String>,
@@ -100,7 +99,6 @@ impl DetailHeader {
     pub fn new(
         pr: PullRequestRef,
         seed: Option<ListEntry>,
-        show_back: bool,
         merge_method: Option<MergeMethod>,
     ) -> Self {
         Self {
@@ -112,7 +110,6 @@ impl DetailHeader {
             checking_out: false,
             stack: StackView::default(),
             seed,
-            show_back,
             title_editor: None,
             saved_title: None,
             picked_merge_method: merge_method,
@@ -343,22 +340,6 @@ impl DetailHeader {
             .items_center()
             .gap_1()
             .text_sm()
-            .when(self.show_back, |row| {
-                row.child(
-                    div().debug_selector(|| "pr-back".into()).child(
-                        Button::new("pr-back")
-                            .ghost()
-                            .xsmall()
-                            .icon(Icon::default().path("icons/arrow_left.svg"))
-                            .tooltip("Back to pull requests")
-                            .on_click(
-                                cx.listener(|this, _, _, cx| {
-                                    this.emit(PullRequestIntent::Back, cx)
-                                }),
-                            ),
-                    ),
-                )
-            })
             .when(!condensed, |row| {
                 row.child(
                     div()
@@ -740,7 +721,7 @@ mod tests {
         let window = cx.update(|cx| {
             gpui_kit::component::init(cx);
             cx.open_window(Default::default(), |_, cx| {
-                cx.new(|_| DetailHeader::new(repo().pull_request(290), None, true, None))
+                cx.new(|_| DetailHeader::new(repo().pull_request(290), None, None))
             })
             .unwrap()
         });
@@ -866,13 +847,6 @@ mod tests {
         cx.executor().advance_clock(COPIED_FOR);
         cx.run_until_parked();
         assert!(cx.debug_bounds("pr-head-branch-copied").is_none());
-    }
-
-    #[gpui_kit::test]
-    fn the_back_arrow_asks_for_the_list(cx: &mut TestAppContext) {
-        let (_, intents, cx) = header(Some(detail(290)), cx);
-        click(cx, "pr-back");
-        assert_eq!(intents.borrow().as_slice(), [PullRequestIntent::Back]);
     }
 
     #[gpui_kit::test]

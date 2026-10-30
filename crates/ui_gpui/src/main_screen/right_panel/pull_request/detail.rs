@@ -12,7 +12,7 @@ use super::data::{Notice, PullRequestData};
 use super::header::CONFIRM_TIMEOUT;
 use super::header::DetailHeader;
 use super::preferences;
-use super::presentation::merge_method_label;
+use super::presentation::{Tone, merge_method_label};
 use super::stack::{StackActionKind, StackPlan, StackRequest, confirmation, layer_row};
 use super::summary::SummaryTab;
 use super::tab_bar::{approve_workflows_slot, checks_slot, render_tab_row, timeline_slot};
@@ -24,7 +24,7 @@ use github::model::StackAction;
 use github::model::{Action, ListEntry, PullRequestUpdate};
 use gpui_kit::component::{ActiveTheme, Icon, Sizable, button::Button, button::ButtonVariants};
 use gpui_kit::{
-    AnyElement, Context, Entity, EventEmitter, ListState, Pixels, Render, SharedString,
+    AnyElement, App, Context, Entity, EventEmitter, ListState, Pixels, Render, SharedString,
     Subscription, Task, Window, div, prelude::*, px,
 };
 
@@ -42,7 +42,26 @@ impl DetailTab {
         (DetailTab::Timeline, "Timeline"),
         (DetailTab::Code, "Code"),
     ];
+
+    /// How it is remembered.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DetailTab::Summary => "summary",
+            DetailTab::Timeline => "timeline",
+            DetailTab::Code => "code",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .map(|(tab, _)| *tab)
+            .find(|tab| tab.as_str() == name)
+    }
 }
+
+/// The page switched between Summary, Timeline and Code.
+pub struct DetailTabChanged;
 
 pub struct DetailView {
     pr: PullRequestRef,
@@ -61,6 +80,8 @@ pub struct DetailView {
     approving: bool,
     /// The checks popover lists the completed checks too.
     checks_show_all: bool,
+    /// The page shows: it reads and polls.
+    visible: bool,
     /// Merging or rebasing the stack waits for confirmation.
     stack_confirm: Option<StackActionKind>,
     /// A stack action runs.
@@ -69,24 +90,15 @@ pub struct DetailView {
 }
 
 impl EventEmitter<PullRequestIntent> for DetailView {}
+impl EventEmitter<DetailTabChanged> for DetailView {}
 
 impl DetailView {
-    /// `seed` is the listing row it was opened from; `show_back` whether
-    /// there is a list to go back to. Reads the pull request and polls its
-    /// checks while shown.
-    pub fn new(
-        pr: PullRequestRef,
-        seed: Option<ListEntry>,
-        show_back: bool,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    /// `seed` is the listing row it was opened from. Reads the pull request
+    /// and polls its checks once shown ([`Self::set_visible`]).
+    pub fn new(pr: PullRequestRef, seed: Option<ListEntry>, cx: &mut Context<Self>) -> Self {
         let data = cx.new(|cx| PullRequestData::new(pr.clone(), cx));
-        data.update(cx, |data, cx| {
-            data.load(cx);
-            data.set_polling(true, cx);
-        });
         let merge_method = preferences::read(cx).merge_method(&pr.repo);
-        let header = cx.new(|_| DetailHeader::new(pr.clone(), seed, show_back, merge_method));
+        let header = cx.new(|_| DetailHeader::new(pr.clone(), seed, merge_method));
         let summary = cx.new(|cx| SummaryTab::new(data.clone(), cx));
         let timeline = cx.new(|_| TimelineTab::new(data.clone()));
         let code = cx.new(|cx| CodeTab::new(data.clone(), cx));
@@ -144,6 +156,7 @@ impl DetailView {
             _confirm_timeout: None,
             approving: false,
             checks_show_all: false,
+            visible: false,
             stack_confirm: None,
             stack_acting: false,
             _subscriptions: subscriptions,
@@ -355,6 +368,7 @@ impl DetailView {
 
     /// Shown again (read anew) or hidden (the polling pauses).
     pub fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        self.visible = visible;
         self.data.update(cx, |data, cx| {
             if visible {
                 data.load(cx);
@@ -363,14 +377,24 @@ impl DetailView {
         });
     }
 
+    pub fn visible(&self) -> bool {
+        self.visible
+    }
+
     pub fn select_tab(&mut self, tab: DetailTab, cx: &mut Context<Self>) {
         if self.tab != tab {
             self.tab = tab;
+            cx.emit(DetailTabChanged);
             cx.notify();
         }
     }
 
-    #[cfg(test)]
+    /// The pull request's state as its tab shows it, once read.
+    pub fn tone(&self, cx: &App) -> Option<Tone> {
+        let detail = self.data.read(cx).detail.clone()?;
+        Some(Tone::of(detail.state, detail.is_draft))
+    }
+
     pub fn tab(&self) -> DetailTab {
         self.tab
     }
@@ -724,7 +748,7 @@ mod tests {
         let window = cx.update(|cx| {
             gpui_kit::component::init(cx);
             cx.open_window(Default::default(), |_, cx| {
-                cx.new(|cx| DetailView::new(repo().pull_request(290), None, true, cx))
+                cx.new(|cx| DetailView::new(repo().pull_request(290), None, cx))
             })
             .unwrap()
         });
