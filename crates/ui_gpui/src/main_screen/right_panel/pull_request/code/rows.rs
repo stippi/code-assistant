@@ -1,15 +1,14 @@
 //! The Code tab as a flat list of rows, the items of its virtualized list:
-//! per file a header, then (unless folded) the hunks as chunks, each hunk
-//! after a gap row ("30 unmodified lines"), threads and comments right
-//! below the row they are on, and the loading footer at the end. Rows that
-//! stay the same compare equal, so a change reaches the list as one splice
+//! per file a header, then (unless folded) the hunks as chunks (stacked or
+//! side by side), each hunk after its gap row ("30 unmodified lines") when
+//! it has one, threads and comments right below the row they are on, and
+//! the loading footer at the end. Rows that stay the same compare equal,
+//! so a change reaches the list as one splice
 //! ([`changed_span`](crate::main_screen::right_panel::review_rows::changed_span))
 //! and the scroll position survives.
 
 use super::anchors::Annotation;
-use crate::diff::chunks::DiffChunk;
-use crate::diff::model::DiffHunk;
-use similar::ChangeTag;
+use super::context::ShownGap;
 use std::collections::BTreeMap;
 
 /// One item of the list. `file` indexes the shown files; `stamp` names
@@ -25,7 +24,7 @@ pub enum CodeRow {
         file: usize,
         stamp: u64,
     },
-    /// The unchanged lines before hunk `hunk`, and its section.
+    /// The unchanged lines before shown hunk `hunk`, and its section.
     Gap {
         file: usize,
         hunk: usize,
@@ -36,7 +35,7 @@ pub enum CodeRow {
         chunk: usize,
         stamp: u64,
     },
-    /// Below the last hunk of a file that has lines past it.
+    /// Below the last hunk of a file that may have lines past it.
     Tail {
         file: usize,
         stamp: u64,
@@ -57,18 +56,27 @@ pub enum CodeRow {
     Footer,
 }
 
+/// A chunk as the rows need it.
+pub struct ChunkOutline {
+    pub hunk: usize,
+    /// The chunk opens its hunk.
+    pub starts_hunk: bool,
+    /// The flat lines its last row shows: what goes below it.
+    pub last_lines: Vec<usize>,
+}
+
 /// What a file contributes below its header.
 pub enum FileBody<'a> {
     /// Binary, too large or no content change: a note says which.
     Note,
     Diff {
-        hunks: &'a [DiffHunk],
-        chunks: &'a [DiffChunk],
+        hunk_count: usize,
+        chunks: Vec<ChunkOutline>,
+        gaps: &'a [ShownGap],
         /// Annotations by the flat line they go below; chunks end there.
         annotations: &'a BTreeMap<usize, Vec<Annotation>>,
         /// Versions of the threads, by index.
         thread_version: &'a dyn Fn(usize) -> u64,
-        tail: bool,
     },
 }
 
@@ -89,44 +97,41 @@ pub fn flatten(files: &[FileOutline], footer: bool) -> Vec<CodeRow> {
         match &outline.body {
             FileBody::Note => rows.push(CodeRow::Note { file, stamp }),
             FileBody::Diff {
-                hunks,
+                hunk_count,
                 chunks,
+                gaps,
                 annotations,
                 thread_version,
-                tail,
             } => {
-                let mut prev = None;
+                let gap_before = |hunk: usize| gaps.iter().any(|gap| gap.before == hunk);
                 for (ix, chunk) in chunks.iter().enumerate() {
-                    if chunk.lines.start == 0
-                        && let Some(hunk) = hunks.get(chunk.hunk)
-                        && gap(prev, hunk).is_some()
-                    {
+                    if chunk.starts_hunk && gap_before(chunk.hunk) {
                         rows.push(CodeRow::Gap {
                             file,
                             hunk: chunk.hunk,
                             stamp,
                         });
                     }
-                    prev = hunks.get(chunk.hunk);
                     rows.push(CodeRow::Chunk {
                         file,
                         chunk: ix,
                         stamp,
                     });
-                    let last = chunk.flat_start + chunk.lines.len().saturating_sub(1);
-                    for annotation in annotations.get(&last).into_iter().flatten() {
-                        rows.push(match *annotation {
-                            Annotation::Thread(thread) => CodeRow::Thread {
-                                file,
-                                thread,
-                                version: thread_version(thread),
-                            },
-                            Annotation::Pending(id) => CodeRow::Pending { file, id },
-                            Annotation::Draft => CodeRow::Draft { file },
-                        });
+                    for &line in &chunk.last_lines {
+                        for annotation in annotations.get(&line).into_iter().flatten() {
+                            rows.push(match *annotation {
+                                Annotation::Thread(thread) => CodeRow::Thread {
+                                    file,
+                                    thread,
+                                    version: thread_version(thread),
+                                },
+                                Annotation::Pending(id) => CodeRow::Pending { file, id },
+                                Annotation::Draft => CodeRow::Draft { file },
+                            });
+                        }
                     }
                 }
-                if *tail && !chunks.is_empty() {
+                if !chunks.is_empty() && gap_before(*hunk_count) {
                     rows.push(CodeRow::Tail { file, stamp });
                 }
             }
@@ -167,28 +172,14 @@ pub fn files_by_proximity(rows: &[CodeRow], files: usize, top_row: usize) -> Vec
     (top..files).chain((0..top).rev()).collect()
 }
 
-/// What separates `hunk` from the one before (`None` for the first): the
-/// unchanged lines between them and its section, when there is either.
-pub fn gap<'a>(prev: Option<&DiffHunk>, hunk: &'a DiffHunk) -> Option<(usize, Option<&'a str>)> {
-    let prev_end = prev.map_or(1, |prev| {
-        prev.old_start
-            + prev
-                .lines
-                .iter()
-                .filter(|l| l.tag != ChangeTag::Insert)
-                .count()
-    });
-    let lines = hunk.old_start.saturating_sub(prev_end);
-    let section = hunk.header.as_deref();
-    (lines > 0 || section.is_some()).then_some((lines, section))
-}
-
-/// The text of a gap row.
-pub fn gap_label(lines: usize, section: Option<&str>) -> String {
+/// The text of a gap row; `None` lines past the last hunk while the file's
+/// length is unknown.
+pub fn gap_label(lines: Option<usize>, section: Option<&str>) -> String {
     let count = match lines {
-        0 => None,
-        1 => Some("1 unmodified line".to_owned()),
-        n => Some(format!("{n} unmodified lines")),
+        None => return "More unchanged context may be available".to_owned(),
+        Some(0) => None,
+        Some(1) => Some("1 unmodified line".to_owned()),
+        Some(n) => Some(format!("{n} unmodified lines")),
     };
     // A section is the raw `@@` context: one line, its spacing collapsed.
     let section = section
@@ -205,32 +196,6 @@ pub fn gap_label(lines: usize, section: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::diff::chunks::chunk_hunks;
-    use crate::diff::model::DiffLine;
-    use ChangeTag::*;
-
-    fn hunk(old_start: usize, header: Option<&str>, tags: &[ChangeTag]) -> DiffHunk {
-        DiffHunk {
-            old_start,
-            new_start: old_start,
-            header: header.map(|h| h.to_owned().into()),
-            lines: tags.iter().map(|&tag| DiffLine::plain(tag, "x")).collect(),
-        }
-    }
-
-    #[test]
-    fn gaps_count_the_old_files_unchanged_lines() {
-        let first = hunk(31, None, &[Equal, Insert, Delete, Equal]);
-        assert_eq!(gap(None, &first), Some((30, None)));
-        // `first` covers old lines 31..=33.
-        let second = hunk(40, Some("fn main() {"), &[Equal]);
-        assert_eq!(gap(Some(&first), &second), Some((6, Some("fn main() {"))));
-        let adjacent = hunk(34, None, &[Equal]);
-        assert_eq!(gap(Some(&first), &adjacent), None);
-        // A new file's hunk starts at old line 0.
-        assert_eq!(gap(None, &hunk(0, None, &[Insert])), None);
-        assert_eq!(gap(None, &hunk(1, None, &[Delete])), None);
-    }
 
     #[test]
     fn files_highlight_from_the_top_of_the_view_outwards() {
@@ -258,41 +223,57 @@ mod tests {
 
     #[test]
     fn gap_labels() {
-        assert_eq!(gap_label(30, None), "30 unmodified lines");
-        assert_eq!(gap_label(1, None), "1 unmodified line");
+        assert_eq!(gap_label(Some(30), None), "30 unmodified lines");
+        assert_eq!(gap_label(Some(1), None), "1 unmodified line");
         assert_eq!(
-            gap_label(4, Some("impl A {")),
+            gap_label(Some(4), Some("impl A {")),
             "4 unmodified lines · impl A {"
         );
-        assert_eq!(gap_label(0, Some("impl A {")), "⋯ impl A {");
+        assert_eq!(gap_label(Some(0), Some("impl A {")), "⋯ impl A {");
         assert_eq!(
-            gap_label(2, Some("  Layer 5:\t   code   — CLI ")),
+            gap_label(Some(2), Some("  Layer 5:\t   code   — CLI ")),
             "2 unmodified lines · Layer 5: code — CLI"
         );
-        assert_eq!(gap_label(2, Some("   ")), "2 unmodified lines");
+        assert_eq!(gap_label(Some(2), Some("   ")), "2 unmodified lines");
+        assert_eq!(
+            gap_label(None, None),
+            "More unchanged context may be available"
+        );
     }
 
     #[test]
     fn files_list_gaps_chunks_annotations_and_tail_in_order() {
-        let hunks = vec![
-            hunk(5, None, &[Equal, Insert, Equal]),
-            hunk(8, None, &[Equal, Delete]),
-        ];
         let mut annotations = BTreeMap::new();
         annotations.insert(1, vec![Annotation::Thread(4), Annotation::Draft]);
         annotations.insert(4, vec![Annotation::Pending(9)]);
-        let chunked = chunk_hunks(&hunks, 40, &[1]);
+        let gap = |before, hidden| ShownGap {
+            gap: before,
+            before,
+            hidden,
+            section: None,
+        };
+        let gaps = [gap(0, Some(4)), gap(1, Some(1)), gap(2, None)];
+        let chunk = |hunk, starts_hunk, last_lines: &[usize]| ChunkOutline {
+            hunk,
+            starts_hunk,
+            last_lines: last_lines.to_vec(),
+        };
         let version = |thread: usize| thread as u64 * 10;
         let files = [
             FileOutline {
                 folded: false,
                 stamp: 7,
                 body: FileBody::Diff {
-                    hunks: &hunks,
-                    chunks: &chunked.chunks,
+                    hunk_count: 2,
+                    // A split chunk's last row shows two lines.
+                    chunks: vec![
+                        chunk(0, true, &[1]),
+                        chunk(0, false, &[2]),
+                        chunk(1, true, &[3, 4]),
+                    ],
+                    gaps: &gaps,
                     annotations: &annotations,
                     thread_version: &version,
-                    tail: true,
                 },
             },
             FileOutline {
@@ -332,7 +313,6 @@ mod tests {
                     chunk: 1,
                     stamp: 7
                 },
-                // Hunk 0 ends at old line 6, hunk 1 starts at 8.
                 Gap {
                     file: 0,
                     hunk: 1,

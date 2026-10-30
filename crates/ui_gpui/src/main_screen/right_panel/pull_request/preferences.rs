@@ -1,5 +1,6 @@
 //! What the pull request view remembers across restarts: how the list is
-//! sorted and filtered, and the merge method last used per repository.
+//! sorted and filtered, the merge method last used per repository, and how
+//! the Code tab shows diffs.
 //! Kept with the other UI settings ([`UiSettings`](crate::shared::settings::UiSettings)).
 
 use super::list_logic::{Filters, SortMode};
@@ -18,6 +19,42 @@ pub struct PullRequestPreferences {
     pub merge_methods: BTreeMap<String, MergeMethod>,
     /// The Summary's comment filter and order, the Timeline's order.
     pub conversation: super::conversation::preferences::ConversationPreferences,
+    pub code: CodePreferences,
+}
+
+/// Stacked rows (old and new lines one below the other) or split (side
+/// by side).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DiffLayout {
+    #[default]
+    Stacked,
+    Split,
+}
+
+/// How the Code tab shows diffs. T3 Code takes the defaults from its
+/// settings (lines wrap, whitespace changes hidden); here the toggles
+/// themselves are remembered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CodePreferences {
+    pub layout: DiffLayout,
+    pub wrap: bool,
+    pub hide_whitespace: bool,
+    pub hide_tests: bool,
+    pub file_tree: bool,
+}
+
+impl Default for CodePreferences {
+    fn default() -> Self {
+        Self {
+            layout: DiffLayout::Stacked,
+            wrap: true,
+            hide_whitespace: true,
+            hide_tests: false,
+            file_tree: false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -59,6 +96,8 @@ mod tests {
         preferences.list.sort = SortMode::Newest;
         preferences.list.state = ListState::Merged;
         preferences.list.filters.draft = Some(DraftFilter::Hide);
+        preferences.code.layout = DiffLayout::Split;
+        preferences.code.wrap = false;
         preferences
             .merge_methods
             .insert(repo().to_string(), MergeMethod::Squash);

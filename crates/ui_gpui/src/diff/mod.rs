@@ -7,6 +7,7 @@
 //! - [`prepare`]: [`prepare::PreparedFileDiff`], all of the above for one
 //!   file, built off the UI thread
 //! - [`split`]: hunks side by side, cut into chunks by rows
+//! - [`whitespace`]: hunks with whitespace-only changes shown unchanged
 //! - [`render`] and [`rows`]: rows as one painted element, with a gutter of
 //!   new or old and new line numbers
 
@@ -17,3 +18,4 @@ pub mod render;
 pub mod rows;
 pub mod split;
 pub mod syntax;
+pub mod whitespace;

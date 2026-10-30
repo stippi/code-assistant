@@ -8,7 +8,11 @@
 //!   ([`pages`]). A re-read (the core announces a changed diff, or the head
 //!   moved) keeps unchanged pages and everything built from them.
 //! - **Order**: per page by imports and tiers, then as a file tree would
-//!   list them ([`file_order`]); tests can be hidden ([`file_kind`]).
+//!   list them ([`file_order`]); tests can be hidden ([`file_kind`]); the
+//!   file tree beside the list ([`tree`]) jumps to a file.
+//! - **Shape**: stacked or split, wrapped or scrolled sideways, with or
+//!   without whitespace changes ([`pages`]); unchanged lines between hunks
+//!   revealed from the file's text, read on the first click ([`context`]).
 //! - **Viewed**: optimistic ticks, written in batches ([`viewed`]); ticking
 //!   folds a file, a shift-click ticks a range ([`folds`]).
 //! - **List**: one virtualized list over flat rows ([`rows`]): headers,
@@ -22,8 +26,10 @@
 //!   anchors comments to the whole change.
 
 mod anchors;
+mod aside;
 mod body;
 mod comments;
+mod context;
 mod file_header;
 mod file_kind;
 mod file_order;
@@ -31,6 +37,7 @@ mod folds;
 mod pages;
 mod rows;
 mod toolbar;
+mod tree;
 mod viewed;
 
 use super::PullRequestIntent;
@@ -38,28 +45,31 @@ use super::bus::{PullRequestEvent, bus};
 use super::conversation::thread::ThreadCard;
 use super::data::{PullRequestData, session_service};
 use super::detail::TabScroll;
+use super::preferences::{self, CodePreferences, DiffLayout};
 use super::review_draft::{ReviewDrafts, review_drafts};
 use crate::comments::AnchorTracker;
 use crate::diff::prepare::highlight_patch;
+use crate::diff::syntax::DiffSyntax;
 use crate::main_screen::right_panel::line_selection::{LineSelection, Selected, SelectsLines};
 use crate::main_screen::right_panel::review_rows::changed_span;
 use anchors::{Annotation, LineRef, place};
 use code_assistant_core::pull_requests::PullRequestPart;
 use comments::Draft;
+use context::{Reveal, lines_of};
 use file_order::order_like_tree;
 use folds::{Folds, viewed_range};
 use github::PullRequestRef;
-use github::model::{Activity, ReviewThread};
+use github::model::{Activity, FileChange, ReviewThread};
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::{
     App, Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent,
-    ListAlignment, ListState, Pixels, Render, SharedString, Subscription, Task, Window, div, list,
-    prelude::*, px,
+    ListAlignment, ListOffset, ListState, Pixels, Render, SharedString, Subscription, Task,
+    UniformListScrollHandle, Window, div, list, prelude::*, px,
 };
-use pages::{Arrival, LoadedFile, Page, arrival, fingerprint, parse_page};
-use rows::{CodeRow, FileBody, FileOutline, files_by_proximity, flatten};
+use pages::{Arrival, DiffView, FileText, LoadedFile, Page, arrival, fingerprint, parse_page};
+use rows::{ChunkOutline, CodeRow, FileBody, FileOutline, files_by_proximity, flatten};
 use std::cell::Cell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -75,7 +85,7 @@ const LIST_OVERDRAW: Pixels = px(512.);
 
 /// A shown file: its page and its index there.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Shown {
+pub(super) struct Shown {
     page: usize,
     file: usize,
 }
@@ -102,8 +112,21 @@ pub struct CodeTab {
     /// The files in the list, in order.
     shown: Vec<Shown>,
     test_files: usize,
-    hide_tests: bool,
+    /// Layout, wrap, whitespace, tests, file tree (remembered).
+    code: CodePreferences,
     folds: Folds,
+    /// Files' texts being read, by path: one read per file at a time.
+    text_reads: HashMap<String, Task<()>>,
+    /// Clicks on a gap made before the file's text was read.
+    queued_reveals: HashMap<String, Vec<(usize, Reveal)>>,
+
+    /// The file tree's collapsed folders and the file last picked there.
+    tree_collapsed: HashSet<String>,
+    tree_selected: Option<String>,
+    tree_scroll: UniformListScrollHandle,
+    /// The toolbar's width at the last paint: narrow, it folds the diff
+    /// options into a menu.
+    toolbar_width: Rc<Cell<Pixels>>,
 
     viewed: ViewedFiles,
     viewed_read: Option<Task<()>>,
@@ -187,8 +210,14 @@ impl CodeTab {
             next_stamp: 0,
             shown: Vec::new(),
             test_files: 0,
-            hide_tests: false,
+            code: preferences::read(cx).code,
             folds: Folds::default(),
+            text_reads: HashMap::new(),
+            queued_reveals: HashMap::new(),
+            tree_collapsed: HashSet::new(),
+            tree_selected: None,
+            tree_scroll: UniformListScrollHandle::new(),
+            toolbar_width: Rc::new(Cell::new(px(f32::MAX))),
             viewed: ViewedFiles::default(),
             viewed_read: None,
             viewed_flush: None,
@@ -297,6 +326,7 @@ impl CodeTab {
             return;
         };
         let (pr, commit, scope) = (self.pr.clone(), self.commit.clone(), self.scope);
+        let view = self.diff_view();
         self.loading = Some(cx.spawn(async move |this, cx| {
             let started = Instant::now();
             let result = service.pull_request_diff(pr, commit, cursor.clone()).await;
@@ -331,7 +361,9 @@ impl CodeTab {
             }
             let (next_cursor, truncated) = (page.next_cursor.clone(), page.truncated);
             let parsing = Instant::now();
-            let files = cx.background_spawn(async move { parse_page(&page) }).await;
+            let files = cx
+                .background_spawn(async move { parse_page(&page, view) })
+                .await;
             tracing::debug!(
                 files = files.len(),
                 elapsed = ?parsing.elapsed(),
@@ -359,7 +391,11 @@ impl CodeTab {
         self.loading = None;
         self.load_error = None;
         if let Arrival::Place(ix) = arrival(&self.pages, page.cursor.as_deref(), page.fingerprint) {
+            // Shaped off the UI thread for the view then; it may have
+            // changed meanwhile.
+            let view = self.diff_view();
             for file in &mut page.files {
+                file.reshape(view);
                 file.stamp = self.stamp();
             }
             self.pages.truncate(ix);
@@ -378,15 +414,19 @@ impl CodeTab {
         }
         self.sync_rows();
         let top = self.list_state.logical_scroll_top().item_ix;
+        // A file whose text was read is highlighted from it.
         let Some(shown) = files_by_proximity(&self.rows, self.shown.len(), top)
             .into_iter()
             .map(|ix| self.shown[ix])
-            .find(|&shown| !self.file(shown).highlighted)
+            .find(|&shown| {
+                let file = self.file(shown);
+                !file.highlighted && file.text.is_none()
+            })
         else {
             return;
         };
         let file = self.file(shown);
-        let (path, hunks) = (file.path.clone(), file.diff.hunks.clone());
+        let (path, hunks) = (file.path.clone(), file.patch_hunks.clone());
         let (page, print, scope) = (shown.page, self.pages[shown.page].fingerprint, self.scope);
         // Captured here: the line styles are computed off the UI thread.
         let theme = cx.theme().highlight_theme.clone();
@@ -405,7 +445,12 @@ impl CodeTab {
                         .filter(|p| p.fingerprint == print)
                         .and_then(|p| p.files.iter_mut().find(|f| f.path == path))
                 {
-                    file.diff.set_syntax(syntax);
+                    // It fits the hunks without whitespace changes too:
+                    // each side keeps its lines.
+                    if file.text.is_none() {
+                        file.diff.set_syntax(syntax.clone());
+                    }
+                    file.hunk_syntax = syntax;
                     file.highlighted = true;
                     cx.notify();
                 }
@@ -467,9 +512,10 @@ impl CodeTab {
             .map(|ix| all[ix])
             .collect();
         self.test_files = ordered.iter().filter(|&&s| self.file(s).is_test).count();
+        let hide_tests = self.code.hide_tests;
         self.shown = ordered
             .into_iter()
-            .filter(|&s| !(self.hide_tests && self.file(s).is_test))
+            .filter(|&s| !(hide_tests && self.file(s).is_test))
             .collect();
         let shown: Vec<String> = self
             .shown
@@ -489,8 +535,250 @@ impl CodeTab {
     }
 
     fn set_hide_tests(&mut self, hide: bool, cx: &mut Context<Self>) {
-        self.hide_tests = hide;
+        self.change_code(cx, |code| code.hide_tests = hide);
         self.sync_files(cx);
+        cx.notify();
+    }
+
+    // -- Diff options ------------------------------------------------------
+
+    fn diff_view(&self) -> DiffView {
+        DiffView {
+            hide_whitespace: self.code.hide_whitespace,
+            layout: self.code.layout,
+        }
+    }
+
+    /// Change the Code tab's preferences, here and remembered.
+    fn change_code(&mut self, cx: &mut Context<Self>, change: impl FnOnce(&mut CodePreferences)) {
+        change(&mut self.code);
+        let code = self.code;
+        preferences::update(cx, |preferences| preferences.code = code);
+    }
+
+    /// Every file gets new rows (their heights change).
+    fn restamp(&mut self) {
+        for page in 0..self.pages.len() {
+            for file in 0..self.pages[page].files.len() {
+                let stamp = self.stamp();
+                self.pages[page].files[file].stamp = stamp;
+            }
+        }
+        self.dirty = true;
+    }
+
+    fn set_layout(&mut self, layout: DiffLayout, cx: &mut Context<Self>) {
+        if layout == self.code.layout {
+            return;
+        }
+        self.change_code(cx, |code| code.layout = layout);
+        for file in self.pages.iter_mut().flat_map(|p| &mut p.files) {
+            let breaks = std::mem::take(&mut file.breaks);
+            file.cut(&breaks, layout);
+        }
+        self.restamp();
+        cx.notify();
+    }
+
+    fn set_wrap(&mut self, wrap: bool, cx: &mut Context<Self>) {
+        self.change_code(cx, |code| code.wrap = wrap);
+        self.restamp();
+        cx.notify();
+    }
+
+    /// Like T3 Code, the selection and an open comment box go: their rows
+    /// change.
+    fn set_hide_whitespace(&mut self, hide: bool, cx: &mut Context<Self>) {
+        self.change_code(cx, |code| code.hide_whitespace = hide);
+        let view = self.diff_view();
+        for file in self.pages.iter_mut().flat_map(|p| &mut p.files) {
+            file.reshape(view);
+        }
+        self.restamp();
+        self.selection.clear();
+        self.draft = None;
+        self.place_annotations(cx);
+    }
+
+    fn set_file_tree(&mut self, open: bool, cx: &mut Context<Self>) {
+        self.change_code(cx, |code| code.file_tree = open);
+        cx.notify();
+    }
+
+    // -- Context -----------------------------------------------------------
+
+    /// A click on a gap of the shown file: reveal its lines, once the
+    /// file's text is read.
+    fn reveal(&mut self, shown: Shown, gap: usize, reveal: Reveal, cx: &mut Context<Self>) {
+        let Some(file) = self
+            .pages
+            .get_mut(shown.page)
+            .and_then(|p| p.files.get_mut(shown.file))
+        else {
+            return;
+        };
+        if file.text.is_none() {
+            self.queued_reveals
+                .entry(file.path.clone())
+                .or_default()
+                .push((gap, reveal));
+            self.read_text(shown, cx);
+            return;
+        }
+        file.revealed.entry(gap).or_default().apply(reveal);
+        self.file_reshaped(shown, cx);
+    }
+
+    /// The shown file changed shape: new rows, annotations placed anew.
+    fn file_reshaped(&mut self, shown: Shown, cx: &mut Context<Self>) {
+        let view = self.diff_view();
+        let stamp = self.stamp();
+        let file = self.file_mut(shown);
+        file.reshape(view);
+        file.stamp = stamp;
+        self.place_annotations(cx);
+    }
+
+    /// Read the shown file's text (both sides, parsed for highlighting),
+    /// one read per file at a time; the clicks queued meanwhile apply then.
+    fn read_text(&mut self, shown: Shown, cx: &mut Context<Self>) {
+        let file = self.file(shown);
+        let path = file.path.clone();
+        if self.text_reads.contains_key(&path) {
+            return;
+        }
+        let Some(service) = session_service(cx) else {
+            return;
+        };
+        let change = match file.status {
+            git::ChangeStatus::Renamed => FileChange::Renamed,
+            _ => FileChange::Modified,
+        };
+        let old_path = file.orig_path.clone().unwrap_or_else(|| path.clone());
+        let (pr, commit, scope) = (self.pr.clone(), self.commit.clone(), self.scope);
+        let theme = cx.theme().highlight_theme.clone();
+        let read = {
+            let path = path.clone();
+            cx.spawn(async move |this, cx| {
+                let contents = service
+                    .pull_request_file_contents(pr, commit, change, old_path, path.clone())
+                    .await;
+                let text = match contents {
+                    Ok(contents) => {
+                        let path = path.clone();
+                        Ok(cx
+                            .background_spawn(async move {
+                                let syntax = DiffSyntax::parse(
+                                    &path,
+                                    Some(&contents.old),
+                                    Some(&contents.new),
+                                )
+                                .map(|syntax| {
+                                    syntax.prime(&theme);
+                                    Arc::new(syntax)
+                                });
+                                FileText {
+                                    new_lines: lines_of(&contents.new),
+                                    syntax,
+                                }
+                            })
+                            .await)
+                    }
+                    Err(error) => Err(error),
+                };
+                this.update(cx, |this, cx| this.text_read(&path, scope, text, cx))
+                    .ok();
+            })
+        };
+        self.text_reads.insert(path, read);
+        cx.notify();
+    }
+
+    fn text_read(
+        &mut self,
+        path: &str,
+        scope: u64,
+        text: anyhow::Result<FileText>,
+        cx: &mut Context<Self>,
+    ) {
+        self.text_reads.remove(path);
+        let reveals = self.queued_reveals.remove(path).unwrap_or_default();
+        let text = match text {
+            Ok(text) => text,
+            Err(error) => {
+                // T3 Code only logs it; the next click tries again.
+                self.data.update(cx, |data, cx| {
+                    data.error = Some(format!("Could not read {path}: {error:#}").into());
+                    cx.notify();
+                });
+                cx.notify();
+                return;
+            }
+        };
+        let Some(shown) = self
+            .shown_ix(path)
+            .map(|ix| self.shown[ix])
+            .filter(|_| self.scope == scope)
+        else {
+            return;
+        };
+        let file = self.file_mut(shown);
+        file.text = Some(text);
+        for (gap, reveal) in reveals {
+            file.revealed.entry(gap).or_default().apply(reveal);
+        }
+        self.file_reshaped(shown, cx);
+    }
+
+    // -- File tree ---------------------------------------------------------
+
+    /// Show the shown file `ix` from its header (unfolded), as a click in
+    /// the file tree asks.
+    fn reveal_file(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let Some(&shown) = self.shown.get(ix) else {
+            return;
+        };
+        let path = self.file(shown).path.clone();
+        if self.folds.is_folded(&path) {
+            self.folds.set(&path, false);
+            self.dirty = true;
+        }
+        self.sync_rows();
+        if let Some(row) = self
+            .rows
+            .iter()
+            .position(|row| *row == CodeRow::File { file: ix })
+        {
+            self.list_state.scroll_to(ListOffset {
+                item_ix: row,
+                offset_in_item: px(0.),
+            });
+        }
+        self.tree_selected = Some(path);
+        cx.notify();
+    }
+
+    fn toggle_folder(&mut self, path: String, cx: &mut Context<Self>) {
+        if !self.tree_collapsed.remove(&path) {
+            self.tree_collapsed.insert(path);
+        }
+        cx.notify();
+    }
+
+    /// Collapse every folder, or expand them all when all are collapsed.
+    fn toggle_all_folders(&mut self, cx: &mut Context<Self>) {
+        let paths: Vec<String> = self
+            .shown
+            .iter()
+            .map(|&s| self.file(s).path.clone())
+            .collect();
+        let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
+        let folders = tree::folder_paths(&paths);
+        if !folders.is_empty() && folders.is_subset(&self.tree_collapsed) {
+            self.tree_collapsed.clear();
+        } else {
+            self.tree_collapsed = folders;
+        }
         cx.notify();
     }
 
@@ -537,10 +825,9 @@ impl CodeTab {
             }
             let breaks: Vec<usize> = placed.keys().copied().collect();
             if file.breaks != breaks {
-                let stamp = self.stamp();
+                let (stamp, layout) = (self.stamp(), self.code.layout);
                 let file = self.file_mut(shown);
-                file.diff.rechunk(&breaks);
-                file.breaks = breaks;
+                file.cut(&breaks, layout);
                 file.stamp = stamp;
             }
             annotations.push(placed);
@@ -702,15 +989,35 @@ impl CodeTab {
                 let body = if diff.is_binary || diff.too_large || diff.hunks.is_empty() {
                     FileBody::Note
                 } else {
+                    let chunks = match &file.split {
+                        Some(split) => split
+                            .chunks
+                            .iter()
+                            .map(|chunk| ChunkOutline {
+                                hunk: chunk.hunk,
+                                starts_hunk: chunk.rows.start == 0,
+                                last_lines: split.last_lines(chunk),
+                            })
+                            .collect(),
+                        None => diff
+                            .chunked
+                            .chunks
+                            .iter()
+                            .map(|chunk| ChunkOutline {
+                                hunk: chunk.hunk,
+                                starts_hunk: chunk.lines.start == 0,
+                                last_lines: vec![
+                                    chunk.flat_start + chunk.lines.len().saturating_sub(1),
+                                ],
+                            })
+                            .collect(),
+                    };
                     FileBody::Diff {
-                        hunks: &diff.hunks,
-                        chunks: &diff.chunked.chunks,
+                        hunk_count: diff.hunks.len(),
+                        chunks,
+                        gaps: &file.gaps,
                         annotations,
                         thread_version: &thread_version,
-                        tail: matches!(
-                            file.status,
-                            git::ChangeStatus::Modified | git::ChangeStatus::Renamed
-                        ),
                     }
                 };
                 FileOutline {
@@ -789,12 +1096,19 @@ impl Render for CodeTab {
                     }),
                 )
                 .size_full();
-                div()
+                let code = div()
                     .relative()
                     .flex_1()
-                    .min_h_0()
+                    .min_w_0()
+                    .h_full()
                     .child(list)
-                    .children(self.render_sticky_header(cx))
+                    .children(self.render_sticky_header(cx));
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .child(code)
+                    .children(self.render_file_tree(window, cx))
                     .into_any_element()
             }
         };

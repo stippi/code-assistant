@@ -112,6 +112,7 @@ pub fn window<V: Render + 'static>(
 ) -> (Entity<V>, &mut VisualTestContext) {
     let window = cx.update(|cx| {
         gpui_kit::component::init(cx);
+        crate::shared::file_icons::init(cx);
         cx.open_window(Default::default(), |_, cx| cx.new(build))
             .unwrap()
     });

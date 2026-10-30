@@ -3,12 +3,13 @@
 //! states shown instead of the list, the strip of threads not on the diff
 //! and the header that stays on top while its file scrolls.
 
-use super::rows::{CodeRow, gap, gap_label};
+use super::context::{Reveal, ShownGap, gap_reveals};
+use super::rows::{CodeRow, gap_label};
 use super::{CodeTab, Shown};
-use crate::diff::render::{GutterNumbers, render_diff_chunk_rows};
+use crate::diff::render::{GutterNumbers, render_diff_chunk_rows, render_split_chunk_rows};
 use crate::main_screen::right_panel::line_selection::{ChunkMarks, row_selection};
-use gpui_kit::component::button::Button;
-use gpui_kit::component::{ActiveTheme, Sizable};
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::{ActiveTheme, Icon, Sizable};
 use gpui_kit::{
     AnyElement, App, Context, FontWeight, SharedString, Window, div, prelude::*, px, rems, svg,
 };
@@ -48,9 +49,13 @@ impl CodeTab {
                 Some(shown) => self.render_chunk(shown, chunk, window, cx),
                 None => div().into_any_element(),
             },
-            CodeRow::Tail { .. } => {
-                hairline_label("More unchanged context may be available".into(), false, cx)
-            }
+            CodeRow::Tail { file, .. } => match shown(file) {
+                Some(shown) => {
+                    let after = self.file(shown).diff.hunks.len();
+                    self.render_gap(shown, after, cx)
+                }
+                None => div().into_any_element(),
+            },
             CodeRow::Thread { thread, .. } => match self.thread_card(thread, cx) {
                 Some(card) => annotation(card.into_any_element()),
                 None => div().into_any_element(),
@@ -81,14 +86,81 @@ impl CodeTab {
             .into_any_element()
     }
 
-    fn render_gap(&self, shown: Shown, hunk: usize, cx: &App) -> AnyElement {
-        let hunks = &self.file(shown).diff.hunks;
-        let label = hunks
-            .get(hunk)
-            .and_then(|h| gap(hunk.checked_sub(1).and_then(|p| hunks.get(p)), h))
-            .map(|(lines, section)| gap_label(lines, section))
-            .unwrap_or_default();
-        hairline_label(label.into(), true, cx)
+    /// The unchanged lines before shown hunk `before` (after the last when
+    /// it is the hunk count): their count and section on a hairline, and
+    /// the buttons revealing them where the file can be read.
+    fn render_gap(&self, shown: Shown, before: usize, cx: &mut Context<Self>) -> AnyElement {
+        let file = self.file(shown);
+        let Some(gap) = file.gaps.iter().find(|gap| gap.before == before).cloned() else {
+            return div().into_any_element();
+        };
+        let label = gap_label(gap.hidden, gap.section.as_deref());
+        let reveals = match file.has_context() {
+            true => gap_reveals(&gap, file.patch_hunks.len()),
+            false => Vec::new(),
+        };
+        let loading = self.text_reads.contains_key(&file.path);
+        let buttons: Vec<AnyElement> = reveals
+            .into_iter()
+            .map(|reveal| self.reveal_button(shown, &gap, reveal, loading, cx))
+            .collect();
+        div()
+            .w_full()
+            .h(px(24.))
+            .flex()
+            .items_center()
+            .gap_1()
+            .px_1()
+            .bg(cx.theme().muted.opacity(0.35))
+            .children(buttons)
+            .child(hairline_label(label.into(), cx))
+            .into_any_element()
+    }
+
+    fn reveal_button(
+        &self,
+        shown: Shown,
+        gap: &ShownGap,
+        reveal: Reveal,
+        loading: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (icon, tooltip, name) = match reveal {
+            Reveal::Down => ("icons/chevron_down.svg", "Expand down", "down"),
+            Reveal::Up => ("icons/chevron_up.svg", "Expand up", "up"),
+            Reveal::All => ("icons/chevron_up_down.svg", "Expand all", "all"),
+        };
+        let gap_ix = gap.gap;
+        let id = SharedString::from(format!(
+            "pr-code-expand-{}-{}-{gap_ix}-{name}",
+            shown.page, shown.file
+        ));
+        let selector = id.to_string();
+        let button = Button::new(id)
+            .ghost()
+            .xsmall()
+            .loading(loading)
+            .tooltip(tooltip)
+            .on_click(cx.listener(move |this, _, window, cx| {
+                // Shift shows the whole gap, as in T3 Code.
+                let reveal = match window.modifiers().shift {
+                    true => Reveal::All,
+                    false => reveal,
+                };
+                this.reveal(shown, gap_ix, reveal, cx);
+            }));
+        let button = match reveal {
+            // Between hunks a large gap offers "Expand all" as text.
+            Reveal::All if gap.hidden.is_some_and(|h| h > super::context::EXPAND_STEP) => {
+                button.label("Expand all")
+            }
+            _ => button.icon(Icon::default().path(icon)),
+        };
+        div()
+            .flex_none()
+            .debug_selector(move || selector)
+            .child(button)
+            .into_any_element()
     }
 
     /// One chunk of a file's diff, its rows selectable on the whole change.
@@ -100,44 +172,76 @@ impl CodeTab {
         cx: &Context<Self>,
     ) -> AnyElement {
         let file = self.file(shown);
-        let Some(chunk) = file.diff.chunked.chunks.get(chunk_ix) else {
-            return div().into_any_element();
-        };
         let theme = cx.theme();
         let rem_size = window.rem_size();
-        let rows = chunk.lines.len();
+        // The flat lines the chunk shows, for the marks and the anchor.
+        let (lines, base_line) = match &file.split {
+            Some(split) => {
+                let Some(chunk) = split.chunks.get(chunk_ix) else {
+                    return div().into_any_element();
+                };
+                let flat = split.flat_starts.get(chunk.hunk).copied().unwrap_or(0);
+                let rows = split.chunk_rows(chunk);
+                let lines = rows.iter().flat_map(|row| [row.left, row.right]).flatten();
+                let lo = lines.clone().min().unwrap_or(0) + flat;
+                let hi = lines.max().unwrap_or(0) + flat;
+                (lo..hi + 1, 0)
+            }
+            None => {
+                let Some(chunk) = file.diff.chunked.chunks.get(chunk_ix) else {
+                    return div().into_any_element();
+                };
+                let start = chunk.flat_start;
+                (start..start + chunk.lines.len(), start)
+            }
+        };
         let selection = self.commit.is_none().then(|| {
             let marks = ChunkMarks {
                 highlight: self.selection.highlight(&file.path),
                 color: theme.selection,
-                marked: self.pending_marks(file, chunk.flat_start, rows, cx),
+                marked: self.pending_marks(file, lines.start, lines.len(), cx),
                 mark_color: theme.warning,
                 anchor: self
-                    .anchors_selection_end(&file.path, chunk.flat_start, rows)
+                    .anchors_selection_end(&file.path, lines.start, lines.len())
                     .then(|| self.selection_anchor.clone()),
             };
             row_selection(
                 file.path.clone(),
-                chunk.flat_start,
+                base_line,
                 marks,
                 self.focus_handle.clone(),
                 cx,
             )
         });
+        let scroll = (!self.code.wrap).then(|| file.scroll.clone());
+        let rows = match &file.split {
+            Some(split) => render_split_chunk_rows(
+                &file.diff,
+                split,
+                &split.chunks[chunk_ix],
+                &file.numbers,
+                theme,
+                rem_size,
+                selection,
+                scroll,
+            ),
+            None => render_diff_chunk_rows(
+                &file.diff,
+                &file.diff.chunked.chunks[chunk_ix],
+                GutterNumbers::New,
+                theme,
+                rem_size,
+                selection,
+                scroll,
+            ),
+        };
         div()
             .w_full()
             .text_size(rems(0.78125))
             .line_height(rems(1.25).to_pixels(rem_size).round())
             .font_family(theme.mono_font_family.clone())
             .font_weight(FontWeight(400.0))
-            .child(render_diff_chunk_rows(
-                &file.diff,
-                chunk,
-                GutterNumbers::New,
-                theme,
-                rem_size,
-                selection,
-            ))
+            .child(rows)
             .into_any_element()
     }
 
@@ -341,14 +445,13 @@ pub(super) fn annotation(card: AnyElement) -> AnyElement {
 }
 
 /// Centred muted text on a hairline ("30 unmodified lines").
-fn hairline_label(label: SharedString, above: bool, cx: &App) -> AnyElement {
+fn hairline_label(label: SharedString, cx: &App) -> AnyElement {
     let theme = cx.theme();
     let line = || div().flex_1().h(px(1.)).bg(theme.border);
     div()
-        .w_full()
-        .px_3()
-        .when(above, |d| d.pt_2().pb_1())
-        .when(!above, |d| d.pt_1().pb_2())
+        .flex_1()
+        .min_w_0()
+        .px_2()
         .flex()
         .items_center()
         .gap_3()

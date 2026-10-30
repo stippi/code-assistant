@@ -3,6 +3,7 @@
 
 use super::super::conversation::fixtures::{commit, data, thread, window};
 use super::super::fixtures::hours_ago;
+use super::super::preferences::DiffLayout;
 use super::*;
 use github::model::{DiffPage, DiffSide};
 use gpui_kit::{Modifiers, TestAppContext, VisualTestContext};
@@ -50,7 +51,7 @@ fn arrive(
         omitted_file_stats: Vec::new(),
     };
     tab.update(cx, |tab, cx| {
-        let files = parse_page(&page);
+        let files = parse_page(&page, tab.diff_view());
         tab.page_arrived(
             Page {
                 cursor: cursor.map(str::to_owned),
@@ -350,7 +351,7 @@ fn rows_show_plain_first_and_highlight_file_by_file(cx: &mut TestAppContext) {
                 fingerprint: fingerprint(&page),
                 next_cursor: None,
                 truncated: false,
-                files: parse_page(&page),
+                files: parse_page(&page, tab.diff_view()),
             },
             cx,
         );
@@ -370,4 +371,155 @@ fn rows_show_plain_first_and_highlight_file_by_file(cx: &mut TestAppContext) {
         assert_eq!(with_syntax, ["src/a.rs", "src/b.rs"]);
     });
     assert_eq!(rows(&tab, cx), plain, "highlighting adds no rows");
+}
+
+/// A page with this patch text arrives first.
+fn arrive_patch(tab: &Entity<CodeTab>, cx: &mut VisualTestContext, patch: &str) {
+    let page = DiffPage {
+        patch: patch.to_owned(),
+        truncated: false,
+        next_cursor: None,
+        omitted_file_stats: Vec::new(),
+    };
+    tab.update(cx, |tab, cx| {
+        let files = parse_page(&page, tab.diff_view());
+        tab.page_arrived(
+            Page {
+                cursor: None,
+                fingerprint: fingerprint(&page),
+                next_cursor: None,
+                truncated: false,
+                files,
+            },
+            cx,
+        )
+    });
+    cx.run_until_parked();
+}
+
+/// The first shown file's line tags, `' '`, `-`, `+`.
+fn tags(tab: &Entity<CodeTab>, cx: &mut VisualTestContext) -> String {
+    tab.read_with(cx, |tab, _| {
+        let file = tab.file(tab.shown[0]);
+        file.diff
+            .hunks
+            .iter()
+            .flat_map(|h| &h.lines)
+            .map(|l| match l.tag {
+                similar::ChangeTag::Equal => ' ',
+                similar::ChangeTag::Delete => '-',
+                similar::ChangeTag::Insert => '+',
+            })
+            .collect()
+    })
+}
+
+#[gpui_kit::test]
+fn whitespace_changes_hide_and_show_again(cx: &mut TestAppContext) {
+    let (tab, _, cx) = tab(cx);
+    let patch = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n\
+                 @@ -1,3 +1,3 @@\n ctx\n-fn f(a,b) {}\n+fn f(a, b) {}\n-x\n+y\n";
+    arrive_patch(&tab, cx, patch);
+    // Hidden by default, as in T3 Code.
+    assert_eq!(tags(&tab, cx), "  -+");
+    tab.update(cx, |tab, cx| tab.set_hide_whitespace(false, cx));
+    assert_eq!(tags(&tab, cx), " -+-+");
+    tab.update(cx, |tab, cx| tab.set_hide_whitespace(true, cx));
+    assert_eq!(tags(&tab, cx), "  -+");
+}
+
+#[gpui_kit::test]
+fn the_split_layout_pairs_rows_but_keeps_new_files_stacked(cx: &mut TestAppContext) {
+    let (tab, _, cx) = tab(cx);
+    let patch = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n\
+                 @@ -10,3 +10,3 @@\n ctx\n-old\n+new\n ctx\n\
+                 diff --git a/b.rs b/b.rs\nnew file mode 100644\n--- /dev/null\n+++ b/b.rs\n\
+                 @@ -0,0 +1,2 @@\n+one\n+two\n";
+    arrive_patch(&tab, cx, patch);
+    let stacked = rows(&tab, cx);
+    tab.update(cx, |tab, cx| tab.set_layout(DiffLayout::Split, cx));
+    cx.run_until_parked();
+    tab.read_with(cx, |tab, _| {
+        let split: Vec<_> = tab
+            .shown
+            .iter()
+            .map(|&s| tab.file(s).split.as_ref().map(|split| split.rows[0].len()))
+            .collect();
+        // ctx, old|new, ctx: three rows; the new file has one side only.
+        assert_eq!(split, [Some(3), None]);
+    });
+    assert_ne!(rows(&tab, cx), stacked, "new rows for the new layout");
+}
+
+#[gpui_kit::test]
+fn a_gap_reveals_lines_once_the_file_is_read(cx: &mut TestAppContext) {
+    let (tab, _, cx) = tab(cx);
+    arrive(&tab, cx, None, &["src/a.rs"], None);
+    let shown = tab.read_with(cx, |tab, _| tab.shown[0]);
+    // The first click queues itself until the text is read.
+    tab.update(cx, |tab, cx| tab.reveal(shown, 0, Reveal::All, cx));
+    tab.read_with(cx, |tab, _| {
+        assert_eq!(tab.file(shown).gaps[0].hidden, Some(9));
+    });
+    let text = FileText {
+        new_lines: (1..=20).map(|n| format!("line {n}").into()).collect(),
+        syntax: None,
+    };
+    let scope = tab.read_with(cx, |tab, _| tab.scope);
+    tab.update(cx, |tab, cx| tab.text_read("src/a.rs", scope, Ok(text), cx));
+    cx.run_until_parked();
+    tab.read_with(cx, |tab, _| {
+        let file = tab.file(shown);
+        assert_eq!(file.diff.hunks[0].new_start, 1);
+        assert_eq!(file.diff.hunks[0].lines[0].text.as_ref(), "line 1");
+        // Only the tail is left: new lines 13..=20.
+        let gaps: Vec<_> = file.gaps.iter().map(|g| (g.gap, g.hidden)).collect();
+        assert_eq!(gaps, [(0, Some(0)), (1, Some(8))]);
+    });
+    // A gap shown whole but naming a section keeps its row, without
+    // buttons; the tail can be revealed.
+    assert!(cx.debug_bounds("pr-code-expand-0-0-0-all").is_none());
+    assert!(cx.debug_bounds("pr-code-expand-0-0-1-all").is_some());
+}
+
+#[gpui_kit::test]
+fn the_file_tree_shows_a_file_from_its_header(cx: &mut TestAppContext) {
+    let (tab, _, cx) = tab(cx);
+    let paths: Vec<String> = (0..30).map(|n| format!("src/f{n:02}.rs")).collect();
+    let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
+    arrive(&tab, cx, None, &paths, None);
+    assert!(cx.debug_bounds("pr-code-tree").is_none());
+    tab.update(cx, |tab, cx| tab.set_file_tree(true, cx));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("pr-code-tree").is_some());
+    let target = tab.read_with(cx, |tab, _| {
+        tab.shown
+            .iter()
+            .position(|&s| tab.file(s).path == "src/f05.rs")
+            .unwrap()
+    });
+    tab.update(cx, |tab, cx| tab.toggle_fold(target, cx));
+    click(
+        cx,
+        &format!("pr-code-tree-file-{target}"),
+        Modifiers::none(),
+    );
+    tab.read_with(cx, |tab, _| {
+        assert_eq!(tab.tree_selected.as_deref(), Some("src/f05.rs"));
+        assert!(!tab.folds.is_folded("src/f05.rs"), "unfolded to show it");
+        let top = tab.list_state.logical_scroll_top().item_ix;
+        assert_eq!(tab.rows[top], CodeRow::File { file: target });
+    });
+}
+
+#[gpui_kit::test]
+fn unwrapping_gives_every_file_new_rows(cx: &mut TestAppContext) {
+    let (tab, _, cx) = tab(cx);
+    arrive(&tab, cx, None, &["src/a.rs"], None);
+    let wrapped = rows(&tab, cx);
+    tab.update(cx, |tab, cx| tab.set_wrap(false, cx));
+    cx.run_until_parked();
+    let unwrapped = rows(&tab, cx);
+    assert_eq!(unwrapped.len(), wrapped.len());
+    assert_ne!(unwrapped, wrapped, "heights change: rows are measured anew");
 }

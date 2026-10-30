@@ -1,19 +1,28 @@
 //! The Code tab's toolbar: the commit scope ("All commits" or one commit,
 //! newest first, ten at a time), "6 files · 0 / 6 viewed", hidden tests,
-//! and on the right collapse / expand all and the "hide tests" toggle.
-//!
-//! Not here yet: hiding whitespace changes (GitHub's diff endpoint takes
-//! no such option through the core), unwrapped lines (diff rows always
-//! wrap), the split layout and the file tree.
+//! and on the right, as in T3 Code: hide whitespace changes, stacked |
+//! split, wrap (folded into one menu when the toolbar is narrow), collapse
+//! / expand all, hide tests and the file tree.
 
+use super::super::preferences::DiffLayout;
 use super::CodeTab;
-use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants};
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::popover::{Popover, PopoverState};
 use gpui_kit::component::{ActiveTheme, Icon, Selectable, Sizable};
-use gpui_kit::{AnyElement, Context, SharedString, WeakEntity, Window, div, prelude::*, px, svg};
+use gpui_kit::{
+    AnyElement, Context, SharedString, WeakEntity, Window, canvas, div, prelude::*, px, svg,
+};
 
 /// Commits the scope menu lists at a time.
 pub const COMMIT_PAGE: usize = 10;
+
+/// Below this width the diff options fold into a menu (T3 Code: 32rem).
+const NARROW: f32 = 512.;
+
+fn icon(path: &'static str) -> Icon {
+    Icon::default().path(SharedString::from(path))
+}
 
 impl CodeTab {
     pub(super) fn render_toolbar(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -27,7 +36,11 @@ impl CodeTab {
             .iter()
             .filter(|&&s| self.viewed.is_viewed(&self.file(s).path))
             .count();
-        let hidden_tests = if self.hide_tests { self.test_files } else { 0 };
+        let hidden_tests = if self.code.hide_tests {
+            self.test_files
+        } else {
+            0
+        };
         let warning = |id: &'static str, tooltip: &'static str| {
             div()
                 .id(id)
@@ -106,17 +119,124 @@ impl CodeTab {
             });
 
         let all_folded = self.all_folded();
+        let code = self.code;
+        let narrow = self.toolbar_width.get() < px(NARROW);
+        let view = cx.entity().downgrade();
+        let toggle = |id: &'static str, path: &'static str, on: bool, tip: SharedString| {
+            Button::new(id)
+                .ghost()
+                .xsmall()
+                .selected(on)
+                .toggled(on)
+                .icon(icon(path))
+                .tooltip(tip)
+        };
+        let options = if narrow {
+            let view = view.clone();
+            vec![
+                Button::new("pr-code-options")
+                    .ghost()
+                    .xsmall()
+                    .icon(icon("icons/settings_2.svg"))
+                    .tooltip("Diff options")
+                    .dropdown_menu_with_anchor(gpui_kit::Anchor::TopRight, move |menu, _, _| {
+                        let act = |change: fn(&mut CodeTab, &mut Context<CodeTab>)| {
+                            let view = view.clone();
+                            move |_: &gpui_kit::ClickEvent,
+                                  _: &mut Window,
+                                  cx: &mut gpui_kit::App| {
+                                view.update(cx, change).ok();
+                            }
+                        };
+                        menu.item(
+                            PopupMenuItem::new("Hide whitespace changes")
+                                .checked(code.hide_whitespace)
+                                .on_click(act(|tab, cx| {
+                                    tab.set_hide_whitespace(!tab.code.hide_whitespace, cx)
+                                })),
+                        )
+                        .item(
+                            PopupMenuItem::new("Wrap lines")
+                                .checked(code.wrap)
+                                .on_click(act(|tab, cx| tab.set_wrap(!tab.code.wrap, cx))),
+                        )
+                        .separator()
+                        .item(
+                            PopupMenuItem::new("Stacked")
+                                .checked(code.layout == DiffLayout::Stacked)
+                                .on_click(act(|tab, cx| tab.set_layout(DiffLayout::Stacked, cx))),
+                        )
+                        .item(
+                            PopupMenuItem::new("Split")
+                                .checked(code.layout == DiffLayout::Split)
+                                .on_click(act(|tab, cx| tab.set_layout(DiffLayout::Split, cx))),
+                        )
+                    })
+                    .into_any_element(),
+            ]
+        } else {
+            let hide = code.hide_whitespace;
+            let split = code.layout == DiffLayout::Split;
+            vec![
+                toggle(
+                    "pr-code-whitespace",
+                    "icons/pilcrow.svg",
+                    hide,
+                    match hide {
+                        true => "Show whitespace changes".into(),
+                        false => "Hide whitespace changes".into(),
+                    },
+                )
+                .on_click(cx.listener(move |this, _, _, cx| this.set_hide_whitespace(!hide, cx)))
+                .into_any_element(),
+                ButtonGroup::new("pr-code-layout")
+                    .ghost()
+                    .xsmall()
+                    .child(
+                        Button::new("pr-code-stacked")
+                            .icon(icon("icons/rows_3.svg"))
+                            .tooltip("Stacked diff view")
+                            .selected(!split),
+                    )
+                    .child(
+                        Button::new("pr-code-split")
+                            .icon(icon("icons/columns_2.svg"))
+                            .tooltip("Split diff view")
+                            .selected(split),
+                    )
+                    .on_click(cx.listener(|this, clicked: &Vec<usize>, _, cx| {
+                        let layout = match clicked.first() {
+                            Some(1) => DiffLayout::Split,
+                            _ => DiffLayout::Stacked,
+                        };
+                        this.set_layout(layout, cx);
+                    }))
+                    .into_any_element(),
+                toggle(
+                    "pr-code-wrap",
+                    "icons/text_wrap.svg",
+                    code.wrap,
+                    match code.wrap {
+                        true => "Don't wrap lines".into(),
+                        false => "Wrap lines".into(),
+                    },
+                )
+                .on_click(cx.listener(move |this, _, _, cx| this.set_wrap(!code.wrap, cx)))
+                .into_any_element(),
+            ]
+        };
         let right = div()
             .flex_none()
             .flex()
             .items_center()
             .gap_1()
+            .children(options)
             .when(files > 0, |d| {
                 d.child(
                     Button::new("pr-code-fold-all")
                         .ghost()
                         .xsmall()
-                        .icon(Icon::default().path(if all_folded {
+                        .icon(icon(if all_folded {
                             "icons/chevron_up_down.svg"
                         } else {
                             "icons/chevrons_down_up.svg"
@@ -132,26 +252,46 @@ impl CodeTab {
                 )
             })
             .when(self.test_files > 0, |d| {
-                let hide = self.hide_tests;
+                let hide = code.hide_tests;
                 d.child(
-                    Button::new("pr-code-hide-tests")
-                        .ghost()
-                        .xsmall()
-                        .selected(hide)
-                        .toggled(hide)
-                        .icon(Icon::default().path("icons/flask_conical_off.svg"))
-                        .tooltip(if hide {
-                            "Show test files"
-                        } else {
-                            "Hide test files"
-                        })
-                        .on_click(
-                            cx.listener(move |this, _, _, cx| this.set_hide_tests(!hide, cx)),
-                        ),
+                    toggle(
+                        "pr-code-hide-tests",
+                        "icons/flask_conical_off.svg",
+                        hide,
+                        match hide {
+                            true => "Show test files".into(),
+                            false => "Hide test files".into(),
+                        },
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| this.set_hide_tests(!hide, cx))),
+                )
+            })
+            .when(files > 0, |d| {
+                let open = code.file_tree;
+                d.child(
+                    toggle(
+                        "pr-code-file-tree",
+                        "icons/folder_tree.svg",
+                        open,
+                        match open {
+                            true => "Hide file tree".into(),
+                            false => "Show file tree".into(),
+                        },
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| this.set_file_tree(!open, cx))),
                 )
             });
 
+        let width = self.toolbar_width.clone();
+        let measure = canvas(
+            move |bounds, _, _| width.set(bounds.size.width),
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full();
+
         div()
+            .relative()
             .flex_none()
             .h(px(40.))
             .px_4()
@@ -163,6 +303,7 @@ impl CodeTab {
             .border_color(border)
             .text_xs()
             .text_color(muted)
+            .child(measure)
             .child(left)
             .child(right)
             .into_any_element()

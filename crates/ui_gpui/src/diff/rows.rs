@@ -19,6 +19,8 @@ use gpui_kit::{
 use std::cell::{Cell, RefCell};
 use std::ops::Range;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 /// One row, ready to paint.
 pub(crate) struct DiffRow {
@@ -62,31 +64,44 @@ impl RowGeometry {
 }
 
 /// How far unwrapped rows are scrolled sideways, shared by all elements
-/// showing one file, and the widest text they have shown.
+/// showing one file, and the widest text they have shown. (Atomics: a
+/// file's state is built off the UI thread.)
 #[derive(Clone, Default, Debug)]
-pub(crate) struct HScroll {
-    offset: Rc<Cell<Pixels>>,
-    widest: Rc<Cell<Pixels>>,
+pub(crate) struct HScroll(Arc<HScrollState>);
+
+#[derive(Default, Debug)]
+struct HScrollState {
+    /// `f32` bits, in pixels.
+    offset: AtomicU32,
+    widest: AtomicU32,
+}
+
+fn load(value: &AtomicU32) -> Pixels {
+    px(f32::from_bits(value.load(Ordering::Relaxed)))
+}
+
+fn store(value: &AtomicU32, pixels: Pixels) {
+    value.store(f32::from(pixels).to_bits(), Ordering::Relaxed);
 }
 
 impl HScroll {
     pub fn offset(&self) -> Pixels {
-        self.offset.get()
+        load(&self.0.offset)
     }
 
     fn note_width(&self, width: Pixels) {
-        if width > self.widest.get() {
-            self.widest.set(width);
+        if width > load(&self.0.widest) {
+            store(&self.0.widest, width);
         }
     }
 
     /// Scroll by `delta` (positive: the text moves right) where `visible`
     /// of the widest text shows; whether the offset changed.
     fn scroll_by(&self, delta: Pixels, visible: Pixels) -> bool {
-        let max = (self.widest.get() - visible).max(px(0.));
-        let offset = (self.offset.get() - delta).clamp(px(0.), max);
-        let changed = offset != self.offset.get();
-        self.offset.set(offset);
+        let max = (load(&self.0.widest) - visible).max(px(0.));
+        let offset = (self.offset() - delta).clamp(px(0.), max);
+        let changed = offset != self.offset();
+        store(&self.0.offset, offset);
         changed
     }
 }
@@ -404,14 +419,14 @@ fn paint_rows(
     let mut y = bounds.origin.y;
     for (cells, row_layout) in rows.iter().zip(&layout.rows) {
         let height = row_layout.height;
-        for column in 0..shape.columns {
+        let columns = cells.iter().zip(&row_layout.cells).take(shape.columns);
+        for (column, (cell, cell_layout)) in columns.enumerate() {
             let frame = ColumnFrame {
                 left: bounds.origin.x + column_width * column as f32,
                 width: column_width,
             };
             let band = |width: Pixels| Bounds::new(point(frame.left, y), size(width, height));
-            let (Some(cell), Some(cell_layout)) = (&cells[column], &row_layout.cells[column])
-            else {
+            let (Some(cell), Some(cell_layout)) = (cell, cell_layout) else {
                 if let Some(empty) = empty {
                     window.paint_quad(fill(band(frame.width), empty));
                 }
