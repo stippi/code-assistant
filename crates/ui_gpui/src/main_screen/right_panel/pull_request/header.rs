@@ -27,6 +27,7 @@ use github::model::{
 };
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Escape, Input, InputEvent, InputState};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme, Icon, Sizable};
 use gpui_kit::{
     AnyElement, Context, Entity, EventEmitter, FontWeight, Render, SharedString, Subscription,
@@ -78,7 +79,13 @@ pub struct DetailHeader {
     _confirm_timeout: Option<Task<()>>,
     /// The tab below is scrolled.
     condensed: bool,
+    /// The copyable text just copied, ticked for [`COPIED_FOR`].
+    copied: Option<&'static str>,
+    _copied_reset: Option<Task<()>>,
 }
+
+/// How long a copied text shows its tick.
+const COPIED_FOR: Duration = Duration::from_millis(1500);
 
 impl EventEmitter<PullRequestIntent> for DetailHeader {}
 
@@ -104,6 +111,8 @@ impl DetailHeader {
             confirm: InlineConfirm::default(),
             _confirm_timeout: None,
             condensed: false,
+            copied: None,
+            _copied_reset: None,
         }
     }
 
@@ -466,26 +475,65 @@ impl DetailHeader {
                     )
             })
             .child(div().flex_1())
-            .child(
-                div()
-                    .id("pr-checkout-command")
-                    .flex_none()
-                    .cursor_pointer()
-                    .font_family(cx.theme().mono_font_family.clone())
-                    .text_xs()
-                    .text_color(muted)
-                    .hover(|s| s.text_color(cx.theme().foreground))
-                    .child(command.clone())
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.emit(PullRequestIntent::Copy(command.clone()), cx)
-                    })),
-            )
+            .child(div().flex_none().text_xs().child(self.copyable(
+                "pr-checkout-command",
+                command,
+                "Copy the checkout command",
+                cx,
+            )))
+    }
+
+    /// Mono `text` that copies itself when clicked; a tick confirms it for
+    /// a moment.
+    fn copyable(
+        &self,
+        id: &'static str,
+        text: String,
+        tooltip: &'static str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let theme = cx.theme();
+        div()
+            .id(id)
+            .debug_selector(move || id.into())
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap_1()
+            .cursor_pointer()
+            .font_family(theme.mono_font_family.clone())
+            .text_color(theme.muted_foreground)
+            .hover(|s| s.text_color(theme.foreground))
+            .tooltip(move |window, cx| Tooltip::new(tooltip).build(window, cx))
+            .child(div().min_w_0().truncate().child(text.clone()))
+            .when(self.copied == Some(id), |row| {
+                row.child(
+                    svg()
+                        .debug_selector(move || format!("{id}-copied"))
+                        .flex_none()
+                        .size(px(12.))
+                        .path("icons/check.svg")
+                        .text_color(theme.success),
+                )
+            })
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.emit(PullRequestIntent::Copy(text.clone()), cx);
+                this.copied = Some(id);
+                this._copied_reset = Some(cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(COPIED_FOR).await;
+                    this.update(cx, |this, cx| {
+                        this.copied = None;
+                        cx.notify();
+                    })
+                    .ok();
+                }));
+                cx.notify();
+            }))
     }
 
     /// `base ← head`, and the files and lines changed.
     fn render_branches(&self, facts: &Facts, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
-        let head = facts.head.to_string();
         div()
             .flex()
             .items_center()
@@ -494,16 +542,22 @@ impl DetailHeader {
             .text_color(muted)
             .child(
                 div()
-                    .id("pr-branches")
                     .min_w_0()
-                    .truncate()
-                    .cursor_pointer()
-                    .font_family(cx.theme().mono_font_family.clone())
-                    .hover(|s| s.text_color(cx.theme().foreground))
-                    .child(format!("{} ← {}", facts.base, facts.head))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.emit(PullRequestIntent::Copy(head.clone()), cx)
-                    })),
+                    .flex()
+                    .items_center()
+                    .gap_1p5()
+                    .child(
+                        div()
+                            .flex_none()
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .child(format!("{} ←", facts.base)),
+                    )
+                    .child(self.copyable(
+                        "pr-head-branch",
+                        facts.head.to_string(),
+                        "Copy the branch name",
+                        cx,
+                    )),
             )
             .child(div().flex_1())
             .when_some(facts.changed_files, |row, files| {
@@ -762,6 +816,21 @@ mod tests {
         assert!(cx.debug_bounds("pr-title").is_none());
         assert!(cx.debug_bounds("pr-condensed-title").is_some());
         assert!(cx.debug_bounds("pr-primary").is_some(), "the actions stay");
+    }
+
+    #[gpui_kit::test]
+    fn the_head_branch_copies_its_name_and_ticks_for_a_moment(cx: &mut TestAppContext) {
+        let (_, intents, cx) = header(Some(detail(290)), cx);
+        assert!(cx.debug_bounds("pr-head-branch-copied").is_none());
+        click(cx, "pr-head-branch");
+        assert_eq!(
+            intents.borrow().as_slice(),
+            [PullRequestIntent::Copy("feat/image-file-renderer".into())]
+        );
+        assert!(cx.debug_bounds("pr-head-branch-copied").is_some());
+        cx.executor().advance_clock(COPIED_FOR);
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("pr-head-branch-copied").is_none());
     }
 
     #[gpui_kit::test]

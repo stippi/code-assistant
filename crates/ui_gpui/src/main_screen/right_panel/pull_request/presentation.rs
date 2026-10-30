@@ -11,7 +11,11 @@ use github::model::{
     Check, CheckStatus, ChecksState, MergeMethod, Mergeability, PullRequestState, ReviewDecision,
 };
 use gpui_kit::component::ActiveTheme;
-use gpui_kit::{AnyElement, App, Hsla, Pixels, SharedString, div, prelude::*, px, svg};
+use gpui_kit::{
+    Animation, AnimationExt, AnyElement, App, Hsla, Pixels, SharedString, Transformation, div,
+    percentage, prelude::*, px, svg,
+};
+use std::time::Duration;
 
 /// What a pull request's state is shown as: a draft is open but looks apart.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,15 +70,37 @@ pub struct Glyph {
     pub icon: &'static str,
     pub color: Hsla,
     pub label: SharedString,
+    /// Turns while something runs; the id of its animation, unique among
+    /// the glyphs drawn beside it.
+    pub spin: Option<SharedString>,
 }
 
 impl Glyph {
-    pub fn render(&self, size: Pixels) -> impl IntoElement + use<> {
-        svg()
+    pub fn new(icon: &'static str, color: Hsla, label: impl Into<SharedString>) -> Self {
+        Self {
+            icon,
+            color,
+            label: label.into(),
+            spin: None,
+        }
+    }
+
+    pub fn render(&self, size: Pixels) -> AnyElement {
+        let glyph = svg()
             .flex_none()
             .size(size)
             .path(self.icon)
-            .text_color(self.color)
+            .text_color(self.color);
+        match &self.spin {
+            Some(id) => glyph
+                .with_animation(
+                    id.clone(),
+                    Animation::new(Duration::from_secs(1)).repeat(),
+                    |svg, delta| svg.with_transformation(Transformation::rotate(percentage(delta))),
+                )
+                .into_any_element(),
+            None => glyph.into_any_element(),
+        }
     }
 }
 
@@ -87,10 +113,12 @@ pub fn conflict_glyph(
     cx: &App,
 ) -> Option<Glyph> {
     (state == PullRequestState::Open && !is_draft && mergeability == Mergeability::Conflicting)
-        .then(|| Glyph {
-            icon: "icons/triangle_alert.svg",
-            color: cx.theme().danger,
-            label: format!("Conflicts with {base_branch}").into(),
+        .then(|| {
+            Glyph::new(
+                "icons/triangle_alert.svg",
+                cx.theme().danger,
+                format!("Conflicts with {base_branch}"),
+            )
         })
 }
 
@@ -112,11 +140,7 @@ pub fn checks_glyph(state: ChecksState, cx: &App) -> Glyph {
             "Some checks haven't completed yet",
         ),
     };
-    Glyph {
-        icon,
-        color,
-        label: label.into(),
-    }
+    Glyph::new(icon, color, label)
 }
 
 pub fn check_status_glyph(check: &Check, cx: &App) -> Glyph {
@@ -129,10 +153,13 @@ pub fn check_status_glyph(check: &Check, cx: &App) -> Glyph {
         CheckStatus::Skipped => ("icons/circle_slash.svg", muted),
         CheckStatus::Neutral => ("icons/circle_dashed.svg", muted),
     };
-    Glyph {
-        icon,
-        color,
-        label: check_status_label(check).into(),
+    let glyph = Glyph::new(icon, color, check_status_label(check));
+    match check.status {
+        CheckStatus::Pending => Glyph {
+            spin: Some(format!("check-spin-{}", check.name).into()),
+            ..glyph
+        },
+        _ => glyph,
     }
 }
 
@@ -150,11 +177,7 @@ pub fn review_glyph(decision: ReviewDecision, cx: &App) -> Glyph {
             "Awaiting review",
         ),
     };
-    Glyph {
-        icon,
-        color,
-        label: label.into(),
-    }
+    Glyph::new(icon, color, label)
 }
 
 pub fn merge_method_label(method: MergeMethod) -> &'static str {
@@ -342,6 +365,17 @@ mod tests {
     use super::*;
     use crate::main_screen::right_panel::pull_request::fixtures::{check, hours_ago, now};
     use chrono::Duration;
+
+    #[gpui_kit::test]
+    fn only_a_running_check_spins(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::component::init(cx);
+            let running = check_status_glyph(&check("build", CheckStatus::Pending), cx);
+            assert_eq!(running.spin.as_deref(), Some("check-spin-build"));
+            let done = check_status_glyph(&check("build", CheckStatus::Success), cx);
+            assert!(done.spin.is_none());
+        });
+    }
 
     #[test]
     fn relative_times() {

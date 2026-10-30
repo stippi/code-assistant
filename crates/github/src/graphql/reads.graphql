@@ -113,9 +113,11 @@ query PullRequestCore(
             ... on User {
               login
               name
+              avatarUrl
             }
             ... on Bot {
               login
+              avatarUrl
             }
             # A team's name and avatar are nullable differently from a person's, so they travel
             # under their own aliases. `combinedSlug` is the `org/slug` a reviewer row shows.

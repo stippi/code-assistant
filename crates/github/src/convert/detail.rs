@@ -335,7 +335,7 @@ pub(crate) fn core(data: CoreData, host: &str) -> Option<(Detail, bool)> {
         .collect();
     let reviewers = requested
         .iter()
-        .filter_map(|r| r.as_actor())
+        .filter_map(|r| with_fallback_avatar(r.as_actor(), host))
         .chain(requested.iter().filter_map(|r| r.as_team()))
         .collect();
     let detail = Detail {
@@ -495,6 +495,9 @@ mod tests {
         assert_eq!(detail.reviewers[0].name.as_deref(), Some("The Octocat"));
         assert!(detail.reviewers[1].is_bot);
         assert_eq!(detail.reviewers[2].name.as_deref(), Some("Core"));
+        // Requested people show their avatar, from GitHub or by login.
+        assert!(detail.reviewers[0].avatar_url.is_some());
+        assert!(detail.reviewers[1].avatar_url.is_some());
     }
 
     #[test]
