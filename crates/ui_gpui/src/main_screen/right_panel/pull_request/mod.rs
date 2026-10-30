@@ -474,7 +474,14 @@ impl PullRequestPanel {
                 cx.update(|cx| {
                     if let Some(gpui) = cx.try_global::<crate::Gpui>() {
                         match place {
-                            CheckoutPlace::Worktree => gpui.open_session(to),
+                            CheckoutPlace::Worktree => {
+                                // Its pull request shows beside it.
+                                crate::shared::ui_state::update(cx, |store| {
+                                    store.set_right_panel_open(&to, true);
+                                    store.set_right_panel_view(&to, "pull-request");
+                                });
+                                gpui.open_session(to)
+                            }
                             CheckoutPlace::Here => gpui.cmd_list_branches_and_worktrees(to),
                         }
                     }

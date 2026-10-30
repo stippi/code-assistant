@@ -83,6 +83,15 @@ const VIEWED_FLUSH_DELAY: Duration = Duration::from_millis(400);
 /// asks for the next page.
 const LIST_OVERDRAW: Pixels = px(512.);
 
+/// What stays in view while every row is rebuilt.
+#[derive(Clone, Copy, Debug)]
+enum KeepInView {
+    /// The same row (the rows are the same, only their heights change).
+    Row(usize),
+    /// The header of the file at the top (the rows change).
+    File(usize),
+}
+
 /// A shown file: its page and its index there.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Shown {
@@ -127,6 +136,9 @@ pub struct CodeTab {
     /// The toolbar's width at the last paint: narrow, it folds the diff
     /// options into a menu.
     toolbar_width: Rc<Cell<Pixels>>,
+    /// Where the list goes once its rows are rebuilt after a change of
+    /// the diff options, so the file in view stays in view.
+    keep_in_view: Option<KeepInView>,
 
     viewed: ViewedFiles,
     viewed_read: Option<Task<()>>,
@@ -218,6 +230,7 @@ impl CodeTab {
             tree_selected: None,
             tree_scroll: UniformListScrollHandle::new(),
             toolbar_width: Rc::new(Cell::new(px(f32::MAX))),
+            keep_in_view: None,
             viewed: ViewedFiles::default(),
             viewed_read: None,
             viewed_flush: None,
@@ -556,6 +569,19 @@ impl CodeTab {
         preferences::update(cx, |preferences| preferences.code = code);
     }
 
+    /// Keep what is at the top of the list there through the next rebuild.
+    fn keep_top(&mut self, same_rows: bool) {
+        let top = self.list_state.logical_scroll_top().item_ix;
+        self.keep_in_view = match same_rows {
+            true => Some(KeepInView::Row(top)),
+            false => self
+                .rows
+                .get(top)
+                .and_then(CodeRow::file)
+                .map(KeepInView::File),
+        };
+    }
+
     /// Every file gets new rows (their heights change).
     fn restamp(&mut self) {
         for page in 0..self.pages.len() {
@@ -572,6 +598,7 @@ impl CodeTab {
             return;
         }
         self.change_code(cx, |code| code.layout = layout);
+        self.keep_top(false);
         for file in self.pages.iter_mut().flat_map(|p| &mut p.files) {
             let breaks = std::mem::take(&mut file.breaks);
             file.cut(&breaks, layout);
@@ -582,6 +609,7 @@ impl CodeTab {
 
     fn set_wrap(&mut self, wrap: bool, cx: &mut Context<Self>) {
         self.change_code(cx, |code| code.wrap = wrap);
+        self.keep_top(true);
         self.restamp();
         cx.notify();
     }
@@ -590,6 +618,7 @@ impl CodeTab {
     /// change.
     fn set_hide_whitespace(&mut self, hide: bool, cx: &mut Context<Self>) {
         self.change_code(cx, |code| code.hide_whitespace = hide);
+        self.keep_top(false);
         let view = self.diff_view();
         for file in self.pages.iter_mut().flat_map(|p| &mut p.files) {
             file.reshape(view);
@@ -1031,6 +1060,17 @@ impl CodeTab {
         let rows = flatten(&outlines, footer);
         if let Some((old, count)) = changed_span(&self.rows, &rows) {
             self.list_state.splice(old, count);
+        }
+        let keep = match self.keep_in_view.take() {
+            Some(KeepInView::Row(ix)) => Some(ix.min(rows.len().saturating_sub(1))),
+            Some(KeepInView::File(file)) => rows.iter().position(|r| *r == CodeRow::File { file }),
+            None => None,
+        };
+        if let Some(item_ix) = keep {
+            self.list_state.scroll_to(ListOffset {
+                item_ix,
+                offset_in_item: px(0.),
+            });
         }
         if !rows.is_empty()
             && let Some(mounted) = self.mounted_at.take()

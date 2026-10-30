@@ -474,10 +474,10 @@ fn a_gap_reveals_lines_once_the_file_is_read(cx: &mut TestAppContext) {
         assert_eq!(file.diff.hunks[0].lines[0].text.as_ref(), "line 1");
         // Only the tail is left: new lines 13..=20.
         let gaps: Vec<_> = file.gaps.iter().map(|g| (g.gap, g.hidden)).collect();
-        assert_eq!(gaps, [(0, Some(0)), (1, Some(8))]);
+        assert_eq!(gaps, [(1, Some(8))]);
     });
-    // A gap shown whole but naming a section keeps its row, without
-    // buttons; the tail can be revealed.
+    // The gap shown whole is gone, section and all; the tail can be
+    // revealed.
     assert!(cx.debug_bounds("pr-code-expand-0-0-0-all").is_none());
     assert!(cx.debug_bounds("pr-code-expand-0-0-1-all").is_some());
 }
@@ -522,4 +522,20 @@ fn unwrapping_gives_every_file_new_rows(cx: &mut TestAppContext) {
     let unwrapped = rows(&tab, cx);
     assert_eq!(unwrapped.len(), wrapped.len());
     assert_ne!(unwrapped, wrapped, "heights change: rows are measured anew");
+}
+
+#[gpui_kit::test]
+fn the_file_in_view_stays_in_view_when_the_layout_changes(cx: &mut TestAppContext) {
+    let (tab, _, cx) = tab(cx);
+    let paths: Vec<String> = (0..30).map(|n| format!("src/f{n:02}.rs")).collect();
+    let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
+    arrive(&tab, cx, None, &paths, None);
+    tab.update(cx, |tab, cx| tab.reveal_file(12, cx));
+    cx.run_until_parked();
+    tab.update(cx, |tab, cx| tab.set_layout(DiffLayout::Split, cx));
+    cx.run_until_parked();
+    tab.read_with(cx, |tab, _| {
+        let top = tab.list_state.logical_scroll_top().item_ix;
+        assert_eq!(tab.rows[top], CodeRow::File { file: 12 });
+    });
 }

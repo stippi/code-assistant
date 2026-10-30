@@ -129,7 +129,8 @@ pub fn shape(
             last.lines.extend(context(new_next + top, bottom));
             last.lines.extend(hunk.lines.iter().cloned());
         } else {
-            if hidden > 0 || hunk.header.is_some() {
+            // A section names the gap until its lines show instead.
+            if hidden > 0 || (size == 0 && hunk.header.is_some()) {
                 gaps.push(ShownGap {
                     gap: ix,
                     before: shown.len(),
