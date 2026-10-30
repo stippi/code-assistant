@@ -69,6 +69,26 @@ ui_gpui (Layer 4)           diff/: shared diff model + row rendering (Review
   submit review `POST pulls/N/reviews`, reviewers
   `POST/DELETE pulls/N/requested_reviewers`, labels `POST issues/N/labels`,
   `DELETE issues/N/labels/{name}`.
+- **Workflow approvals** (a fork's open pull request): the detail read
+  lists the head's runs waiting for a maintainer
+  (`actions/runs?head_sha&branch&event=pull_request&status=action_required`,
+  up to 1000) and adds them as `action-required` checks
+  (`Detail::workflow_approvals`; unknown after a failed read, shown as
+  "Workflow approval status"); the checks revalidation probes a fork's
+  `actions/runs?head_sha&event=pull_request` too. `Action::ApproveWorkflows`
+  (writers only) refuses a head another open pull request shares
+  (`PullRequestsByHead`) and reads the head again before each
+  `POST actions/runs/{id}/approve`.
+- **Stacks** (GitHub's stacked pull requests): `Client::stack` reads
+  `stacks?pull_request=N` (ETag-revalidated; 404 = none) and then
+  `stacks/{number}` for titles, drafts and heads; github.com listings mark
+  where rows sit (`ListEntry::stack`, aliased `PullRequestStackMembership`,
+  failing quietly). `merge_stack` sends `PUT pulls/N/merge-async` and polls
+  `merge-async/{uuid}` (backoff to 10 s, 5 min); `stack_rebase` checks the
+  stack still is what the viewer saw (`StackHead`s) and that every open
+  branch may be pushed to (`PullRequestBranchAccess`), and returns what a
+  rebase needs (remote URL, credential header, layers). The refusals keep
+  T3 Code's words.
 - **Model** (serde, also persisted): `RepoRef {host, owner, name}`
   (+ `from_remote_url`), `PullRequestRef {repo, number}`, `Actor`, `Label`,
   `Check`, `ChecksState`, `ListEntry`, `Summary`, `Detail` (body, head sha,
@@ -119,6 +139,7 @@ deleted modes, binary markers, `\ No newline at end of file`, CRLF) and
   | activity (comments, threads, commits) | 60 s | 128 |
   | diff page | 60 s; per-commit diffs 10 min | 128, 32 MB of patch text |
   | files viewed | 15 s | 128 |
+  | stack | 60 s | 128 |
   | viewer, candidates | 10 min | 32 |
   | own PR of a branch | 60 s | 128 |
 
@@ -150,12 +171,27 @@ deleted modes, binary markers, `\ No newline at end of file`, CRLF) and
   | review, request reviewers | detail, activity (+ reviewer candidates) |
   | action (merge, close, update branch, …) | detail, checks, activity |
   | files viewed | files viewed only (no diff refetch) |
+  | stack merge / rebase | every part but files viewed, of every layer |
   | refresh | every part, candidates |
 
 - The lifecycle sweep reads the session PRs through the same client:
   one batched `PullRequestSummary` for all known PR numbers, a head-branch
   lookup for sessions without one (or whose PR now has another head or is
   gone), then one more batch for those (`session::pull_request`).
+- **Checkout** (`pull_requests::checkout`, `git::pull_request`), as
+  `gh pr checkout` does it: the head branch fetched from the remote of the
+  pull request's repository; a fork's head as `refs/pull/N/head` from it
+  (no remote added), tracking the fork's URL and branch when maintainers
+  may push, else the pull request's ref; a fork's branch named like the
+  default (or base) branch becomes `owner/branch`; an existing branch only
+  fast-forwards. *Here* refuses tracked changes; *in a worktree* reuses the
+  branch's worktree or adds one beside the project, and a new session for
+  the project works in it. The session knows the pull request as its own
+  (lifecycle snapshot).
+- **Stack rebase** (`git::stack_rebase`, after T3's cascade): in a scratch
+  repository each open layer is replayed onto the rebased one below and
+  pushed with a lease on the head it had; the credential goes through
+  `GIT_CONFIG_*` in the environment, never the command line.
 
 #### API (`SessionService`, `session/service/pull_requests.rs`)
 
@@ -172,7 +208,7 @@ change a row invalidate the repo's lists.
 /// (a `PullRequestChanged` follows when it lands).
 pub struct Fetched<T> { pub value: T, pub fetched_at: SystemTime, pub refreshing: bool }
 
-pub enum PullRequestPart { Detail, Checks, Activity, Diff, FilesViewed }
+pub enum PullRequestPart { Detail, Checks, Activity, Diff, FilesViewed, Stack }
 
 // Where a session's pull requests live and which one is its own; `None`
 // without a project or a GitHub remote.
@@ -194,6 +230,7 @@ async fn pull_request_thread_comments(&self, pr: PullRequestRef, thread_id: Stri
 async fn pull_request_file_contents(&self, pr: PullRequestRef, commit: Option<String>, change: FileChange, old_path: String, new_path: String) -> Result<DiffFileContents>;
 async fn pull_request_reviewer_candidates(&self, pr: PullRequestRef) -> Result<ReviewerCandidates>;
 async fn pull_request_label_candidates(&self, pr: PullRequestRef) -> Result<LabelCandidates>;
+async fn pull_request_stack(&self, pr: PullRequestRef) -> Result<Fetched<Option<Stack>>>;
 async fn github_viewer(&self, host: String) -> Result<Viewer>;
 
 // Writes: run interactively, then invalidate and publish PullRequestChanged.
@@ -207,7 +244,9 @@ async fn pull_request_react(&self, pr, subject_id: Option<String>, content: Reac
 async fn pull_request_request_reviewers(&self, pr, reviewers: Vec<Reviewer>, requested: bool) -> Result<()>;
 async fn pull_request_set_labels(&self, pr, labels: Vec<String>, applied: bool) -> Result<()>;
 async fn pull_request_set_files_viewed(&self, pr, files: Vec<(String, bool)>) -> Result<()>;
-async fn pull_request_action(&self, pr, action: Action) -> Result<()>;
+async fn pull_request_action(&self, pr, action: Action) -> Result<()>; // incl. ApproveWorkflows
+async fn pull_request_stack_action(&self, pr, stack_number: u64, expected: Vec<StackHead>, action: StackAction) -> Result<()>;
+async fn pull_request_checkout(&self, session_id: String, pr, place: CheckoutPlace) -> Result<PullRequestCheckout>; // Here | Worktree
 async fn pull_request_refresh(&self, pr: PullRequestRef) -> Result<()>; // drop every cached part, refetch on next read
 ```
 
@@ -217,10 +256,16 @@ and `UiEvent::PullRequestListChanged { repo: RepoRef }` are app-scoped
 
 ### UI: right panel tab "Pull request"
 
-Navigation: the tab shows the session's PR when it has one, otherwise the
-repo's PR list; a back crumb returns to the list. Detail tabs: **Summary**,
-**Timeline**, **Code** (T3's Guide tab, an agent-written review tour, is
-out of scope for now).
+Navigation: a row of tabs (T3's right panel tabs): the repo's PR list,
+then a tab per opened PR ("#290" after its state glyph). Opening an open
+PR shows its tab; closing the shown one shows its right neighbour, else the
+last, else the list; close by the button replacing the glyph under the
+pointer, a middle click or the context menu (others, to the right, all);
+drag to reorder; overflow scrolls with arrows. A tab keeps its page (scroll,
+sub-tab, drafts) while open; only the shown page reads and polls. Open tabs
+and their sub-tabs are remembered per session; without any, the session's
+own PR opens. Detail tabs: **Summary**, **Timeline**, **Code** (T3's Guide
+tab, an agent-written review tour, is out of scope).
 
 - **Header**: repo · `#N ↗` in the state colour; editable title; author ·
   updated; `base ← head` (copy), files, `+A −D`; behind-by warning with
@@ -228,10 +273,19 @@ out of scope for now).
   Auto-merge / state badge) with a two-click inline confirm; ⋯ menu
   (refresh, draft/ready, close/reopen, auto-merge on/off, merge method,
   maintainer edits, open on GitHub, copy link, delete branch). Collapses to
-  one row when scrolled.
+  one row when scrolled. "Check out ▾": in a separate worktree (a new
+  session on it, shown at once) or in this repository, or copy the `gh`
+  command; the page says where it landed (T3's toasts as a notice).
+  Stacks: "⧉ 2/3" with the stack's menu (layers top first, a click opens
+  that PR's tab, the base, Merge stack (k) / Rebase stack) and "Merge
+  stack", both confirmed over the panel; while a PR is in a stack (or its
+  stack is not known yet) the single merge controls stay away; "Retry
+  stack lookup" after a failed read.
 - **Summary** (GitHub's Conversation): reviewers (avatars, verdict rings,
   picker), labels (chips, picker), description (markdown, edit), checks
-  (collapsed list, popover in the tab bar), comments with bot / resolved
+  (collapsed list; popover in the tab bar: attention, running, then
+  completed behind "Show all", "Details" links; "Approve workflows to run"
+  in its place while a fork's runs wait, two clicks), comments with bot / resolved
   filters, newest-first toggle, 10 conversations at a time, comment cards
   (header strip, verdict badge, reactions, edit, body clipped at 240 px),
   threads with replies, collapsed resolved/dismissed cards.
@@ -243,6 +297,17 @@ out of scope for now).
   (reply, resolve, load more, reactions, edit), threads not on the diff,
   new comments on a line or range → pending review (or → agent, as today's
   line comments), diff pages loaded as the end scrolls into view.
+  Toolbar toggles (remembered): hide whitespace changes (default on;
+  client-side like T3: each hunk re-diffed without whitespace, per page
+  off the UI thread), stacked | split (old left, new right, paired runs;
+  new and deleted files stay one column), wrap (off: rows scroll sideways
+  per file, line numbers stay), hide tests, file tree; narrow toolbars fold
+  the first three into a menu. Gaps between hunks and the unknown tail
+  expand by 100 lines or whole (shift-click whole); the first click reads
+  the file (`pull_request_file_contents`, one read per file at a time) and
+  highlights both whole sides. The file tree (right, min(320 px, 40 %))
+  compacts single-folder chains, tints files by change with their letter,
+  and a click unfolds the file and scrolls to it.
 - **Composer**: floating button with the pending-comment count; Comment
   (post, close with comment) and Review (Comment / Approve / Request
   changes + pending comments).
