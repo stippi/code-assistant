@@ -35,9 +35,12 @@ use super::review_rows::{
 };
 use crate::comments::CommentChange;
 use crate::comments::editor::CommentEditor;
+use crate::diff::prepare::PreparedFileDiff;
+use crate::diff::render::{
+    GutterNumbers, added_row_colors, deleted_row_colors, diff_body_bg, render_diff_chunk,
+};
 use crate::shared::file_icons;
-use crate::tool_cards::diff_card::{added_row_colors, deleted_row_colors, render_diff_chunk};
-use crate::{Gpui, PreparedReviewDiff, RepoReviewData};
+use crate::{Gpui, RepoReviewData};
 use code_assistant_core::line_comments::LineComment;
 use code_assistant_core::session::{ReviewMode, ReviewScanState};
 use git::{ChangeStatus, ChangedFile};
@@ -169,7 +172,7 @@ const REVIEW_LIST_OVERDRAW: gpui_kit::Pixels = px(512.);
 /// fingerprint or status), the diff is stale.
 struct LoadedDiff {
     file: ChangedFile,
-    prepared: PreparedReviewDiff,
+    prepared: PreparedFileDiff,
     /// Unique per arrival; tells the list rows of a reloaded diff apart.
     stamp: u64,
 }
@@ -448,7 +451,8 @@ impl ReviewView {
         if let Some((repo_root, base, file)) = next {
             self.in_flight = Some(((repo_root.clone(), file.path.clone()), file.clone()));
             if let Some(gpui) = cx.try_global::<Gpui>() {
-                gpui.cmd_get_review_file_diff(session_id, repo_root, self.mode, base, file);
+                let theme = cx.theme().highlight_theme.clone();
+                gpui.cmd_get_review_file_diff(session_id, repo_root, self.mode, base, file, theme);
             }
         }
     }
@@ -1150,7 +1154,7 @@ impl ReviewView {
     fn render_chunk(
         &self,
         key: &FileKey,
-        prepared: &PreparedReviewDiff,
+        prepared: &PreparedFileDiff,
         chunk_ix: usize,
         window: &Window,
         cx: &Context<Self>,
@@ -1161,21 +1165,10 @@ impl ReviewView {
         };
         let theme = cx.theme();
         let rem_size = window.rem_size();
-        let is_dark = theme.background.l < 0.5;
-        let body_bg = if is_dark {
-            gpui_kit::hsla(0.0, 0.0, 0.08, 1.0)
-        } else {
-            gpui_kit::hsla(0.0, 0.0, 0.97, 1.0)
-        };
         let line_height_px = rems(1.25).to_pixels(rem_size).round();
 
-        // Flat line index of this chunk's first row within the file's hunks,
-        // and the local rows (relative to this chunk) to paint as selected.
-        let base_line: usize = prepared.hunks[..chunk.hunk]
-            .iter()
-            .map(|h| h.lines.len())
-            .sum::<usize>()
-            + chunk.lines.start;
+        // The local rows (relative to this chunk) to paint as selected.
+        let base_line = chunk.flat_start;
         let marks = ChunkMarks {
             highlight: self.selection.highlight(key, base_line, chunk.lines.len()),
             color: theme.selection,
@@ -1191,7 +1184,7 @@ impl ReviewView {
             .w_full()
             .when(chunk_ix == 0, |d| d.pt_1())
             .when(chunk_ix + 1 == chunks.len(), |d| d.pb_1())
-            .bg(body_bg)
+            .bg(diff_body_bg(theme))
             .flex()
             .flex_col()
             .text_size(rems(0.78125))
@@ -1199,10 +1192,9 @@ impl ReviewView {
             .font_family("Menlo")
             .font_weight(FontWeight(400.0))
             .child(render_diff_chunk(
-                &prepared.hunks,
+                prepared,
                 chunk,
-                prepared.chunked.gutter_width,
-                prepared.syntax.as_deref(),
+                GutterNumbers::New,
                 theme,
                 rem_size,
                 Some(selection),
@@ -1338,9 +1330,9 @@ mod tests {
     }
 
     /// A pure-add diff of `lines` lines.
-    fn prepared(lines: usize) -> PreparedReviewDiff {
+    fn prepared(lines: usize) -> PreparedFileDiff {
         let text: String = (0..lines).map(|i| format!("line {i}\n")).collect();
-        PreparedReviewDiff::from_content(
+        PreparedFileDiff::from_content(
             "a.rs",
             &git::FileDiffContent {
                 old_text: None,
@@ -1348,6 +1340,7 @@ mod tests {
                 is_binary: false,
                 too_large: false,
             },
+            None,
         )
     }
 
@@ -1389,7 +1382,7 @@ mod tests {
     #[gpui_kit::test]
     fn highlighted_rows_with_word_emphasis_render(cx: &mut TestAppContext) {
         let (view, cx) = view_with_files(vec![added_file("a.rs")], cx);
-        let prepared = PreparedReviewDiff::from_content(
+        let prepared = PreparedFileDiff::from_content(
             "a.rs",
             &git::FileDiffContent {
                 old_text: Some("fn grüße() -> &'static str { \"hallo wält\" }\n".into()),
@@ -1397,6 +1390,7 @@ mod tests {
                 is_binary: false,
                 too_large: false,
             },
+            None,
         );
         assert!(prepared.syntax.is_some());
         assert!(

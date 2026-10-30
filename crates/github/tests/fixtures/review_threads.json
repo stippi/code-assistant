@@ -1,0 +1,202 @@
+{
+  "data": {
+    "viewer": { "login": "me" },
+    "repository": {
+      "pullRequest": {
+        "reviewThreads": {
+          "totalCount": 3,
+          "pageInfo": { "hasNextPage": false, "endCursor": "threads-3" },
+          "nodes": [
+            {
+              "id": "PRRT_1",
+              "isResolved": true,
+              "isOutdated": false,
+              "path": "src/lib.rs",
+              "line": 12,
+              "diffSide": "LEFT",
+              "comments": {
+                "totalCount": 12,
+                "pageInfo": { "hasNextPage": true, "endCursor": "thread-1-comments" },
+                "nodes": [
+                  {
+                    "id": "PRRC_1",
+                    "author": { "__typename": "User", "login": "octocat", "avatarUrl": "https://avatars.githubusercontent.com/u/583231?v=4" },
+                    "body": "Why remove this?",
+                    "createdAt": "2026-10-30T10:30:00Z",
+                    "lastEditedAt": null,
+                    "url": "https://github.com/stippi/code-assistant/pull/291#discussion_r1",
+                    "reactionGroups": []
+                  },
+                  {
+                    "id": "PRRC_2",
+                    "author": { "__typename": "User", "login": "contributor", "avatarUrl": "https://avatars.githubusercontent.com/u/42?v=4" },
+                    "body": "It moved to the client.",
+                    "createdAt": "2026-10-30T11:15:00Z",
+                    "lastEditedAt": "2026-10-30T11:20:00Z",
+                    "url": "https://github.com/stippi/code-assistant/pull/291#discussion_r2",
+                    "reactionGroups": [
+                      {
+                        "content": "THUMBS_UP",
+                        "viewerHasReacted": false,
+                        "reactors": { "totalCount": 1, "nodes": [{ "login": "octocat" }] }
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "id": "PRRT_2",
+              "isResolved": false,
+              "isOutdated": true,
+              "path": "src/main.rs",
+              "line": null,
+              "diffSide": "RIGHT",
+              "comments": {
+                "totalCount": 1,
+                "pageInfo": { "hasNextPage": false, "endCursor": "c" },
+                "nodes": [
+                  {
+                    "id": "PRRC_3",
+                    "author": { "__typename": "User", "login": "octocat", "avatarUrl": null },
+                    "body": "Nit: naming.",
+                    "createdAt": "2026-10-30T12:30:00Z",
+                    "lastEditedAt": null,
+                    "url": null,
+                    "reactionGroups": []
+                  }
+                ]
+              }
+            },
+            {
+              "id": "PRRT_3",
+              "isResolved": false,
+              "isOutdated": false,
+              "path": "src/empty.rs",
+              "line": 3,
+              "diffSide": "RIGHT",
+              "comments": { "totalCount": 0, "pageInfo": { "hasNextPage": false }, "nodes": [] }
+            }
+          ]
+        },
+        "viewerCanUpdate": true,
+        "viewerDidAuthor": false,
+        "author": {
+          "__typename": "User",
+          "login": "contributor",
+          "avatarUrl": "https://avatars.githubusercontent.com/u/42?v=4"
+        },
+        "reactionGroups": [
+          {
+            "content": "THUMBS_UP",
+            "viewerHasReacted": true,
+            "reactors": { "totalCount": 14, "nodes": [{ "login": "octocat" }, { "login": "ME" }] }
+          },
+          {
+            "content": "SOMETHING_NEW",
+            "viewerHasReacted": false,
+            "reactors": { "totalCount": 2, "nodes": [] }
+          },
+          {
+            "content": "LAUGH",
+            "viewerHasReacted": false,
+            "reactors": { "totalCount": 0, "nodes": [] }
+          }
+        ],
+        "comments": {
+          "nodes": [
+            {
+              "id": "IC_1",
+              "lastEditedAt": "2026-10-30T10:05:00Z",
+              "author": { "__typename": "User", "login": "octocat", "avatarUrl": "https://avatars.githubusercontent.com/u/583231?v=4" },
+              "reactionGroups": [
+                {
+                  "content": "HEART",
+                  "viewerHasReacted": false,
+                  "reactors": { "totalCount": 1, "nodes": [{ "login": "contributor" }] }
+                }
+              ]
+            }
+          ]
+        },
+        "reviews": {
+          "nodes": [
+            {
+              "id": "PRR_approve",
+              "lastEditedAt": null,
+              "author": {
+                "__typename": "Bot",
+                "login": "review-bot",
+                "avatarUrl": "https://avatars.githubusercontent.com/in/9"
+              },
+              "reactionGroups": []
+            }
+          ]
+        },
+        "reviewRequests": {
+          "nodes": [
+            {
+              "requestedReviewer": {
+                "__typename": "User",
+                "login": "octocat",
+                "name": "The Octocat",
+                "avatarUrl": "https://avatars.githubusercontent.com/u/583231?v=4"
+              }
+            },
+            {
+              "requestedReviewer": {
+                "__typename": "Team",
+                "combinedSlug": "acme/core",
+                "teamName": "Core",
+                "teamAvatarUrl": null
+              }
+            }
+          ]
+        },
+        "latestReviews": {
+          "nodes": [
+            {
+              "state": "APPROVED",
+              "author": {
+                "__typename": "Bot",
+                "login": "review-bot",
+                "avatarUrl": "https://avatars.githubusercontent.com/in/9"
+              }
+            },
+            {
+              "state": "COMMENTED",
+              "author": { "__typename": "User", "login": "octocat", "avatarUrl": null }
+            }
+          ]
+        },
+        "reviewDismissals": {
+          "pageInfo": { "hasNextPage": false, "endCursor": "d" },
+          "nodes": [
+            { "dismissalMessage": "Outdated after the rewrite", "review": { "id": "PRR_dismissed" } },
+            {}
+          ]
+        },
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "oid": "1111111111111111111111111111111111111111",
+                "messageHeadline": "Add the pull request view",
+                "committedDate": "2026-10-28T09:00:00Z",
+                "authors": {
+                  "nodes": [
+                    {
+                      "name": "Stephan Aßmus",
+                      "avatarUrl": "https://avatars.githubusercontent.com/u/1?v=4",
+                      "user": { "login": "stippi" }
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

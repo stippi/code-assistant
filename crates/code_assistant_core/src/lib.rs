@@ -20,6 +20,7 @@ pub mod injection;
 pub mod line_comments;
 pub mod persistence;
 pub mod plugins;
+pub mod pull_requests;
 pub mod session;
 pub mod session_query;
 pub mod skills;

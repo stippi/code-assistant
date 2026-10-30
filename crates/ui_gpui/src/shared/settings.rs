@@ -92,6 +92,11 @@ pub struct UiSettings {
     /// The session sidebar's view and project folders.
     #[serde(default)]
     pub sidebar: SidebarSettings,
+
+    /// The pull request view's list settings and merge methods.
+    #[serde(default)]
+    pub pull_requests:
+        crate::main_screen::right_panel::pull_request::preferences::PullRequestPreferences,
 }
 
 /// Which list the session sidebar shows.
@@ -136,6 +141,7 @@ impl Default for UiSettings {
             review_default_base: None,
             review_expanded_repos: Vec::new(),
             sidebar: SidebarSettings::default(),
+            pull_requests: Default::default(),
         }
     }
 }

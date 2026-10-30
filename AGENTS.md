@@ -20,7 +20,7 @@ This is a Rust-based AI coding agent harness with multiple operational modes.
 ### Crate Layers
 
 ```
-Layer 0 (generic):    llm  command_executor  pty_session  fs_explorer  sandbox  web  git  terminal  terminal_output  audio
+Layer 0 (generic):    llm  command_executor  pty_session  fs_explorer  sandbox  web  git  github  terminal  terminal_output  audio
 Layer 1 (generic):    tools_core        — tool trait, registry, render, spec, permissions
                       mcp_client        — wraps MCP server tools as registry tools
 Layer 2 (generic):    agent_core        — agent loop, hook traits, dialect trait, AgentUi trait
@@ -139,6 +139,19 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
 - `code_assistant_core::session::monitor` (`MonitorHandle`, installed with
   `SessionManager::set_monitor_handle`; `UiEvent::UpdateActiveMonitors`);
   see `docs/background-monitors.md`
+
+### Pull Requests
+- Layer-0 `github` crate: HTTP client for api.github.com (token from
+  `GH_TOKEN` / `gh auth token`), typed model, every PR read and write;
+  `fake::FakeTransport` (feature `test-utils`) for tests
+- `code_assistant_core::pull_requests`: repo resolution for a session
+  (`origin` remote → `RepoRef`), per-part read cache with TTLs, shared
+  in-flight reads, stale-while-revalidate and disk snapshots; reached
+  through `SessionService::pull_request_*`, refreshes announced with
+  app-scoped `UiEvent::PullRequestChanged` / `PullRequestListChanged`
+- Client and snapshot dir injected via `AgentRuntimeOptions::pull_requests`;
+  the lifecycle sweep reads sessions' PRs through it in batches; see
+  `docs/pull-request-view.md`
 
 ### Session Storage
 - One folder per session below `sessions/`, the ID is its path:

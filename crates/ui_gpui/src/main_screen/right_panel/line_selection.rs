@@ -1,10 +1,10 @@
-//! Whole-line selection over [`DiffRows`](crate::tool_cards::diff_rows::DiffRows)
+//! Whole-line selection over [`DiffRows`](crate::diff::rows::DiffRows)
 //! chunks, shared by the right panel's views. A view keeps one
 //! [`LineSelection`] and builds each chunk's [`RowSelection`] with
 //! [`row_selection`]; the element reports pointer positions as flat line
 //! indices, which `key` ties to one file. A selection never spans files.
 
-use crate::tool_cards::diff_rows::{EndCallback, LineCallback, RowSelection};
+use crate::diff::rows::{EndCallback, LineCallback, RowSelection};
 use gpui_kit::{App, Context, FocusHandle, Hsla, Window};
 
 use std::ops::Range;

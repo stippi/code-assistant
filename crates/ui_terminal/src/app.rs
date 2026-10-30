@@ -1366,6 +1366,7 @@ impl TerminalTuiApp {
                 project_manager_factory:
                     code_assistant_core::session::service::default_project_manager_factory(),
                 llm_client_factory: None,
+                pull_requests: None,
             }),
             events,
         );

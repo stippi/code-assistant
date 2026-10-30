@@ -1,0 +1,109 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "author": {
+          "__typename": "User",
+          "login": "contributor",
+          "avatarUrl": null,
+          "name": "A Contributor"
+        },
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "id": "C_first",
+                "oid": "1111111111111111111111111111111111111111",
+                "messageHeadline": "Add the pull request view",
+                "committedDate": "2026-10-28T09:00:00Z",
+                "parents": { "totalCount": 1 },
+                "authors": {
+                  "nodes": [
+                    {
+                      "name": "Stephan Aßmus",
+                      "email": "stephan@example.com",
+                      "user": { "login": "stippi" }
+                    },
+                    { "name": "Co Author", "email": "co@example.com", "user": null }
+                  ]
+                }
+              }
+            },
+            {
+              "commit": {
+                "id": "C_merge",
+                "oid": "2222222222222222222222222222222222222222",
+                "messageHeadline": "Merge branch 'main' into feature/pr-view",
+                "committedDate": "2026-10-29T09:00:00Z",
+                "parents": { "totalCount": 2 },
+                "authors": { "nodes": [{ "name": "Stephan Aßmus", "user": { "login": "stippi" } }] }
+              }
+            }
+          ]
+        },
+        "comments": {
+          "pageInfo": { "hasNextPage": true, "endCursor": "comments-2" },
+          "nodes": [
+            {
+              "id": "IC_1",
+              "body": "Looks promising.",
+              "createdAt": "2026-10-30T10:00:00Z",
+              "lastEditedAt": null,
+              "url": "https://github.com/stippi/code-assistant/pull/291#issuecomment-1",
+              "author": { "__typename": "User", "login": "octocat", "avatarUrl": null, "name": "The Octocat" }
+            },
+            {
+              "id": "IC_2",
+              "body": "Rebased.",
+              "createdAt": "2026-10-30T12:00:00Z",
+              "lastEditedAt": null,
+              "url": "https://github.com/stippi/code-assistant/pull/291#issuecomment-2",
+              "author": { "__typename": "User", "login": "contributor", "avatarUrl": null }
+            }
+          ]
+        },
+        "reviews": {
+          "pageInfo": { "hasNextPage": false, "endCursor": "reviews-1" },
+          "nodes": [
+            {
+              "id": "PRR_approve",
+              "body": "",
+              "state": "APPROVED",
+              "submittedAt": "2026-10-30T11:00:00Z",
+              "lastEditedAt": null,
+              "url": "https://github.com/stippi/code-assistant/pull/291#pullrequestreview-1",
+              "author": { "__typename": "Bot", "login": "review-bot", "avatarUrl": null }
+            },
+            {
+              "id": "PRR_commented",
+              "body": "",
+              "state": "COMMENTED",
+              "submittedAt": "2026-10-30T11:30:00Z",
+              "lastEditedAt": null,
+              "url": null,
+              "author": { "__typename": "User", "login": "octocat" }
+            },
+            {
+              "id": "PRR_dismissed",
+              "body": "<!-- review-bot:summary -->",
+              "state": "DISMISSED",
+              "submittedAt": "2026-10-30T13:00:00Z",
+              "lastEditedAt": null,
+              "url": null,
+              "author": { "__typename": "User", "login": "octocat" }
+            },
+            {
+              "id": "PRR_pending",
+              "body": "Draft thoughts",
+              "state": "PENDING",
+              "submittedAt": null,
+              "lastEditedAt": null,
+              "url": null,
+              "author": { "__typename": "User", "login": "me" }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

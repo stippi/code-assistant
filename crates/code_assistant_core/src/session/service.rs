@@ -17,6 +17,7 @@
 use crate::config::{DefaultProjectManager, ProjectManager, save_project};
 use crate::injection::without_injections;
 use crate::persistence::{ChatMetadata, DraftAttachment, MessageEdit, NodeId, SessionModelConfig};
+use crate::pull_requests::{PullRequestSource, PullRequests};
 use crate::session::SessionManager;
 use crate::session::effort::EffortChoice;
 use crate::session::event_stream::EventStream;
@@ -79,6 +80,10 @@ pub struct AgentRuntimeOptions {
     pub project_manager_factory: ProjectManagerFactory,
     /// Overrides LLM client construction per run. See [`LlmClientFactory`].
     pub llm_client_factory: Option<LlmClientFactory>,
+    /// Where pull requests are read from and their snapshots kept. `None`
+    /// uses [`PullRequestSource::default`]; tests supply a client over a
+    /// scripted transport.
+    pub pull_requests: Option<PullRequestSource>,
 }
 
 /// A single entry in the input-area skill picker.
@@ -217,6 +222,7 @@ struct ServiceCtx {
     manager: Arc<Mutex<SessionManager>>,
     runtime: Arc<AgentRuntimeOptions>,
     events: EventStream,
+    pull_requests: Arc<PullRequests>,
 }
 
 impl ServiceCtx {
@@ -268,10 +274,15 @@ impl SessionService {
         let (tx, rx) = async_channel::bounded::<Dispatch>(COMMAND_CAPACITY);
         let (control_tx, control_rx) = async_channel::bounded::<Command>(16);
         let admission = Arc::new(tokio::sync::Semaphore::new(COMMAND_CAPACITY));
+        let pull_requests = Arc::new(PullRequests::new(
+            runtime.pull_requests.clone().unwrap_or_default(),
+            events.clone(),
+        ));
         let ctx = ServiceCtx {
             manager,
             runtime,
             events: events.clone(),
+            pull_requests,
         };
         let worker = async move {
             let control = {
@@ -2474,6 +2485,7 @@ fn schedule_agent_impl(
     let owner = Arc::downgrade(&ctx.manager);
     let runtime = ctx.runtime.clone();
     let events = ctx.events.clone();
+    let github = ctx.pull_requests.client();
     let session_id = session_id.to_string();
     let task_session = session_id.clone();
     let task = tokio::spawn(async move {
@@ -2591,6 +2603,7 @@ fn schedule_agent_impl(
                             model: Some(session_config),
                             task,
                             sub_agent_llm: runtime.llm_client_factory.clone(),
+                            github: Some(github),
                         },
                     )
                     .await
@@ -2650,6 +2663,7 @@ pub use files::{
 };
 mod lifecycle;
 mod new_context;
+mod pull_requests;
 
 #[cfg(test)]
 mod recovery_tests;
@@ -2701,6 +2715,7 @@ mod tests {
             }),
             project_manager_factory: default_project_manager_factory(),
             llm_client_factory: None,
+            pull_requests: None,
         });
         let (service, worker) = SessionService::new(manager.clone(), runtime, events);
         tokio::spawn(worker);
@@ -2755,6 +2770,38 @@ mod tests {
             }),
             project_manager_factory: default_project_manager_factory(),
             llm_client_factory: Some(factory),
+            pull_requests: None,
+        });
+        let (service, worker) = SessionService::new(manager.clone(), runtime, events);
+        tokio::spawn(worker);
+        (service, manager)
+    }
+
+    /// Service whose pull request reads go through `source` (a scripted
+    /// GitHub transport).
+    pub(super) fn test_service_with_pull_requests(
+        root: &std::path::Path,
+        source: PullRequestSource,
+    ) -> (SessionService, Arc<Mutex<SessionManager>>) {
+        let events = EventStream::new();
+        let persistence = FileSessionPersistence::new_with_root_dir(root.to_path_buf());
+        let manager = Arc::new(Mutex::new(SessionManager::new(
+            persistence,
+            SessionConfig::default(),
+            "test-model".to_string(),
+            crate::tools::test_registry(),
+            events.clone(),
+        )));
+        let runtime = Arc::new(AgentRuntimeOptions {
+            record_path: None,
+            playback_path: None,
+            fast_playback: false,
+            command_executor_factory: Arc::new(|_| {
+                Box::new(crate::mocks::create_command_executor_mock())
+            }),
+            project_manager_factory: default_project_manager_factory(),
+            llm_client_factory: None,
+            pull_requests: Some(source),
         });
         let (service, worker) = SessionService::new(manager.clone(), runtime, events);
         tokio::spawn(worker);
@@ -3724,6 +3771,7 @@ mod tests {
             }),
             project_manager_factory: default_project_manager_factory(),
             llm_client_factory: None,
+            pull_requests: None,
         });
         let (service, worker) = SessionService::new(manager, runtime, events);
         drop(worker); // never spawned
@@ -3988,6 +4036,7 @@ mod tests {
                 )
             }),
             llm_client_factory: Some(factory),
+            pull_requests: None,
         });
         let (service, worker) = SessionService::new(manager.clone(), runtime, events);
         tokio::spawn(worker);

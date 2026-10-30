@@ -187,7 +187,7 @@ counts do).
    tree-sitter query per row and frame fell from 4-7 % of the draw time to
    0.2-0.4 %; the `edit` card's build went from 0.85 ms to 0.25 ms per card.
 2. **Diff rows as one element** (`DiffRows` in
-   `tool_cards/diff_rows.rs`, used by tool cards and the review panel).
+   `diff/rows.rs`, used by tool cards and the review panel).
    Taffy's share of the draw time fell from 39-40 % to 25-27 %. Over the
    whole sweep the draw mean went from 5.44 ms to 5.16 ms (p95 6.50 to
    5.93 ms); in intervals with diff cards in view it went down by

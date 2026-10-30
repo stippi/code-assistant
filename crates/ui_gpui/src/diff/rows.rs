@@ -20,6 +20,8 @@ pub(crate) struct DiffRow {
     /// Sorted, non-overlapping, within `text`.
     pub highlights: Vec<(Range<usize>, HighlightStyle)>,
     pub background: Option<Hsla>,
+    /// A thin bar at the left edge (added / removed rows).
+    pub edge: Option<Hsla>,
     pub color: Hsla,
     /// Line number text (already padded to the gutter width) and its color.
     pub gutter: Option<(SharedString, Hsla)>,
@@ -280,6 +282,12 @@ fn paint_rows(
                     size(bounds.size.width, row_layout.height),
                 ),
                 background,
+            ));
+        }
+        if let Some(edge) = row.edge {
+            window.paint_quad(fill(
+                Bounds::new(point(bounds.origin.x, y), size(px(2.), row_layout.height)),
+                edge,
             ));
         }
         // Selection sits above the add/delete tint but below the glyphs, so
@@ -551,6 +559,7 @@ mod tests {
                 text: SharedString::from(text.to_string()),
                 highlights: Vec::new(),
                 background: Some(red()),
+                edge: None,
                 color: white(),
                 gutter: Some(("12".into(), white())),
             })

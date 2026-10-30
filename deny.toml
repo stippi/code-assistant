@@ -40,6 +40,12 @@ ignore = [
     { id = "RUSTSEC-2026-0391", reason = "zstd with_context() reuse leaks stream data; zip never reuses a context" },
     { id = "RUSTSEC-2026-0398", reason = "zstd Seekable::decompress overflow; the seekable feature is not built" },
     { id = "RUSTSEC-2026-0403", reason = "zstd legacy frame decoding exposes uninit memory; the legacy feature is not built" },
+    # lru 0.12 comes in only through ratatui 0.29 (patched fork, no newer lru
+    # there); our own crates use a fixed lru. ratatui's layout cache calls
+    # `get_or_insert` and `resize` only, on keys and values whose Drop cannot
+    # panic. Drop these when ratatui moves to lru >= 0.18.2.
+    { id = "RUSTSEC-2026-0002", reason = "lru IterMut is unsound; ratatui never iterates its layout cache mutably" },
+    { id = "RUSTSEC-2026-0253", reason = "lru pop() lacks panic safety; ratatui's cached Rect/Layout values never panic on drop" },
 ]
 
 # ---------------------------------------------------------------------------

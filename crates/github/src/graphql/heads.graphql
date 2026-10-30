@@ -1,0 +1,47 @@
+# The pull requests whose head is a branch: how a checkout finds the pull request it works on.
+
+# The pull request fields every read selects.
+fragment PullRequestNode on PullRequest {
+  number
+  title
+  url
+  baseRefName
+  headRefName
+  headRefOid
+  state
+  isDraft
+  mergedAt
+  closedAt
+  updatedAt
+  isCrossRepository
+  headRepository {
+    name
+    nameWithOwner
+  }
+  headRepositoryOwner {
+    login
+  }
+}
+
+query PullRequestsByHead(
+  $owner: String!
+  $name: String!
+  $head: String!
+  $states: [PullRequestState!]
+  $first: Int!
+) {
+  repository(owner: $owner, name: $name) {
+    # `gh pr list` orders the same way, so a head with more matches than the limit keeps the
+    # same rows.
+    pullRequests(
+      headRefName: $head
+      states: $states
+      first: $first
+      orderBy: { field: CREATED_AT, direction: DESC }
+    ) {
+      nodes {
+        ...PullRequestNode
+      }
+    }
+  }
+}

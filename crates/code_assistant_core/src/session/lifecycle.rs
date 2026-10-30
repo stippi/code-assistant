@@ -28,7 +28,9 @@ use tracing::{debug, warn};
 
 use crate::session::SessionService;
 use crate::session::instance::SessionActivityState;
-use crate::session::pull_request::{PullRequestSnapshot, PullRequestState};
+use crate::session::pull_request::{
+    BranchLookup, PullRequestSnapshot, PullRequestState, read_branch_pull_requests,
+};
 use crate::utils::file_utils::atomic_write_json;
 
 /// Per-session lifecycle record.
@@ -42,8 +44,8 @@ pub struct SessionLifecycle {
     /// When the user last pulled the session back out of the settled shelf.
     /// Automatic settlement waits for activity newer than this.
     pub unsettled_at: Option<SystemTime>,
-    /// The pull request behind the session's branch, as last read from the
-    /// GitHub CLI. Refreshed by the lifecycle sweep and after each run.
+    /// The pull request behind the session's branch, as last read from
+    /// GitHub. Refreshed by the lifecycle sweep and after each run.
     pub pull_request: Option<PullRequestSnapshot>,
 }
 
@@ -358,8 +360,18 @@ pub(crate) async fn sessions_with_merged_branch(inputs: &[SettlementInput]) -> H
 pub(crate) async fn refresh_branch_after_run(
     manager: &std::sync::Arc<tokio::sync::Mutex<crate::session::SessionManager>>,
     session_id: &str,
+    github: &github::Client,
 ) {
-    let observed = manager.lock().await.record_observed_branch(session_id);
+    let (observed, known) = {
+        let mut manager = manager.lock().await;
+        let observed = manager.record_observed_branch(session_id);
+        let known = manager
+            .session_lifecycles()
+            .ok()
+            .and_then(|lifecycles| lifecycles.get(session_id)?.pull_request.clone())
+            .map(|pr| pr.number);
+        (observed, known)
+    };
     let (root, branch) = match observed {
         Ok(Some(observed)) => observed,
         Ok(None) => return,
@@ -368,12 +380,21 @@ pub(crate) async fn refresh_branch_after_run(
             return;
         }
     };
-    let fetched = match crate::session::pull_request::fetch_pull_request(&root, &branch).await {
-        Ok(fetched) => fetched,
-        Err(e) => {
-            debug!("Cannot read the pull request of {branch}: {e}");
+    let Some(repo) = crate::pull_requests::github_repo(root).await else {
+        return;
+    };
+    let lookup = BranchLookup {
+        repo,
+        branch,
+        known,
+    };
+    let fetched = match read_branch_pull_requests(github, &[lookup]).await.pop() {
+        Some(Ok(fetched)) => fetched,
+        Some(Err(e)) => {
+            debug!("Cannot read the pull request of {session_id}: {e}");
             return;
         }
+        None => return,
     };
     let manager = manager.lock().await;
     if let Err(e) =

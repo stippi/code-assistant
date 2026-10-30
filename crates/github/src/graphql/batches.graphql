@@ -1,0 +1,58 @@
+# One pull request per operation. The client repeats each under an alias per pull request
+# (`graphql::alias`), so a batch is one request and a missing pull request fails only its own slice.
+
+query PullRequestSummary($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      number
+      title
+      url
+      state
+      isDraft
+      mergeable
+      reviewDecision
+      additions
+      deletions
+      changedFiles
+      updatedAt
+      mergedAt
+      closedAt
+      headRefName
+      baseRefName
+      author {
+        __typename
+        login
+        avatarUrl
+        ... on User {
+          name
+        }
+      }
+      latestReviews(first: 20) {
+        nodes {
+          state
+          author {
+            login
+          }
+        }
+      }
+      commits(last: 1) {
+        nodes {
+          commit {
+            statusCheckRollup {
+              state
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+query PullRequestStats($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      additions
+      deletions
+    }
+  }
+}

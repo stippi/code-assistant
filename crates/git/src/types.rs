@@ -35,6 +35,13 @@ impl Worktree {
     }
 }
 
+/// A configured remote and the URL it fetches from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Remote {
+    pub name: String,
+    pub url: String,
+}
+
 /// Summary information about a git repository.
 #[derive(Debug, Clone)]
 pub struct RepoInfo {

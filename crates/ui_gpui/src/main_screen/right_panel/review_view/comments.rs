@@ -12,25 +12,6 @@ use code_assistant_core::line_comments::LineComment;
 use similar::ChangeTag;
 use std::ops::Range;
 
-/// One diff row's change tag and its 1-based line numbers in the old and
-/// new file, for every row of the file's hunks in render order.
-pub(super) fn row_numbers(prepared: &PreparedReviewDiff) -> Vec<(ChangeTag, usize, usize)> {
-    let mut rows = Vec::new();
-    for hunk in &prepared.hunks {
-        let (mut old, mut new) = (hunk.old_start, hunk.new_start);
-        for line in &hunk.lines {
-            rows.push((line.tag, old, new));
-            if line.tag != ChangeTag::Insert {
-                old += 1;
-            }
-            if line.tag != ChangeTag::Delete {
-                new += 1;
-            }
-        }
-    }
-    rows
-}
-
 /// Whether `comment` covers a row with these numbers.
 fn covers(comment: &LineComment, (tag, old, new): (ChangeTag, usize, usize)) -> bool {
     let lines = comment.start_line..=comment.end_line;
@@ -57,7 +38,7 @@ impl ReviewView {
     pub(super) fn chunk_marks(
         &self,
         key: &FileKey,
-        prepared: &PreparedReviewDiff,
+        prepared: &PreparedFileDiff,
         base_line: usize,
         row_count: usize,
     ) -> Vec<Range<usize>> {
@@ -66,7 +47,7 @@ impl ReviewView {
         if comments.is_empty() {
             return Vec::new();
         }
-        let numbers = row_numbers(prepared);
+        let numbers = prepared.row_numbers();
         (0..row_count)
             .filter(|&row| {
                 numbers
@@ -82,7 +63,7 @@ impl ReviewView {
     fn selection_comment(&self) -> Option<LineComment> {
         let sel = self.selection.get()?;
         let prepared = &self.file_diffs.get(&sel.key)?.prepared;
-        let numbers = row_numbers(prepared);
+        let numbers = prepared.row_numbers();
         let lines: Vec<_> = prepared.hunks.iter().flat_map(|h| h.lines.iter()).collect();
         let (lo, hi) = sel.range();
         let hi = hi.min(numbers.len().checked_sub(1)?);
@@ -273,7 +254,7 @@ impl ReviewView {
             return;
         };
         self.pending_reveal = None;
-        let numbers = row_numbers(&loaded.prepared);
+        let numbers = loaded.prepared.row_numbers();
         let covered: Vec<usize> = numbers
             .iter()
             .enumerate()
@@ -334,8 +315,8 @@ mod tests {
     }
 
     #[test]
-    fn row_numbers_count_each_side() {
-        let prepared = PreparedReviewDiff::from_content(
+    fn comments_cover_rows_on_their_side() {
+        let prepared = PreparedFileDiff::from_content(
             "a.rs",
             &git::FileDiffContent {
                 old_text: Some("a\nb\nc\n".into()),
@@ -343,8 +324,9 @@ mod tests {
                 is_binary: false,
                 too_large: false,
             },
+            None,
         );
-        let numbers = row_numbers(&prepared);
+        let numbers = prepared.row_numbers();
         let tags: Vec<_> = numbers.iter().map(|n| n.0).collect();
         assert_eq!(
             tags,

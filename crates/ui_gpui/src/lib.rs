@@ -3,6 +3,7 @@ pub mod shared;
 mod app;
 pub mod blocks;
 pub mod comments;
+pub mod diff;
 pub mod input;
 pub mod main_screen;
 pub mod messages;
@@ -121,92 +122,12 @@ pub struct RepoReviewData {
 }
 
 /// Latest loaded diff for a single file in the Review panel, already prepared
-/// for rendering (see [`PreparedReviewDiff`]).
+/// for rendering.
 #[derive(Debug, Clone)]
 pub struct ReviewDiff {
     pub repo_root: std::path::PathBuf,
     pub path: String,
-    pub prepared: PreparedReviewDiff,
-}
-
-/// Context lines around each review diff hunk (matches `git diff`'s default).
-const REVIEW_HUNK_CONTEXT_LINES: usize = 3;
-
-/// Upper bound for the lines of one review list item. A hunk above it (a
-/// newly added file is a single hunk) is split, so the virtualized list only
-/// builds what is in view.
-const REVIEW_CHUNK_MAX_LINES: usize = 40;
-
-/// A file diff reduced to renderable hunks. The expensive line diff runs once
-/// on a background thread (in the command layer) — the UI only builds elements
-/// from the prepared hunks, so element counts scale with changed lines and the
-/// UI thread never runs a Myers diff. `chunked` cuts the hunks into the items
-/// the Review panel's virtualized list renders.
-#[derive(Debug, Clone)]
-pub struct PreparedReviewDiff {
-    pub is_binary: bool,
-    pub too_large: bool,
-    pub hunks: Vec<tool_cards::diff_card::DiffHunk>,
-    pub chunked: tool_cards::diff_card::ChunkedHunks,
-    /// Both sides parsed for syntax highlighting; `None` without a grammar.
-    pub syntax: Option<Arc<tool_cards::diff_syntax::DiffSyntax>>,
-    pub additions: usize,
-    pub deletions: usize,
-}
-
-impl PreparedReviewDiff {
-    /// Compute hunks (changed lines + context) from raw diff content.
-    /// CPU-heavy for large files — call on a background thread.
-    pub fn from_content(path: &str, diff: &git::FileDiffContent) -> Self {
-        if diff.is_binary || diff.too_large {
-            return Self {
-                is_binary: diff.is_binary,
-                too_large: diff.too_large,
-                hunks: Vec::new(),
-                chunked: Default::default(),
-                syntax: None,
-                additions: 0,
-                deletions: 0,
-            };
-        }
-        let old = diff.old_text.as_deref().filter(|t| !t.is_empty());
-        let new = diff.new_text.as_deref().filter(|t| !t.is_empty());
-        let hunks = match (old, new) {
-            (None, None) => Vec::new(),
-            (Some(old), Some(new)) => {
-                tool_cards::diff_card::compute_diff_hunks(old, new, REVIEW_HUNK_CONTEXT_LINES)
-            }
-            // Pure add / pure delete: the whole file is the hunk.
-            (None, Some(new)) => {
-                tool_cards::diff_card::single_sided_hunk(new, similar::ChangeTag::Insert)
-            }
-            (Some(old), None) => {
-                tool_cards::diff_card::single_sided_hunk(old, similar::ChangeTag::Delete)
-            }
-        };
-        let mut additions = 0;
-        let mut deletions = 0;
-        for line in hunks.iter().flat_map(|h| h.lines.iter()) {
-            match line.tag {
-                similar::ChangeTag::Insert => additions += 1,
-                similar::ChangeTag::Delete => deletions += 1,
-                similar::ChangeTag::Equal => {}
-            }
-        }
-        Self {
-            is_binary: false,
-            too_large: false,
-            chunked: tool_cards::diff_card::chunk_hunks(&hunks, REVIEW_CHUNK_MAX_LINES),
-            // Nothing to show means nothing to parse.
-            syntax: (!hunks.is_empty())
-                .then(|| tool_cards::diff_syntax::DiffSyntax::parse(path, old, new))
-                .flatten()
-                .map(Arc::new),
-            hunks,
-            additions,
-            deletions,
-        }
-    }
+    pub prepared: diff::prepare::PreparedFileDiff,
 }
 
 // Our main UI struct that implements the UserInterface trait
@@ -742,6 +663,8 @@ impl Gpui {
 
         app.run(move |cx| {
             gpui_clone.install(cx);
+            // Remote images (`img(url)`, e.g. GitHub avatars) load through it.
+            cx.set_http_client(std::sync::Arc::new(reqwest_client::ReqwestClient::new()));
 
             // Opt-in frame profiling (see shared::frame_profile).
             let frame_profile_mode = shared::frame_profile::init_from_env();
@@ -776,7 +699,7 @@ impl Gpui {
             gpui_kit::component::init(cx);
             // Apply our custom theme colors (restoring saved mode)
             shared::theme::init_themes(cx, saved_theme_mode);
-            tool_cards::diff_syntax::register_language_aliases();
+            diff::syntax::register_language_aliases();
 
             // Restore saved font scale
             {

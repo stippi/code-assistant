@@ -1029,6 +1029,9 @@ impl UserInterface for ACPUserUI {
             UiEvent::VoiceStatusChanged { .. } | UiEvent::VoiceTranscript { .. } => {
                 // Voice mode is GPUI-specific.
             }
+            UiEvent::PullRequestChanged { .. } | UiEvent::PullRequestListChanged { .. } => {
+                // The pull request view is GPUI-specific.
+            }
         }
         Ok(())
     }

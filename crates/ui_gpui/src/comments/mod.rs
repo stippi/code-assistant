@@ -12,6 +12,7 @@
 pub mod editor;
 
 use code_assistant_core::line_comments::LineComment;
+use code_assistant_core::persistence::DraftAttachment;
 use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size};
 use gpui_kit::{
     AnyElement, App, Entity, EventEmitter, Global, Pixels, Point, SharedString, Window, anchored,
@@ -24,6 +25,9 @@ pub enum CommentChange {
     /// Add (`id` 0) or replace a comment.
     Upsert(LineComment),
     Remove(u64),
+    /// Add context that is no comment on lines (a pull request's review
+    /// comment or failing check, handed to the agent) as an attachment.
+    Attach(DraftAttachment),
 }
 
 /// Comment changes from anywhere in the UI.
