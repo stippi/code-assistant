@@ -1,5 +1,6 @@
 //! Polling checks cheaply. Before the full read, the pull request, its
-//! head's check runs and its head's statuses are revalidated with ETags; a
+//! head's check runs and its head's statuses (and for a fork its workflow
+//! runs, which may wait for approval) are revalidated with ETags; a
 //! 304 costs no quota. When none of them changed and the last read is
 //! recent, that read is the answer. Hosts without these endpoints fall back
 //! to the full read.
@@ -135,17 +136,34 @@ impl Client {
             }
         };
         #[derive(Deserialize)]
+        struct Repo {
+            id: u64,
+        }
+        #[derive(Deserialize)]
         struct Head {
             sha: String,
+            repo: Option<Repo>,
+        }
+        #[derive(Deserialize)]
+        struct Base {
+            repo: Option<Repo>,
         }
         #[derive(Deserialize)]
         struct Pull {
             head: Head,
+            base: Option<Base>,
         }
-        let head = serde_json::from_slice::<Pull>(&body)
-            .map_err(|e| Error::decode("revalidateChecks", e))?
-            .head
-            .sha;
+        let pull = serde_json::from_slice::<Pull>(&body)
+            .map_err(|e| Error::decode("revalidateChecks", e))?;
+        // A fork's runs may wait for approval: those are no check runs yet.
+        let fork = match (
+            &pull.head.repo,
+            pull.base.as_ref().and_then(|b| b.repo.as_ref()),
+        ) {
+            (Some(head), Some(base)) => head.id != base.id,
+            _ => false,
+        };
+        let head = pull.head.sha;
         if entry.head_sha.as_deref() != Some(head.as_str()) {
             changed = true;
             entry.head_sha = Some(head.clone());
@@ -153,15 +171,22 @@ impl Client {
 
         let runs = format!("{root}/commits/{head}/check-runs?filter=all");
         let statuses = format!("{root}/commits/{head}/status");
-        let (runs, statuses) = futures::try_join!(
+        let workflows = format!("{root}/actions/runs?head_sha={head}&event=pull_request");
+        let (runs, statuses, workflows) = futures::try_join!(
             self.probe_pages(host, &runs),
-            self.probe_pages(host, &statuses)
-        )?;
-        match (runs, statuses) {
-            (Ok(runs_changed), Ok(statuses_changed)) => {
-                changed |= runs_changed || statuses_changed;
+            self.probe_pages(host, &statuses),
+            async {
+                match fork {
+                    true => self.probe_pages(host, &workflows).await,
+                    false => Ok(Ok(false)),
+                }
             }
-            (Err(unsupported), _) | (_, Err(unsupported)) => {
+        )?;
+        match (runs, statuses, workflows) {
+            (Ok(runs_changed), Ok(statuses_changed), Ok(workflows_changed)) => {
+                changed |= runs_changed || statuses_changed || workflows_changed;
+            }
+            (Err(unsupported), _, _) | (_, Err(unsupported), _) | (_, _, Err(unsupported)) => {
                 entry.unsupported = unsupported;
                 entry.value = None;
                 return self.read_checks(pr).await;
@@ -189,6 +214,7 @@ impl Client {
             head_sha: detail.head_sha,
             checks: detail.checks,
             checks_state: detail.checks_state,
+            workflow_approvals: detail.workflow_approvals,
         })
     }
 }

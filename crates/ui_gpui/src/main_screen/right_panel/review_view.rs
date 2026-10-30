@@ -1167,10 +1167,9 @@ impl ReviewView {
         let rem_size = window.rem_size();
         let line_height_px = rems(1.25).to_pixels(rem_size).round();
 
-        // The local rows (relative to this chunk) to paint as selected.
         let base_line = chunk.flat_start;
         let marks = ChunkMarks {
-            highlight: self.selection.highlight(key, base_line, chunk.lines.len()),
+            highlight: self.selection.highlight(key),
             color: theme.selection,
             marked: self.chunk_marks(key, prepared, base_line, chunk.lines.len()),
             mark_color: theme.warning,

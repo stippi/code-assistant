@@ -18,6 +18,7 @@
 
 use super::PullRequestIntent;
 use super::avatar::avatar;
+use super::data::session_service;
 use super::list_logic::{
     Arrangement, ChecksFilter, DraftFilter, Filters, GroupKey, ReviewFilter, SortMode, arrange,
     facets, parse_query,
@@ -30,21 +31,24 @@ use super::preferences;
 use super::presentation::{
     GLYPH_SIZE, Tone, checks_glyph, conflict_glyph, diff_stat, relative_time, review_glyph,
 };
+use super::stack::{LAYERS_ICON, base_row, layer_row, position_label};
 use chrono::Utc;
 use github::RepoRef;
 use github::model::{
     Action, DiffStat, Involvement, ListEntry, ListPage, ListQuery, ListState as ListedState,
-    MergeMethod,
+    MergeMethod, Stack, StackMembership,
 };
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenu, PopupMenuItem};
+use gpui_kit::component::popover::{Popover, PopoverState};
 use gpui_kit::component::{ActiveTheme, Icon, Side, Sizable, Size};
 use gpui_kit::{
     AnyElement, App, Context, Entity, EventEmitter, ListAlignment, ListState, Pixels, Render,
     SharedString, Subscription, Task, WeakEntity, Window, div, list, prelude::*, px, svg,
 };
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Pull requests one listing asks for.
@@ -82,6 +86,8 @@ pub struct PullRequestList {
     stats_asked: HashSet<u64>,
     /// Rows drawn without counts, to ask for at the end of the frame.
     stats_wanted: Vec<u64>,
+    /// The stacks of rows whose stack popover was opened, by row.
+    stacks: HashMap<u64, StackRead>,
     next_cursor: Option<String>,
     loading_more: bool,
     /// Shift is held: rows show their quick actions.
@@ -128,6 +134,7 @@ impl PullRequestList {
             stats: HashMap::new(),
             stats_asked: HashSet::new(),
             stats_wanted: Vec::new(),
+            stacks: HashMap::new(),
             next_cursor: None,
             loading_more: false,
             speed: false,
@@ -584,6 +591,12 @@ impl PullRequestList {
                     .child(entry.title.clone()),
             )
             .child(signals)
+            .children(
+                entry
+                    .stack
+                    .as_ref()
+                    .map(|membership| self.render_stack_popover(number, membership, cx)),
+            )
             .child(div().flex_none().text_xs().children(diff_stat(
                 entry.additions,
                 entry.deletions,
@@ -1147,6 +1160,164 @@ impl Render for PullRequestList {
                 ),
             )
     }
+}
+
+/// A row's stack, read when its popover first opens.
+#[derive(Default)]
+struct StackRead {
+    stack: Option<Arc<Stack>>,
+    error: Option<SharedString>,
+    done: bool,
+    _task: Option<Task<()>>,
+}
+
+impl PullRequestList {
+    /// "⧉ 2/3": the row's place in its stack; the popover lists the stack
+    /// (read only once it opens, as T3 Code does) and a click on a layer
+    /// shows that pull request.
+    fn render_stack_popover(
+        &self,
+        number: u64,
+        membership: &StackMembership,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let muted = cx.theme().muted_foreground;
+        let list = cx.entity().downgrade();
+        let membership = membership.clone();
+        let tooltip = format!(
+            "View stack #{}, layer {} of {}",
+            membership.number, membership.position, membership.size
+        );
+        let trigger = Button::new(SharedString::from(format!("pr-row-stack-{number}")))
+            .ghost()
+            .xsmall()
+            .text_color(muted)
+            .icon(Icon::default().path(LAYERS_ICON))
+            .label(position_label(
+                membership.position as usize,
+                membership.size as usize,
+            ))
+            .tooltip(tooltip);
+        div()
+            .id(SharedString::from(format!("pr-row-stack-slot-{number}")))
+            .debug_selector(move || format!("pr-row-stack-{number}"))
+            .flex_none()
+            // The row opens its pull request on a click; this one is the
+            // popover's.
+            .on_click(|_, _, cx| cx.stop_propagation())
+            .child(
+                Popover::new(SharedString::from(format!("pr-row-stack-popover-{number}")))
+                    .anchor(gpui_kit::Anchor::TopRight)
+                    .trigger(trigger)
+                    .content(move |state, _, cx| {
+                        row_stack_menu(&list, number, &membership, state, cx)
+                    }),
+            )
+            .into_any_element()
+    }
+
+    /// Read the stack of row `number`, once.
+    fn ensure_stack(&mut self, number: u64, cx: &mut Context<Self>) {
+        if self.stacks.contains_key(&number) {
+            return;
+        }
+        let (Some(repo), Some(service)) = (self.repo.clone(), session_service(cx)) else {
+            return;
+        };
+        let task = cx.spawn(async move |this, cx| {
+            let read = service.pull_request_stack(repo.pull_request(number)).await;
+            this.update(cx, |this, cx| {
+                if let Some(entry) = this.stacks.get_mut(&number) {
+                    entry.done = true;
+                    match read {
+                        Ok(fetched) => entry.stack = fetched.value.map(Arc::new),
+                        Err(error) => entry.error = Some(format!("{error:#}").into()),
+                    }
+                    cx.notify();
+                }
+            })
+            .ok();
+        });
+        self.stacks.insert(
+            number,
+            StackRead {
+                _task: Some(task),
+                ..StackRead::default()
+            },
+        );
+    }
+}
+
+fn row_stack_menu(
+    list: &WeakEntity<PullRequestList>,
+    number: u64,
+    membership: &StackMembership,
+    _state: &mut PopoverState,
+    cx: &mut Context<PopoverState>,
+) -> AnyElement {
+    let Some(view) = list.upgrade() else {
+        return div().into_any_element();
+    };
+    view.update(cx, |list, cx| list.ensure_stack(number, cx));
+    let (stack, error, done) = {
+        let list = view.read(cx);
+        match list.stacks.get(&number) {
+            Some(read) => (read.stack.clone(), read.error.clone(), read.done),
+            None => (None, None, false),
+        }
+    };
+    let theme = cx.theme();
+    let (muted, hover) = (theme.muted_foreground, theme.accent);
+    let popover = cx.entity().downgrade();
+    let title = stack
+        .as_ref()
+        .map_or(membership.number, |stack| stack.number);
+    let menu = div().w(px(320.)).flex().flex_col().gap_0p5().child(
+        div()
+            .px_2()
+            .py_1()
+            .text_xs()
+            .text_color(muted)
+            .child(format!("Stack #{title}")),
+    );
+    let note = |text: SharedString| div().px_2().py_1().text_xs().text_color(muted).child(text);
+    let Some(stack) = stack else {
+        let text: SharedString = match (error, done) {
+            (Some(error), _) => error,
+            (None, false) => "Loading stack…".into(),
+            (None, true) => "This pull request is no longer in a stack.".into(),
+        };
+        return menu.child(note(text)).into_any_element();
+    };
+    menu.child(
+        div()
+            .id("pr-row-stack-layers")
+            .max_h(px(320.))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .children(stack.layers.iter().rev().map(|layer| {
+                let (list, popover) = (list.clone(), popover.clone());
+                let target = layer.number;
+                div()
+                    .id(SharedString::from(format!("pr-row-stack-layer-{target}")))
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .hover(|d| d.bg(hover))
+                    .child(layer_row(layer, target == number, false, cx))
+                    .on_click(move |_, window, cx| {
+                        popover
+                            .update(cx, |state, cx| state.dismiss(window, cx))
+                            .ok();
+                        list.update(cx, |_, cx| cx.emit(PullRequestIntent::Open(target)))
+                            .ok();
+                    })
+            })),
+    )
+    .child(base_row(&stack.base, cx))
+    .into_any_element()
 }
 
 #[cfg(test)]

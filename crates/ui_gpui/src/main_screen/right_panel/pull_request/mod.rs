@@ -1,6 +1,6 @@
 //! The "Pull request" view of the right panel (`docs/pull-request-view.md`):
-//! the session's pull request, or the pull requests of its repository to
-//! pick one from; a back arrow returns to the list.
+//! the pull requests of the session's repository, and a tab for each one
+//! opened from there ([`tabs`]), the session's own first.
 //!
 //! The views ([`list::PullRequestList`], [`detail::DetailView`] with its
 //! header and tab bodies) render model values from the `github` crate and
@@ -28,19 +28,26 @@ mod markdown;
 pub mod preferences;
 mod presentation;
 pub mod review_draft;
+mod stack;
 mod summary;
 mod tab_bar;
+mod tab_strip;
+mod tabs;
 mod timeline;
 
+use crate::shared::ui_state::{PullRequestTabState, PullRequestTabsState};
 use bus::{PullRequestEvent, bus};
+use code_assistant_core::pull_requests::{CheckoutPlace, PullRequestCheckout};
 use data::session_service;
-use detail::DetailView;
+use detail::{DetailTab, DetailTabChanged, DetailView};
 use github::RepoRef;
 use github::model::{Action, ListQuery, PullRequestUpdate};
 use gpui_kit::{
-    ClipboardItem, Context, Entity, Render, Subscription, Task, Window, div, prelude::*,
+    ClipboardItem, Context, Entity, Render, ScrollHandle, Subscription, Task, Window, div,
+    prelude::*,
 };
 use list::PullRequestList;
+use tabs::Tabs;
 
 /// How often relative times ("9h ago") are drawn anew.
 const CLOCK_TICK: std::time::Duration = std::time::Duration::from_secs(60);
@@ -48,10 +55,8 @@ const CLOCK_TICK: std::time::Duration = std::time::Duration::from_secs(60);
 /// What the user asks of the pull request view.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PullRequestIntent {
-    /// Show a pull request of the listed repository.
+    /// Show a pull request of the listed repository in its tab.
     Open(u64),
-    /// Back to the list.
-    Back,
     /// List the repository's pull requests anew.
     List(ListQuery),
     /// Read the next page of the listing.
@@ -74,6 +79,8 @@ pub enum PullRequestIntent {
     Update(PullRequestUpdate),
     OpenUrl(String),
     Copy(String),
+    /// Check the shown pull request out, here or in a worktree.
+    CheckOut(CheckoutPlace),
 }
 
 pub struct PullRequestPanel {
@@ -82,7 +89,9 @@ pub struct PullRequestPanel {
     visible: bool,
     repo: Option<RepoRef>,
     list: Entity<PullRequestList>,
-    detail: Option<Entity<DetailView>>,
+    /// A page per opened pull request; the shown one, or the list.
+    tabs: Tabs<OpenTab>,
+    strip_scroll: ScrollHandle,
     /// Finding the session's repository and pull request.
     resolve: Option<Task<()>>,
     list_read: Option<Task<()>>,
@@ -91,8 +100,13 @@ pub struct PullRequestPanel {
     /// Redraws once a minute while shown, so "9h ago" stays true.
     _clock: Option<Task<()>>,
     _list_subscription: Subscription,
-    _detail_subscription: Option<Subscription>,
     _bus: Subscription,
+}
+
+/// An open pull request's page and what the panel hears from it.
+pub(super) struct OpenTab {
+    view: Entity<DetailView>,
+    _subscriptions: [Subscription; 2],
 }
 
 impl PullRequestPanel {
@@ -115,14 +129,14 @@ impl PullRequestPanel {
             visible: false,
             repo: None,
             list,
-            detail: None,
+            tabs: Tabs::default(),
+            strip_scroll: ScrollHandle::new(),
             resolve: None,
             list_read: None,
             more_read: None,
             viewer_read: None,
             _clock: None,
             _list_subscription: list_subscription,
-            _detail_subscription: None,
             _bus: bus,
         }
     }
@@ -133,9 +147,7 @@ impl PullRequestPanel {
         let visible = session_id.is_some();
         if visible != self.visible {
             self.visible = visible;
-            if let Some(detail) = &self.detail {
-                detail.update(cx, |detail, cx| detail.set_visible(visible, cx));
-            }
+            self.sync_visibility(cx);
             self._clock = visible.then(|| self.start_clock(cx));
         }
         let Some(session_id) = session_id else {
@@ -157,7 +169,7 @@ impl PullRequestPanel {
                 cx.background_executor().timer(CLOCK_TICK).await;
                 let ticked = this.update(cx, |this, cx| {
                     this.list.update(cx, |_, cx| cx.notify());
-                    if let Some(detail) = &this.detail {
+                    if let Some(detail) = this.detail() {
                         detail.update(cx, |_, cx| cx.notify());
                     }
                     cx.notify();
@@ -196,8 +208,9 @@ impl PullRequestPanel {
         }));
     }
 
-    /// Where the session's pull requests live and which one is its own,
-    /// which is shown first.
+    /// Where the session's pull requests live and which one is its own.
+    /// The tabs the session had open come back; without any, its own pull
+    /// request opens.
     pub fn set_repository(
         &mut self,
         repo: Option<RepoRef>,
@@ -205,12 +218,29 @@ impl PullRequestPanel {
         cx: &mut Context<Self>,
     ) {
         self.repo = repo.clone();
-        self.close_detail();
+        self.tabs.close_all();
         self.list.update(cx, |list, cx| list.set_repo(repo, cx));
         self.load_list(cx);
         self.read_viewer(cx);
-        if let Some(number) = own {
-            self.open(number, cx);
+        let remembered = match (&self.session_id, &self.repo) {
+            (Some(session_id), Some(_)) => {
+                crate::shared::ui_state::read(cx, |store| store.get_pull_request_tabs(session_id))
+                    .unwrap_or_default()
+            }
+            _ => Default::default(),
+        };
+        if remembered.open.is_empty() {
+            if let Some(number) = own {
+                self.open(number, cx);
+            }
+        } else {
+            for open in &remembered.open {
+                let tab = open.tab.as_deref().and_then(DetailTab::parse);
+                self.open_tab(open.number, tab, cx);
+            }
+            let active = remembered.active.and_then(|n| self.tabs.position(n));
+            self.tabs.activate(active);
+            self.sync_visibility(cx);
         }
         cx.notify();
     }
@@ -362,10 +392,15 @@ impl PullRequestPanel {
     /// Read what is shown again (the window became active): the held value
     /// at once, a newer one where it is past its time.
     pub fn reload(&mut self, cx: &mut Context<Self>) {
-        match &self.detail {
+        match self.detail() {
             Some(detail) => detail.update(cx, |detail, cx| detail.set_visible(true, cx)),
             None => self.load_list(cx),
         }
+    }
+
+    /// The shown pull request's page.
+    pub fn detail(&self) -> Option<Entity<DetailView>> {
+        self.tabs.active_item().map(|(_, tab)| tab.view.clone())
     }
 
     #[cfg(test)]
@@ -373,29 +408,20 @@ impl PullRequestPanel {
         &self.list
     }
 
-    #[cfg(test)]
-    pub fn detail(&self) -> Option<&Entity<DetailView>> {
-        self.detail.as_ref()
-    }
-
     fn handle(&mut self, intent: &PullRequestIntent, cx: &mut Context<Self>) {
         match intent {
             PullRequestIntent::Open(number) => self.open(*number, cx),
-            PullRequestIntent::Back => {
-                self.close_detail();
-                cx.notify();
-            }
             PullRequestIntent::OpenUrl(url) => cx.open_url(url),
             PullRequestIntent::Copy(text) => {
                 cx.write_to_clipboard(ClipboardItem::new_string(text.clone()))
             }
             PullRequestIntent::List(_) => self.load_list(cx),
-            PullRequestIntent::Refresh => match &self.detail {
+            PullRequestIntent::Refresh => match self.detail() {
                 Some(detail) => detail.update(cx, |detail, cx| detail.refresh(cx)),
                 None => self.refresh_list(cx),
             },
             PullRequestIntent::Act(action) => {
-                if let Some(detail) = self.detail.clone() {
+                if let Some(detail) = self.detail() {
                     let action = *action;
                     let number = detail.read(cx).pr().number;
                     // The list shows the outcome already, as after a quick action.
@@ -414,53 +440,188 @@ impl PullRequestPanel {
             PullRequestIntent::ListMore(query) => self.load_more(query.clone(), cx),
             PullRequestIntent::ListStats(numbers) => self.load_stats(numbers.clone(), cx),
             PullRequestIntent::Update(update) => {
-                if let Some(detail) = &self.detail {
+                if let Some(detail) = self.detail() {
                     let update = update.clone();
                     detail.update(cx, |detail, cx| detail.update(update, cx));
                 }
             }
+            PullRequestIntent::CheckOut(place) => self.check_out(*place, cx),
         }
     }
 
-    fn open(&mut self, number: u64, cx: &mut Context<Self>) {
-        let Some(repo) = &self.repo else {
+    /// Check the shown pull request out; a new worktree's session is
+    /// shown at once, a checkout here updates the session's branch.
+    fn check_out(&mut self, place: CheckoutPlace, cx: &mut Context<Self>) {
+        let (Some(detail), Some(session_id), Some(service)) =
+            (self.detail(), self.session_id.clone(), session_service(cx))
+        else {
             return;
         };
-        let pr = repo.pull_request(number);
-        if self.detail.as_ref().is_some_and(|d| *d.read(cx).pr() == pr) {
-            return;
-        }
-        let seed = self.list.read(cx).entry(number).cloned();
-        let visible = self.visible;
-        let detail = cx.new(|cx| {
-            let mut detail = DetailView::new(pr, seed, true, cx);
-            if !visible {
-                detail.set_visible(false, cx);
-            }
+        let pr = detail.read(cx).pr().clone();
+        detail.update(cx, |detail, cx| detail.set_checking_out(true, cx));
+        let detail = detail.downgrade();
+        cx.spawn(async move |_, cx| {
+            let done = service
+                .pull_request_checkout(session_id.clone(), pr, place)
+                .await;
             detail
+                .update(cx, |detail, cx| {
+                    detail.set_checking_out(false, cx);
+                    detail.checked_out(place, &done, cx);
+                })
+                .ok();
+            if let Ok(PullRequestCheckout { session_id: to, .. }) = done {
+                cx.update(|cx| {
+                    if let Some(gpui) = cx.try_global::<crate::Gpui>() {
+                        match place {
+                            CheckoutPlace::Worktree => {
+                                // Its pull request shows beside it.
+                                crate::shared::ui_state::update(cx, |store| {
+                                    store.set_right_panel_open(&to, true);
+                                    store.set_right_panel_view(&to, "pull-request");
+                                });
+                                gpui.open_session(to)
+                            }
+                            CheckoutPlace::Here => gpui.cmd_list_branches_and_worktrees(to),
+                        }
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// Show pull request `number` in its tab, opened when it is not.
+    fn open(&mut self, number: u64, cx: &mut Context<Self>) {
+        let Some(ix) = self.open_tab(number, None, cx) else {
+            return;
+        };
+        self.tabs.activate(Some(ix));
+        self.strip_scroll.scroll_to_item(ix + 1);
+        self.tabs_changed(cx);
+    }
+
+    /// The tab of `number`, opened (on `tab`) when it is not; shows it.
+    fn open_tab(
+        &mut self,
+        number: u64,
+        tab: Option<DetailTab>,
+        cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        let repo = self.repo.clone()?;
+        let seed = self.list.read(cx).entry(number).cloned();
+        let ix = self.tabs.open(number, || {
+            let view = cx.new(|cx| {
+                let mut detail = DetailView::new(repo.pull_request(number), seed, cx);
+                if let Some(tab) = tab {
+                    detail.select_tab(tab, cx);
+                }
+                detail
+            });
+            OpenTab {
+                _subscriptions: [
+                    cx.subscribe(&view, |this, _, intent: &PullRequestIntent, cx| {
+                        this.handle(intent, cx)
+                    }),
+                    cx.subscribe(&view, |this, _, _: &DetailTabChanged, cx| {
+                        this.persist_tabs(cx)
+                    }),
+                ],
+                view,
+            }
         });
-        self._detail_subscription = Some(
-            cx.subscribe(&detail, |this, _, intent: &PullRequestIntent, cx| {
-                this.handle(intent, cx)
-            }),
-        );
-        self.detail = Some(detail);
+        Some(ix)
+    }
+
+    /// Show the tab at `ix`, or the list.
+    pub(super) fn activate(&mut self, ix: Option<usize>, cx: &mut Context<Self>) {
+        self.tabs.activate(ix);
+        if ix.is_none() {
+            self.load_list(cx);
+        }
+        self.tabs_changed(cx);
+    }
+
+    pub(super) fn close_tab(&mut self, ix: usize, cx: &mut Context<Self>) {
+        self.tabs.close(ix);
+        self.tabs_changed(cx);
+    }
+
+    pub(super) fn close_others(&mut self, ix: usize, cx: &mut Context<Self>) {
+        self.tabs.close_others(ix);
+        self.tabs_changed(cx);
+    }
+
+    pub(super) fn close_to_the_right(&mut self, ix: usize, cx: &mut Context<Self>) {
+        self.tabs.close_to_the_right(ix);
+        self.tabs_changed(cx);
+    }
+
+    pub(super) fn close_all(&mut self, cx: &mut Context<Self>) {
+        self.tabs.close_all();
+        self.tabs_changed(cx);
+    }
+
+    pub(super) fn move_tab(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
+        self.tabs.move_tab(from, to);
+        self.tabs_changed(cx);
+    }
+
+    fn tabs_changed(&mut self, cx: &mut Context<Self>) {
+        self.sync_visibility(cx);
+        self.persist_tabs(cx);
         cx.notify();
     }
 
-    fn close_detail(&mut self) {
-        self.detail = None;
-        self._detail_subscription = None;
+    /// Only the shown page reads and polls.
+    fn sync_visibility(&mut self, cx: &mut Context<Self>) {
+        let active = self.tabs.active();
+        let visible = self.visible;
+        let views: Vec<_> = self.tabs.iter().map(|(_, tab)| tab.view.clone()).collect();
+        for (ix, view) in views.into_iter().enumerate() {
+            let shown = visible && active == Some(ix);
+            view.update(cx, |view, cx| {
+                if view.visible() != shown {
+                    view.set_visible(shown, cx)
+                }
+            });
+        }
+    }
+
+    /// Remember the open tabs for the session.
+    fn persist_tabs(&mut self, cx: &mut Context<Self>) {
+        let Some(session_id) = self.session_id.clone() else {
+            return;
+        };
+        let state = PullRequestTabsState {
+            open: self
+                .tabs
+                .iter()
+                .map(|(number, tab)| PullRequestTabState {
+                    number,
+                    tab: Some(tab.view.read(cx).tab().as_str().to_owned()),
+                })
+                .collect(),
+            active: self.tabs.active_item().map(|(number, _)| number),
+        };
+        crate::shared::ui_state::update(cx, |store| {
+            store.set_pull_request_tabs(&session_id, state)
+        });
     }
 }
 
 impl Render for PullRequestPanel {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let body = match &self.detail {
-            Some(detail) => detail.clone().into_any_element(),
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let body = match self.detail() {
+            Some(detail) => detail.into_any_element(),
             None => self.list.clone().into_any_element(),
         };
-        div().size_full().child(body)
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(self.render_tab_strip(cx))
+            .child(div().flex_1().min_h_0().child(body))
     }
 }
 
@@ -491,6 +652,7 @@ mod tests {
         let data = view.read_with(cx, |view, _| view.data().clone());
         data.update(cx, |data, cx| {
             data.detail = Some(std::sync::Arc::new(detail));
+            data.stack = stack::StackView::known_alone();
             cx.notify();
         });
         cx.run_until_parked();
@@ -510,14 +672,17 @@ mod tests {
         panel.update(cx, |panel, cx| {
             panel.set_repository(Some(repo()), Some(290), cx)
         });
-        let detail = panel.read_with(cx, |panel, _| panel.detail().cloned());
+        let detail = panel.read_with(cx, |panel, _| panel.detail());
         let detail = detail.expect("the detail is shown");
         show(&detail, fixtures::detail(290), cx);
         cx.run_until_parked();
         assert!(cx.debug_bounds("pr-primary").is_some());
 
-        click(cx, "pr-back");
+        // The list stays a tab away.
+        click(cx, "pr-tab-list");
         panel.read_with(cx, |panel, _| assert!(panel.detail().is_none()));
+        click(cx, "pr-tab-290");
+        panel.read_with(cx, |panel, _| assert!(panel.detail().is_some()));
     }
 
     #[gpui_kit::test]
@@ -538,7 +703,7 @@ mod tests {
         cx.run_until_parked();
         click(cx, "pr-row-281");
         let detail = panel
-            .read_with(cx, |panel, _| panel.detail().cloned())
+            .read_with(cx, |panel, _| panel.detail())
             .expect("the row opened");
         assert!(cx.debug_bounds("pr-title").is_some());
         detail.read_with(cx, |view, _| {
@@ -548,14 +713,89 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn each_pull_request_keeps_its_tab_and_its_page(cx: &mut TestAppContext) {
+        let (panel, cx) = panel(cx);
+        panel.update(cx, |panel, cx| {
+            panel.set_repository(Some(repo()), None, cx);
+            panel.list().update(cx, |list, cx| {
+                list.set_page(
+                    ListPage {
+                        entries: vec![entry(281, "Sub-agents", "ann"), entry(290, "Images", "bob")],
+                        next_cursor: None,
+                    },
+                    cx,
+                )
+            });
+        });
+        cx.run_until_parked();
+        click(cx, "pr-row-281");
+        let first = panel.read_with(cx, |panel, _| panel.detail()).unwrap();
+        first.update(cx, |view, cx| view.select_tab(DetailTab::Code, cx));
+        click(cx, "pr-tab-list");
+        click(cx, "pr-row-290");
+        let tabs = |panel: &Entity<PullRequestPanel>, cx: &mut VisualTestContext| {
+            panel.read_with(cx, |panel, _| panel.tabs.numbers().collect::<Vec<_>>())
+        };
+        assert_eq!(tabs(&panel, cx), [281, 290]);
+        first.read_with(cx, |view, _| {
+            assert!(!view.visible(), "a hidden tab does not poll")
+        });
+
+        // Back on the first: the same page, still on its Code tab.
+        click(cx, "pr-tab-281");
+        let shown = panel.read_with(cx, |panel, _| panel.detail()).unwrap();
+        assert_eq!(shown.entity_id(), first.entity_id());
+        shown.read_with(cx, |view, _| {
+            assert_eq!(view.tab(), DetailTab::Code);
+            assert!(view.visible());
+        });
+
+        // Closing the shown tab shows its right neighbour.
+        panel.update(cx, |panel, cx| panel.close_tab(0, cx));
+        assert_eq!(tabs(&panel, cx), [290]);
+        let shown = panel.read_with(cx, |panel, cx| {
+            panel.detail().map(|d| d.read(cx).pr().number)
+        });
+        assert_eq!(shown, Some(290));
+        panel.update(cx, |panel, cx| panel.close_tab(0, cx));
+        panel.read_with(cx, |panel, _| {
+            assert!(panel.detail().is_none(), "the list shows")
+        });
+    }
+
+    #[gpui_kit::test]
+    fn tabs_move_by_drag_and_drop(cx: &mut TestAppContext) {
+        let (panel, cx) = panel(cx);
+        panel.update(cx, |panel, cx| {
+            panel.set_repository(Some(repo()), None, cx);
+            for number in [1, 2, 3] {
+                panel.open(number, cx);
+            }
+        });
+        cx.run_until_parked();
+        let from = cx.debug_bounds("pr-tab-3").unwrap().center();
+        let to = cx.debug_bounds("pr-tab-1").unwrap().center();
+        cx.simulate_mouse_down(
+            from,
+            gpui_kit::MouseButton::Left,
+            gpui_kit::Modifiers::none(),
+        );
+        cx.simulate_mouse_move(to, gpui_kit::MouseButton::Left, gpui_kit::Modifiers::none());
+        cx.simulate_mouse_up(to, gpui_kit::MouseButton::Left, gpui_kit::Modifiers::none());
+        cx.run_until_parked();
+        panel.read_with(cx, |panel, _| {
+            assert_eq!(panel.tabs.numbers().collect::<Vec<_>>(), [3, 1, 2]);
+            assert_eq!(panel.tabs.active_item().map(|(n, _)| n), Some(3));
+        });
+    }
+
+    #[gpui_kit::test]
     fn the_tab_row_switches_tabs(cx: &mut TestAppContext) {
         let (panel, cx) = panel(cx);
         panel.update(cx, |panel, cx| {
             panel.set_repository(Some(repo()), Some(290), cx)
         });
-        let detail = panel
-            .read_with(cx, |panel, _| panel.detail().cloned())
-            .unwrap();
+        let detail = panel.read_with(cx, |panel, _| panel.detail()).unwrap();
         show(&detail, fixtures::detail(290), cx);
         cx.run_until_parked();
         click(cx, "pr-tab-Code");

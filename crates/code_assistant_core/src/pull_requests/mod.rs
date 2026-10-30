@@ -14,13 +14,17 @@
 //! [`UiEvent::PullRequestListChanged`]: crate::ui::UiEvent::PullRequestListChanged
 
 mod cache;
+mod checkout;
 mod repo;
 mod snapshots;
 mod store;
 #[cfg(test)]
 mod tests;
 
+pub use checkout::{CheckoutPlace, PullRequestCheckout};
 pub use store::{PullRequestSource, PullRequests};
+
+pub(crate) use checkout::pull_request_head;
 
 pub(crate) use repo::{github_remote, github_repo, own_pull_request};
 
@@ -45,6 +49,7 @@ pub enum PullRequestPart {
     Activity,
     Diff,
     FilesViewed,
+    Stack,
 }
 
 /// Where a session's pull requests live and which one is its own.

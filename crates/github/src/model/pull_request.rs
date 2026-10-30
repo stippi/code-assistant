@@ -77,6 +77,9 @@ pub struct ListEntry {
     pub has_team_review_request: bool,
     pub labels: Vec<Label>,
     pub checks_state: Option<ChecksState>,
+    /// Where it sits in its stack (github.com only).
+    #[serde(default)]
+    pub stack: Option<super::StackMembership>,
 }
 
 /// Line counts of one pull request, as `Client::list_stats` reads them.
@@ -155,6 +158,7 @@ pub enum PullRequestAction {
     UpdateBranch,
     EnableAutoMerge,
     DisableAutoMerge,
+    ApproveWorkflows,
 }
 
 /// An action on a pull request with what it needs.
@@ -174,6 +178,8 @@ pub enum Action {
     Reopen,
     /// Deletes the source branch of a closed or merged pull request.
     DeleteBranch,
+    /// Lets the workflow runs of a pull request from a fork run.
+    ApproveWorkflows,
 }
 
 impl Action {
@@ -188,6 +194,7 @@ impl Action {
             Action::Close => PullRequestAction::Close,
             Action::Reopen => PullRequestAction::Reopen,
             Action::DeleteBranch => PullRequestAction::DeleteBranch,
+            Action::ApproveWorkflows => PullRequestAction::ApproveWorkflows,
         }
     }
 }
@@ -250,6 +257,10 @@ pub struct Detail {
     pub auto_merge_enabled: bool,
     pub auto_merge_method: Option<MergeMethod>,
     pub maintainer_can_modify: bool,
+    /// Workflow runs of an open pull request from a fork waiting for a
+    /// maintainer's approval; `None` when not asked or not known.
+    #[serde(default)]
+    pub workflow_approvals: Option<u64>,
 }
 
 /// Fields of a pull request to rewrite; `None` leaves one as it is.

@@ -160,6 +160,7 @@ fn entry(row: RawRow) -> ListEntry {
             .any(|r| trimmed(r.login.as_deref()).is_none() && trimmed(r.slug.as_deref()).is_some()),
         labels: labels(&row.labels),
         checks_state: checks_state(&rollup_states(&row.commits)),
+        stack: None,
     }
 }
 

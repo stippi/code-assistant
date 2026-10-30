@@ -20,15 +20,16 @@ use super::actions::{
 use super::avatar::avatar;
 use super::preferences;
 use super::presentation::{Tone, diff_stat, format_count, relative_time};
+use super::stack::{self, StackRequest, StackView};
 use chrono::{DateTime, Utc};
 use github::PullRequestRef;
 use github::model::{
     Action, Actor, ChecksState, Detail, ListEntry, MergeMethod, PullRequestUpdate, UpdateMethod,
 };
-use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Escape, Input, InputEvent, InputState};
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{ActiveTheme, Icon, Sizable};
+use gpui_kit::component::{ActiveTheme, Sizable};
 use gpui_kit::{
     AnyElement, Context, Entity, EventEmitter, FontWeight, Render, SharedString, Subscription,
     Task, Window, div, prelude::*, px, svg,
@@ -37,7 +38,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// How long an armed control waits for its confirming click.
-const CONFIRM_TIMEOUT: Duration = Duration::from_secs(3);
+pub const CONFIRM_TIMEOUT: Duration = Duration::from_secs(3);
 
 struct TitleEditor {
     input: Entity<InputState>,
@@ -67,9 +68,12 @@ pub struct DetailHeader {
     refreshing: bool,
     /// An action runs.
     pending: bool,
+    /// A checkout runs.
+    checking_out: bool,
+    /// The stack the pull request is a layer of.
+    stack: StackView,
     seed: Option<ListEntry>,
     /// The list is there to go back to.
-    show_back: bool,
     title_editor: Option<TitleEditor>,
     /// A saved title, shown until the detail has it.
     saved_title: Option<String>,
@@ -88,13 +92,13 @@ pub struct DetailHeader {
 const COPIED_FOR: Duration = Duration::from_millis(1500);
 
 impl EventEmitter<PullRequestIntent> for DetailHeader {}
+impl EventEmitter<StackRequest> for DetailHeader {}
 
 impl DetailHeader {
     /// `merge_method` is the one last used in the repository.
     pub fn new(
         pr: PullRequestRef,
         seed: Option<ListEntry>,
-        show_back: bool,
         merge_method: Option<MergeMethod>,
     ) -> Self {
         Self {
@@ -103,8 +107,9 @@ impl DetailHeader {
             checks_state: None,
             refreshing: false,
             pending: false,
+            checking_out: false,
+            stack: StackView::default(),
             seed,
-            show_back,
             title_editor: None,
             saved_title: None,
             picked_merge_method: merge_method,
@@ -147,6 +152,21 @@ impl DetailHeader {
         self.checks_state
     }
 
+    pub fn set_stack(&mut self, stack: StackView, cx: &mut Context<Self>) {
+        if self.stack != stack {
+            self.stack = stack;
+            cx.notify();
+        }
+    }
+
+    pub fn stack(&self) -> &StackView {
+        &self.stack
+    }
+
+    pub fn request_stack(&mut self, request: StackRequest, cx: &mut Context<Self>) {
+        cx.emit(request);
+    }
+
     #[cfg(test)]
     pub fn shown_title(&self) -> SharedString {
         self.facts().title
@@ -154,6 +174,11 @@ impl DetailHeader {
 
     pub fn pending(&self) -> bool {
         self.pending
+    }
+
+    pub fn set_checking_out(&mut self, checking_out: bool, cx: &mut Context<Self>) {
+        self.checking_out = checking_out;
+        cx.notify();
     }
 
     /// While an action runs, the primary control waits.
@@ -315,22 +340,6 @@ impl DetailHeader {
             .items_center()
             .gap_1()
             .text_sm()
-            .when(self.show_back, |row| {
-                row.child(
-                    div().debug_selector(|| "pr-back".into()).child(
-                        Button::new("pr-back")
-                            .ghost()
-                            .xsmall()
-                            .icon(Icon::default().path("icons/arrow_left.svg"))
-                            .tooltip("Back to pull requests")
-                            .on_click(
-                                cx.listener(|this, _, _, cx| {
-                                    this.emit(PullRequestIntent::Back, cx)
-                                }),
-                            ),
-                    ),
-                )
-            })
             .when(!condensed, |row| {
                 row.child(
                     div()
@@ -638,7 +647,12 @@ impl Render for DetailHeader {
                 .flex()
                 .items_center()
                 .gap_1()
-                .child(actions::render_checkout(facts.number, weak.clone()))
+                .children(stack::render_stack_controls(self, detail, cx))
+                .child(actions::render_checkout(
+                    facts.number,
+                    self.checking_out,
+                    weak.clone(),
+                ))
                 .children(actions::render_primary(self, detail, cx))
                 .child(actions::render_more_menu(
                     detail,
@@ -707,7 +721,7 @@ mod tests {
         let window = cx.update(|cx| {
             gpui_kit::component::init(cx);
             cx.open_window(Default::default(), |_, cx| {
-                cx.new(|_| DetailHeader::new(repo().pull_request(290), None, true, None))
+                cx.new(|_| DetailHeader::new(repo().pull_request(290), None, None))
             })
             .unwrap()
         });
@@ -724,7 +738,9 @@ mod tests {
         if let Some(detail) = detail {
             let checks = effective_checks_state(detail.checks_state, &detail.checks);
             view.update(cx, |view, cx| {
-                view.set_data(Some(Arc::new(detail)), checks, false, cx)
+                view.set_data(Some(Arc::new(detail)), checks, false, cx);
+                // In no stack.
+                view.set_stack(StackView::known_alone(), cx);
             });
         }
         cx.run_until_parked();
@@ -831,13 +847,6 @@ mod tests {
         cx.executor().advance_clock(COPIED_FOR);
         cx.run_until_parked();
         assert!(cx.debug_bounds("pr-head-branch-copied").is_none());
-    }
-
-    #[gpui_kit::test]
-    fn the_back_arrow_asks_for_the_list(cx: &mut TestAppContext) {
-        let (_, intents, cx) = header(Some(detail(290)), cx);
-        click(cx, "pr-back");
-        assert_eq!(intents.borrow().as_slice(), [PullRequestIntent::Back]);
     }
 
     #[gpui_kit::test]

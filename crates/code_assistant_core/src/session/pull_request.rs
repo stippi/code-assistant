@@ -54,23 +54,52 @@ pub enum ChecksState {
 
 impl PullRequestSnapshot {
     pub fn from_summary(summary: &Summary, fetched_at: SystemTime) -> Self {
-        let state = match summary.state {
-            github::model::PullRequestState::Open if summary.is_draft => PullRequestState::Draft,
+        Self::from_parts(
+            (summary.number, &summary.url, &summary.title),
+            summary.state,
+            summary.is_draft,
+            summary.review_decision,
+            summary.checks_state,
+            fetched_at,
+        )
+    }
+
+    pub fn from_detail(detail: &github::model::Detail, fetched_at: SystemTime) -> Self {
+        Self::from_parts(
+            (detail.number, &detail.url, &detail.title),
+            detail.state,
+            detail.is_draft,
+            detail.review_decision,
+            detail.checks_state,
+            fetched_at,
+        )
+    }
+
+    fn from_parts(
+        (number, url, title): (u64, &str, &str),
+        state: github::model::PullRequestState,
+        is_draft: bool,
+        review: Option<github::model::ReviewDecision>,
+        checks: Option<github::model::ChecksState>,
+        fetched_at: SystemTime,
+    ) -> Self {
+        let state = match state {
+            github::model::PullRequestState::Open if is_draft => PullRequestState::Draft,
             github::model::PullRequestState::Open => PullRequestState::Open,
             github::model::PullRequestState::Merged => PullRequestState::Merged,
             github::model::PullRequestState::Closed => PullRequestState::Closed,
         };
         Self {
-            number: summary.number,
-            url: summary.url.clone(),
-            title: summary.title.clone(),
+            number,
+            url: url.to_owned(),
+            title: title.to_owned(),
             state,
-            review: summary.review_decision.map(|review| match review {
+            review: review.map(|review| match review {
                 github::model::ReviewDecision::Approved => ReviewDecision::Approved,
                 github::model::ReviewDecision::ChangesRequested => ReviewDecision::ChangesRequested,
                 github::model::ReviewDecision::ReviewRequired => ReviewDecision::ReviewRequired,
             }),
-            checks: summary.checks_state.map(|checks| match checks {
+            checks: checks.map(|checks| match checks {
                 github::model::ChecksState::Passing => ChecksState::Passing,
                 github::model::ChecksState::Failing => ChecksState::Failing,
                 github::model::ChecksState::Pending => ChecksState::Pending,

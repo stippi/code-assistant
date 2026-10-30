@@ -51,6 +51,7 @@ pub fn entry(number: u64, title: &str, author: &str) -> ListEntry {
         has_team_review_request: false,
         labels: Vec::new(),
         checks_state: None,
+        stack: None,
     }
 }
 
@@ -137,6 +138,7 @@ pub fn detail(number: u64) -> Detail {
         auto_merge_enabled: false,
         auto_merge_method: None,
         maintainer_can_modify: false,
+        workflow_approvals: None,
     }
 }
 

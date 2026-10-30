@@ -19,6 +19,7 @@ const DOCUMENTS: &[&str] = &[
     include_str!("batches.graphql"),
     include_str!("mutations.graphql"),
     include_str!("heads.graphql"),
+    include_str!("stacks.graphql"),
 ];
 
 /// Every operation by name, ready to send.
@@ -114,6 +115,7 @@ mod tests {
             "MergePullRequest",
             "PullRequestActionState",
             "PullRequestActivity",
+            "PullRequestBranchAccess",
             "PullRequestBranchToDelete",
             "PullRequestCheckContexts",
             "PullRequestCommitStats",
@@ -123,6 +125,7 @@ mod tests {
             "PullRequestNodeId",
             "PullRequestSearch",
             "PullRequestSourceBranch",
+            "PullRequestStackMembership",
             "PullRequestStats",
             "PullRequestSubject",
             "PullRequestSummary",
@@ -146,7 +149,13 @@ mod tests {
             assert!(OPERATIONS.contains_key(name), "{name} is not defined");
         }
         assert_eq!(OPERATIONS.len(), sent.len(), "an operation is never sent");
-        for batched in ["PullRequestSummary", "PullRequestStats", "SetFileViewed"] {
+        for batched in [
+            "PullRequestSummary",
+            "PullRequestStats",
+            "SetFileViewed",
+            "PullRequestStackMembership",
+            "PullRequestBranchAccess",
+        ] {
             alias::aliased_operation(operation(batched), 2);
         }
     }

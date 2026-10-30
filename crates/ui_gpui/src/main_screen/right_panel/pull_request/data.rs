@@ -9,6 +9,7 @@
 
 use super::bus::{PullRequestEvent, bus};
 use super::presentation::effective_checks_state;
+use super::stack::StackView;
 use crate::Gpui;
 use code_assistant_core::pull_requests::{Fetched, PullRequestPart};
 use code_assistant_core::session::SessionService;
@@ -30,6 +31,14 @@ pub fn session_service(cx: &App) -> Option<SessionService> {
         .and_then(|gpui| gpui.session_service())
 }
 
+/// A word on what an action came to, a warning when it fell short.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Notice {
+    pub title: SharedString,
+    pub detail: SharedString,
+    pub warning: bool,
+}
+
 /// What the detail page knows about one pull request; the tabs observe it.
 pub struct PullRequestData {
     pub pr: PullRequestRef,
@@ -41,6 +50,11 @@ pub struct PullRequestData {
     pub refreshing: bool,
     /// The last failed read or write, shown by the page until the next success.
     pub error: Option<SharedString>,
+    /// What an action came to, shown until dismissed ("Checked out").
+    pub notice: Option<Notice>,
+    /// The stack the pull request is a layer of; its failures stay apart
+    /// from the page's ("Retry stack lookup").
+    pub stack: StackView,
     refreshing_parts: HashSet<PullRequestPart>,
     reads: HashMap<PullRequestPart, Task<()>>,
     viewer_read: Option<Task<()>>,
@@ -68,6 +82,8 @@ impl PullRequestData {
             viewer: None,
             refreshing: false,
             error: None,
+            notice: None,
+            stack: StackView::default(),
             refreshing_parts: HashSet::new(),
             reads: HashMap::new(),
             viewer_read: None,
@@ -84,6 +100,7 @@ impl PullRequestData {
             PullRequestPart::Detail,
             PullRequestPart::Activity,
             PullRequestPart::Checks,
+            PullRequestPart::Stack,
         ] {
             self.read(part, cx);
         }
@@ -128,8 +145,38 @@ impl PullRequestData {
                     s.pull_request_checks(pr).await
                 })
             }
+            PullRequestPart::Stack => self.read_stack(cx),
             PullRequestPart::Diff | PullRequestPart::FilesViewed => {}
         }
+    }
+
+    fn read_stack(&mut self, cx: &mut Context<Self>) {
+        let Some(service) = session_service(cx) else {
+            return;
+        };
+        let pr = self.pr.clone();
+        let task = cx.spawn(async move |this, cx| {
+            let read = service.pull_request_stack(pr).await;
+            this.update(cx, |this, cx| {
+                this.reads.remove(&PullRequestPart::Stack);
+                let view = &mut this.stack;
+                view.read = true;
+                match read {
+                    Ok(fetched) => {
+                        view.stack = fetched.value.map(Arc::new);
+                        view.fresh = !fetched.refreshing;
+                        view.error = None;
+                    }
+                    Err(error) => {
+                        view.fresh = false;
+                        view.error = Some(format!("{error:#}").into());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+        self.reads.insert(PullRequestPart::Stack, task);
     }
 
     fn store_detail(&mut self, detail: Detail) {
@@ -312,6 +359,12 @@ impl PullRequestData {
             cx.notify();
         }
     }
+
+    pub fn dismiss_notice(&mut self, cx: &mut Context<Self>) {
+        if self.notice.take().is_some() {
+            cx.notify();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -342,6 +395,7 @@ mod tests {
                 head_sha: None,
                 checks: vec![check("ci", CheckStatus::Success)],
                 checks_state: None,
+                workflow_approvals: None,
             }));
         });
         data.read_with(cx, |data, _| {

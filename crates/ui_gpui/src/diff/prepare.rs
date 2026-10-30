@@ -15,7 +15,7 @@ const HUNK_CONTEXT_LINES: usize = 3;
 /// Upper bound for the lines of one list item. A hunk above it (a newly
 /// added file is a single hunk) is split, so a virtualized list only builds
 /// what is in view.
-const CHUNK_MAX_LINES: usize = 40;
+pub const CHUNK_MAX_LINES: usize = 40;
 
 /// A file diff reduced to renderable hunks. The expensive parts (line diff,
 /// syntax parse, line styles) run once on a background thread — the UI only

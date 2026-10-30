@@ -10,13 +10,14 @@
 use super::PullRequestIntent;
 use super::header::DetailHeader;
 use super::presentation::{Tone, merge_method_label};
+use code_assistant_core::pull_requests::CheckoutPlace;
 use github::model::{
-    Action, ChecksState, Detail, MergeMethod, Mergeability, PullRequestAction, PullRequestState,
-    PullRequestUpdate, UpdateMethod,
+    Action, Checks, ChecksState, Detail, MergeMethod, Mergeability, PullRequestAction,
+    PullRequestState, PullRequestUpdate, UpdateMethod,
 };
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenu, PopupMenuItem};
-use gpui_kit::component::{ActiveTheme, Icon, Side, Sizable};
+use gpui_kit::component::{ActiveTheme, Disableable, Icon, Side, Sizable};
 use gpui_kit::{
     AnyElement, App, Context, Hsla, SharedString, WeakEntity, div, prelude::*, px, svg,
 };
@@ -38,6 +39,19 @@ pub enum PrimaryControl {
 /// The actions the host lets the viewer take.
 pub fn can(detail: &Detail, action: PullRequestAction) -> bool {
     detail.viewer_permissions.actions.contains(&action)
+}
+
+/// How many workflow runs of an open pull request from a fork wait for
+/// the viewer to approve them (0 when there is nothing they may approve).
+/// `checks` is the newer read of the runs, when the checks poll made one.
+pub fn workflow_approvals(detail: &Detail, checks: Option<&Checks>) -> u64 {
+    if detail.state != PullRequestState::Open || !can(detail, PullRequestAction::ApproveWorkflows) {
+        return 0;
+    }
+    checks
+        .and_then(|checks| checks.workflow_approvals)
+        .or(detail.workflow_approvals)
+        .unwrap_or(0)
 }
 
 /// Merge methods the repository allows, in GitHub's order.
@@ -164,6 +178,7 @@ pub enum Confirmable {
     Merge,
     EnableAutoMerge,
     Close,
+    ApproveWorkflows,
 }
 
 /// Which control waits for its confirming click.
@@ -233,6 +248,15 @@ pub fn render_primary(
     let method = header.merge_method(detail);
     let confirm = header.confirm();
     let control = primary_control(detail, header.checks_state())?;
+    // A stack merges through its own controls (T3 Code); until the stack
+    // is known, no single merge either.
+    if matches!(
+        control,
+        PrimaryControl::Merge | PrimaryControl::EnableAutoMerge
+    ) && !header.stack().allows_single_merge()
+    {
+        return None;
+    }
     let pending = header.pending();
     let confirmable = |key: Confirmable, label: String, action: Action, cx: &mut Context<_>| {
         let armed = confirm.is_armed(key);
@@ -311,18 +335,53 @@ pub fn render_primary(
     )
 }
 
-/// "Check out ▾": for now the command that checks the branch out.
-pub fn render_checkout(number: u64, header: WeakEntity<DetailHeader>) -> AnyElement {
+/// "Check out ▾" (T3 Code's `PullRequestDetailActions`): in a worktree of
+/// its own with a session on it, or here; or copy the `gh` command.
+/// "Checking out..." while one runs.
+pub fn render_checkout(
+    number: u64,
+    checking_out: bool,
+    header: WeakEntity<DetailHeader>,
+) -> AnyElement {
     Button::new("pr-checkout")
         .outline()
         .xsmall()
         .icon(icon("icons/git_branch.svg"))
-        .label("Check out")
+        .label(if checking_out {
+            "Checking out..."
+        } else {
+            "Check out"
+        })
+        .disabled(checking_out)
+        .tooltip("Check out this pull request")
         .dropdown_caret(true)
         .dropdown_menu_with_anchor(gpui_kit::Anchor::TopRight, move |menu, _, _| {
-            let header = header.clone();
             let command = checkout_command(number);
+            let place = |place: CheckoutPlace| {
+                let header = header.clone();
+                move |_: &gpui_kit::ClickEvent, _: &mut gpui_kit::Window, cx: &mut App| {
+                    send(&header, PullRequestIntent::CheckOut(place), cx)
+                }
+            };
+            let header = header.clone();
             menu.item(
+                described(
+                    "In a separate worktree",
+                    "Its own folder and session. Nothing you have open moves.",
+                    "icons/folder_tree.svg",
+                )
+                .on_click(place(CheckoutPlace::Worktree)),
+            )
+            .item(
+                described(
+                    "In this repository",
+                    "Switches the branch you are working in.",
+                    "icons/git_branch.svg",
+                )
+                .on_click(place(CheckoutPlace::Here)),
+            )
+            .separator()
+            .item(
                 PopupMenuItem::new(format!("Copy “{command}”"))
                     .icon(icon("icons/copy.svg"))
                     .on_click(move |_, _, cx| {
@@ -331,6 +390,31 @@ pub fn render_checkout(number: u64, header: WeakEntity<DetailHeader>) -> AnyElem
             )
         })
         .into_any_element()
+}
+
+/// A menu entry with a muted line below its label.
+fn described(label: &'static str, detail: &'static str, icon_path: &'static str) -> PopupMenuItem {
+    PopupMenuItem::element(move |_, cx| {
+        div()
+            .flex()
+            .items_start()
+            .gap_2()
+            .child(
+                svg()
+                    .mt_0p5()
+                    .size(px(14.))
+                    .path(icon_path)
+                    .text_color(cx.theme().muted_foreground),
+            )
+            .child(
+                div().flex().flex_col().child(label).child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(detail),
+                ),
+            )
+    })
 }
 
 pub fn checkout_command(number: u64) -> String {
@@ -417,7 +501,11 @@ fn more_menu(
         return menu;
     };
     let state = state.read(cx);
-    let entries = menu_entries(detail, state.checks_state());
+    let mut entries = menu_entries(detail, state.checks_state());
+    if !state.stack().allows_single_merge() {
+        entries.merge_now = false;
+        entries.enable_auto_merge = false;
+    }
     let method = state.merge_method(detail);
     let item = |label: &str, icon_path: &'static str, intent: PullRequestIntent| {
         let header = header.clone();
@@ -567,6 +655,35 @@ mod tests {
             detail,
             effective_checks_state(detail.checks_state, &detail.checks),
         )
+    }
+
+    #[test]
+    fn only_an_open_forks_runs_the_viewer_may_approve_are_offered() {
+        let waiting = |d: &mut Detail| {
+            d.workflow_approvals = Some(2);
+            d.viewer_permissions
+                .actions
+                .push(PullRequestAction::ApproveWorkflows);
+        };
+        assert_eq!(workflow_approvals(&detail_with(1, waiting), None), 2);
+        let polled = Checks {
+            state: PullRequestState::Open,
+            head_sha: None,
+            checks: Vec::new(),
+            checks_state: None,
+            workflow_approvals: Some(0),
+        };
+        assert_eq!(
+            workflow_approvals(&detail_with(1, waiting), Some(&polled)),
+            0
+        );
+        let merged = detail_with(1, |d| {
+            waiting(d);
+            d.state = PullRequestState::Merged;
+        });
+        assert_eq!(workflow_approvals(&merged, None), 0);
+        let reader = detail_with(1, |d| d.workflow_approvals = Some(2));
+        assert_eq!(workflow_approvals(&reader, None), 0);
     }
 
     #[test]

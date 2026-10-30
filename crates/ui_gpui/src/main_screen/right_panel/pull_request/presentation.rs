@@ -255,6 +255,36 @@ fn plural(count: usize, one: &str, many: &str) -> String {
 }
 
 /// "5 of 6 passing", "1 of 6 failing", "2 of 6 running" and the like.
+/// Checks as T3 Code's popover orders them.
+pub struct CheckGroups<'a> {
+    /// Failed, cancelled or waiting for someone.
+    pub attention: Vec<&'a Check>,
+    pub running: Vec<&'a Check>,
+    pub completed: Vec<&'a Check>,
+}
+
+pub fn group_checks(checks: &[Check]) -> CheckGroups<'_> {
+    let of = |statuses: &[CheckStatus]| {
+        checks
+            .iter()
+            .filter(|check| statuses.contains(&check.status))
+            .collect::<Vec<_>>()
+    };
+    CheckGroups {
+        attention: of(&[
+            CheckStatus::Failure,
+            CheckStatus::Cancelled,
+            CheckStatus::ActionRequired,
+        ]),
+        running: of(&[CheckStatus::Pending]),
+        completed: of(&[
+            CheckStatus::Success,
+            CheckStatus::Skipped,
+            CheckStatus::Neutral,
+        ]),
+    }
+}
+
 pub fn summarize_checks(checks: &[Check]) -> String {
     let total = checks.len();
     if total == 0 {
@@ -365,6 +395,22 @@ mod tests {
     use super::*;
     use crate::main_screen::right_panel::pull_request::fixtures::{check, hours_ago, now};
     use chrono::Duration;
+
+    #[test]
+    fn checks_needing_attention_come_first_then_running_then_completed() {
+        let checks = [
+            check("lint", CheckStatus::Success),
+            check("build", CheckStatus::Pending),
+            check("test", CheckStatus::Failure),
+            check("ci", CheckStatus::ActionRequired),
+            check("docs", CheckStatus::Skipped),
+        ];
+        let names = |group: &[&Check]| group.iter().map(|c| c.name.clone()).collect::<Vec<_>>();
+        let groups = group_checks(&checks);
+        assert_eq!(names(&groups.attention), ["test", "ci"]);
+        assert_eq!(names(&groups.running), ["build"]);
+        assert_eq!(names(&groups.completed), ["lint", "docs"]);
+    }
 
     #[gpui_kit::test]
     fn only_a_running_check_spins(cx: &mut gpui_kit::TestAppContext) {

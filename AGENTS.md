@@ -152,6 +152,9 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
 - Client and snapshot dir injected via `AgentRuntimeOptions::pull_requests`;
   the lifecycle sweep reads sessions' PRs through it in batches; see
   `docs/pull-request-view.md`
+- Checkout like `gh pr checkout` (`git::pull_request`, here or in a new
+  worktree session) and stack rebases (`git::stack_rebase`, scratch repo)
+  are git-crate work the core drives
 
 ### Session Storage
 - One folder per session below `sessions/`, the ID is its path:

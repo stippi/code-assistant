@@ -92,6 +92,33 @@ pub struct UiSessionState {
     /// gitignored entries were shown.
     #[serde(default, skip_serializing_if = "FilesViewState::is_default")]
     pub files_view: FilesViewState,
+
+    /// The pull request tabs open in the right panel.
+    #[serde(default, skip_serializing_if = "PullRequestTabsState::is_empty")]
+    pub pull_request_tabs: PullRequestTabsState,
+}
+
+/// The right panel's pull request tabs for one session: in order, each
+/// with its sub-tab, and which one shows (`None`: the list).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PullRequestTabsState {
+    pub open: Vec<PullRequestTabState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active: Option<u64>,
+}
+
+impl PullRequestTabsState {
+    fn is_empty(&self) -> bool {
+        self.open.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PullRequestTabState {
+    pub number: u64,
+    /// "summary", "timeline" or "code".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab: Option<String>,
 }
 
 /// The Files view's state for one session. Paths are `/`-separated and
@@ -359,6 +386,20 @@ impl UiStateStore {
             return;
         }
         state.review_compare_mode = Some(mode);
+        self.dirty.insert(session_id.to_owned());
+    }
+
+    /// The pull request tabs open for a session.
+    pub fn get_pull_request_tabs(&mut self, session_id: &str) -> PullRequestTabsState {
+        self.get(session_id).pull_request_tabs
+    }
+
+    pub fn set_pull_request_tabs(&mut self, session_id: &str, tabs: PullRequestTabsState) {
+        let state = self.states.entry(session_id.to_owned()).or_default();
+        if state.pull_request_tabs == tabs {
+            return;
+        }
+        state.pull_request_tabs = tabs;
         self.dirty.insert(session_id.to_owned());
     }
 

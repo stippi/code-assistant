@@ -45,9 +45,16 @@ fn asks_required(host: &str) -> bool {
 }
 
 impl Client {
-    /// Everything about one pull request: state, people, labels, checks,
-    /// merge settings and what the viewer may do.
+    /// Everything about one pull request: state, people, labels, checks
+    /// (with the workflow runs of a fork waiting for approval), merge
+    /// settings and what the viewer may do.
     pub async fn detail(&self, pr: &PullRequestRef) -> Result<Detail> {
+        let mut detail = self.detail_without_approvals(pr).await?;
+        self.add_workflow_approvals(pr, &mut detail).await?;
+        Ok(detail)
+    }
+
+    pub(crate) async fn detail_without_approvals(&self, pr: &PullRequestRef) -> Result<Detail> {
         let host = &pr.repo.host;
         let variables = |requested_reviewers: u32| -> Result<serde_json::Value> {
             Ok(with(

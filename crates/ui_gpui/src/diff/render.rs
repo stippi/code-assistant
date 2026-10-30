@@ -5,7 +5,8 @@
 use super::chunks::DiffChunk;
 use super::model::DiffLine;
 use super::prepare::PreparedFileDiff;
-use super::rows::{DiffRow, DiffRows, RowGeometry, RowSelection};
+use super::rows::{DiffRow, DiffRows, HScroll, RowCell, RowGeometry, RowSelection};
+use super::split::{SplitChunk, SplitHunks};
 use super::syntax::{DiffSyntax, SyntaxOrigin};
 use gpui_kit::component::theme::Theme;
 use gpui_kit::{
@@ -34,7 +35,7 @@ pub(crate) fn render_diff_chunk(
     rem_size: Pixels,
     selection: Option<RowSelection>,
 ) -> AnyElement {
-    let rows = render_diff_chunk_rows(diff, chunk, numbers, theme, rem_size, selection);
+    let rows = render_diff_chunk_rows(diff, chunk, numbers, theme, rem_size, selection, None);
     let Some(hunk) = diff.hunks.get(chunk.hunk) else {
         return rows;
     };
@@ -64,7 +65,8 @@ pub(crate) fn render_diff_chunk(
 }
 
 /// The rows of one chunk as [`render_diff_chunk`] draws them, without the
-/// separator: for views that draw hunk boundaries themselves.
+/// separator: for views that draw hunk boundaries themselves. With
+/// `scroll`, lines do not wrap but scroll sideways.
 pub(crate) fn render_diff_chunk_rows(
     diff: &PreparedFileDiff,
     chunk: &DiffChunk,
@@ -72,6 +74,7 @@ pub(crate) fn render_diff_chunk_rows(
     theme: &Theme,
     rem_size: Pixels,
     selection: Option<RowSelection>,
+    scroll: Option<HScroll>,
 ) -> AnyElement {
     let Some(hunk) = diff.hunks.get(chunk.hunk) else {
         return div().into_any();
@@ -107,7 +110,82 @@ pub(crate) fn render_diff_chunk_rows(
         old_width: diff.chunked.old_width,
         new_width: diff.chunked.new_width,
     };
-    render_diff_rows(lines, theme, Some(gutter), rem_size, syntax, selection)
+    render_diff_rows(
+        lines,
+        theme,
+        Some(gutter),
+        rem_size,
+        syntax,
+        selection,
+        scroll,
+    )
+}
+
+/// One chunk of a split diff: the old file's lines left with their
+/// numbers, the new file's right, a side without a line filled. Cells
+/// carry their flat line (`numbers` holds every flat line's numbers), so
+/// `selection` counts from 0.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn render_split_chunk_rows(
+    diff: &PreparedFileDiff,
+    split: &SplitHunks,
+    chunk: &SplitChunk,
+    numbers: &[(ChangeTag, usize, usize)],
+    theme: &Theme,
+    rem_size: Pixels,
+    selection: Option<RowSelection>,
+    scroll: Option<HScroll>,
+) -> AnyElement {
+    let Some(hunk) = diff.hunks.get(chunk.hunk) else {
+        return div().into_any();
+    };
+    let flat_start = split.flat_starts.get(chunk.hunk).copied().unwrap_or(0);
+    let (old_width, new_width) = (diff.chunked.old_width, diff.chunked.new_width);
+    let syntax = diff.syntax.as_deref();
+    let cell = |line: Option<usize>, left: bool| -> Option<RowCell> {
+        let dl = hunk.lines.get(line?)?;
+        let flat = flat_start + line?;
+        let &(_, old, new) = numbers.get(flat)?;
+        let gutter = match left {
+            true => format!("{old:>old_width$}"),
+            false => format!("{new:>new_width$}"),
+        };
+        let syntax = syntax.map(|syntax| {
+            let own = if dl.tag == ChangeTag::Delete {
+                old
+            } else {
+                new
+            };
+            match syntax.origin() {
+                SyntaxOrigin::WholeFile => (syntax, 0, own),
+                SyntaxOrigin::PerHunk => {
+                    let start = match dl.tag {
+                        ChangeTag::Delete => hunk.old_start,
+                        _ => hunk.new_start,
+                    };
+                    (syntax, chunk.hunk, own.saturating_sub(start) + 1)
+                }
+            }
+        });
+        Some(RowCell {
+            row: diff_row(dl, Some(gutter.into()), syntax, theme),
+            line: flat,
+        })
+    };
+    let rows = split
+        .chunk_rows(chunk)
+        .iter()
+        .map(|row| [cell(row.left, true), cell(row.right, false)])
+        .collect();
+    let geometry = row_geometry(Some(old_width.max(new_width)), rem_size);
+    let mut element = DiffRows::split(rows, geometry, empty_cell_bg(theme));
+    if let Some(scroll) = scroll {
+        element = element.unwrapped(scroll);
+    }
+    match selection {
+        Some(selection) => element.selectable(selection).into_any(),
+        None => element.into_any(),
+    }
 }
 
 /// Build the element tree for already-computed diff lines of a snippet.
@@ -144,6 +222,7 @@ pub(crate) fn render_diff_lines(
             start: LineCounter::default(),
         }),
         selection,
+        None,
     )
 }
 
@@ -227,6 +306,63 @@ impl Gutter {
     }
 }
 
+/// The horizontal layout of rows with a gutter of `gutter_chars` digits
+/// (none without): ~0.5rem per character + 0.75rem padding, rounded to
+/// pixels so it aligns to the pixel grid.
+fn row_geometry(gutter_chars: Option<usize>, rem_size: Pixels) -> RowGeometry {
+    let gutter_width = gutter_chars.map_or(px(0.), |chars| {
+        rems(chars as f32 * 0.5 + 0.75).to_pixels(rem_size).round()
+    });
+    RowGeometry {
+        gutter_width,
+        gutter_left: rems(0.375).to_pixels(rem_size),
+        // Without a gutter the text keeps the card's horizontal padding.
+        content_left: rems(if gutter_chars.is_some() { 0.25 } else { 0.75 }).to_pixels(rem_size),
+        content_right: rems(0.75).to_pixels(rem_size),
+    }
+}
+
+/// One line as a row: tinted by its change, with its gutter text, syntax
+/// colors (`syntax`: the parse, its segment and the line's number there)
+/// and the word emphasis on top.
+fn diff_row(
+    dl: &DiffLine,
+    gutter: Option<SharedString>,
+    syntax: Option<(&DiffSyntax, usize, usize)>,
+    theme: &Theme,
+) -> DiffRow {
+    let (row_bg, gutter_fg) = row_colors(dl.tag, theme);
+    // Word-level changes get a stronger background via text-run
+    // highlights, which wrap with the text. Syntax colors come first, the
+    // word emphasis layers on top.
+    let syntax_styles = syntax.map_or_else(Vec::new, |(syntax, segment, line)| {
+        syntax.line_styles(dl.tag, segment, line, &dl.text, &theme.highlight_theme)
+    });
+    let highlights = if dl.emphasis.is_empty() && syntax_styles.is_empty() {
+        Vec::new()
+    } else {
+        let word_bg = word_emphasis_bg(dl.tag, theme);
+        let emphasis = dl.emphasis.iter().map(|range| {
+            (
+                range.clone(),
+                gpui_kit::HighlightStyle {
+                    background_color: Some(word_bg),
+                    ..Default::default()
+                },
+            )
+        });
+        gpui_kit::combine_highlights(syntax_styles, emphasis).collect()
+    };
+    DiffRow {
+        text: dl.text.clone(),
+        highlights,
+        background: row_bg,
+        edge: row_edge(dl.tag, theme),
+        color: row_text_color(dl.tag, syntax.is_some(), theme),
+        gutter: gutter.map(|text| (text, gutter_fg.opacity(0.5))),
+    }
+}
+
 /// Shared row builder: the rows with the `gutter` (when given), as one
 /// [`DiffRows`] element.
 fn render_diff_rows(
@@ -236,78 +372,28 @@ fn render_diff_rows(
     rem_size: Pixels,
     syntax: Option<RowSyntax>,
     selection: Option<RowSelection>,
+    scroll: Option<HScroll>,
 ) -> AnyElement {
     let mut gutter_lines = gutter.as_ref().map(|g| g.start).unwrap_or_default();
     let mut syntax_lines = syntax.as_ref().map(|s| s.start).unwrap_or_default();
-
-    // Gutter width: compute in rems (~0.5rem per character + 0.75rem
-    // padding), then convert to rounded pixels so it aligns to the pixel grid.
-    let gutter_px = gutter.as_ref().map_or(px(0.), |gutter| {
-        rems(gutter.chars() as f32 * 0.5 + 0.75)
-            .to_pixels(rem_size)
-            .round()
-    });
-    let geometry = RowGeometry {
-        gutter_width: gutter_px,
-        gutter_left: rems(0.375).to_pixels(rem_size),
-        // Without a gutter the text keeps the card's horizontal padding.
-        content_left: rems(if gutter.is_some() { 0.25 } else { 0.75 }).to_pixels(rem_size),
-        content_right: rems(0.75).to_pixels(rem_size),
-    };
-
+    let geometry = row_geometry(gutter.as_ref().map(Gutter::chars), rem_size);
     let rows = diff_lines
         .iter()
         .map(|dl| {
-            let (row_bg, gutter_fg) = row_colors(dl.tag, theme);
             let (old_num, new_num) = gutter_lines.step(dl.tag);
             let syntax_line = syntax_lines.advance(dl.tag);
-
-            let gutter = gutter.as_ref().map(|gutter| {
-                (
-                    SharedString::from(gutter.text(old_num, new_num)),
-                    gutter_fg.opacity(0.5),
-                )
-            });
-
-            // Word-level changes get a stronger background via text-run
-            // highlights, which wrap with the text. Syntax colors come
-            // first, the word emphasis layers on top.
-            let syntax_styles = syntax.as_ref().map_or_else(Vec::new, |s| {
-                s.syntax.line_styles(
-                    dl.tag,
-                    s.segment,
-                    syntax_line,
-                    &dl.text,
-                    &theme.highlight_theme,
-                )
-            });
-            let highlights = if dl.emphasis.is_empty() && syntax_styles.is_empty() {
-                Vec::new()
-            } else {
-                let word_bg = word_emphasis_bg(dl.tag, theme);
-                let emphasis = dl.emphasis.iter().map(|range| {
-                    (
-                        range.clone(),
-                        gpui_kit::HighlightStyle {
-                            background_color: Some(word_bg),
-                            ..Default::default()
-                        },
-                    )
-                });
-                gpui_kit::combine_highlights(syntax_styles, emphasis).collect()
-            };
-            DiffRow {
-                text: dl.text.clone(),
-                highlights,
-                background: row_bg,
-                edge: row_edge(dl.tag, theme),
-                color: row_text_color(dl.tag, syntax.is_some(), theme),
-                gutter,
-            }
+            let gutter_text = gutter
+                .as_ref()
+                .map(|gutter| SharedString::from(gutter.text(old_num, new_num)));
+            let syntax = syntax.as_ref().map(|s| (s.syntax, s.segment, syntax_line));
+            diff_row(dl, gutter_text, syntax, theme)
         })
         .collect();
 
-    let element = DiffRows::new(rows, geometry);
+    let mut element = DiffRows::new(rows, geometry);
+    if let Some(scroll) = scroll {
+        element = element.unwrapped(scroll);
+    }
     match selection {
         Some(selection) => element.selectable(selection).into_any(),
         None => element.into_any(),
@@ -330,6 +416,13 @@ fn rgba_color(r: u8, g: u8, b: u8, a: u8) -> Hsla {
         a: a as f32 / 255.0,
     }
     .into()
+}
+
+/// The side of a split row that shows no line.
+pub(crate) fn empty_cell_bg(theme: &Theme) -> Hsla {
+    theme
+        .muted
+        .opacity(if theme.is_dark() { 0.35 } else { 0.6 })
 }
 
 /// Background of a diff body, behind the rows.

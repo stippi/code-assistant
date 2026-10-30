@@ -130,14 +130,17 @@ impl Gpui {
         let gpui = self.clone();
         self.dispatch(async move {
             match service.create_session(name, initial_project).await {
-                Ok(session_id) => {
-                    *gpui.current_session_id.lock().unwrap() = Some(session_id.clone());
-                    gpui.cmd_refresh_chat_list();
-                    gpui.cmd_load_session(session_id, None);
-                }
+                Ok(session_id) => gpui.open_session(session_id),
                 Err(e) => gpui.display_error(format!("Failed to create session: {e:#}")),
             }
         });
+    }
+
+    /// Make `session_id` the current session and show it.
+    pub(crate) fn open_session(&self, session_id: String) {
+        *self.current_session_id.lock().unwrap() = Some(session_id.clone());
+        self.cmd_refresh_chat_list();
+        self.cmd_load_session(session_id, None);
     }
 
     /// Connect a session to the UI: apply the returned snapshot and refresh
@@ -966,9 +969,7 @@ impl Gpui {
             match service.add_project(name.clone(), path).await {
                 Ok(AddProjectOutcome::Added { session_id }) => {
                     info!("Project '{name}' added, initial session: {session_id}");
-                    *gpui.current_session_id.lock().unwrap() = Some(session_id.clone());
-                    gpui.cmd_refresh_chat_list();
-                    gpui.cmd_load_session(session_id, None);
+                    gpui.open_session(session_id);
                 }
                 Ok(AddProjectOutcome::AlreadyExists) => {
                     info!("Project '{name}' already exists — nothing to do");
