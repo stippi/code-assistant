@@ -20,7 +20,7 @@ This is a Rust-based AI coding agent harness with multiple operational modes.
 ### Crate Layers
 
 ```
-Layer 0 (generic):    llm  command_executor  pty_session  fs_explorer  sandbox  web  git  terminal  terminal_output  audio
+Layer 0 (generic):    llm  command_executor  pty_session  fs_explorer  sandbox  web  git  github  terminal  terminal_output  audio
 Layer 1 (generic):    tools_core        — tool trait, registry, render, spec, permissions
                       mcp_client        — wraps MCP server tools as registry tools
 Layer 2 (generic):    agent_core        — agent loop, hook traits, dialect trait, AgentUi trait

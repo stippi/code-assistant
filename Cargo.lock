@@ -3374,6 +3374,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "github"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "futures",
+ "github",
+ "lru",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "urlencoding",
+]
+
+[[package]]
 name = "gix"
 version = "0.83.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
