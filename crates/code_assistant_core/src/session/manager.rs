@@ -42,6 +42,10 @@ pub(crate) struct RunConfig {
     /// Builds the LLM clients of sub-agents and of the auto-mode reviewer;
     /// `None` uses the configured providers.
     pub sub_agent_llm: Option<crate::session::service::LlmClientFactory>,
+    /// Reads the pull request of the session's branch once the run ends;
+    /// `None` (runs started on the manager directly) leaves that to the
+    /// lifecycle sweep.
+    pub github: Option<github::Client>,
 }
 
 /// What a run does.
@@ -1177,6 +1181,7 @@ impl SessionManager {
             model: instance.session.model_config.clone(),
             task: RunTask::Answer,
             sub_agent_llm: None,
+            github: None,
         };
         self.refresh_tool_registry(session_id, registry_request)
             .await;
@@ -1338,6 +1343,7 @@ impl SessionManager {
         };
         let task = run_config.task;
         let sub_agent_llm = run_config.sub_agent_llm;
+        let github = run_config.github;
         let idle_handoff = self.idle_handoff.clone();
         let pending_message_for_task = pending_message_ref.clone();
 
@@ -1676,11 +1682,14 @@ impl SessionManager {
                             activity_state: crate::session::instance::SessionActivityState::Idle,
                         },
                     );
-                    crate::session::lifecycle::refresh_branch_after_run(
-                        &manager_for_outcome,
-                        &session_id_clone,
-                    )
-                    .await;
+                    if let Some(github) = &github {
+                        crate::session::lifecycle::refresh_branch_after_run(
+                            &manager_for_outcome,
+                            &session_id_clone,
+                            github,
+                        )
+                        .await;
+                    }
                 }
                 Err(e) => {
                     error!("Agent failed for session {}: {:#}", session_id_clone, e);

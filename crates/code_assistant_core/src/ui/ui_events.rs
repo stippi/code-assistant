@@ -456,6 +456,18 @@ pub enum UiEvent {
     /// The UI should reload model lists, settings sections, etc.
     ConfigChanged,
 
+    // === Pull requests (app-scoped) ===
+    /// A cached part of a pull request changed: a background refresh
+    /// landed, or a write invalidated it. Views showing that pull request
+    /// read the part again.
+    PullRequestChanged {
+        pr: github::PullRequestRef,
+        part: crate::pull_requests::PullRequestPart,
+    },
+    /// The cached lists of a repository's pull requests changed; views
+    /// listing them read again.
+    PullRequestListChanged { repo: github::RepoRef },
+
     // === Voice mode (app-scoped) ===
     /// The voice agent's state changed.
     VoiceStatusChanged { status: crate::voice::VoiceStatus },

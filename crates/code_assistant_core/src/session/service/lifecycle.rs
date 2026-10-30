@@ -4,12 +4,15 @@
 use std::collections::{HashMap, HashSet};
 use std::time::SystemTime;
 
+use github::RepoRef;
+
 use super::*;
+use crate::pull_requests::github_repo;
 use crate::session::lifecycle::{
     LifecycleConfig, SessionLifecycle, SettledReason, SettlementCandidate, auto_settlement,
     sessions_with_merged_branch,
 };
-use crate::session::pull_request::{PullRequestError, PullRequestSnapshot, fetch_pull_request};
+use crate::session::pull_request::{BranchLookup, PullRequestSnapshot, read_branch_pull_requests};
 
 impl SessionService {
     /// Every session's lifecycle record, keyed by session id.
@@ -61,8 +64,8 @@ impl SessionService {
 
     /// Refresh the pull request of every unsettled session on a branch, then
     /// apply the automatic settlement rules once; returns what settled. Git
-    /// and `gh` run outside the session lock so a slow repository or host
-    /// never stalls other commands.
+    /// and GitHub are asked outside the session lock so a slow repository or
+    /// host never stalls other commands.
     pub async fn sweep_lifecycle(
         &self,
         config: &LifecycleConfig,
@@ -83,23 +86,51 @@ impl SessionService {
             .await?;
 
         // Pull requests: a merged one is the strongest merge signal.
-        let mut gh_available = true;
-        for candidate in candidates.iter_mut() {
+        let mut repos: HashMap<PathBuf, Option<RepoRef>> = HashMap::new();
+        let mut lookups: Vec<(usize, BranchLookup)> = Vec::new();
+        for (index, candidate) in candidates.iter().enumerate() {
             let (Some(branch), Some(root)) = (&candidate.branch, &candidate.repo_root) else {
                 continue;
             };
-            if candidate.busy || !gh_available {
+            if candidate.busy {
                 continue;
             }
-            let fetched = match fetch_pull_request(root, branch).await {
+            if !repos.contains_key(root) {
+                repos.insert(root.clone(), github_repo(root.clone()).await);
+            }
+            let Some(repo) = repos[root].clone() else {
+                continue;
+            };
+            let known = candidate
+                .lifecycle
+                .pull_request
+                .as_ref()
+                .map(|pr| pr.number);
+            lookups.push((
+                index,
+                BranchLookup {
+                    repo,
+                    branch: branch.clone(),
+                    known,
+                },
+            ));
+        }
+        let branches: Vec<BranchLookup> = lookups.iter().map(|(_, l)| l.clone()).collect();
+        let reads = self
+            .call_io(move |ctx| async move {
+                let client = ctx.pull_requests.client();
+                Ok(read_branch_pull_requests(&client, &branches).await)
+            })
+            .await?;
+        for ((index, lookup), read) in lookups.into_iter().zip(reads) {
+            let candidate = &mut candidates[index];
+            let fetched = match read {
                 Ok(fetched) => fetched,
-                Err(PullRequestError::GhUnavailable) => {
-                    debug!("Lifecycle sweep: gh is not installed, skipping pull requests");
-                    gh_available = false;
-                    continue;
-                }
                 Err(e) => {
-                    debug!("Lifecycle sweep: cannot read the pull request of {branch}: {e}");
+                    debug!(
+                        "Lifecycle sweep: cannot read the pull request of {}: {e}",
+                        lookup.branch
+                    );
                     continue;
                 }
             };
@@ -409,6 +440,104 @@ mod tests {
         );
         let listed = service.list_sessions().await.unwrap();
         assert_eq!(listed.iter().find(|s| s.id == id).unwrap().branch, None);
+    }
+
+    #[tokio::test]
+    async fn the_sweep_reads_pull_requests_through_github_and_settles_a_merged_one() {
+        use crate::session::pull_request::tests::{head_nodes, summary_node};
+        use crate::session::pull_request::{PullRequestState, ReviewDecision};
+        use github::fake::FakeTransport;
+        use serde_json::json;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        repo_on_feature_branch(&repo);
+        git(&repo, &["commit", "-q", "--allow-empty", "-m", "x"]);
+        git(&repo, &["checkout", "-q", "-b", "feature/y", "main"]);
+        git(&repo, &["commit", "-q", "--allow-empty", "-m", "y"]);
+        git(
+            &repo,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/stippi/code-assistant.git",
+            ],
+        );
+        let fake = FakeTransport::new();
+        fake.on_graphql("PullRequestSummary")
+            .with_variables(json!({"number_0": 7}))
+            .data(
+                json!({"a0_repository": {"pullRequest": summary_node(7, "feature/x", "MERGED")}}),
+            );
+        fake.on_graphql("PullRequestsByHead")
+            .with_variables(json!({"head": "feature/y"}))
+            .data(head_nodes("feature/y", &[8]));
+        fake.on_graphql("PullRequestSummary")
+            .with_variables(json!({"number_0": 8}))
+            .data(json!({"a0_repository": {"pullRequest": summary_node(8, "feature/y", "OPEN")}}));
+        let source = crate::pull_requests::PullRequestSource {
+            client: fake.client(),
+            snapshot_dir: tmp.path().join("pull-requests"),
+        };
+        let (service, manager) = super::super::tests::test_service_with_pull_requests(
+            &tmp.path().join("sessions"),
+            source,
+        );
+        let mut ids = Vec::new();
+        for branch in ["feature/x", "feature/y"] {
+            let config = crate::session::SessionConfig {
+                init_path: Some(repo.clone()),
+                initial_project: "pull-request-sweep-test".into(),
+                branch: Some(branch.into()),
+                ..crate::session::SessionConfig::default()
+            };
+            let id = service
+                .create_session_with_config(None, config, None)
+                .await
+                .unwrap();
+            service.load_session(id.clone(), None).await.unwrap();
+            ids.push(id);
+        }
+        manager
+            .lock()
+            .await
+            .update_session_lifecycle(&ids[0], |lifecycle| {
+                lifecycle.pull_request = Some(PullRequestSnapshot {
+                    number: 7,
+                    url: String::new(),
+                    title: "PR 7".into(),
+                    state: PullRequestState::Open,
+                    review: None,
+                    checks: None,
+                    fetched_at: SystemTime::UNIX_EPOCH,
+                })
+            })
+            .unwrap();
+        let config = LifecycleConfig {
+            auto_settle_after_days: 0,
+            auto_settle_on_merge: true,
+        };
+
+        let settled = service.sweep_lifecycle(&config).await.unwrap();
+
+        assert_eq!(settled, vec![(ids[0].clone(), SettledReason::BranchMerged)]);
+        let lifecycles = service.list_session_lifecycles().await.unwrap();
+        let merged = lifecycles[&ids[0]].pull_request.as_ref().unwrap();
+        assert_eq!(merged.state, PullRequestState::Merged);
+        let found = lifecycles[&ids[1]].pull_request.as_ref().unwrap();
+        assert_eq!((found.number, found.state), (8, PullRequestState::Open));
+        assert_eq!(found.review, Some(ReviewDecision::Approved));
+        // Known pull requests in one batch, the rest by branch.
+        assert_eq!(
+            fake.operations(),
+            [
+                "PullRequestSummary",
+                "PullRequestsByHead",
+                "PullRequestSummary"
+            ]
+        );
     }
 
     #[tokio::test]

@@ -218,6 +218,7 @@ fn session_service(dir: &tempfile::TempDir) -> (SessionService, EventStream) {
                 MockLLMProvider::new(vec![Ok(create_test_response_text("done"))]).streaming(),
             ))
         })),
+        pull_requests: None,
     });
     let (sessions, worker) = SessionService::new(manager, runtime, events.clone());
     tokio::spawn(worker);

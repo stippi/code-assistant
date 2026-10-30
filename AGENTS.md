@@ -140,6 +140,19 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
   `SessionManager::set_monitor_handle`; `UiEvent::UpdateActiveMonitors`);
   see `docs/background-monitors.md`
 
+### Pull Requests
+- Layer-0 `github` crate: HTTP client for api.github.com (token from
+  `GH_TOKEN` / `gh auth token`), typed model, every PR read and write;
+  `fake::FakeTransport` (feature `test-utils`) for tests
+- `code_assistant_core::pull_requests`: repo resolution for a session
+  (`origin` remote → `RepoRef`), per-part read cache with TTLs, shared
+  in-flight reads, stale-while-revalidate and disk snapshots; reached
+  through `SessionService::pull_request_*`, refreshes announced with
+  app-scoped `UiEvent::PullRequestChanged` / `PullRequestListChanged`
+- Client and snapshot dir injected via `AgentRuntimeOptions::pull_requests`;
+  the lifecycle sweep reads sessions' PRs through it in batches; see
+  `docs/pull-request-view.md`
+
 ### Session Storage
 - One folder per session below `sessions/`, the ID is its path:
   `<project-slug>/<YYYY-MM-DD>-<NNN>` (`persistence::layout`)

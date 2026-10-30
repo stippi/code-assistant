@@ -997,6 +997,11 @@ impl Gpui {
                 cx.refresh();
             }
 
+            UiEvent::PullRequestChanged { .. } | UiEvent::PullRequestListChanged { .. } => {
+                // The pull request panel reads the part again.
+                cx.refresh();
+            }
+
             UiEvent::RefreshCurrentSession { session_id } => {
                 // Another process modified the session file on disk.
                 // Use incremental refresh which diffs the active path and only

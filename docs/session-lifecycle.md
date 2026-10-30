@@ -91,15 +91,18 @@ A session is associated with a branch in two ways:
 
 `ChatMetadata::branch` mirrors the config field for the sidebar.
 
-The pull request behind the branch is read with the GitHub CLI
-(`gh pr view <branch> --json …`, `session::pull_request`) and stored as a
+The pull request behind the branch is read through the `github` crate's
+client (`session::pull_request::read_branch_pull_requests`) and stored as a
 `PullRequestSnapshot` (number, url, title, open/draft/merged/closed, review
-decision, checks verdict) in the lifecycle record. It is refreshed after
-each run of the session and by the sweep for every unsettled session on a
-branch. Without `gh`, or without a login, sessions show only their branch.
-The `fetch_pull_request` seam is the place to swap in an API client
-(octocrab) later; what that needs on top is a token and the owner/repo
-parsed from the remote.
+decision, checks verdict) in the lifecycle record. The repository comes
+from the checkout's `origin` remote (else the first GitHub remote). It is
+refreshed after each run of the session and by the sweep for every
+unsettled session on a branch: one batched `PullRequestSummary` request for
+all sessions whose pull request is known, a lookup by branch for the others
+(and for a known one that is gone or now has another head), then one more
+batch for what that found. The token comes from `GH_TOKEN` / `GITHUB_TOKEN`
+or `gh auth token`; without one, the reads fail and sessions show only their
+branch. See [pull-request-view.md](pull-request-view.md) for the client.
 
 ## Storage
 

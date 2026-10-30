@@ -44,6 +44,7 @@ impl TestCore {
             }),
             project_manager_factory: default_project_manager_factory(),
             llm_client_factory: Some(llm),
+            pull_requests: None,
         };
         let (service, worker) = SessionService::new(manager, Arc::new(options), events);
         runtime.spawn(worker);

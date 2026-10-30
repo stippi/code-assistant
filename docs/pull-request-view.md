@@ -90,33 +90,128 @@ deleted modes, binary markers, `\ No newline at end of file`, CRLF) and
 ### Core: `code_assistant_core::pull_requests`
 
 - **Repo resolution**: session → effective path → `origin` remote (else the
-  first GitHub remote) → `RepoRef`. The session's own PR comes from the
-  lifecycle snapshot (number) or a head-branch lookup.
-- **Read cache**, one entry per (repo, number, part), with in-flight
-  coalescing (concurrent identical reads share one request) and these TTLs:
+  first remote, by name, whose URL names a GitHub repository) → `RepoRef`
+  (`git::GitRepository::remotes`, `pull_requests::github_remote`). The
+  head branch is the session's `branch`, else the branch checked out there
+  unless it is the base branch. The session's own PR comes from the
+  lifecycle snapshot (number) or a head-branch lookup (newest PR not from a
+  fork, cached 60 s).
+- **Client**: one `PullRequests` store per `SessionService`, built from
+  `AgentRuntimeOptions::pull_requests` (`PullRequestSource {client,
+  snapshot_dir}`; `None` = `github::Client::new()` and
+  `<config_dir>/pull-requests/`; tests pass a `FakeTransport` client). It
+  sits in the service's `ServiceCtx`; every API method runs through
+  `call_io`, outside the session lanes. Agent runs get the client through
+  `RunConfig::github` for the post-run lifecycle refresh.
+- **Read cache** (`pull_requests/cache.rs`), one LRU per part, keyed by
+  the PR (lists by `(repo, query)`, diffs by `(pr, head sha of the held
+  detail, commit, cursor)`), with in-flight coalescing (concurrent identical
+  reads share one request, run on a task of its own so it lands even when
+  the readers are gone) and these TTLs:
 
-  | Part | TTL |
-  |---|---|
-  | list | 30 s |
-  | detail | 60 s (10 min once merged / closed) |
-  | checks | 15 s |
-  | activity (comments, threads, commits) | 60 s |
-  | diff page | 60 s; keyed by head sha, per-commit diffs 10 min |
-  | files viewed | 15 s |
-  | viewer, candidates | 10 min |
+  | Part | TTL | Held |
+  |---|---|---|
+  | list | 30 s | 64 |
+  | detail | 60 s (10 min once merged / closed) | 128 |
+  | checks | 15 s | 128 |
+  | activity (comments, threads, commits) | 60 s | 128 |
+  | diff page | 60 s; per-commit diffs 10 min | 128, 32 MB of patch text |
+  | files viewed | 15 s | 128 |
+  | viewer, candidates | 10 min | 32 |
+  | own PR of a branch | 60 s | 128 |
 
-- **Stale-while-revalidate**: a read returns the held value at once and,
-  when it is past its TTL, refreshes in the background; the fresh value is
-  announced with an app-scoped `UiEvent::PullRequestChanged {pr, part}` and
-  the view reads it again. On a rate-limited / failed refresh the last good
-  value (≤ 10 min) is kept.
+- **Stale-while-revalidate**: a value within its TTL is served as it is;
+  up to 10 min past it, at once with `refreshing: true` while a background
+  read (`Priority::Background`) refreshes it. When that read lands, stored
+  or failed, an app-scoped `UiEvent::PullRequestChanged {pr, part}` (lists:
+  `PullRequestListChanged {repo}`) tells the view to read again. A failed
+  refresh keeps the value and waits one TTL before the next try (no refresh
+  loop). With nothing servable the reader waits for an interactive read; if
+  that fails for a passing reason (rate limit, network, 5xx), a value within
+  the window is served instead.
 - **Disk snapshots** for a cold start: the last detail + activity of the
-  20 most recent PRs and the last list per repo, under
-  `<config_dir>/pull-requests/`. Shown instantly, then revalidated.
-- **Writes** invalidate the PR's parts and publish `PullRequestChanged`;
-  ticking a file viewed only invalidates files-viewed (no diff refetch).
-- The lifecycle sweep's `gh pr view` becomes a batched `PullRequestSummary`
-  read through the same client.
+  20 most recently read PRs and the first page of the 20 most recently read
+  lists, one JSON file each under `<config_dir>/pull-requests/` (name = hash
+  of the key, the key stored inside). Written on a background task, one
+  write after the other, pruned after each write; read when memory holds
+  nothing, shown at once as stale, then revalidated.
+- **Writes** run interactively, then (failed or not) invalidate the parts
+  they change: the next read waits for GitHub, reads under way are dropped
+  so a pre-write answer never lands. Each part is announced with
+  `PullRequestChanged`; a write touching the detail also invalidates the
+  repo's lists and publishes `PullRequestListChanged`.
+
+  | Write | Parts |
+  |---|---|
+  | comment, edit comment, reply, resolve, react | activity |
+  | title / body / maintainer edits, labels | detail (+ label candidates) |
+  | review, request reviewers | detail, activity (+ reviewer candidates) |
+  | action (merge, close, update branch, …) | detail, checks, activity |
+  | files viewed | files viewed only (no diff refetch) |
+  | refresh | every part, candidates |
+
+- The lifecycle sweep reads the session PRs through the same client:
+  one batched `PullRequestSummary` for all known PR numbers, a head-branch
+  lookup for sessions without one (or whose PR now has another head or is
+  gone), then one more batch for those (`session::pull_request`).
+
+#### API (`SessionService`, `session/service/pull_requests.rs`)
+
+Model types are the `github` crate's (`github::model::*`, `RepoRef`,
+`PullRequestRef`); core re-exports nothing of its own for them. `Fetched`,
+`PullRequestPart` and `SessionPullRequests` live in
+`code_assistant_core::pull_requests`. Errors are `anyhow` around
+`github::Error` (downcast for e.g. `NoCredential`). List refreshes have no
+method of their own: list reads revalidate after 30 s, and writes that
+change a row invalidate the repo's lists.
+
+```rust
+/// A cached read: the value plus whether a background refresh is under way
+/// (a `PullRequestChanged` follows when it lands).
+pub struct Fetched<T> { pub value: T, pub fetched_at: SystemTime, pub refreshing: bool }
+
+pub enum PullRequestPart { Detail, Checks, Activity, Diff, FilesViewed }
+
+// Where a session's pull requests live and which one is its own; `None`
+// without a project or a GitHub remote.
+async fn session_pull_requests(&self, session_id: String) -> Result<Option<SessionPullRequests>>;
+//   SessionPullRequests { repo: RepoRef, head_branch: Option<String>, own: Option<u64> }
+
+// Reads: held value at once (memory, else disk snapshot) and a background
+// revalidation when past the TTL; nothing held → waits for the fetch.
+// list_stats, thread_comments and file_contents are not cached; viewer and
+// candidates are cached but return the value alone.
+async fn pull_request_list(&self, repo: RepoRef, query: ListQuery) -> Result<Fetched<ListPage>>;
+async fn pull_request_list_stats(&self, prs: Vec<PullRequestRef>) -> Result<Vec<DiffStat>>;
+async fn pull_request_detail(&self, pr: PullRequestRef) -> Result<Fetched<Detail>>;
+async fn pull_request_checks(&self, pr: PullRequestRef) -> Result<Fetched<Checks>>;
+async fn pull_request_activity(&self, pr: PullRequestRef) -> Result<Fetched<Activity>>;
+async fn pull_request_diff(&self, pr: PullRequestRef, commit: Option<String>, cursor: Option<String>) -> Result<Fetched<DiffPage>>;
+async fn pull_request_files_viewed(&self, pr: PullRequestRef) -> Result<Fetched<FilesViewed>>;
+async fn pull_request_thread_comments(&self, pr: PullRequestRef, thread_id: String, cursor: String) -> Result<ThreadCommentsPage>; // after the thread's next_comments_cursor
+async fn pull_request_file_contents(&self, pr: PullRequestRef, commit: Option<String>, change: FileChange, old_path: String, new_path: String) -> Result<DiffFileContents>;
+async fn pull_request_reviewer_candidates(&self, pr: PullRequestRef) -> Result<ReviewerCandidates>;
+async fn pull_request_label_candidates(&self, pr: PullRequestRef) -> Result<LabelCandidates>;
+async fn github_viewer(&self, host: String) -> Result<Viewer>;
+
+// Writes: run interactively, then invalidate and publish PullRequestChanged.
+async fn pull_request_comment(&self, pr, body: String) -> Result<()>;
+async fn pull_request_update_comment(&self, pr, id: String, kind: EditableCommentKind, body: String) -> Result<()>;
+async fn pull_request_update(&self, pr, update: PullRequestUpdate) -> Result<()>;
+async fn pull_request_submit_review(&self, pr, review: ReviewSubmission) -> Result<()>;
+async fn pull_request_reply(&self, pr, thread_id: String, body: String) -> Result<()>;
+async fn pull_request_resolve_thread(&self, pr, thread_id: String, resolved: bool) -> Result<()>;
+async fn pull_request_react(&self, pr, subject_id: Option<String>, content: ReactionContent, reacted: bool) -> Result<()>;
+async fn pull_request_request_reviewers(&self, pr, reviewers: Vec<Reviewer>, requested: bool) -> Result<()>;
+async fn pull_request_set_labels(&self, pr, labels: Vec<String>, applied: bool) -> Result<()>;
+async fn pull_request_set_files_viewed(&self, pr, files: Vec<(String, bool)>) -> Result<()>;
+async fn pull_request_action(&self, pr, action: Action) -> Result<()>;
+async fn pull_request_refresh(&self, pr: PullRequestRef) -> Result<()>; // drop every cached part, refetch on next read
+```
+
+`UiEvent::PullRequestChanged { pr: PullRequestRef, part: PullRequestPart }`
+and `UiEvent::PullRequestListChanged { repo: RepoRef }` are app-scoped
+(always forwarded); a view holding that PR re-reads the part.
 
 ### UI: right panel tab "Pull request"
 
