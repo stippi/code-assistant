@@ -84,7 +84,6 @@ pub struct MarkdownPreview {
 }
 
 impl EventEmitter<CommentChange> for MarkdownPreview {}
-impl EventEmitter<super::RendererEdit> for MarkdownPreview {}
 
 impl MarkdownPreview {
     fn new(file: PathBuf, root: PathBuf, cx: &mut Context<Self>) -> Self {

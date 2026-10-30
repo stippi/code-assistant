@@ -94,17 +94,13 @@ comments.
 
 ## Adding a renderer
 
-A built-in renderer is compiled in and listed in a static table. Plugins
-add web pages as renderers without compiling anything (see "Plugin file
-viewers" below).
+No plugin system: a renderer is compiled in and listed in a static table.
 
 1. A module under `crates/ui_gpui/src/main_screen/right_panel/file_renderers/`
    with a view implementing `RendererView`:
 
    ```rust
-   pub trait RendererView:
-       Render + EventEmitter<CommentChange> + EventEmitter<RendererEdit> + Sized
-   {
+   pub trait RendererView: Render + EventEmitter<CommentChange> + Sized {
        fn set_text(&mut self, text: &str, cx: &mut Context<Self>);
        // Optional, for renderers that read the file themselves:
        fn reload(&mut self, cx: &mut Context<Self>);
@@ -124,32 +120,20 @@ viewers" below).
    the view boxed as a `RendererHandle` (blanket implemented for
    `Entity<V: RendererView>`).
 
-Comment changes the view emits reach the composer through the viewer. A
-view that edits the file emits a `RendererEdit` with the new text; the
-viewer puts it into the editor and saves it like typing (views that do not
-edit only declare the emitter).
-
-## Plugin file viewers
-
-Enabled plugins add file viewers after the built-in renderers
-(`file_renderers::Renderer::Plugin`, ids `<plugin>/<viewer>`, feature
-`browser-panel`): a web page in a headless Chrome tab, drawn from its
-screencast, that gets the file's text and can write it back — draw.io for
-`.drawio` files, for example. See [plugins.md](plugins.md#file-viewers).
-
-A pick that does not take the file being opened falls back to the first
-renderer that does, so picking draw.io for a `.drawio.svg` file (remembered
-for the kind `svg`) still shows other `.svg` files as images.
+Comment changes the view emits reach the composer through the viewer.
 
 ### Where this would grow
 
-- **draw.io without a plugin.** A built-in view that draws the diagram
-  from the file's XML, read-only (the `.drawio.svg` variant already shows
-  through the SVG renderer). Editing in draw.io itself is what the plugin
-  file viewers do.
+- **draw.io.** A view that draws the diagram from the file's XML (the
+  `.drawio.svg` variant already shows through the SVG renderer). Picks are
+  remembered by the last extension, so a `.drawio.svg` renderer would share
+  its pick with `.svg` unless `file_kind` learns double extensions. Editing
+  in draw.io itself would need a web view, which the app does not embed yet (the browser
+  panel shows a CDP screencast of an external browser).
 - **Other binary files** (PDFs). A renderer with `reads_file` set, like
   the raster one. Only the first such renderer that takes a file shows
   it; a second kind for the same files would need picks for them too.
-- **Command renderers from plugins.** A command that turns a file into SVG
-  or HTML, its output shown (Mermaid, PlantUML, Graphviz); see
-  [plugins-concept.md](plugins-concept.md).
+- **Renderers from outside the app** (as extensions). The table could also
+  hold entries built from configuration, for example a command that turns a
+  file into SVG or HTML; the view would show its output. Not needed for
+  built-in renderers.

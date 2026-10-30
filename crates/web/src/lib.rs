@@ -1,5 +1,4 @@
 mod ax_tree;
-mod bridge;
 mod browser;
 mod browser_session;
 mod client;
@@ -12,7 +11,6 @@ mod tab;
 #[cfg(test)]
 mod tests;
 mod user_input;
-pub use bridge::Binding;
 pub use browser::{BrowserLaunchConfig, BrowserProfile, DEFAULT_VIEWPORT, LaunchedBrowser};
 pub use browser_session::{
     BrowserSession, BrowserSessionInfo, BrowserSessionManager, DEFAULT_MAX_SESSIONS, TabInfo,

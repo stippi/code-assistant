@@ -10,9 +10,9 @@
 //! panel forwards mouse, wheel and keyboard ([`input`]) and the toolbar
 //! navigates ([`toolbar`]), while the agent's browser tools refuse to act.
 
-pub(super) mod geometry;
+mod geometry;
 mod input;
-pub(super) mod keys;
+mod keys;
 mod toolbar;
 
 use crate::Gpui;

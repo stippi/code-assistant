@@ -62,14 +62,14 @@ enum DirState {
 #[derive(Clone)]
 struct RendererItem {
     id: String,
-    label: SharedString,
+    label: &'static str,
 }
 
 impl SelectItem for RendererItem {
     type Value = String;
 
     fn title(&self) -> SharedString {
-        self.label.clone()
+        self.label.into()
     }
 
     fn value(&self) -> &Self::Value {
@@ -145,7 +145,7 @@ pub struct FilesView {
     query: String,
     renderer_select: Entity<SelectState<Vec<RendererItem>>>,
     /// The renderer ids the dropdown offers, and the selected one.
-    renderer_shown: (Vec<SharedString>, SharedString),
+    renderer_shown: (Vec<&'static str>, &'static str),
     /// Every file gitignore keeps; loaded when the filter is first used and
     /// dropped when the tree changes.
     all_files: Option<Arc<Vec<String>>>,
@@ -208,7 +208,7 @@ impl FilesView {
             filter,
             query: String::new(),
             renderer_select,
-            renderer_shown: (Vec::new(), file_renderers::TEXT.into()),
+            renderer_shown: (Vec::new(), file_renderers::TEXT),
             all_files: None,
             files_task: None,
             matches: Vec::new(),
@@ -758,7 +758,7 @@ impl FilesView {
         let SelectEvent::Confirm(selected) = event;
         match selected {
             // Only a change is a pick; the default stays unrecorded.
-            Some(id) if id.as_str() != self.viewer.read(cx).renderer_id().as_ref() => {
+            Some(id) if id != self.viewer.read(cx).renderer_id() => {
                 let id = id.clone();
                 self.viewer
                     .update(cx, |viewer, cx| viewer.pick_renderer(id, cx));
@@ -767,7 +767,7 @@ impl FilesView {
             Some(_) => {}
             // Nothing selected: show the viewer's renderer again.
             None => {
-                self.renderer_shown = (Vec::new(), file_renderers::TEXT.into());
+                self.renderer_shown = (Vec::new(), file_renderers::TEXT);
                 cx.notify();
             }
         }
@@ -778,20 +778,20 @@ impl FilesView {
         let viewer = self.viewer.read(cx);
         let options = viewer.renderer_options();
         let selected = viewer.renderer_id();
-        let ids: Vec<SharedString> = options.iter().map(|(id, _)| id.clone()).collect();
+        let ids: Vec<&'static str> = options.iter().map(|(id, _)| *id).collect();
         if self.renderer_shown.0 == ids && self.renderer_shown.1 == selected {
             return;
         }
         let items = options
             .into_iter()
             .map(|(id, label)| RendererItem {
-                id: id.to_string(),
+                id: id.to_owned(),
                 label,
             })
             .collect();
         self.renderer_select.update(cx, |select, cx| {
             select.set_items(items, window, cx);
-            select.set_selected_value(&selected.to_string(), window, cx);
+            select.set_selected_value(&selected.to_owned(), window, cx);
         });
         self.renderer_shown = (ids, selected);
     }
