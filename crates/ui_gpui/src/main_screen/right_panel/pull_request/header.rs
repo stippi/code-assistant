@@ -67,6 +67,8 @@ pub struct DetailHeader {
     refreshing: bool,
     /// An action runs.
     pending: bool,
+    /// A checkout runs.
+    checking_out: bool,
     seed: Option<ListEntry>,
     /// The list is there to go back to.
     show_back: bool,
@@ -103,6 +105,7 @@ impl DetailHeader {
             checks_state: None,
             refreshing: false,
             pending: false,
+            checking_out: false,
             seed,
             show_back,
             title_editor: None,
@@ -154,6 +157,11 @@ impl DetailHeader {
 
     pub fn pending(&self) -> bool {
         self.pending
+    }
+
+    pub fn set_checking_out(&mut self, checking_out: bool, cx: &mut Context<Self>) {
+        self.checking_out = checking_out;
+        cx.notify();
     }
 
     /// While an action runs, the primary control waits.
@@ -638,7 +646,11 @@ impl Render for DetailHeader {
                 .flex()
                 .items_center()
                 .gap_1()
-                .child(actions::render_checkout(facts.number, weak.clone()))
+                .child(actions::render_checkout(
+                    facts.number,
+                    self.checking_out,
+                    weak.clone(),
+                ))
                 .children(actions::render_primary(self, detail, cx))
                 .child(actions::render_more_menu(
                     detail,

@@ -30,6 +30,14 @@ pub fn session_service(cx: &App) -> Option<SessionService> {
         .and_then(|gpui| gpui.session_service())
 }
 
+/// A word on what an action came to, a warning when it fell short.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Notice {
+    pub title: SharedString,
+    pub detail: SharedString,
+    pub warning: bool,
+}
+
 /// What the detail page knows about one pull request; the tabs observe it.
 pub struct PullRequestData {
     pub pr: PullRequestRef,
@@ -41,6 +49,8 @@ pub struct PullRequestData {
     pub refreshing: bool,
     /// The last failed read or write, shown by the page until the next success.
     pub error: Option<SharedString>,
+    /// What an action came to, shown until dismissed ("Checked out").
+    pub notice: Option<Notice>,
     refreshing_parts: HashSet<PullRequestPart>,
     reads: HashMap<PullRequestPart, Task<()>>,
     viewer_read: Option<Task<()>>,
@@ -68,6 +78,7 @@ impl PullRequestData {
             viewer: None,
             refreshing: false,
             error: None,
+            notice: None,
             refreshing_parts: HashSet::new(),
             reads: HashMap::new(),
             viewer_read: None,
@@ -309,6 +320,12 @@ impl PullRequestData {
 
     pub fn dismiss_error(&mut self, cx: &mut Context<Self>) {
         if self.error.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    pub fn dismiss_notice(&mut self, cx: &mut Context<Self>) {
+        if self.notice.take().is_some() {
             cx.notify();
         }
     }

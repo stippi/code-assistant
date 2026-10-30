@@ -8,7 +8,7 @@ use super::PullRequestIntent;
 use super::actions::{Confirmable, InlineConfirm, workflow_approvals};
 use super::code::CodeTab;
 use super::composer::Composer;
-use super::data::PullRequestData;
+use super::data::{Notice, PullRequestData};
 use super::header::CONFIRM_TIMEOUT;
 use super::header::DetailHeader;
 use super::preferences;
@@ -16,6 +16,7 @@ use super::summary::SummaryTab;
 use super::tab_bar::{approve_workflows_slot, checks_slot, render_tab_row, timeline_slot};
 use super::timeline::{OpenCommit, TimelineTab};
 use anyhow::Context as _;
+use code_assistant_core::pull_requests::{CheckoutPlace, PullRequestCheckout};
 use github::PullRequestRef;
 use github::model::{Action, ListEntry, PullRequestUpdate};
 use gpui_kit::component::{ActiveTheme, Icon, Sizable, button::Button, button::ButtonVariants};
@@ -283,6 +284,85 @@ impl DetailView {
         }
     }
 
+    pub fn set_checking_out(&mut self, checking_out: bool, cx: &mut Context<Self>) {
+        self.header
+            .update(cx, |header, cx| header.set_checking_out(checking_out, cx));
+    }
+
+    /// Say what a checkout came to, in T3 Code's words.
+    pub fn checked_out(
+        &mut self,
+        place: CheckoutPlace,
+        done: &anyhow::Result<PullRequestCheckout>,
+        cx: &mut Context<Self>,
+    ) {
+        self.data.update(cx, |data, cx| {
+            match done {
+                Ok(done) => {
+                    data.error = None;
+                    data.notice = Some(checkout_notice(place, done));
+                }
+                Err(error) => {
+                    data.notice = None;
+                    data.error = Some(
+                        format!(
+                            "Could not prepare the pull request checkout: {error:#}. Check that \
+                             the branch still exists and is not checked out elsewhere, then \
+                             try again."
+                        )
+                        .into(),
+                    );
+                }
+            }
+            cx.notify();
+        });
+    }
+
+    fn render_notice(&self, notice: Notice, cx: &mut Context<Self>) -> AnyElement {
+        let color = match notice.warning {
+            true => cx.theme().warning,
+            false => cx.theme().info,
+        };
+        div()
+            .debug_selector(|| "pr-notice".into())
+            .flex_none()
+            .px_4()
+            .py_1p5()
+            .flex()
+            .items_center()
+            .gap_2()
+            .bg(color.opacity(0.08))
+            .border_b_1()
+            .border_color(color.opacity(0.25))
+            .text_xs()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .font_weight(gpui_kit::FontWeight::MEDIUM)
+                            .text_color(color)
+                            .child(notice.title),
+                    )
+                    .child(
+                        div()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(notice.detail),
+                    ),
+            )
+            .child(
+                Button::new("pr-notice-dismiss")
+                    .ghost()
+                    .xsmall()
+                    .icon(Icon::default().path("icons/close.svg"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.data.update(cx, |data, cx| data.dismiss_notice(cx))
+                    })),
+            )
+            .into_any_element()
+    }
+
     /// The last failure, until it is dismissed or something succeeds.
     fn render_error(&self, error: SharedString, cx: &mut Context<Self>) -> AnyElement {
         let danger = cx.theme().danger;
@@ -310,6 +390,31 @@ impl DetailView {
                     })),
             )
             .into_any_element()
+    }
+}
+
+/// T3 Code's toast after a checkout; a warning when it did not land on the
+/// pull request's head.
+fn checkout_notice(place: CheckoutPlace, done: &PullRequestCheckout) -> Notice {
+    let (title, detail) = match (done.on_head, place) {
+        (false, _) => (
+            "Checked out, but not confirmed on the latest commit",
+            "This checkout could not be confirmed at the pull request's latest commit, so its \
+             code may differ. Local commits or uncommitted work keep a checkout where it is.",
+        ),
+        (true, CheckoutPlace::Here) => (
+            "Checked out here",
+            "This repository is on the pull request's branch.",
+        ),
+        (true, CheckoutPlace::Worktree) => (
+            "Checked out",
+            "The pull request is in its own worktree, with a session open on it.",
+        ),
+    };
+    Notice {
+        title: title.into(),
+        detail: format!("{detail} ({}, {})", done.branch, done.path.display()).into(),
+        warning: !done.on_head,
     }
 }
 
@@ -366,7 +471,10 @@ impl Render for DetailView {
             DetailTab::Timeline => self.timeline.clone().into_any_element(),
             DetailTab::Code => self.code.clone().into_any_element(),
         };
-        let error = self.data.read(cx).error.clone();
+        let (error, notice) = {
+            let data = self.data.read(cx);
+            (data.error.clone(), data.notice.clone())
+        };
         let slot = self.tab_slot(cx);
         div()
             .relative()
@@ -375,6 +483,7 @@ impl Render for DetailView {
             .flex_col()
             .child(self.header.clone())
             .children(error.map(|error| self.render_error(error, cx)))
+            .children(notice.map(|notice| self.render_notice(notice, cx)))
             .child(render_tab_row(self.tab, slot, window, cx))
             .child(div().flex_1().min_h_0().child(body))
             .child(
@@ -510,6 +619,39 @@ mod tests {
         // No session service: refused, shown, and the button is free again.
         assert!(cx.debug_bounds("pr-error").is_some());
         view.read_with(cx, |view, _| assert!(!view.approving));
+    }
+
+    #[gpui_kit::test]
+    fn a_checkout_says_where_it_landed(cx: &mut TestAppContext) {
+        let (view, cx) = page(cx);
+        let done = PullRequestCheckout {
+            session_id: "s".into(),
+            path: "/w/pr".into(),
+            branch: "feature".into(),
+            on_head: true,
+        };
+        view.update(cx, |view, cx| {
+            view.checked_out(CheckoutPlace::Worktree, &Ok(done.clone()), cx)
+        });
+        cx.run_until_parked();
+        let notice = view.read_with(cx, |view, cx| view.data.read(cx).notice.clone());
+        let notice = notice.expect("a notice");
+        assert_eq!(notice.title.as_ref(), "Checked out");
+        assert!(!notice.warning);
+        assert!(cx.debug_bounds("pr-notice").is_some());
+
+        let behind = PullRequestCheckout {
+            on_head: false,
+            ..done
+        };
+        assert!(checkout_notice(CheckoutPlace::Here, &behind).warning);
+
+        view.update(cx, |view, cx| {
+            view.checked_out(CheckoutPlace::Here, &Err(anyhow::anyhow!("dirty")), cx)
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("pr-error").is_some());
+        assert!(cx.debug_bounds("pr-notice").is_none());
     }
 
     #[gpui_kit::test]

@@ -3,6 +3,7 @@ mod branch;
 mod diff;
 mod merged;
 mod patch;
+pub mod pull_request;
 mod repository;
 mod types;
 mod watch;

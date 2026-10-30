@@ -33,6 +33,7 @@ mod tab_bar;
 mod timeline;
 
 use bus::{PullRequestEvent, bus};
+use code_assistant_core::pull_requests::{CheckoutPlace, PullRequestCheckout};
 use data::session_service;
 use detail::DetailView;
 use github::RepoRef;
@@ -74,6 +75,8 @@ pub enum PullRequestIntent {
     Update(PullRequestUpdate),
     OpenUrl(String),
     Copy(String),
+    /// Check the shown pull request out, here or in a worktree.
+    CheckOut(CheckoutPlace),
 }
 
 pub struct PullRequestPanel {
@@ -419,7 +422,45 @@ impl PullRequestPanel {
                     detail.update(cx, |detail, cx| detail.update(update, cx));
                 }
             }
+            PullRequestIntent::CheckOut(place) => self.check_out(*place, cx),
         }
+    }
+
+    /// Check the shown pull request out; a new worktree's session is
+    /// shown at once, a checkout here updates the session's branch.
+    fn check_out(&mut self, place: CheckoutPlace, cx: &mut Context<Self>) {
+        let (Some(detail), Some(session_id), Some(service)) = (
+            self.detail.clone(),
+            self.session_id.clone(),
+            session_service(cx),
+        ) else {
+            return;
+        };
+        let pr = detail.read(cx).pr().clone();
+        detail.update(cx, |detail, cx| detail.set_checking_out(true, cx));
+        let detail = detail.downgrade();
+        cx.spawn(async move |_, cx| {
+            let done = service
+                .pull_request_checkout(session_id.clone(), pr, place)
+                .await;
+            detail
+                .update(cx, |detail, cx| {
+                    detail.set_checking_out(false, cx);
+                    detail.checked_out(place, &done, cx);
+                })
+                .ok();
+            if let Ok(PullRequestCheckout { session_id: to, .. }) = done {
+                cx.update(|cx| {
+                    if let Some(gpui) = cx.try_global::<crate::Gpui>() {
+                        match place {
+                            CheckoutPlace::Worktree => gpui.open_session(to),
+                            CheckoutPlace::Here => gpui.cmd_list_branches_and_worktrees(to),
+                        }
+                    }
+                });
+            }
+        })
+        .detach();
     }
 
     fn open(&mut self, number: u64, cx: &mut Context<Self>) {

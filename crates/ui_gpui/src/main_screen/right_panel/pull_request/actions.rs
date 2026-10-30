@@ -10,13 +10,14 @@
 use super::PullRequestIntent;
 use super::header::DetailHeader;
 use super::presentation::{Tone, merge_method_label};
+use code_assistant_core::pull_requests::CheckoutPlace;
 use github::model::{
     Action, Checks, ChecksState, Detail, MergeMethod, Mergeability, PullRequestAction,
     PullRequestState, PullRequestUpdate, UpdateMethod,
 };
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenu, PopupMenuItem};
-use gpui_kit::component::{ActiveTheme, Icon, Side, Sizable};
+use gpui_kit::component::{ActiveTheme, Disableable, Icon, Side, Sizable};
 use gpui_kit::{
     AnyElement, App, Context, Hsla, SharedString, WeakEntity, div, prelude::*, px, svg,
 };
@@ -325,18 +326,53 @@ pub fn render_primary(
     )
 }
 
-/// "Check out ▾": for now the command that checks the branch out.
-pub fn render_checkout(number: u64, header: WeakEntity<DetailHeader>) -> AnyElement {
+/// "Check out ▾" (T3 Code's `PullRequestDetailActions`): in a worktree of
+/// its own with a session on it, or here; or copy the `gh` command.
+/// "Checking out..." while one runs.
+pub fn render_checkout(
+    number: u64,
+    checking_out: bool,
+    header: WeakEntity<DetailHeader>,
+) -> AnyElement {
     Button::new("pr-checkout")
         .outline()
         .xsmall()
         .icon(icon("icons/git_branch.svg"))
-        .label("Check out")
+        .label(if checking_out {
+            "Checking out..."
+        } else {
+            "Check out"
+        })
+        .disabled(checking_out)
+        .tooltip("Check out this pull request")
         .dropdown_caret(true)
         .dropdown_menu_with_anchor(gpui_kit::Anchor::TopRight, move |menu, _, _| {
-            let header = header.clone();
             let command = checkout_command(number);
+            let place = |place: CheckoutPlace| {
+                let header = header.clone();
+                move |_: &gpui_kit::ClickEvent, _: &mut gpui_kit::Window, cx: &mut App| {
+                    send(&header, PullRequestIntent::CheckOut(place), cx)
+                }
+            };
+            let header = header.clone();
             menu.item(
+                described(
+                    "In a separate worktree",
+                    "Its own folder and session. Nothing you have open moves.",
+                    "icons/folder_tree.svg",
+                )
+                .on_click(place(CheckoutPlace::Worktree)),
+            )
+            .item(
+                described(
+                    "In this repository",
+                    "Switches the branch you are working in.",
+                    "icons/git_branch.svg",
+                )
+                .on_click(place(CheckoutPlace::Here)),
+            )
+            .separator()
+            .item(
                 PopupMenuItem::new(format!("Copy “{command}”"))
                     .icon(icon("icons/copy.svg"))
                     .on_click(move |_, _, cx| {
@@ -345,6 +381,31 @@ pub fn render_checkout(number: u64, header: WeakEntity<DetailHeader>) -> AnyElem
             )
         })
         .into_any_element()
+}
+
+/// A menu entry with a muted line below its label.
+fn described(label: &'static str, detail: &'static str, icon_path: &'static str) -> PopupMenuItem {
+    PopupMenuItem::element(move |_, cx| {
+        div()
+            .flex()
+            .items_start()
+            .gap_2()
+            .child(
+                svg()
+                    .mt_0p5()
+                    .size(px(14.))
+                    .path(icon_path)
+                    .text_color(cx.theme().muted_foreground),
+            )
+            .child(
+                div().flex().flex_col().child(label).child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(detail),
+                ),
+            )
+    })
 }
 
 pub fn checkout_command(number: u64) -> String {
