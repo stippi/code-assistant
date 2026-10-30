@@ -17,8 +17,7 @@
 //!
 //! A file can also be shown by a renderer ([`file_renderers`]), such as
 //! rendered Markdown. The editor still holds the text then, so loading and
-//! saving work the same; the renderer gets the editor's text, and a text
-//! change it makes (a plugin's web viewer) goes into the editor like an edit.
+//! saving work the same; the renderer gets the editor's text.
 
 use super::file_renderers::{self, RendererHandle};
 use crate::Gpui;
@@ -34,7 +33,7 @@ use gpui_kit::component::input::{
 use gpui_kit::component::{ActiveTheme, Sizable, v_flex};
 use gpui_kit::{
     Context, Entity, EventEmitter, FocusHandle, Focusable, HighlightStyle, KeyDownEvent, Pixels,
-    Point, Render, SharedString, Subscription, Task, Window, div, point, prelude::*, px,
+    Point, Render, Subscription, Task, Window, div, point, prelude::*, px,
 };
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -90,8 +89,8 @@ pub struct FileViewer {
     /// The renderer picked per kind of file ([`file_renderers::chosen`]).
     renderer_picks: BTreeMap<String, String>,
     /// The shown renderer and its view, when it is not the text editor.
-    renderer: Option<(SharedString, Box<dyn RendererHandle>)>,
-    _renderer_subscriptions: Vec<Subscription>,
+    renderer: Option<(&'static str, Box<dyn RendererHandle>)>,
+    _renderer_subscription: Option<Subscription>,
     /// The open file shows as text, whatever renderer was picked: it was
     /// asked to show a line or comment its renderer cannot.
     text_override: bool,
@@ -127,7 +126,7 @@ impl FileViewer {
             renderer_picks: BTreeMap::new(),
             text_override: false,
             renderer: None,
-            _renderer_subscriptions: Vec::new(),
+            _renderer_subscription: None,
         }
     }
 
@@ -141,25 +140,24 @@ impl FileViewer {
 
     /// The ways the shown file can be shown, as `(id, label)`, the text
     /// editor first.
-    pub fn renderer_options(&self) -> Vec<(SharedString, SharedString)> {
+    pub fn renderer_options(&self) -> Vec<(&'static str, &'static str)> {
         let others = self
             .path
             .as_deref()
             .into_iter()
-            .flat_map(file_renderers::for_path)
-            .map(|r| (r.id(), r.label()));
-        std::iter::once((file_renderers::TEXT.into(), "Text".into()))
+            .flat_map(|path| file_renderers::for_path(path).map(|r| (r.id, r.label)));
+        std::iter::once((file_renderers::TEXT, "Text"))
             .chain(others)
             .collect()
     }
 
     /// The renderer the shown file is shown with.
-    pub fn renderer_id(&self) -> SharedString {
+    pub fn renderer_id(&self) -> &'static str {
         self.chosen_renderer()
-            .map_or(file_renderers::TEXT.into(), |r| r.id())
+            .map_or(file_renderers::TEXT, |r| r.id)
     }
 
-    fn chosen_renderer(&self) -> Option<file_renderers::Renderer> {
+    fn chosen_renderer(&self) -> Option<&'static file_renderers::FileRenderer> {
         if self.text_override {
             return None;
         }
@@ -211,7 +209,7 @@ impl FileViewer {
         self.marks = None;
         self._editor_subscriptions.clear();
         self.renderer = None;
-        self._renderer_subscriptions.clear();
+        self._renderer_subscription = None;
         self.text_override = false;
         self.dirty = false;
         self.disk_changed = false;
@@ -383,57 +381,27 @@ impl FileViewer {
             (wanted, &self.editor, self.file(), self.root.clone())
         else {
             if self.renderer.take().is_some() {
-                self._renderer_subscriptions.clear();
+                self._renderer_subscription = None;
             }
             return;
         };
-        let wanted_id = wanted.id();
         if self
             .renderer
             .as_ref()
-            .is_some_and(|(id, _)| *id == wanted_id)
+            .is_some_and(|(id, _)| *id == wanted.id)
         {
             return;
         }
         let text = editor.read(cx).value();
-        let renderer = wanted.create(file, root, window, cx);
+        let renderer = (wanted.create)(file, root, window, cx);
         renderer.set_text(&text, cx);
         renderer.set_comments(&self.comments, cx);
-        self._renderer_subscriptions = vec![
-            renderer.forward_comments(cx),
-            renderer.forward_edits(window, cx),
-        ];
-        self.renderer = Some((wanted_id, renderer));
+        self._renderer_subscription = Some(renderer.forward_comments(cx));
+        self.renderer = Some((wanted.id, renderer));
         // The editor's selection pill or comment card are not in view now.
         if self.comment_editor.is_some() {
             self.close_comment_editor(cx);
         }
-    }
-
-    /// The renderer changed the text: put it into the editor and save it as
-    /// an edit. The renderer has the text already, so it is not told again.
-    pub(super) fn apply_renderer_edit(
-        &mut self,
-        text: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(editor) = &self.editor else {
-            return;
-        };
-        if editor.read(cx).value().as_ref() == text {
-            return;
-        }
-        // `set_value` emits no change event, so the renderer is not echoed.
-        editor.update(cx, |editor, cx| {
-            editor.set_value(text.to_string(), window, cx)
-        });
-        self.dirty = text != self.saved_text;
-        if self.dirty {
-            self.schedule_auto_save(cx);
-        }
-        self.reanchor_and_mark(cx);
-        cx.notify();
     }
 
     /// Hand pending reveals to the renderer. One it cannot show stays for
@@ -909,55 +877,5 @@ impl Render for FileViewer {
             .children(self.render_banner(cx))
             .child(div().flex_1().min_h_0().child(body))
             .children(self.render_floating(window, cx))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use gpui_kit::{TestAppContext, VisualTestContext};
-
-    /// A renderer's text change (a web viewer saving) goes into the editor
-    /// as an edit: the file becomes dirty and is saved like typing.
-    #[gpui_kit::test]
-    fn renderer_edits_go_into_the_editor(cx: &mut TestAppContext) {
-        let window = cx.update(|cx| {
-            gpui_kit::component::init(cx);
-            cx.open_window(Default::default(), |_, cx| cx.new(FileViewer::new))
-                .unwrap()
-        });
-        let viewer = window.root(cx).unwrap();
-        let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
-        viewer.update(cx, |viewer, cx| {
-            viewer.path = Some("docs/flow.drawio".into());
-            viewer.root = Some(PathBuf::from("/p"));
-            viewer.state = ViewerState::Loaded("<mxfile/>".into());
-            cx.notify();
-        });
-        cx.run_until_parked();
-
-        cx.update(|window, cx| {
-            viewer.update(cx, |viewer, cx| {
-                viewer.apply_renderer_edit("<mxfile><diagram/></mxfile>", window, cx)
-            })
-        });
-        viewer.read_with(cx, |viewer, cx| {
-            let editor = viewer.editor.as_ref().expect("the editor holds the file");
-            assert_eq!(
-                editor.read(cx).value().as_ref(),
-                "<mxfile><diagram/></mxfile>"
-            );
-            assert!(viewer.is_dirty());
-            assert!(viewer.auto_save_task.is_some(), "saved like an edit");
-        });
-
-        // The text the renderer gave back already is no edit.
-        cx.update(|window, cx| {
-            viewer.update(cx, |viewer, cx| {
-                viewer.auto_save_task = None;
-                viewer.apply_renderer_edit("<mxfile><diagram/></mxfile>", window, cx)
-            })
-        });
-        viewer.read_with(cx, |viewer, _| assert!(viewer.auto_save_task.is_none()));
     }
 }

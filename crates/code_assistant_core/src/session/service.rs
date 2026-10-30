@@ -2644,7 +2644,6 @@ async fn run_command(ctx: ServiceCtx, command: Command, permit: tokio::sync::Own
 
 mod browsers;
 mod files;
-mod viewers;
 pub use files::{
     DirEntry, DirListing, EntryKind, FileContent, ProjectDir, ProjectFile, ProjectFiles,
     TreeWatcher,
