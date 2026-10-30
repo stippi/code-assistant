@@ -138,6 +138,35 @@ pub fn flatten(files: &[FileOutline], footer: bool) -> Vec<CodeRow> {
     rows
 }
 
+impl CodeRow {
+    /// The shown file a row belongs to (`None` for the footer).
+    pub fn file(&self) -> Option<usize> {
+        match *self {
+            CodeRow::File { file }
+            | CodeRow::Note { file, .. }
+            | CodeRow::Gap { file, .. }
+            | CodeRow::Chunk { file, .. }
+            | CodeRow::Tail { file, .. }
+            | CodeRow::Thread { file, .. }
+            | CodeRow::Pending { file, .. }
+            | CodeRow::Draft { file } => Some(file),
+            CodeRow::Footer => None,
+        }
+    }
+}
+
+/// The shown files (`0..files`) in the order to highlight them when
+/// `top_row` is the first row in view: from the file at the top of the
+/// viewport downwards, then the ones above it, nearest first.
+pub fn files_by_proximity(rows: &[CodeRow], files: usize, top_row: usize) -> Vec<usize> {
+    let top = rows
+        .get(top_row)
+        .and_then(CodeRow::file)
+        .unwrap_or_else(|| files.saturating_sub(1))
+        .min(files.saturating_sub(1));
+    (top..files).chain((0..top).rev()).collect()
+}
+
 /// What separates `hunk` from the one before (`None` for the first): the
 /// unchanged lines between them and its section, when there is either.
 pub fn gap<'a>(prev: Option<&DiffHunk>, hunk: &'a DiffHunk) -> Option<(usize, Option<&'a str>)> {
@@ -201,6 +230,30 @@ mod tests {
         // A new file's hunk starts at old line 0.
         assert_eq!(gap(None, &hunk(0, None, &[Insert])), None);
         assert_eq!(gap(None, &hunk(1, None, &[Delete])), None);
+    }
+
+    #[test]
+    fn files_highlight_from_the_top_of_the_view_outwards() {
+        use CodeRow::*;
+        let rows = vec![
+            File { file: 0 },
+            File { file: 1 },
+            Chunk {
+                file: 1,
+                chunk: 0,
+                stamp: 1,
+            },
+            File { file: 2 },
+            File { file: 3 },
+            Footer,
+        ];
+        assert_eq!(files_by_proximity(&rows, 4, 0), [0, 1, 2, 3]);
+        // Inside file 1's rows: it first, then below, then above.
+        assert_eq!(files_by_proximity(&rows, 4, 2), [1, 2, 3, 0]);
+        // The footer or a stale index past the end: from the last file up.
+        assert_eq!(files_by_proximity(&rows, 4, 5), [3, 2, 1, 0]);
+        assert_eq!(files_by_proximity(&rows, 4, 99), [3, 2, 1, 0]);
+        assert!(files_by_proximity(&[], 0, 0).is_empty());
     }
 
     #[test]

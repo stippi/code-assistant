@@ -7,6 +7,10 @@
 //! Until the detail is read, a listing row (when the pull request was
 //! opened from the list) fills in what it knows; the actions wait for the
 //! detail.
+//!
+//! Once the tab below is scrolled, the header condenses: `#N Title` takes
+//! the repository's place and one line sums up author, time, branches and
+//! the change.
 
 use super::PullRequestIntent;
 use super::actions::{
@@ -14,6 +18,7 @@ use super::actions::{
     resolve_merge_method,
 };
 use super::avatar::avatar;
+use super::preferences;
 use super::presentation::{Tone, diff_stat, format_count, hairline, relative_time};
 use chrono::{DateTime, Utc};
 use github::PullRequestRef;
@@ -71,12 +76,20 @@ pub struct DetailHeader {
     picked_merge_method: Option<MergeMethod>,
     confirm: InlineConfirm,
     _confirm_timeout: Option<Task<()>>,
+    /// The tab below is scrolled.
+    condensed: bool,
 }
 
 impl EventEmitter<PullRequestIntent> for DetailHeader {}
 
 impl DetailHeader {
-    pub fn new(pr: PullRequestRef, seed: Option<ListEntry>, show_back: bool) -> Self {
+    /// `merge_method` is the one last used in the repository.
+    pub fn new(
+        pr: PullRequestRef,
+        seed: Option<ListEntry>,
+        show_back: bool,
+        merge_method: Option<MergeMethod>,
+    ) -> Self {
         Self {
             pr,
             detail: None,
@@ -87,9 +100,17 @@ impl DetailHeader {
             show_back,
             title_editor: None,
             saved_title: None,
-            picked_merge_method: None,
+            picked_merge_method: merge_method,
             confirm: InlineConfirm::default(),
             _confirm_timeout: None,
+            condensed: false,
+        }
+    }
+
+    pub fn set_condensed(&mut self, condensed: bool, cx: &mut Context<Self>) {
+        if self.condensed != condensed {
+            self.condensed = condensed;
+            cx.notify();
         }
     }
 
@@ -151,8 +172,13 @@ impl DetailHeader {
         resolve_merge_method(&allowed_merge_methods(detail), self.picked_merge_method)
     }
 
+    /// The method is remembered for the repository.
     pub fn pick_merge_method(&mut self, method: MergeMethod, cx: &mut Context<Self>) {
         self.picked_merge_method = Some(method);
+        let repo = self.pr.repo.to_string();
+        preferences::update(cx, |preferences| {
+            preferences.merge_methods.insert(repo, method);
+        });
         cx.notify();
     }
 
@@ -268,6 +294,7 @@ impl DetailHeader {
 
     /// `owner/repo #290 ↗`, the back arrow before them when there is a list.
     fn render_crumbs(&self, facts: &Facts, cx: &mut Context<Self>) -> impl IntoElement {
+        let condensed = self.condensed;
         let repo = &self.pr.repo;
         let repo_url = format!("https://{}/{}", repo.host, repo.full_name());
         let tone = facts.tone.color(cx);
@@ -295,19 +322,21 @@ impl DetailHeader {
                     ),
                 )
             })
-            .child(
-                div()
-                    .id("pr-repo")
-                    .min_w_0()
-                    .truncate()
-                    .cursor_pointer()
-                    .text_color(cx.theme().muted_foreground)
-                    .hover(|s| s.underline())
-                    .child(repo.full_name())
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.emit(PullRequestIntent::OpenUrl(repo_url.clone()), cx)
-                    })),
-            )
+            .when(!condensed, |row| {
+                row.child(
+                    div()
+                        .id("pr-repo")
+                        .min_w_0()
+                        .truncate()
+                        .cursor_pointer()
+                        .text_color(cx.theme().muted_foreground)
+                        .hover(|s| s.underline())
+                        .child(repo.full_name())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.emit(PullRequestIntent::OpenUrl(repo_url.clone()), cx)
+                        })),
+                )
+            })
             .child(
                 div()
                     .id("pr-number")
@@ -330,6 +359,56 @@ impl DetailHeader {
                         this.emit(PullRequestIntent::OpenUrl(url.clone()), cx)
                     })),
             )
+            .when(condensed, |row| {
+                row.child(
+                    div()
+                        .debug_selector(|| "pr-condensed-title".into())
+                        .min_w_0()
+                        .truncate()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(cx.theme().foreground)
+                        .child(facts.title.clone()),
+                )
+            })
+    }
+
+    /// The condensed header's one line: author, time, branches, change.
+    fn render_summary_line(&self, facts: &Facts, cx: &mut Context<Self>) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+        div()
+            .flex()
+            .items_center()
+            .gap_1p5()
+            .text_xs()
+            .text_color(muted)
+            .child(avatar(facts.author.as_ref(), px(14.), cx))
+            .child(
+                facts
+                    .author
+                    .as_ref()
+                    .map_or("ghost".to_string(), |a| a.login.clone()),
+            )
+            .when_some(facts.updated_at, |row, updated| {
+                row.child(relative_time(updated, Utc::now()))
+            })
+            .when(!facts.base.is_empty(), |row| {
+                row.child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .font_family(cx.theme().mono_font_family.clone())
+                        .child(format!("{} ← {}", facts.base, facts.head)),
+                )
+            })
+            .child(div().flex_1())
+            .when_some(facts.changed_files, |row, files| {
+                row.child(format!(
+                    "{} {}",
+                    format_count(files),
+                    if files == 1 { "file" } else { "files" }
+                ))
+            })
+            .children(diff_stat(facts.additions, facts.deletions, cx))
     }
 
     fn render_title(&self, facts: &Facts, cx: &mut Context<Self>) -> AnyElement {
@@ -517,7 +596,7 @@ impl Render for DetailHeader {
             .flex_none()
             .px_4()
             .pt_2()
-            .pb_3()
+            .map(|el| if self.condensed { el.pb_2() } else { el.pb_3() })
             .flex()
             .flex_col()
             .gap_1p5()
@@ -532,16 +611,21 @@ impl Render for DetailHeader {
                     .child(self.render_crumbs(&facts, cx))
                     .children(actions),
             )
-            .child(self.render_title(&facts, cx))
-            .child(self.render_meta(&facts, cx))
-            .when(!facts.base.is_empty(), |el| {
-                el.child(self.render_branches(&facts, cx))
+            .map(|el| {
+                if self.condensed && self.title_editor.is_none() {
+                    return el.child(self.render_summary_line(&facts, cx));
+                }
+                el.child(self.render_title(&facts, cx))
+                    .child(self.render_meta(&facts, cx))
+                    .when(!facts.base.is_empty(), |el| {
+                        el.child(self.render_branches(&facts, cx))
+                    })
+                    .children(
+                        detail
+                            .as_ref()
+                            .and_then(|detail| self.render_branch_update(detail, cx)),
+                    )
             })
-            .children(
-                detail
-                    .as_ref()
-                    .and_then(|detail| self.render_branch_update(detail, cx)),
-            )
     }
 }
 
@@ -569,7 +653,7 @@ mod tests {
         let window = cx.update(|cx| {
             gpui_kit::component::init(cx);
             cx.open_window(Default::default(), |_, cx| {
-                cx.new(|_| DetailHeader::new(repo().pull_request(290), None, true))
+                cx.new(|_| DetailHeader::new(repo().pull_request(290), None, true, None))
             })
             .unwrap()
         });
@@ -667,6 +751,17 @@ mod tests {
         view.read_with(cx, |view, _| {
             assert_eq!(view.facts().title.as_ref(), "From the list")
         });
+    }
+
+    #[gpui_kit::test]
+    fn a_scrolled_tab_condenses_the_header(cx: &mut TestAppContext) {
+        let (view, _, cx) = header(Some(detail(290)), cx);
+        assert!(cx.debug_bounds("pr-title").is_some());
+        view.update(cx, |view, cx| view.set_condensed(true, cx));
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("pr-title").is_none());
+        assert!(cx.debug_bounds("pr-condensed-title").is_some());
+        assert!(cx.debug_bounds("pr-primary").is_some(), "the actions stay");
     }
 
     #[gpui_kit::test]

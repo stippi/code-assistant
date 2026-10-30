@@ -14,6 +14,7 @@
 use github::model::{
     ChecksState, Involvement, Label, ListEntry, Mergeability, PullRequestState, ReviewDecision,
 };
+use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 
 /// Qualifier values (labels in one `label:`, label groups) read at most.
@@ -21,7 +22,8 @@ const MAX_QUALIFIER_VALUES: usize = 10;
 /// Characters of one qualifier value kept.
 const MAX_QUALIFIER_LENGTH: usize = 200;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum SortMode {
     #[default]
     MergeReadiness,
@@ -57,13 +59,15 @@ impl SortMode {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum DraftFilter {
     Only,
     Hide,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ReviewFilter {
     Approved,
     ChangesRequested,
@@ -72,7 +76,8 @@ pub enum ReviewFilter {
     None,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ChecksFilter {
     Passing,
     Failing,
@@ -80,7 +85,8 @@ pub enum ChecksFilter {
 
 /// What the loaded rows are narrowed to, from the Filters menu or typed
 /// qualifiers.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Filters {
     pub draft: Option<DraftFilter>,
     pub review: Option<ReviewFilter>,

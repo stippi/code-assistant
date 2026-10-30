@@ -1,6 +1,6 @@
 //! The pull request view in front of the real session core, GitHub
 //! scripted: the session's repository found from its project, the list read
-//! through the cache and read anew on refresh, the session's own pull
+//! through the cache (page after page) and read anew on refresh, the session's own pull
 //! request shown and commented on.
 
 use crate::test_support::{MainScreenTest, TestCore};
@@ -112,11 +112,15 @@ fn the_tab_lists_the_projects_pull_requests_and_refreshes_them(cx: &mut TestAppC
     let (mut test, _checkout) = session_on_checkout(cx, &fake);
 
     test.click("right-panel-view-PR");
-    test.wait_until("the list shows", |test| test.shows("pr-row-290"));
-    assert_eq!(searches(&fake), 1);
+    // The open one: the list shows the listed state (Open) only.
+    test.wait_until("the list shows", |test| test.shows("pr-row-291"));
+    assert!(!test.shows("pr-row-290"), "#290 is merged");
+    // The fixture says more follow: the end of the rows asks for them.
+    test.wait_until("the next page was read", |_| searches(&fake) >= 2);
+    let read = searches(&fake);
 
     test.click("pr-list-refresh");
-    test.wait_until("the list was read anew", |_| searches(&fake) == 2);
+    test.wait_until("the list was read anew", |_| searches(&fake) > read);
 }
 
 #[gpui_kit::test]

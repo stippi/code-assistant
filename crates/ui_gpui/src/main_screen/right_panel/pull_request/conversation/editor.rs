@@ -11,8 +11,8 @@ use gpui_kit::component::input::{Escape, InputEvent, Textarea, TextareaState};
 use gpui_kit::component::text::{TextView, TextViewState};
 use gpui_kit::component::{ActiveTheme, Disableable, Selectable, Sizable};
 use gpui_kit::{
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, Render, SharedString, Subscription,
-    Window, div, prelude::*,
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent, Render, SharedString,
+    Subscription, Window, div, prelude::*,
 };
 
 pub enum EditorEvent {
@@ -72,6 +72,8 @@ pub struct MarkdownEditor {
     /// The rendered draft, while previewing.
     preview: Option<Entity<TextViewState>>,
     previewing: bool,
+    /// Holds the keyboard while previewing, for ⌘↵ and Escape.
+    preview_focus: FocusHandle,
     busy: bool,
     _subscription: Subscription,
 }
@@ -110,6 +112,7 @@ impl MarkdownEditor {
             input,
             preview: None,
             previewing: false,
+            preview_focus: cx.focus_handle(),
             busy: false,
             _subscription: subscription,
         }
@@ -152,6 +155,7 @@ impl MarkdownEditor {
                 Some(state) => state.update(cx, |state, cx| state.set_text(&prepared, cx)),
                 None => self.preview = Some(cx.new(|cx| TextViewState::markdown(&prepared, cx))),
             }
+            self.preview_focus.focus(window, cx);
         } else {
             self.input.update(cx, |input, cx| input.focus(window, cx));
         }
@@ -209,6 +213,21 @@ impl Render for MarkdownEditor {
             .flex()
             .flex_col()
             .gap_1p5()
+            .track_focus(&self.preview_focus)
+            // The text area has the keys while writing; these are for the
+            // preview.
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                if !this.previewing {
+                    return;
+                }
+                let keystroke = &event.keystroke;
+                match keystroke.key.as_str() {
+                    "enter" if keystroke.modifiers.platform => this.submit(cx),
+                    "escape" => this.cancel(cx),
+                    _ => return,
+                }
+                cx.stop_propagation();
+            }))
             .capture_action(cx.listener(|this, _: &Escape, _, cx| {
                 this.cancel(cx);
                 cx.stop_propagation();
@@ -305,6 +324,21 @@ mod tests {
         assert_eq!(
             seen.borrow().as_slice(),
             [Seen::Submit("Looks good".into())]
+        );
+    }
+
+    #[gpui_kit::test]
+    fn cmd_enter_and_escape_work_while_previewing(cx: &mut TestAppContext) {
+        let (view, seen, cx) = editor("Looks good", EditorOptions::REPLY, cx);
+        view.update_in(cx, |editor, window, cx| {
+            editor.set_previewing(true, window, cx)
+        });
+        cx.run_until_parked();
+        cx.simulate_keystrokes("cmd-enter");
+        cx.simulate_keystrokes("escape");
+        assert_eq!(
+            seen.borrow().as_slice(),
+            [Seen::Submit("Looks good".into()), Seen::Cancel]
         );
     }
 

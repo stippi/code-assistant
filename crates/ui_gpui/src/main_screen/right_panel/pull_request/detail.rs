@@ -9,6 +9,7 @@ use super::code::CodeTab;
 use super::composer::Composer;
 use super::data::PullRequestData;
 use super::header::DetailHeader;
+use super::preferences;
 use super::summary::SummaryTab;
 use super::tab_bar::{checks_slot, render_tab_row, timeline_slot};
 use super::timeline::TimelineTab;
@@ -16,8 +17,8 @@ use github::PullRequestRef;
 use github::model::{Action, ListEntry, PullRequestUpdate};
 use gpui_kit::component::{ActiveTheme, Icon, Sizable, button::Button, button::ButtonVariants};
 use gpui_kit::{
-    AnyElement, Context, Entity, EventEmitter, Render, SharedString, Subscription, Window, div,
-    prelude::*,
+    AnyElement, Context, Entity, EventEmitter, Pixels, Render, SharedString, Subscription, Task,
+    Window, div, prelude::*, px,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -65,7 +66,8 @@ impl DetailView {
             data.load(cx);
             data.set_polling(true, cx);
         });
-        let header = cx.new(|_| DetailHeader::new(pr.clone(), seed, show_back));
+        let merge_method = preferences::read(cx).merge_method(&pr.repo);
+        let header = cx.new(|_| DetailHeader::new(pr.clone(), seed, show_back, merge_method));
         let summary = cx.new(|cx| SummaryTab::new(data.clone(), cx));
         let timeline = cx.new(|_| TimelineTab::new(data.clone()));
         let code = cx.new(|cx| CodeTab::new(data.clone(), cx));
@@ -143,21 +145,22 @@ impl DetailView {
     }
 
     /// Merge, close, … the pull request; the primary control waits meanwhile.
-    pub fn act(&mut self, action: Action, cx: &mut Context<Self>) {
+    /// Whether it went through comes out of the task.
+    pub fn act(&mut self, action: Action, cx: &mut Context<Self>) -> Task<bool> {
         self.header
             .update(cx, |header, cx| header.set_pending(true, cx));
         let write = PullRequestData::write(&self.data, cx, move |service, pr| async move {
             service.pull_request_action(pr, action).await
         });
         cx.spawn(async move |this, cx| {
-            let _ = write.await;
+            let done = write.await.is_ok();
             this.update(cx, |this, cx| {
                 this.header
                     .update(cx, |header, cx| header.set_pending(false, cx))
             })
             .ok();
+            done
         })
-        .detach();
     }
 
     /// Rewrite the title, body or maintainer edits; a refused title is
@@ -230,8 +233,21 @@ impl DetailView {
     }
 }
 
+/// Scrolled this far, the tab's content has left the header's room.
+const CONDENSE_AFTER: Pixels = px(24.);
+
 impl Render for DetailView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The header condenses while the shown tab is scrolled; read each
+        // frame, it costs a field read per tab.
+        let top = match self.tab {
+            DetailTab::Summary => self.summary.read(cx).scroll_top(),
+            DetailTab::Timeline => self.timeline.read(cx).scroll_top(),
+            DetailTab::Code => self.code.read(cx).scroll_top(),
+        };
+        let condensed = top.item_ix > 0 || top.offset_in_item > CONDENSE_AFTER;
+        self.header
+            .update(cx, |header, cx| header.set_condensed(condensed, cx));
         let body = match self.tab {
             DetailTab::Summary => self.summary.clone().into_any_element(),
             DetailTab::Timeline => self.timeline.clone().into_any_element(),
@@ -292,7 +308,7 @@ mod tests {
         let (view, cx) = page(cx);
         assert!(cx.debug_bounds("pr-error").is_none());
         view.update(cx, |view, cx| {
-            view.act(Action::Merge(MergeMethod::Merge), cx)
+            view.act(Action::Merge(MergeMethod::Merge), cx).detach()
         });
         cx.run_until_parked();
         assert!(cx.debug_bounds("pr-error").is_some());

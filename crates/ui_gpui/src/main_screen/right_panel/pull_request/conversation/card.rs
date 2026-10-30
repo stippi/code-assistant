@@ -8,10 +8,13 @@
 
 use super::super::PullRequestIntent;
 use super::super::data::PullRequestData;
+use super::agent::{add_to_agent_button, comment_text};
 use super::body::CommentBody;
 use super::editor::{EditorEvent, EditorOptions, MarkdownEditor};
 use super::logic::{can_edit, preview_text, visible_body};
-use super::parts::{Collapsed, Location, identity, location_line, render_collapsed, review_badge};
+use super::parts::{
+    Collapsed, Location, identity, location_line, open_on_github, render_collapsed, review_badge,
+};
 use super::reaction_bar::reaction_bar;
 use super::reactions::PendingReactions;
 use github::model::{Comment, CommentKind, EditableCommentKind, ReactionContent};
@@ -43,6 +46,10 @@ pub struct CommentCard {
     body: CommentBody,
     editor: Option<(Entity<MarkdownEditor>, Subscription)>,
     reactions: PendingReactions,
+    /// Offers "Add to agent".
+    agent_button: bool,
+    /// Shows ↗ to the comment on GitHub.
+    github_link: bool,
 }
 
 impl EventEmitter<PullRequestIntent> for CommentCard {}
@@ -66,12 +73,26 @@ impl CommentCard {
             body,
             editor: None,
             reactions: PendingReactions::default(),
+            agent_button: false,
+            github_link: false,
         }
     }
 
     /// Show where the comment sits in the code under its header.
     pub fn with_location(mut self, location: Option<Location>) -> Self {
         self.location = location;
+        self
+    }
+
+    /// Offer "Add to agent" (comments on their own, not a thread's).
+    pub fn with_agent_button(mut self, show: bool) -> Self {
+        self.agent_button = show;
+        self
+    }
+
+    /// Show ↗ to the comment on GitHub in the header.
+    pub fn with_github_link(mut self, show: bool) -> Self {
+        self.github_link = show;
         self
     }
 
@@ -215,6 +236,23 @@ impl CommentCard {
         let host = self.data.read(cx).pr.repo.host.clone();
         let editable = self.editor.is_none() && self.viewer_can_edit(cx);
         let muted = cx.theme().muted_foreground;
+        let github_link = self
+            .comment
+            .url
+            .clone()
+            .filter(|_| self.github_link)
+            .map(|url| open_on_github(format!("{id}-github").into(), url, cx));
+        let handed = (self.agent_button && visible_body(&self.comment.body).is_some()).then(|| {
+            let pr = self.data.read(cx).pr.clone();
+            let text = comment_text(&pr, &self.comment, self.location.as_ref());
+            let agent_id = format!("{id}-agent");
+            div()
+                .debug_selector({
+                    let agent_id = agent_id.clone();
+                    move || agent_id.clone()
+                })
+                .child(add_to_agent_button(agent_id.into(), text))
+        });
         div()
             .min_w_0()
             .flex()
@@ -245,6 +283,8 @@ impl CommentCard {
                     ),
                 )
             })
+            .children(handed)
+            .children(github_link)
             .children(self.render_reactions(cx))
     }
 
@@ -333,7 +373,7 @@ impl Render for CommentCard {
 
 #[cfg(test)]
 mod tests {
-    use super::super::fixtures::{comment, data, review, window};
+    use super::super::fixtures::{agent_inbox, click, comment, data, review, window};
     use super::*;
     use crate::main_screen::right_panel::pull_request::fixtures::hours_ago;
     use github::model::{Reaction, ReviewState};
@@ -403,6 +443,24 @@ mod tests {
         );
         cx.simulate_keystrokes("escape");
         card.read_with(cx, |card, _| assert!(!card.is_editing()));
+    }
+
+    #[gpui_kit::test]
+    fn add_to_agent_hands_the_comment_to_the_draft(cx: &mut TestAppContext) {
+        let data = data(cx, None);
+        let (_, cx) = window(cx, move |cx| {
+            CommentCard::new(
+                data,
+                comment("c1", "ann", hours_ago(2)),
+                CardStyle::Card,
+                cx,
+            )
+            .with_agent_button(true)
+        });
+        let inbox = agent_inbox(cx);
+        click(cx, "c-c1-agent");
+        assert_eq!(inbox.borrow().len(), 1);
+        assert!(inbox.borrow()[0].starts_with("Comment by @ann on stippi/code-assistant#290"));
     }
 
     #[gpui_kit::test]

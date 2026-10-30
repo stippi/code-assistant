@@ -5,7 +5,6 @@ use super::super::conversation::fixtures::{commit, data, thread, window};
 use super::super::fixtures::hours_ago;
 use super::*;
 use github::model::{DiffPage, DiffSide};
-use gpui_kit::component::highlighter::HighlightTheme;
 use gpui_kit::{Modifiers, TestAppContext, VisualTestContext};
 
 fn tab(
@@ -51,7 +50,7 @@ fn arrive(
         omitted_file_stats: Vec::new(),
     };
     tab.update(cx, |tab, cx| {
-        let files = parse_page(&page, &HighlightTheme::default_light());
+        let files = parse_page(&page);
         tab.page_arrived(
             Page {
                 cursor: cursor.map(str::to_owned),
@@ -333,4 +332,42 @@ fn hidden_tests_leave_the_list(cx: &mut TestAppContext) {
         assert_eq!(tab.shown.len(), 1);
     });
     assert_eq!(rows(&tab, cx), file_rows(0, 1));
+}
+
+#[gpui_kit::test]
+fn rows_show_plain_first_and_highlight_file_by_file(cx: &mut TestAppContext) {
+    let (tab, _, cx) = tab(cx);
+    let page = DiffPage {
+        patch: patch(&["src/a.rs", "src/b.rs", "notes.unknown"]),
+        truncated: false,
+        next_cursor: None,
+        omitted_file_stats: Vec::new(),
+    };
+    tab.update(cx, |tab, cx| {
+        tab.page_arrived(
+            Page {
+                cursor: None,
+                fingerprint: fingerprint(&page),
+                next_cursor: None,
+                truncated: false,
+                files: parse_page(&page),
+            },
+            cx,
+        );
+        tab.sync_rows();
+        assert!(tab.shown.iter().all(|&s| tab.file(s).diff.syntax.is_none()));
+    });
+    let plain = rows(&tab, cx);
+    cx.run_until_parked();
+    tab.read_with(cx, |tab, _| {
+        let files: Vec<_> = tab.shown.iter().map(|&s| tab.file(s)).collect();
+        assert!(files.iter().all(|f| f.highlighted));
+        let with_syntax: Vec<&str> = files
+            .iter()
+            .filter(|f| f.diff.syntax.is_some())
+            .map(|f| f.path.as_str())
+            .collect();
+        assert_eq!(with_syntax, ["src/a.rs", "src/b.rs"]);
+    });
+    assert_eq!(rows(&tab, cx), plain, "highlighting adds no rows");
 }

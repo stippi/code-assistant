@@ -194,3 +194,24 @@ fn a_comment_on_a_message_reaches_the_draft_and_the_transcript(cx: &mut TestAppC
         assert_eq!(marked[0].excerpt, "Use a ledger first.");
     });
 }
+
+#[gpui_kit::test]
+fn context_handed_to_the_agent_lands_in_the_draft(cx: &mut TestAppContext) {
+    let mut test = MainScreenTest::new(cx);
+    test.view_session("a");
+    let text = "Check \"build\" on o/r#1: Failed".to_string();
+    test.cx.update(|_, cx| {
+        crate::comments::report(
+            CommentChange::Attach(DraftAttachment::Text {
+                content: text.clone(),
+            }),
+            cx,
+        )
+    });
+    test.settle();
+    let draft = test.stores.drafts.stored("a").expect("draft saved");
+    assert!(matches!(
+        draft.attachments.as_slice(),
+        [DraftAttachment::Text { content }] if *content == text
+    ));
+}

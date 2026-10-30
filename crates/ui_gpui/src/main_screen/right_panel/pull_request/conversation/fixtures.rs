@@ -120,3 +120,31 @@ pub fn window<V: Render + 'static>(
     cx.run_until_parked();
     (view, cx)
 }
+
+/// What reaches the composer's draft through the comment bus: the texts
+/// handed to the agent.
+pub fn agent_inbox(cx: &mut VisualTestContext) -> std::rc::Rc<std::cell::RefCell<Vec<String>>> {
+    use crate::comments::{CommentBus, CommentBusGlobal, CommentChange};
+    use code_assistant_core::persistence::DraftAttachment;
+    let inbox = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let sink = inbox.clone();
+    cx.update(|_, cx| {
+        let bus = cx.new(|_| CommentBus);
+        cx.set_global(CommentBusGlobal(bus.clone()));
+        cx.subscribe(&bus, move |_, change: &CommentChange, _| {
+            if let CommentChange::Attach(DraftAttachment::Text { content }) = change {
+                sink.borrow_mut().push(content.clone());
+            }
+        })
+        .detach();
+    });
+    inbox
+}
+
+pub fn click(cx: &mut VisualTestContext, selector: &'static str) {
+    let bounds = cx
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("nothing rendered as {selector}"));
+    cx.simulate_click(bounds.center(), gpui_kit::Modifiers::none());
+    cx.run_until_parked();
+}

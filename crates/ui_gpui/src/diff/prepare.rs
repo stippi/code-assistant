@@ -77,6 +77,15 @@ impl PreparedFileDiff {
         })
     }
 
+    /// [`Self::from_patch`] without the syntax: cheap enough to show the
+    /// rows at once; [`highlight_patch`] adds it later.
+    pub fn from_patch_plain(file: &git::FilePatch) -> Self {
+        if file.is_binary {
+            return Self::placeholder(true, false);
+        }
+        Self::from_hunks(hunks_from_patch(&file.hunks), None, |_| None)
+    }
+
     fn placeholder(is_binary: bool, too_large: bool) -> Self {
         Self {
             is_binary,
@@ -117,6 +126,11 @@ impl PreparedFileDiff {
         }
     }
 
+    /// Show the rows highlighted with `syntax` (see [`highlight_patch`]).
+    pub fn set_syntax(&mut self, syntax: Option<Arc<DiffSyntax>>) {
+        self.syntax = syntax;
+    }
+
     /// Cut the hunks into chunks again, so one ends after each flat line
     /// index in `breaks` (see [`chunk_hunks`]).
     pub fn rechunk(&mut self, breaks: &[usize]) {
@@ -142,6 +156,19 @@ impl PreparedFileDiff {
         }
         rows
     }
+}
+
+/// The syntax of a patch file's hunks (prepared by
+/// [`PreparedFileDiff::from_patch_plain`]), with the line styles for
+/// `theme` computed. CPU-heavy — call on a background thread.
+pub fn highlight_patch(
+    path: &str,
+    hunks: &[DiffHunk],
+    theme: &HighlightTheme,
+) -> Option<Arc<DiffSyntax>> {
+    let syntax = DiffSyntax::parse_hunks(path, hunks)?;
+    syntax.prime(theme);
+    Some(Arc::new(syntax))
 }
 
 #[cfg(test)]
@@ -183,6 +210,24 @@ index 1..2 100644
         // Hunk 1's first new line is `fn done`, line 1 of its own text.
         let styles = syntax.line_styles(ChangeTag::Equal, 1, 1, "fn done() {}", &theme);
         assert!(!styles.is_empty());
+    }
+
+    #[test]
+    fn a_plain_patch_diff_is_highlighted_later() {
+        let files = git::parse_patch(PATCH);
+        let theme = HighlightTheme::default_dark();
+        let mut prepared = PreparedFileDiff::from_patch_plain(&files[0]);
+        assert!(prepared.syntax.is_none());
+        assert_eq!((prepared.additions, prepared.deletions), (2, 2));
+        let syntax = highlight_patch(&files[0].path, &prepared.hunks, &theme);
+        prepared.set_syntax(syntax);
+        let syntax = prepared.syntax.as_ref().expect("rust has a grammar");
+        assert!(
+            !syntax
+                .line_styles(ChangeTag::Equal, 1, 1, "fn done() {}", &theme)
+                .is_empty()
+        );
+        assert!(highlight_patch("notes.unknown", &prepared.hunks, &theme).is_none());
     }
 
     #[test]

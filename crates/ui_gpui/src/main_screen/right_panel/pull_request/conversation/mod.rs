@@ -16,15 +16,18 @@
 //! [`PullRequestData::write`](super::data::PullRequestData::write) and
 //! emit [`PullRequestIntent`](super::PullRequestIntent)s (links to open).
 
+pub mod agent;
 pub mod body;
 pub mod card;
 pub mod editor;
 pub mod logic;
 pub mod parts;
+pub mod preferences;
 pub mod reaction_bar;
 pub mod reactions;
 pub mod thread;
 
+pub use agent::add_to_agent_button;
 pub use body::CommentBody;
 pub use card::{CardStyle, CommentCard};
 pub use editor::{EditorEvent, EditorOptions, MarkdownEditor};

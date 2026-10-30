@@ -15,29 +15,35 @@ mod picker;
 mod rows;
 
 use super::PullRequestIntent;
+use super::conversation::add_to_agent_button;
+use super::conversation::agent::check_text;
 use super::conversation::logic::{
     CommentFilter, ConversationItem, ReviewOutcome, ReviewerEntry, can_edit_description,
     comment_count, conversation_items, filter_items, is_verdict_stale, latest_review_outcomes,
     newest_commit_at, reviewer_entries, splice_list,
 };
+use super::conversation::reaction_bar::reaction_bar;
+use super::conversation::reactions::PendingReactions;
 use super::conversation::{
     CardStyle, CommentBody, CommentCard, EditorEvent, EditorOptions, Location, MarkdownEditor,
     ThreadCard,
 };
 use super::data::PullRequestData;
+use super::preferences;
 use super::presentation::{GLYPH_SIZE, check_status_glyph};
 use candidates::{OpenPicker, PickerKind};
 use chrono::{DateTime, Utc};
-use github::model::{Activity, Detail, PullRequestUpdate};
+use github::model::{Activity, CheckStatus, Detail, PullRequestUpdate, Reaction, ReactionContent};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenu, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme, Icon, Side, Sizable};
 use gpui_kit::{
-    AnyElement, App, Context, Entity, EventEmitter, FontWeight, ListAlignment, ListState, Pixels,
-    Render, SharedString, Subscription, WeakEntity, Window, div, list, prelude::*, px, svg,
+    AnyElement, App, Context, Entity, EventEmitter, FontWeight, ListAlignment, ListOffset,
+    ListState, Pixels, Render, SharedString, Subscription, WeakEntity, Window, div, list,
+    prelude::*, px, svg,
 };
 use meta::{label_chip, meta_label, none_label, reviewer_avatars};
-use rows::{CommentsLayout, PAGE, Row, summary_rows};
+use rows::{CommentsLayout, PAGE, Row, pinned_section, summary_rows};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -73,6 +79,8 @@ pub struct SummaryTab {
     comments_open: bool,
     description: Option<CommentBody>,
     description_editor: Option<(Entity<MarkdownEditor>, Subscription)>,
+    /// The viewer's reactions on the pull request not reported yet.
+    description_reactions: PendingReactions,
     rows: Vec<Row>,
     list: ListState,
     cards: HashMap<SharedString, MountedCard>,
@@ -92,8 +100,14 @@ fn same<T>(a: &Option<Arc<T>>, b: &Option<Arc<T>>) -> bool {
 }
 
 impl SummaryTab {
+    /// How far the tab is scrolled; the header condenses once it is.
+    pub fn scroll_top(&self) -> gpui_kit::ListOffset {
+        self.list.logical_scroll_top()
+    }
+
     pub fn new(data: Entity<PullRequestData>, cx: &mut Context<Self>) -> Self {
         let observe = cx.observe(&data, |this, _, cx| this.sync(cx));
+        let remembered = preferences::read(cx).conversation;
         let mut this = Self {
             data,
             detail: None,
@@ -102,8 +116,8 @@ impl SummaryTab {
             index_of: HashMap::new(),
             reviewers: Vec::new(),
             newest_commit_at: None,
-            filter: CommentFilter::default(),
-            newest_first: true,
+            filter: remembered.comment_filter(),
+            newest_first: !remembered.comments_oldest_first,
             count: PAGE,
             hidden_comments: 0,
             description_open: true,
@@ -111,6 +125,7 @@ impl SummaryTab {
             comments_open: true,
             description: None,
             description_editor: None,
+            description_reactions: PendingReactions::default(),
             rows: Vec::new(),
             list: ListState::new(0, ListAlignment::Top, LIST_OVERDRAW),
             cards: HashMap::new(),
@@ -228,6 +243,7 @@ impl SummaryTab {
     pub fn set_filter(&mut self, filter: CommentFilter, cx: &mut Context<Self>) {
         if self.filter != filter {
             self.filter = filter;
+            preferences::update(cx, |p| p.conversation.set_comment_filter(filter));
             self.rebuild_rows();
             cx.notify();
         }
@@ -235,8 +251,52 @@ impl SummaryTab {
 
     pub fn toggle_order(&mut self, cx: &mut Context<Self>) {
         self.newest_first = !self.newest_first;
+        let oldest_first = !self.newest_first;
+        preferences::update(cx, |p| p.conversation.comments_oldest_first = oldest_first);
         self.rebuild_rows();
         cx.notify();
+    }
+
+    /// The viewer (un)reacts on the pull request: shown at once, taken back
+    /// when the write fails.
+    fn react_on_description(
+        &mut self,
+        content: ReactionContent,
+        reacted: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let reactions = self.description_host_reactions();
+        self.description_reactions
+            .choose(&reactions, content, reacted);
+        self.remeasure(Row::Description);
+        cx.notify();
+        let write = PullRequestData::write(&self.data, cx, move |service, pr| async move {
+            service.pull_request_react(pr, None, content, reacted).await
+        });
+        cx.spawn(async move |this, cx| {
+            if write.await.is_err() {
+                this.update(cx, |this, cx| {
+                    this.description_reactions.revert(content);
+                    this.remeasure(Row::Description);
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
+    /// The reactions on the pull request as the host reported them.
+    fn description_host_reactions(&self) -> Vec<Reaction> {
+        self.activity
+            .as_ref()
+            .map_or_else(Vec::new, |a| a.reactions.clone())
+    }
+
+    /// The section header pinned over the list, if any.
+    fn pinned(&self) -> Option<Row> {
+        let top = self.list.logical_scroll_top();
+        pinned_section(&self.rows, top.item_ix, top.offset_in_item)
     }
 
     fn show_more(&mut self, more: bool, cx: &mut Context<Self>) {
@@ -246,6 +306,9 @@ impl SummaryTab {
     }
 
     fn toggle_section(&mut self, row: Row, cx: &mut Context<Self>) {
+        // A section folded while scrolled under its pinned header keeps
+        // that header where it was: at the top.
+        let anchor = self.pinned().as_ref() == Some(&row);
         match row {
             Row::Description => self.description_open = !self.description_open,
             Row::Checks => self.checks_open = !self.checks_open,
@@ -258,6 +321,12 @@ impl SummaryTab {
         // The section's own height changed.
         if let Some(ix) = self.rows.iter().position(|r| *r == row) {
             self.list.remeasure_items(ix..ix + 1);
+            if anchor {
+                self.list.scroll_to(ListOffset {
+                    item_ix: ix,
+                    offset_in_item: px(0.),
+                });
+            }
         }
         cx.notify();
     }
@@ -291,6 +360,7 @@ impl SummaryTab {
                 let card = cx.new(|cx| {
                     let mut card = CommentCard::new(data, comment, CardStyle::Card, cx)
                         .with_location(location)
+                        .with_agent_button(true)
                         .collapsed(dismissed);
                     card.set_stale(stale, cx);
                     card
@@ -444,11 +514,15 @@ impl SummaryTab {
         title: SharedString,
         open: bool,
         actions: Option<AnyElement>,
+        pinned: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let theme = cx.theme();
         let muted = theme.muted_foreground;
-        let id = SharedString::from(format!("pr-section-{title}"));
+        let id = SharedString::from(format!(
+            "pr-section-{title}{}",
+            if pinned { "-pinned" } else { "" }
+        ));
         div()
             .px_4()
             .py_2()
@@ -487,7 +561,7 @@ impl SummaryTab {
             .children(actions)
     }
 
-    fn render_description(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn description_header(&self, pinned: bool, cx: &mut Context<Self>) -> AnyElement {
         let viewer = self.data.read(cx).viewer.as_ref().map(|v| v.login.clone());
         let editable = self.description_editor.is_none()
             && self
@@ -495,11 +569,16 @@ impl SummaryTab {
                 .as_ref()
                 .is_some_and(|d| can_edit_description(d, viewer.as_deref()));
         let muted = cx.theme().muted_foreground;
+        let id = if pinned {
+            "pr-description-edit-pinned"
+        } else {
+            "pr-description-edit"
+        };
         let pencil = editable.then(|| {
             div()
-                .debug_selector(|| "pr-description-edit".into())
+                .debug_selector(move || id.into())
                 .child(
-                    Button::new("pr-description-edit")
+                    Button::new(id)
                         .ghost()
                         .xsmall()
                         .icon(Icon::default().path("icons/pencil.svg").text_color(muted))
@@ -510,13 +589,20 @@ impl SummaryTab {
                 )
                 .into_any_element()
         });
-        let header = self.section_header(
+        self.section_header(
             Row::Description,
             "Description".into(),
             self.description_open,
             pencil,
+            pinned,
             cx,
-        );
+        )
+        .into_any_element()
+    }
+
+    fn render_description(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let header = self.description_header(false, cx);
+        let muted = cx.theme().muted_foreground;
         let body = if !self.description_open {
             None
         } else if let Some((editor, _)) = &self.description_editor {
@@ -540,15 +626,35 @@ impl SummaryTab {
                 None => None,
             }
         };
+        let reactions = (self.description_open && self.activity.is_some())
+            .then(|| {
+                let shown = self
+                    .description_reactions
+                    .shown(&self.description_host_reactions());
+                let can_react = self.data.read(cx).viewer.is_some();
+                reaction_bar(
+                    "pr-description",
+                    &shown,
+                    can_react,
+                    |this: &mut Self, content, reacted, cx| {
+                        this.react_on_description(content, reacted, cx)
+                    },
+                    cx,
+                )
+            })
+            .flatten();
         div()
             .child(header)
-            .children(body.map(|body| div().px_4().pb_4().child(body)))
+            .children(body.map(|body| div().px_4().pb_2().child(body)))
+            .children(reactions.map(|bar| div().px_4().pb_2().child(bar)))
+            .child(div().pb_2())
             .into_any_element()
     }
 
     fn render_checks(&self, cx: &mut Context<Self>) -> AnyElement {
-        let header = self.section_header(Row::Checks, "Checks".into(), self.checks_open, None, cx);
+        let header = self.checks_header(false, cx);
         let checks = self.data.read(cx).current_checks().to_vec();
+        let pr = self.data.read(cx).pr.clone();
         let theme = cx.theme();
         let muted = theme.muted_foreground;
         let body = self.checks_open.then(|| {
@@ -565,36 +671,58 @@ impl SummaryTab {
                 .children(checks.iter().enumerate().map(|(i, check)| {
                     let glyph = check_status_glyph(check, cx);
                     let url = check.url.clone();
+                    let failed =
+                        matches!(check.status, CheckStatus::Failure | CheckStatus::Cancelled);
+                    let handed = check_text(&pr, check);
                     div()
-                        .id(("pr-summary-check", i))
-                        .px_2()
-                        .py_1p5()
-                        .rounded_md()
                         .flex()
                         .items_center()
-                        .gap_2()
-                        .text_xs()
-                        .child(glyph.render(GLYPH_SIZE))
+                        .gap_1()
+                        .rounded_md()
+                        .hover(|s| s.bg(theme.muted.opacity(0.5)))
                         .child(
                             div()
+                                .id(("pr-summary-check", i))
                                 .flex_1()
                                 .min_w_0()
-                                .truncate()
-                                .text_color(theme.foreground)
-                                .child(check.name.clone()),
+                                .px_2()
+                                .py_1p5()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .text_xs()
+                                .child(glyph.render(GLYPH_SIZE))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_color(theme.foreground)
+                                        .child(check.name.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_color(muted)
+                                        .child(glyph.label.clone()),
+                                )
+                                .when_some(url, |row, url| {
+                                    row.cursor_pointer().on_click(cx.listener(
+                                        move |_, _, _, cx| {
+                                            cx.emit(PullRequestIntent::OpenUrl(url.clone()))
+                                        },
+                                    ))
+                                }),
                         )
-                        .child(
-                            div()
-                                .flex_none()
-                                .text_color(muted)
-                                .child(glyph.label.clone()),
-                        )
-                        .when_some(url, |row, url| {
-                            row.cursor_pointer()
-                                .hover(|s| s.bg(theme.muted))
-                                .on_click(cx.listener(move |_, _, _, cx| {
-                                    cx.emit(PullRequestIntent::OpenUrl(url.clone()))
-                                }))
+                        .when(failed, |row| {
+                            row.child(
+                                div()
+                                    .debug_selector(move || format!("pr-check-agent-{i}"))
+                                    .child(add_to_agent_button(
+                                        SharedString::from(format!("pr-check-agent-{i}")),
+                                        handed,
+                                    )),
+                            )
                         })
                 }))
                 .into_any_element()
@@ -605,17 +733,31 @@ impl SummaryTab {
             .into_any_element()
     }
 
-    fn render_comments_header(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn checks_header(&self, pinned: bool, cx: &mut Context<Self>) -> AnyElement {
+        self.section_header(
+            Row::Checks,
+            "Checks".into(),
+            self.checks_open,
+            None,
+            pinned,
+            cx,
+        )
+        .into_any_element()
+    }
+
+    fn comments_header(&self, pinned: bool, cx: &mut Context<Self>) -> AnyElement {
         let count = self.activity.as_ref().map_or(0, |a| a.comment_count);
         let this = cx.entity().downgrade();
         let hidden = self.hidden_comments;
+        let suffix = if pinned { "-pinned" } else { "" };
+        let order_id = format!("pr-comments-order{suffix}");
         let actions = div()
             .flex_none()
             .flex()
             .items_center()
             .gap_1()
             .child(
-                Button::new("pr-comments-filter")
+                Button::new(SharedString::from(format!("pr-comments-filter{suffix}")))
                     .ghost()
                     .xsmall()
                     .icon(Icon::default().path("icons/list_filter.svg"))
@@ -629,18 +771,23 @@ impl SummaryTab {
                     }),
             )
             .child(
-                div().debug_selector(|| "pr-comments-order".into()).child(
-                    Button::new("pr-comments-order")
-                        .ghost()
-                        .xsmall()
-                        .icon(Icon::default().path("icons/arrow_up_down.svg"))
-                        .label(if self.newest_first {
-                            "Newest first"
-                        } else {
-                            "Oldest first"
-                        })
-                        .on_click(cx.listener(|this, _, _, cx| this.toggle_order(cx))),
-                ),
+                div()
+                    .debug_selector({
+                        let order_id = order_id.clone();
+                        move || order_id.clone()
+                    })
+                    .child(
+                        Button::new(SharedString::from(order_id))
+                            .ghost()
+                            .xsmall()
+                            .icon(Icon::default().path("icons/arrow_up_down.svg"))
+                            .label(if self.newest_first {
+                                "Newest first"
+                            } else {
+                                "Oldest first"
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_order(cx))),
+                    ),
             )
             .into_any_element();
         self.section_header(
@@ -648,9 +795,34 @@ impl SummaryTab {
             format!("Comments ({count})").into(),
             self.comments_open,
             Some(actions),
+            pinned,
             cx,
         )
         .into_any_element()
+    }
+
+    /// The header of the section scrolled under the top edge, over the
+    /// list.
+    fn render_pinned(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let header = match self.pinned()? {
+            Row::Description => self.description_header(true, cx),
+            Row::Checks => self.checks_header(true, cx),
+            Row::CommentsHeader => self.comments_header(true, cx),
+            _ => return None,
+        };
+        let theme = cx.theme();
+        Some(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .bg(theme.background)
+                .border_b_1()
+                .border_color(theme.border.opacity(0.6))
+                .child(header)
+                .into_any_element(),
+        )
     }
 
     fn render_comments_note(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -716,7 +888,7 @@ impl SummaryTab {
             Row::Meta => self.render_meta(cx),
             Row::Description => self.render_description(cx),
             Row::Checks => self.render_checks(cx),
-            Row::CommentsHeader => self.render_comments_header(cx),
+            Row::CommentsHeader => self.comments_header(false, cx),
             Row::CommentsNote => self.render_comments_note(cx),
             Row::ShowOlder { hidden } => {
                 let more = hidden.min(PAGE);
@@ -792,24 +964,31 @@ fn filter_menu(menu: PopupMenu, tab: &WeakEntity<SummaryTab>, cx: &App) -> Popup
 
 impl Render for SummaryTab {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().child(
-            list(
-                self.list.clone(),
-                cx.processor(|this: &mut Self, ix: usize, _, cx| this.render_row(ix, cx)),
+        let pinned = self.render_pinned(cx);
+        div()
+            .relative()
+            .size_full()
+            .child(
+                list(
+                    self.list.clone(),
+                    cx.processor(|this: &mut Self, ix: usize, _, cx| this.render_row(ix, cx)),
+                )
+                .size_full(),
             )
-            .size_full(),
-        )
+            .children(pinned)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::conversation::fixtures::{
-        bot, comment, data_with_detail, review, thread, window,
+        agent_inbox, bot, click, comment, data_with_detail, review, thread, window,
     };
     use super::picker::{Candidate, Leading, PickerEntry, PickerToggle};
     use super::*;
-    use crate::main_screen::right_panel::pull_request::fixtures::{actor, detail_with, hours_ago};
+    use crate::main_screen::right_panel::pull_request::fixtures::{
+        actor, check, detail_with, hours_ago,
+    };
     use github::model::ReviewState;
     use gpui_kit::{TestAppContext, VisualTestContext};
 
@@ -998,6 +1177,110 @@ mod tests {
         tab.read_with(cx, |tab, _| {
             let top = tab.list.logical_scroll_top();
             assert_eq!((top.item_ix, top.offset_in_item), (0, px(0.)));
+        });
+    }
+
+    #[gpui_kit::test]
+    fn the_remembered_filter_and_order_apply(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let mut settings = crate::shared::settings::UiSettings::default();
+            let conversation = &mut settings.pull_requests.conversation;
+            conversation.show_bot_comments = true;
+            conversation.comments_oldest_first = true;
+            cx.set_global(crate::UiSettingsGlobal(settings));
+        });
+        let (tab, cx) = summary(activity(2), cx);
+        tab.read_with(cx, |tab, _| {
+            assert_eq!(items(tab), ["c0", "c1", "ok", "bot"]);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn the_description_carries_the_pull_requests_reactions(cx: &mut TestAppContext) {
+        let mut reacted = activity(0);
+        reacted.reactions = vec![github::model::Reaction {
+            content: ReactionContent::Rocket,
+            count: 2,
+            actors: vec!["bob".into(), "cid".into()],
+            viewer_has_reacted: false,
+        }];
+        let (tab, cx) = summary(reacted, cx);
+        assert!(cx.debug_bounds("pr-description-reaction-Rocket").is_some());
+        tab.update(cx, |tab, cx| {
+            tab.react_on_description(ReactionContent::Rocket, true, cx);
+            let shown = tab
+                .description_reactions
+                .shown(&tab.description_host_reactions());
+            assert_eq!((shown[0].count, shown[0].viewer_has_reacted), (3, true));
+        });
+        // No session service: the write fails and the choice goes.
+        cx.run_until_parked();
+        tab.read_with(cx, |tab, _| {
+            let shown = tab
+                .description_reactions
+                .shown(&tab.description_host_reactions());
+            assert_eq!(shown[0].count, 2);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn a_failing_check_goes_to_the_agent(cx: &mut TestAppContext) {
+        let data = data_with_detail(cx, Some("ann"));
+        data.update(cx, |data, _| {
+            data.detail = Some(Arc::new(detail_with(290, |d| {
+                d.checks = vec![
+                    check("lint", CheckStatus::Success),
+                    check("test", CheckStatus::Failure),
+                ];
+            })));
+        });
+        let (_, cx) = window(cx, move |cx| SummaryTab::new(data, cx));
+        let inbox = agent_inbox(cx);
+        click(cx, "pr-section-Checks");
+        assert!(cx.debug_bounds("pr-check-agent-0").is_none(), "it passed");
+        click(cx, "pr-check-agent-1");
+        assert_eq!(
+            inbox.borrow().as_slice(),
+            ["Check \"test\" on stippi/code-assistant#290: Failed"]
+        );
+    }
+
+    #[gpui_kit::test]
+    fn headers_pin_and_folding_keeps_the_header_in_place(cx: &mut TestAppContext) {
+        let data = data_with_detail(cx, Some("ann"));
+        let long = (0..60)
+            .map(|i| format!("Paragraph {i} of a long description."))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        data.update(cx, |data, _| {
+            data.detail = Some(Arc::new(detail_with(290, |d| d.body = long)));
+            data.activity = Some(Arc::new(activity(30)));
+        });
+        let (tab, cx) = window(cx, move |cx| SummaryTab::new(data, cx));
+        let scroll = |tab: &Entity<SummaryTab>, item_ix: usize, cx: &mut VisualTestContext| {
+            tab.update(cx, |tab, cx| {
+                tab.list.scroll_to(ListOffset {
+                    item_ix,
+                    offset_in_item: px(300.),
+                });
+                cx.notify();
+            });
+            cx.run_until_parked();
+        };
+        assert!(cx.debug_bounds("pr-section-Description-pinned").is_none());
+        scroll(&tab, 6, cx);
+        assert!(cx.debug_bounds("pr-section-Comments (33)-pinned").is_some());
+
+        scroll(&tab, 1, cx);
+        click(cx, "pr-section-Description-pinned");
+        tab.read_with(cx, |tab, _| {
+            assert!(!tab.description_open);
+            let top = tab.list.logical_scroll_top();
+            assert_eq!(
+                (top.item_ix, top.offset_in_item),
+                (1, px(0.)),
+                "the header on top"
+            );
         });
     }
 

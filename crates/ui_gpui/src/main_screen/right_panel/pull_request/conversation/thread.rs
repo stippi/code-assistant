@@ -7,10 +7,11 @@
 
 use super::super::PullRequestIntent;
 use super::super::data::PullRequestData;
+use super::agent::{add_to_agent_button, thread_text};
 use super::card::{CardStyle, CommentCard};
 use super::editor::{EditorEvent, EditorOptions, MarkdownEditor};
 use super::logic::{ThreadItem, merge_thread_comments, preview_text, thread_comment, thread_item};
-use super::parts::{Collapsed, Location, location_line, render_collapsed};
+use super::parts::{Collapsed, Location, location_line, open_on_github, render_collapsed};
 use github::model::{Comment, ReviewThread, ThreadComment};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::{ActiveTheme, Sizable};
@@ -38,6 +39,8 @@ pub struct ThreadCard {
     show_location: bool,
     resolving: bool,
     reply: Option<(Entity<MarkdownEditor>, Subscription)>,
+    /// Shows ↗ to the thread on GitHub.
+    github_link: bool,
 }
 
 impl EventEmitter<PullRequestIntent> for ThreadCard {}
@@ -56,6 +59,7 @@ impl ThreadCard {
             show_location: false,
             resolving: false,
             reply: None,
+            github_link: false,
         }
     }
 
@@ -63,6 +67,12 @@ impl ThreadCard {
     /// thread without comments.
     pub fn for_thread(data: Entity<PullRequestData>, thread: &ReviewThread) -> Option<Self> {
         Some(Self::new(data, thread_item(thread, &HashMap::new())?))
+    }
+
+    /// Show ↗ to the thread on GitHub in the header.
+    pub fn with_github_link(mut self, show: bool) -> Self {
+        self.github_link = show;
+        self
     }
 
     /// Show `path:line` under the header.
@@ -315,9 +325,17 @@ impl ThreadCard {
     }
 
     fn render_header(&self, can_resolve: bool, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let id = format!("t-{}", self.item.thread.id);
+        let pr = self.data.read(cx).pr.clone();
+        let handed = thread_text(&pr, &self.item);
+        let github_link = self
+            .item
+            .url
+            .clone()
+            .filter(|_| self.github_link)
+            .map(|url| open_on_github(format!("{id}-github").into(), url, cx));
         let theme = cx.theme();
         let thread = &self.item.thread;
-        let id = format!("t-{}", thread.id);
         let count = thread.comment_count.max(1 + self.item.replies.len() as u64);
         let (icon, color, state) = if thread.is_resolved {
             ("icons/circle_check.svg", theme.success, "Resolved")
@@ -348,6 +366,15 @@ impl ThreadCard {
             )
             .when(thread.is_outdated, |row| row.child("Outdated"))
             .child(div().flex_1())
+            .child(
+                div()
+                    .debug_selector({
+                        let selector = format!("{id}-agent");
+                        move || selector.clone()
+                    })
+                    .child(add_to_agent_button(format!("{id}-agent").into(), handed)),
+            )
+            .children(github_link)
             .when(can_resolve, |row| {
                 row.child(
                     div().debug_selector(|| format!("{id}-resolve")).child(
@@ -461,7 +488,7 @@ impl Render for ThreadCard {
 
 #[cfg(test)]
 mod tests {
-    use super::super::fixtures::{data_with_detail, thread, window};
+    use super::super::fixtures::{agent_inbox, click, data_with_detail, thread, window};
     use super::*;
     use crate::main_screen::right_panel::pull_request::fixtures::hours_ago;
     use gpui_kit::TestAppContext;
@@ -511,6 +538,19 @@ mod tests {
         cx.simulate_click(expand.center(), gpui_kit::Modifiers::none());
         cx.run_until_parked();
         view.read_with(cx, |view, _| assert!(view.is_expanded()));
+    }
+
+    #[gpui_kit::test]
+    fn add_to_agent_hands_the_whole_thread_over(cx: &mut TestAppContext) {
+        let (_, cx) = card(
+            thread("t1", &[("a", hours_ago(3)), ("b", hours_ago(2))]),
+            cx,
+        );
+        let inbox = agent_inbox(cx);
+        click(cx, "t-t1-agent");
+        let inbox = inbox.borrow();
+        assert!(inbox[0].starts_with("Review thread on stippi/code-assistant#290, src/lib.rs:12"));
+        assert!(inbox[0].contains("b in a thread"));
     }
 
     #[gpui_kit::test]

@@ -6,7 +6,15 @@
 //! host: changing them asks for a new listing ([`PullRequestIntent::List`],
 //! the text after a pause in typing). Sorting, the other filters and the
 //! search's qualifiers (`label:bug`) work on the loaded rows
-//! ([`list_logic`](super::list_logic)).
+//! ([`list_logic`](super::list_logic)). Sort, filters, state and
+//! involvement are remembered ([`preferences`](super::preferences)).
+//!
+//! The next page is asked for when the end of the rows comes near, and line
+//! counts for rows that came without them when such rows are drawn (with
+//! the list's overdraw as margin). Holding Shift shows each row's quick
+//! actions (close and merge take a confirming click); what they do shows at
+//! once ([`list_overrides`](super::list_overrides)) and is taken back if
+//! GitHub refuses.
 
 use super::PullRequestIntent;
 use super::avatar::avatar;
@@ -14,14 +22,22 @@ use super::list_logic::{
     Arrangement, ChecksFilter, DraftFilter, Filters, GroupKey, ReviewFilter, SortMode, arrange,
     facets, parse_query,
 };
+use super::list_overrides::{
+    QuickAction, RowOverride, apply_overrides, merge_stats, override_after_action, quick_actions,
+    settle_overrides, with_stats,
+};
+use super::preferences;
 use super::presentation::{
     GLYPH_SIZE, Tone, checks_glyph, conflict_glyph, diff_stat, hairline, relative_time,
     review_glyph,
 };
 use chrono::Utc;
 use github::RepoRef;
-use github::model::{Involvement, ListEntry, ListPage, ListQuery, ListState as ListedState};
-use gpui_kit::component::button::Button;
+use github::model::{
+    Action, DiffStat, Involvement, ListEntry, ListPage, ListQuery, ListState as ListedState,
+    MergeMethod,
+};
+use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenu, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme, Icon, Side, Sizable, Size};
@@ -29,7 +45,7 @@ use gpui_kit::{
     AnyElement, App, Context, Entity, EventEmitter, ListAlignment, ListState, Pixels, Render,
     SharedString, Subscription, Task, WeakEntity, Window, div, list, prelude::*, px, svg,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 /// Pull requests one listing asks for.
@@ -39,6 +55,8 @@ const SEARCH_DEBOUNCE: Duration = Duration::from_millis(400);
 const LIST_OVERDRAW: Pixels = px(400.);
 /// Authors the Author filter offers at most.
 const MAX_AUTHOR_CHOICES: usize = 15;
+/// How long a quick action waits for its confirming click.
+const CONFIRM_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// One row of the list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,14 +65,31 @@ enum Row {
         key: GroupKey,
         count: usize,
     },
-    /// An index into the loaded entries.
+    /// An index into the shown entries.
     Entry(usize),
 }
 
 pub struct PullRequestList {
     repo: Option<RepoRef>,
     viewer: Option<String>,
+    /// As GitHub listed them.
     entries: Vec<ListEntry>,
+    /// As shown: with overrides and read line counts.
+    shown: Vec<ListEntry>,
+    overrides: HashMap<u64, RowOverride>,
+    last_token: u64,
+    /// Line counts read for rows that came without.
+    stats: HashMap<u64, (u64, u64)>,
+    stats_asked: HashSet<u64>,
+    /// Rows drawn without counts, to ask for at the end of the frame.
+    stats_wanted: Vec<u64>,
+    next_cursor: Option<String>,
+    loading_more: bool,
+    /// Shift is held: rows show their quick actions.
+    speed: bool,
+    armed: Option<(u64, QuickAction)>,
+    _armed_timeout: Option<Task<()>>,
+    _flush: Option<Task<()>>,
     loaded: bool,
     /// The session's repository is still being looked for.
     resolving: bool,
@@ -83,18 +118,31 @@ impl PullRequestList {
             InputState::new(window, cx).placeholder("Search pull requests, or label:bug")
         });
         let subscriptions = vec![cx.subscribe_in(&search, window, Self::on_search_event)];
+        let remembered = preferences::read(cx).list;
         Self {
             repo: None,
             viewer: None,
             entries: Vec::new(),
+            shown: Vec::new(),
+            overrides: HashMap::new(),
+            last_token: 0,
+            stats: HashMap::new(),
+            stats_asked: HashSet::new(),
+            stats_wanted: Vec::new(),
+            next_cursor: None,
+            loading_more: false,
+            speed: false,
+            armed: None,
+            _armed_timeout: None,
+            _flush: None,
             loaded: false,
             resolving: false,
             refreshing: false,
             error: None,
-            state: ListedState::default(),
-            involvement: Involvement::default(),
-            sort: SortMode::default(),
-            filters: Filters::default(),
+            state: remembered.state,
+            involvement: remembered.involvement,
+            sort: remembered.sort,
+            filters: remembered.filters,
             search,
             query: String::new(),
             listed_text: String::new(),
@@ -112,6 +160,10 @@ impl PullRequestList {
         }
         self.repo = repo;
         self.entries.clear();
+        self.overrides.clear();
+        self.stats.clear();
+        self.stats_asked.clear();
+        self.next_cursor = None;
         self.loaded = false;
         self.error = None;
         self.rebuild_rows();
@@ -127,12 +179,80 @@ impl PullRequestList {
         }
     }
 
+    /// A first page: what is listed now.
     pub fn set_page(&mut self, page: ListPage, cx: &mut Context<Self>) {
+        settle_overrides(&mut self.overrides, &page.entries, Utc::now());
         self.entries = page.entries;
+        self.next_cursor = page.next_cursor;
+        self.loading_more = false;
         self.loaded = true;
         self.error = None;
         self.rebuild_rows();
         cx.notify();
+    }
+
+    /// The next page, after the rows held.
+    pub fn append_page(&mut self, page: ListPage, cx: &mut Context<Self>) {
+        let held: HashSet<u64> = self.entries.iter().map(|e| e.number).collect();
+        settle_overrides(&mut self.overrides, &page.entries, Utc::now());
+        let before = self.entries.len();
+        self.entries.extend(
+            page.entries
+                .into_iter()
+                .filter(|e| !held.contains(&e.number)),
+        );
+        // A page with nothing new (the listing moved under the cursor) ends
+        // the paging rather than asking again and again.
+        let grew = self.entries.len() > before;
+        self.next_cursor = page.next_cursor.filter(|_| grew);
+        self.loading_more = false;
+        self.rebuild_rows();
+        cx.notify();
+    }
+
+    /// Reading the next page failed; it may be asked for again.
+    pub fn more_failed(&mut self, error: String, cx: &mut Context<Self>) {
+        self.loading_more = false;
+        self.set_error(Some(error), cx);
+    }
+
+    /// Line counts read for rows that came without them.
+    pub fn set_stats(&mut self, stats: &[DiffStat], cx: &mut Context<Self>) {
+        merge_stats(&mut self.stats, stats);
+        self.rebuild_rows();
+        cx.notify();
+    }
+
+    /// Show what `action` does to row `number` before GitHub confirms it;
+    /// the token takes it back ([`Self::revert`]).
+    pub fn override_row(
+        &mut self,
+        number: u64,
+        action: &Action,
+        cx: &mut Context<Self>,
+    ) -> Option<u64> {
+        let state = self.entry(number)?.state;
+        self.last_token += 1;
+        let token = self.last_token;
+        let row = override_after_action(state, action.kind(), Utc::now(), token)?;
+        self.overrides.insert(number, row);
+        self.rebuild_rows();
+        cx.notify();
+        Some(token)
+    }
+
+    /// GitHub refused: the row shows what it listed again (unless a later
+    /// action overrode it since).
+    pub fn revert(&mut self, number: u64, token: u64, cx: &mut Context<Self>) {
+        if self
+            .overrides
+            .get(&number)
+            .is_some_and(|o| o.token == token)
+        {
+            self.overrides.remove(&number);
+            self.rebuild_rows();
+            cx.notify();
+        }
     }
 
     pub fn set_resolving(&mut self, resolving: bool, cx: &mut Context<Self>) {
@@ -155,6 +275,15 @@ impl PullRequestList {
         cx.notify();
     }
 
+    /// The listing after the rows held, while there is more.
+    pub fn next_query(&self) -> Option<ListQuery> {
+        let cursor = self.next_cursor.clone()?;
+        Some(ListQuery {
+            cursor: Some(cursor),
+            ..self.query()
+        })
+    }
+
     /// The listing the current state, involvement and search ask for.
     pub fn query(&self) -> ListQuery {
         let text = parse_query(&self.query).text;
@@ -167,20 +296,100 @@ impl PullRequestList {
         }
     }
 
+    /// A row as shown.
     pub fn entry(&self, number: u64) -> Option<&ListEntry> {
-        self.entries.iter().find(|e| e.number == number)
+        self.shown
+            .iter()
+            .chain(&self.entries)
+            .find(|e| e.number == number)
+    }
+
+    fn remember(&self, cx: &mut Context<Self>) {
+        let list = preferences::ListPreferences {
+            sort: self.sort,
+            filters: self.filters.clone(),
+            state: self.state,
+            involvement: self.involvement,
+        };
+        preferences::update(cx, |preferences| preferences.list = list);
     }
 
     fn set_sort(&mut self, sort: SortMode, cx: &mut Context<Self>) {
         self.sort = sort;
+        self.remember(cx);
         self.rebuild_rows();
         cx.notify();
     }
 
     fn set_filters(&mut self, change: impl FnOnce(&mut Filters), cx: &mut Context<Self>) {
         change(&mut self.filters);
+        self.remember(cx);
         self.rebuild_rows();
         cx.notify();
+    }
+
+    fn set_speed(&mut self, speed: bool, cx: &mut Context<Self>) {
+        if self.speed != speed {
+            self.speed = speed;
+            if !speed {
+                self.armed = None;
+            }
+            cx.notify();
+        }
+    }
+
+    /// A quick action's click: one taking two arms it first.
+    fn click_quick(&mut self, number: u64, quick: QuickAction, cx: &mut Context<Self>) {
+        if quick.confirms() && self.armed != Some((number, quick)) {
+            self.armed = Some((number, quick));
+            self._armed_timeout = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(CONFIRM_TIMEOUT).await;
+                this.update(cx, |this, cx| {
+                    this.armed = None;
+                    cx.notify();
+                })
+                .ok();
+            }));
+            cx.notify();
+            return;
+        }
+        self.armed = None;
+        self._armed_timeout = None;
+        let method = self
+            .repo
+            .as_ref()
+            .and_then(|repo| preferences::read(cx).merge_method(repo))
+            .unwrap_or(MergeMethod::Merge);
+        let action = quick.action(method);
+        if let Some(token) = self.override_row(number, &action, cx) {
+            cx.emit(PullRequestIntent::ActOn {
+                number,
+                action,
+                token,
+            });
+        }
+    }
+
+    /// Ask, after this frame, for what drawing the rows found missing.
+    fn schedule_flush(&mut self, cx: &mut Context<Self>) {
+        if self._flush.is_none() {
+            self._flush = Some(cx.spawn(async move |this, cx| {
+                this.update(cx, |this, cx| this.flush(cx)).ok();
+            }));
+        }
+    }
+
+    fn flush(&mut self, cx: &mut Context<Self>) {
+        self._flush = None;
+        let wanted = std::mem::take(&mut self.stats_wanted);
+        if !wanted.is_empty() {
+            cx.emit(PullRequestIntent::ListStats(wanted));
+        }
+        if self.loading_more
+            && let Some(query) = self.next_query()
+        {
+            cx.emit(PullRequestIntent::ListMore(query));
+        }
     }
 
     fn set_listing(
@@ -192,6 +401,7 @@ impl PullRequestList {
         if (self.state, self.involvement) != (state, involvement) {
             self.state = state;
             self.involvement = involvement;
+            self.remember(cx);
             cx.emit(PullRequestIntent::List(self.query()));
             cx.notify();
         }
@@ -231,14 +441,16 @@ impl PullRequestList {
             .as_ref()
             .map(RepoRef::full_name)
             .unwrap_or_default();
+        self.shown = apply_overrides(&self.entries, &self.overrides, self.state);
+        with_stats(&mut self.shown, &self.stats);
         let index: HashMap<u64, usize> = self
-            .entries
+            .shown
             .iter()
             .enumerate()
             .map(|(i, e)| (e.number, i))
             .collect();
         let groups = arrange(
-            &self.entries,
+            &self.shown,
             &Arrangement {
                 sort: self.sort,
                 query: &self.query,
@@ -261,18 +473,40 @@ impl PullRequestList {
         self.list.reset(self.rows.len());
     }
 
+    /// Whether row `number` is shown.
+    #[cfg(test)]
+    pub fn shows(&self, number: u64) -> bool {
+        self.rows
+            .iter()
+            .any(|row| matches!(row, Row::Entry(i) if self.shown[*i].number == number))
+    }
+
     #[cfg(test)]
     fn shown(&self) -> Vec<String> {
         self.rows
             .iter()
             .map(|row| match row {
                 Row::Group { key, count } => format!("{} {count}", key.label()),
-                Row::Entry(i) => format!("#{}", self.entries[*i].number),
+                Row::Entry(i) => format!("#{}", self.shown[*i].number),
             })
             .collect()
     }
 
+    /// Drawing a row is what asks for its line counts and, near the end,
+    /// for the next page.
     fn render_row(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(Row::Entry(i)) = self.rows.get(ix) {
+            let entry = &self.shown[*i];
+            if entry.additions == 0 && entry.deletions == 0 && self.stats_asked.insert(entry.number)
+            {
+                self.stats_wanted.push(entry.number);
+                self.schedule_flush(cx);
+            }
+        }
+        if ix + 1 >= self.rows.len() && self.next_cursor.is_some() && !self.loading_more {
+            self.loading_more = true;
+            self.schedule_flush(cx);
+        }
         match self.rows.get(ix) {
             Some(Row::Group { key, count }) => render_group_header(*key, *count, cx),
             Some(Row::Entry(i)) => self.render_entry(*i, cx),
@@ -281,7 +515,7 @@ impl PullRequestList {
     }
 
     fn render_entry(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
-        let entry = &self.entries[index];
+        let entry = &self.shown[index];
         let theme = cx.theme();
         let muted = theme.muted_foreground;
         let number = entry.number;
@@ -355,7 +589,10 @@ impl PullRequestList {
                 entry.additions,
                 entry.deletions,
                 cx,
-            )));
+            )))
+            .when(self.speed, |line| {
+                line.child(self.render_quick_actions(entry, cx))
+            });
         let line_two = div()
             .flex()
             .items_center()
@@ -410,6 +647,46 @@ impl PullRequestList {
                     .on_click(
                         cx.listener(move |_, _, _, cx| cx.emit(PullRequestIntent::Open(number))),
                     ),
+            )
+            .into_any_element()
+    }
+
+    /// The row's quick actions, while Shift is held.
+    fn render_quick_actions(&self, entry: &ListEntry, cx: &mut Context<Self>) -> AnyElement {
+        let number = entry.number;
+        div()
+            .flex_none()
+            .flex()
+            .gap_1()
+            .children(
+                quick_actions(entry.state, entry.is_draft)
+                    .iter()
+                    .map(|&quick| {
+                        let armed = self.armed == Some((number, quick));
+                        let label = if armed {
+                            format!("Confirm {}?", quick.label().to_lowercase())
+                        } else {
+                            quick.label().to_string()
+                        };
+                        let button = Button::new(SharedString::from(format!(
+                            "pr-quick-{number}-{}",
+                            quick.label()
+                        )))
+                        .xsmall()
+                        .label(label)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.click_quick(number, quick, cx)
+                        }));
+                        let button = match quick {
+                            QuickAction::Close => button.outline().danger(),
+                            QuickAction::Merge => button.primary(),
+                            QuickAction::Ready | QuickAction::Reopen => button.outline(),
+                        };
+                        div()
+                            .debug_selector(move || format!("pr-quick-{number}-{}", quick.label()))
+                            .child(button)
+                    }),
             )
             .into_any_element()
     }
@@ -852,6 +1129,18 @@ impl Render for PullRequestList {
             .size_full()
             .flex()
             .flex_col()
+            // Shift reveals the quick actions, while the list has focus or
+            // the mouse moves over it.
+            .on_modifiers_changed(cx.listener(
+                |this, event: &gpui_kit::ModifiersChangedEvent, _, cx| {
+                    this.set_speed(event.modifiers.shift, cx)
+                },
+            ))
+            .on_mouse_move(
+                cx.listener(|this, event: &gpui_kit::MouseMoveEvent, _, cx| {
+                    this.set_speed(event.modifiers.shift, cx)
+                }),
+            )
             .child(self.render_toolbar(cx))
             .children(note)
             .child(
@@ -919,7 +1208,136 @@ mod tests {
             );
         });
         cx.run_until_parked();
+        // Drawing the rows asked for their line counts; tests start after.
+        intents.borrow_mut().clear();
         (view, intents, cx)
+    }
+
+    fn page(entries: Vec<ListEntry>, next_cursor: Option<&str>) -> ListPage {
+        ListPage {
+            entries,
+            next_cursor: next_cursor.map(str::to_owned),
+        }
+    }
+
+    #[gpui_kit::test]
+    fn drawn_rows_without_line_counts_ask_for_them_once(cx: &mut TestAppContext) {
+        let (view, intents, cx) = list_view(cx);
+        view.update(cx, |view, cx| {
+            view.set_page(page(vec![entry(400, "new", "ann")], None), cx)
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            intents.borrow().as_slice(),
+            [PullRequestIntent::ListStats(vec![400])]
+        );
+        let stat = DiffStat {
+            pr: repo().pull_request(400),
+            additions: 7,
+            deletions: 2,
+        };
+        view.update(cx, |view, cx| view.set_stats(&[stat], cx));
+        cx.run_until_parked();
+        view.read_with(cx, |view, _| {
+            let shown = view.entry(400).unwrap();
+            assert_eq!((shown.additions, shown.deletions), (7, 2));
+        });
+        assert_eq!(intents.borrow().len(), 1, "asked once");
+    }
+
+    #[gpui_kit::test]
+    fn the_end_of_the_rows_asks_for_the_next_page(cx: &mut TestAppContext) {
+        let (view, intents, cx) = list_view(cx);
+        view.update(cx, |view, cx| {
+            view.set_page(page(vec![entry(1, "a", "ann")], Some("c2")), cx)
+        });
+        cx.run_until_parked();
+        let expected = ListQuery {
+            cursor: Some("c2".into()),
+            limit: PAGE_SIZE,
+            ..ListQuery::default()
+        };
+        assert!(
+            intents
+                .borrow()
+                .contains(&PullRequestIntent::ListMore(expected))
+        );
+        view.update(cx, |view, cx| {
+            view.append_page(
+                page(vec![entry(1, "a", "ann"), entry(2, "b", "ann")], None),
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.shown(), ["Others 2", "#1", "#2"])
+        });
+        let more = intents
+            .borrow()
+            .iter()
+            .filter(|i| matches!(i, PullRequestIntent::ListMore(_)))
+            .count();
+        assert_eq!(more, 1, "nothing more to read");
+
+        // A page bringing nothing new ends the paging even with a cursor.
+        view.update(cx, |view, cx| {
+            view.set_page(page(vec![entry(1, "a", "ann")], Some("c2")), cx);
+            view.append_page(page(vec![entry(1, "a", "ann")], Some("c3")), cx);
+        });
+        view.read_with(cx, |view, _| assert_eq!(view.next_query(), None));
+    }
+
+    #[gpui_kit::test]
+    fn a_quick_close_shows_at_once_and_is_taken_back_when_refused(cx: &mut TestAppContext) {
+        let (view, intents, cx) = list_view(cx);
+        view.update(cx, |view, cx| view.set_speed(true, cx));
+        cx.run_until_parked();
+        let click = |cx: &mut VisualTestContext| {
+            let bounds = cx.debug_bounds("pr-quick-281-Close").unwrap();
+            cx.simulate_click(bounds.center(), gpui_kit::Modifiers::none());
+            cx.run_until_parked();
+        };
+        click(cx);
+        assert!(
+            intents.borrow().is_empty(),
+            "closing takes a confirming click"
+        );
+        click(cx);
+        let token = match intents.borrow().as_slice() {
+            [
+                PullRequestIntent::ActOn {
+                    number: 281,
+                    action: Action::Close,
+                    token,
+                },
+            ] => *token,
+            other => panic!("unexpected {other:?}"),
+        };
+        view.read_with(cx, |view, _| {
+            assert!(
+                !view.shown().contains(&"#281".to_string()),
+                "gone from Open"
+            )
+        });
+        view.update(cx, |view, cx| view.revert(281, token, cx));
+        view.read_with(cx, |view, _| {
+            assert!(view.shown().contains(&"#281".to_string()))
+        });
+    }
+
+    #[gpui_kit::test]
+    fn the_list_starts_as_it_was_left(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let mut settings = crate::shared::settings::UiSettings::default();
+            settings.pull_requests.list.sort = SortMode::Newest;
+            settings.pull_requests.list.state = ListedState::Merged;
+            cx.set_global(crate::UiSettingsGlobal(settings));
+        });
+        let (view, _, cx) = list_view(cx);
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.sort, SortMode::Newest);
+            assert_eq!(view.query().state, ListedState::Merged);
+        });
     }
 
     #[gpui_kit::test]

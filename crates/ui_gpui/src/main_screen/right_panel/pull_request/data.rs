@@ -44,6 +44,8 @@ pub struct PullRequestData {
     refreshing_parts: HashSet<PullRequestPart>,
     reads: HashMap<PullRequestPart, Task<()>>,
     viewer_read: Option<Task<()>>,
+    /// Prefetching what the Code tab reads first.
+    warm: Option<Task<()>>,
     poll: Option<Task<()>>,
     _bus: Subscription,
 }
@@ -69,6 +71,7 @@ impl PullRequestData {
             refreshing_parts: HashSet::new(),
             reads: HashMap::new(),
             viewer_read: None,
+            warm: None,
             poll: None,
             _bus: bus,
         }
@@ -85,6 +88,25 @@ impl PullRequestData {
             self.read(part, cx);
         }
         self.read_viewer(cx);
+        self.warm_code(cx);
+    }
+
+    /// Read the first diff page and the files viewed into the core's cache,
+    /// so the Code tab finds them there when it is opened.
+    fn warm_code(&mut self, cx: &mut Context<Self>) {
+        let Some(service) = session_service(cx) else {
+            return;
+        };
+        let pr = self.pr.clone();
+        self.warm = Some(cx.spawn(async move |_, _| {
+            let (diff, viewed) = futures::join!(
+                service.pull_request_diff(pr.clone(), None, None),
+                service.pull_request_files_viewed(pr),
+            );
+            if let Err(error) = diff.map(drop).and(viewed.map(drop)) {
+                tracing::debug!("pull request code not prefetched: {error:#}");
+            }
+        }));
     }
 
     /// Read `part` (held value first). Parts other views keep (diff, files

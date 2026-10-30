@@ -1,6 +1,7 @@
 //! The diff as GitHub sends it, page by page: each page's patch parsed
 //! once, off the UI thread, into prepared file diffs in listing order
-//! ([`parse_page`]); arrivals merged like T3 Code does it ([`arrival`]): a
+//! ([`parse_page`]), unhighlighted (the view highlights file by file
+//! afterwards); arrivals merged like T3 Code does it ([`arrival`]): a
 //! re-read page that did not change keeps everything, a changed one
 //! replaces itself and drops the pages after it (their cursors point into
 //! the old diff).
@@ -11,7 +12,6 @@ use super::file_order::order_files;
 use crate::diff::prepare::PreparedFileDiff;
 use git::ChangeStatus;
 use github::model::DiffPage;
-use gpui_kit::component::highlighter::HighlightTheme;
 use similar::ChangeTag;
 use std::hash::{Hash, Hasher};
 
@@ -32,6 +32,8 @@ pub struct LoadedFile {
     pub stamp: u64,
     /// The flat lines the chunks are cut after (annotations go there).
     pub breaks: Vec<usize>,
+    /// The syntax was looked for (there may be no grammar).
+    pub highlighted: bool,
 }
 
 pub struct Page {
@@ -88,13 +90,13 @@ pub fn fingerprint(page: &DiffPage) -> u64 {
 }
 
 /// The files of `page`, in the order they are listed, with their diffs
-/// prepared (and highlighted with `theme`). CPU-heavy: call off the UI
-/// thread. Stamps are left for the view to give.
-pub fn parse_page(page: &DiffPage, theme: &HighlightTheme) -> Vec<LoadedFile> {
+/// prepared but not highlighted. Call off the UI thread (a few ms for a
+/// big page). Stamps are left for the view to give.
+pub fn parse_page(page: &DiffPage) -> Vec<LoadedFile> {
     let mut files: Vec<Option<LoadedFile>> = git::parse_patch(&page.patch)
         .into_iter()
         .map(|patch| {
-            let diff = PreparedFileDiff::from_patch(&patch, Some(theme));
+            let diff = PreparedFileDiff::from_patch_plain(&patch);
             let numbers = diff.row_numbers();
             let (mut additions, mut deletions) = (diff.additions as u64, diff.deletions as u64);
             if additions == 0
@@ -118,6 +120,7 @@ pub fn parse_page(page: &DiffPage, theme: &HighlightTheme) -> Vec<LoadedFile> {
                 status: patch.status,
                 stamp: 0,
                 breaks: Vec::new(),
+                highlighted: false,
             })
         })
         .collect();
@@ -215,7 +218,7 @@ diff --git a/src/z.ts b/src/z.ts
                 deletions: 1,
             }],
         };
-        let files = parse_page(&page, &HighlightTheme::default_light());
+        let files = parse_page(&page);
         let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
         // `a.ts` imports `z.ts`; everything else in path order.
         assert_eq!(paths, ["img.png", "src/b.ts", "src/z.ts", "src/a.ts"]);

@@ -8,8 +8,9 @@ use super::super::presentation::relative_time;
 use super::logic::ReviewOutcome;
 use chrono::{DateTime, Utc};
 use github::model::{Actor, ReviewState};
-use gpui_kit::component::ActiveTheme;
+use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::component::{ActiveTheme, Icon, Sizable};
 use gpui_kit::{
     AnyElement, App, Context, EventEmitter, FontWeight, Hsla, SharedString, div, prelude::*, px,
     svg,
@@ -48,6 +49,37 @@ pub fn outcome_icon(outcome: ReviewOutcome) -> &'static str {
         ReviewOutcome::ChangesRequested => "icons/circle_x.svg",
         ReviewOutcome::Dismissed => "icons/circle_dashed.svg",
     }
+}
+
+/// ↗: open `url` on GitHub.
+pub fn open_on_github<V: EventEmitter<PullRequestIntent>>(
+    id: SharedString,
+    url: String,
+    cx: &mut Context<V>,
+) -> AnyElement {
+    let muted = cx.theme().muted_foreground;
+    div()
+        .debug_selector({
+            let id = id.clone();
+            move || id.to_string()
+        })
+        .child(
+            Button::new(id)
+                .ghost()
+                .xsmall()
+                .icon(
+                    Icon::default()
+                        .path("icons/external_link.svg")
+                        .text_color(muted),
+                )
+                .tooltip("Open on GitHub")
+                .on_click(
+                    cx.listener(move |_, _, _, cx| {
+                        cx.emit(PullRequestIntent::OpenUrl(url.clone()))
+                    }),
+                ),
+        )
+        .into_any_element()
 }
 
 /// The profile of `login` on `host`.

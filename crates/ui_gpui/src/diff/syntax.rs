@@ -9,7 +9,10 @@
 //! for a patch, which has no whole files, one text per hunk
 //! ([`SyntaxOrigin`]). Hunks are parsed on their own, so a construct cut off
 //! at one hunk's end cannot color the next, but share one highlighter per
-//! side: building one compiles the grammar's queries, the costly part.
+//! side: building one compiles the grammar's queries, the costly part (a
+//! tenth of a second per Rust side in a debug build). So once a side's
+//! styles are all cached, its highlighter goes back to a per-thread pool
+//! for the next diff parsed there ([`take_highlighter`]).
 
 use super::model::DiffHunk;
 use gpui_kit::HighlightStyle;
@@ -19,8 +22,35 @@ use gpui_kit::component::highlighter::{
     HighlightTheme, Language, LanguageRegistry, SyntaxHighlighter,
 };
 use similar::ChangeTag;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Mutex;
+
+/// Highlighters kept per language and thread, at most this many each.
+const POOLED_PER_LANGUAGE: usize = 4;
+
+thread_local! {
+    static POOL: RefCell<HashMap<&'static str, Vec<SyntaxHighlighter>>> =
+        RefCell::new(HashMap::new());
+}
+
+/// A highlighter for `language`: a pooled one, else a new one.
+fn take_highlighter(language: &'static str) -> SyntaxHighlighter {
+    POOL.with(|pool| pool.borrow_mut().get_mut(language)?.pop())
+        .unwrap_or_else(|| SyntaxHighlighter::new(language))
+}
+
+/// Keep `highlighter` for the next side of `language` parsed on this thread.
+fn return_highlighter(language: &'static str, highlighter: SyntaxHighlighter) {
+    POOL.with(|pool| {
+        let mut pool = pool.borrow_mut();
+        let pooled = pool.entry(language).or_default();
+        if pooled.len() < POOLED_PER_LANGUAGE {
+            pooled.push(highlighter);
+        }
+    });
+}
 
 /// Styles of one line, as ranges relative to the line's start.
 type LineStyles = Vec<(Range<usize>, HighlightStyle)>;
@@ -204,7 +234,9 @@ impl Segment {
 /// The parser of one side and the styles it gave, under one lock: styling
 /// another segment means parsing it first.
 struct SideState {
-    highlighter: SyntaxHighlighter,
+    language: &'static str,
+    /// Held until every segment's styles are cached.
+    highlighter: Option<SyntaxHighlighter>,
     /// The segment the highlighter's tree is for.
     parsed: Option<usize>,
     /// Filled by [`SyntaxSide::prime`] or on the first query; replaced when
@@ -213,19 +245,25 @@ struct SideState {
 }
 
 impl SideState {
+    /// The styles of every segment; the highlighter goes back to the pool.
     fn style_all(&mut self, segments: &[Segment], theme: &HighlightTheme) -> StyleCache {
+        let mut highlighter = self
+            .highlighter
+            .take()
+            .unwrap_or_else(|| take_highlighter(self.language));
         let segments = segments
             .iter()
             .enumerate()
             .map(|(ix, segment)| {
                 if self.parsed != Some(ix) {
-                    self.highlighter
-                        .update(None, &Rope::from_str(&segment.text), None);
+                    highlighter.update(None, &Rope::from_str(&segment.text), None);
                     self.parsed = Some(ix);
                 }
-                segment.style_lines(&self.highlighter, theme)
+                segment.style_lines(&highlighter, theme)
             })
             .collect();
+        self.parsed = None;
+        return_highlighter(self.language, highlighter);
         StyleCache {
             theme: ThemeKey::of(theme),
             segments,
@@ -242,9 +280,9 @@ struct SyntaxSide {
 impl SyntaxSide {
     /// Parses the first segment right away; the others are parsed when
     /// their styles are computed.
-    fn parse(language: &str, texts: Vec<String>) -> Self {
+    fn parse(language: &'static str, texts: Vec<String>) -> Self {
         let segments: Vec<Segment> = texts.into_iter().map(Segment::new).collect();
-        let mut highlighter = SyntaxHighlighter::new(language);
+        let mut highlighter = take_highlighter(language);
         let parsed = segments.first().map(|first| {
             highlighter.update(None, &Rope::from_str(&first.text), None);
             0
@@ -252,7 +290,8 @@ impl SyntaxSide {
         Self {
             segments,
             state: Mutex::new(SideState {
-                highlighter,
+                language,
+                highlighter: Some(highlighter),
                 parsed,
                 cache: None,
             }),
@@ -499,19 +538,39 @@ mod tests {
     }
 
     #[test]
+    fn a_styled_side_hands_its_highlighter_on() {
+        let pooled = || POOL.with(|pool| pool.borrow().get("rust").map_or(0, Vec::len));
+        let theme = HighlightTheme::default_dark();
+        let first = SyntaxSide::parse("rust", vec!["fn a() {}\n".into(), "struct B;\n".into()]);
+        let before = pooled();
+        first.prime(&theme);
+        assert_eq!(pooled(), before + 1, "back in the pool once styled");
+        let second = SyntaxSide::parse("rust", vec!["fn c() {}\n".into()]);
+        assert_eq!(pooled(), before, "taken by the next side");
+        // Styles stay right for a highlighter that parsed another text, and
+        // a new theme parses again with a pooled one.
+        second.prime(&theme);
+        assert!(!second.line_styles(0, 1, "fn c() {}", &theme).is_empty());
+        let light = HighlightTheme::default_light();
+        assert!(!first.line_styles(1, 1, "struct B;", &light).is_empty());
+        assert!(!first.line_styles(0, 1, "fn a() {}", &light).is_empty());
+    }
+
+    #[test]
     fn cached_line_styles_match_per_line_queries() {
         let text =
             "/* a comment\n   over two lines */\nfn main() {\n    let s = \"multi\nline\";\n}\n";
         let side = SyntaxSide::parse("rust", vec![text.to_string()]);
         let theme = HighlightTheme::default_dark();
         let state = side.state.lock().unwrap();
+        let highlighter = state.highlighter.as_ref().unwrap();
         let segment = &side.segments[0];
-        let cached = segment.style_lines(&state.highlighter, &theme);
+        let cached = segment.style_lines(highlighter, &theme);
         assert_eq!(cached.len(), segment.line_starts.len());
         for line_no in 1..=segment.line_starts.len() {
             assert_eq!(
                 cached[line_no - 1],
-                segment.line_styles_uncached(&state.highlighter, line_no, &theme),
+                segment.line_styles_uncached(highlighter, line_no, &theme),
                 "line {line_no}"
             );
         }

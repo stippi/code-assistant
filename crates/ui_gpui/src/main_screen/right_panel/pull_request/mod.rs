@@ -23,7 +23,9 @@ mod fixtures;
 mod header;
 mod list;
 mod list_logic;
+mod list_overrides;
 mod markdown;
+pub mod preferences;
 mod presentation;
 pub mod review_draft;
 mod summary;
@@ -40,6 +42,9 @@ use gpui_kit::{
 };
 use list::PullRequestList;
 
+/// How often relative times ("9h ago") are drawn anew.
+const CLOCK_TICK: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// What the user asks of the pull request view.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PullRequestIntent {
@@ -49,6 +54,17 @@ pub enum PullRequestIntent {
     Back,
     /// List the repository's pull requests anew.
     List(ListQuery),
+    /// Read the next page of the listing.
+    ListMore(ListQuery),
+    /// Read the line counts of these listed pull requests.
+    ListStats(Vec<u64>),
+    /// Act on a listed pull request (a quick action); the list shows the
+    /// outcome already and takes it back (`token`) if GitHub refuses.
+    ActOn {
+        number: u64,
+        action: Action,
+        token: u64,
+    },
     /// Read what is shown again, past the cache.
     Refresh,
     /// Merge, close, reopen, draft or ready, auto-merge, update or delete
@@ -70,7 +86,10 @@ pub struct PullRequestPanel {
     /// Finding the session's repository and pull request.
     resolve: Option<Task<()>>,
     list_read: Option<Task<()>>,
+    more_read: Option<Task<()>>,
     viewer_read: Option<Task<()>>,
+    /// Redraws once a minute while shown, so "9h ago" stays true.
+    _clock: Option<Task<()>>,
     _list_subscription: Subscription,
     _detail_subscription: Option<Subscription>,
     _bus: Subscription,
@@ -99,7 +118,9 @@ impl PullRequestPanel {
             detail: None,
             resolve: None,
             list_read: None,
+            more_read: None,
             viewer_read: None,
+            _clock: None,
             _list_subscription: list_subscription,
             _detail_subscription: None,
             _bus: bus,
@@ -115,6 +136,7 @@ impl PullRequestPanel {
             if let Some(detail) = &self.detail {
                 detail.update(cx, |detail, cx| detail.set_visible(visible, cx));
             }
+            self._clock = visible.then(|| self.start_clock(cx));
         }
         let Some(session_id) = session_id else {
             return;
@@ -127,6 +149,24 @@ impl PullRequestPanel {
         self.session_id = Some(session_id.clone());
         self.set_repository(None, None, cx);
         self.resolve_repository(session_id, cx);
+    }
+
+    fn start_clock(&self, cx: &mut Context<Self>) -> Task<()> {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(CLOCK_TICK).await;
+                let ticked = this.update(cx, |this, cx| {
+                    this.list.update(cx, |_, cx| cx.notify());
+                    if let Some(detail) = &this.detail {
+                        detail.update(cx, |_, cx| cx.notify());
+                    }
+                    cx.notify();
+                });
+                if ticked.is_err() {
+                    return;
+                }
+            }
+        })
     }
 
     /// Ask the core where the session's pull requests live.
@@ -203,6 +243,85 @@ impl PullRequestPanel {
         }));
     }
 
+    /// A quick action on a listed pull request.
+    fn act_on(&mut self, number: u64, action: Action, token: u64, cx: &mut Context<Self>) {
+        let (Some(repo), Some(service)) = (self.repo.clone(), session_service(cx)) else {
+            self.list
+                .update(cx, |list, cx| list.revert(number, token, cx));
+            return;
+        };
+        let list = self.list.downgrade();
+        cx.spawn(async move |_, cx| {
+            let acted = service
+                .pull_request_action(repo.pull_request(number), action)
+                .await;
+            if let Err(error) = acted {
+                list.update(cx, |list, cx| {
+                    list.revert(number, token, cx);
+                    list.set_error(Some(format!("#{number}: {error:#}")), cx);
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
+    /// Take the list's override back when `done` says the action failed.
+    fn revert_unless(
+        &mut self,
+        done: Task<bool>,
+        number: u64,
+        token: Option<u64>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(token) = token else {
+            done.detach();
+            return;
+        };
+        let list = self.list.downgrade();
+        cx.spawn(async move |_, cx| {
+            if !done.await {
+                list.update(cx, |list, cx| list.revert(number, token, cx))
+                    .ok();
+            }
+        })
+        .detach();
+    }
+
+    /// The next page of the listing.
+    fn load_more(&mut self, query: ListQuery, cx: &mut Context<Self>) {
+        let (Some(repo), Some(service)) = (self.repo.clone(), session_service(cx)) else {
+            return;
+        };
+        let list = self.list.downgrade();
+        self.more_read = Some(cx.spawn(async move |_, cx| {
+            let page = service.pull_request_list(repo, query).await;
+            list.update(cx, |list, cx| match page {
+                Ok(fetched) => list.append_page(fetched.value, cx),
+                Err(error) => list.more_failed(format!("{error:#}"), cx),
+            })
+            .ok();
+        }));
+    }
+
+    /// Line counts of listed pull requests that came without them.
+    fn load_stats(&mut self, numbers: Vec<u64>, cx: &mut Context<Self>) {
+        let (Some(repo), Some(service)) = (self.repo.clone(), session_service(cx)) else {
+            return;
+        };
+        let prs = numbers.iter().map(|n| repo.pull_request(*n)).collect();
+        let list = self.list.downgrade();
+        cx.spawn(
+            async move |_, cx| match service.pull_request_list_stats(prs).await {
+                Ok(stats) => {
+                    list.update(cx, |list, cx| list.set_stats(&stats, cx)).ok();
+                }
+                Err(error) => tracing::debug!("no line counts: {error:#}"),
+            },
+        )
+        .detach();
+    }
+
     /// Drop the repository's cached lists and read the listing anew.
     fn refresh_list(&mut self, cx: &mut Context<Self>) {
         let (Some(repo), Some(service)) = (self.repo.clone(), session_service(cx)) else {
@@ -276,11 +395,24 @@ impl PullRequestPanel {
                 None => self.refresh_list(cx),
             },
             PullRequestIntent::Act(action) => {
-                if let Some(detail) = &self.detail {
+                if let Some(detail) = self.detail.clone() {
                     let action = *action;
-                    detail.update(cx, |detail, cx| detail.act(action, cx));
+                    let number = detail.read(cx).pr().number;
+                    // The list shows the outcome already, as after a quick action.
+                    let token = self
+                        .list
+                        .update(cx, |list, cx| list.override_row(number, &action, cx));
+                    let done = detail.update(cx, |detail, cx| detail.act(action, cx));
+                    self.revert_unless(done, number, token, cx);
                 }
             }
+            PullRequestIntent::ActOn {
+                number,
+                action,
+                token,
+            } => self.act_on(*number, *action, *token, cx),
+            PullRequestIntent::ListMore(query) => self.load_more(query.clone(), cx),
+            PullRequestIntent::ListStats(numbers) => self.load_stats(numbers.clone(), cx),
             PullRequestIntent::Update(update) => {
                 if let Some(detail) = &self.detail {
                     let update = update.clone();
@@ -428,6 +560,37 @@ mod tests {
         cx.run_until_parked();
         click(cx, "pr-tab-Code");
         detail.read_with(cx, |view, _| assert_eq!(view.tab(), DetailTab::Code));
+    }
+
+    #[gpui_kit::test]
+    fn an_action_on_the_shown_pull_request_shows_in_the_list_until_refused(
+        cx: &mut TestAppContext,
+    ) {
+        let (panel, cx) = panel(cx);
+        panel.update(cx, |panel, cx| {
+            panel.set_repository(Some(repo()), None, cx);
+            panel.list().update(cx, |list, cx| {
+                list.set_page(
+                    ListPage {
+                        entries: vec![entry(290, "Raster images", "ann")],
+                        next_cursor: None,
+                    },
+                    cx,
+                )
+            });
+            panel.open(290, cx);
+        });
+        let listed = |panel: &Entity<PullRequestPanel>, cx: &mut VisualTestContext| {
+            panel.read_with(cx, |panel, cx| panel.list().read(cx).shows(290))
+        };
+        assert!(listed(&panel, cx));
+        panel.update(cx, |panel, cx| {
+            panel.handle(&PullRequestIntent::Act(Action::Close), cx)
+        });
+        assert!(!listed(&panel, cx), "closed: out of the open ones at once");
+        // No session service: GitHub never saw it, the row is taken back.
+        cx.run_until_parked();
+        assert!(listed(&panel, cx));
     }
 
     #[gpui_kit::test]

@@ -570,6 +570,17 @@ impl InputArea {
         }
     }
 
+    /// Add an attachment to the draft (context handed over from elsewhere).
+    pub fn add_attachment(&mut self, attachment: DraftAttachment, cx: &mut Context<Self>) {
+        if self.is_read_only() {
+            return;
+        }
+        self.attachments.push(attachment);
+        self.rebuild_attachment_views(cx);
+        self.emit_content_changed(cx);
+        cx.notify();
+    }
+
     /// Remove an attachment by index
     fn remove_attachment(&mut self, index: usize, cx: &mut Context<Self>) {
         if index < self.attachments.len() {

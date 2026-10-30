@@ -322,6 +322,9 @@ impl MainScreen {
                 input.upsert_comment(comment.clone(), cx)
             }
             crate::comments::CommentChange::Remove(id) => input.remove_comment(*id, cx),
+            crate::comments::CommentChange::Attach(attachment) => {
+                input.add_attachment(attachment.clone(), cx)
+            }
         });
     }
 

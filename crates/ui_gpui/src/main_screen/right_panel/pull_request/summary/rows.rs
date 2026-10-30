@@ -3,7 +3,7 @@
 //! conversations first and older ones ten at a time.
 
 use super::super::conversation::logic::page;
-use gpui_kit::SharedString;
+use gpui_kit::{Pixels, SharedString};
 
 /// Conversations shown at first, and added per "Show older".
 pub const PAGE: usize = 10;
@@ -68,6 +68,20 @@ pub fn summary_rows(layout: CommentsLayout) -> Vec<Row> {
         rows.push(Row::ShowRecent);
     }
     rows
+}
+
+/// The section header to pin above the list while its section scrolls
+/// under the top edge (`top`: the row there and how far it is scrolled
+/// into it): Description and Checks are one row each, the Comments header
+/// heads every row after it.
+pub fn pinned_section(rows: &[Row], top: usize, offset: Pixels) -> Option<Row> {
+    let row = rows.get(top)?;
+    let scrolled = offset > Pixels::ZERO;
+    match row {
+        Row::Description | Row::Checks | Row::CommentsHeader if scrolled => Some(row.clone()),
+        Row::Meta | Row::Description | Row::Checks | Row::CommentsHeader => None,
+        _ => Some(Row::CommentsHeader),
+    }
 }
 
 #[cfg(test)]
@@ -158,5 +172,26 @@ mod tests {
             note: true,
         });
         assert_eq!(rows.len(), 4);
+    }
+
+    #[test]
+    fn a_section_scrolled_under_the_top_pins_its_header() {
+        use gpui_kit::px;
+        let ids = ids(3);
+        let rows = summary_rows(CommentsLayout {
+            ids: &ids,
+            newest_first: true,
+            count: PAGE,
+            open: true,
+            note: false,
+        });
+        assert_eq!(pinned_section(&rows, 0, px(30.)), None);
+        assert_eq!(pinned_section(&rows, 1, px(0.)), None, "its header shows");
+        assert_eq!(pinned_section(&rows, 1, px(5.)), Some(Row::Description));
+        assert_eq!(pinned_section(&rows, 2, px(5.)), Some(Row::Checks));
+        assert_eq!(pinned_section(&rows, 3, px(0.)), None);
+        assert_eq!(pinned_section(&rows, 3, px(1.)), Some(Row::CommentsHeader));
+        assert_eq!(pinned_section(&rows, 5, px(0.)), Some(Row::CommentsHeader));
+        assert_eq!(pinned_section(&rows, 99, px(0.)), None);
     }
 }

@@ -39,6 +39,7 @@ use super::conversation::thread::ThreadCard;
 use super::data::{PullRequestData, session_service};
 use super::review_draft::{ReviewDrafts, review_drafts};
 use crate::comments::AnchorTracker;
+use crate::diff::prepare::highlight_patch;
 use crate::main_screen::right_panel::line_selection::{LineSelection, Selected, SelectsLines};
 use crate::main_screen::right_panel::review_rows::changed_span;
 use anchors::{Annotation, LineRef, place};
@@ -55,13 +56,13 @@ use gpui_kit::{
     prelude::*, px,
 };
 use pages::{Arrival, LoadedFile, Page, arrival, fingerprint, parse_page};
-use rows::{CodeRow, FileBody, FileOutline, flatten};
+use rows::{CodeRow, FileBody, FileOutline, files_by_proximity, flatten};
 use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use viewed::{Batch, ViewedFiles};
 
 /// Presses on "Viewed" wait this long for more before they are written.
@@ -90,6 +91,10 @@ pub struct CodeTab {
     pages: Vec<Page>,
     /// The page read under way.
     loading: Option<Task<()>>,
+    /// The file being highlighted.
+    highlighting: Option<Task<()>>,
+    /// When the tab was first drawn, until its first rows show.
+    mounted_at: Option<Instant>,
     load_error: Option<SharedString>,
     next_stamp: u64,
 
@@ -140,6 +145,11 @@ pub struct CodeTab {
 impl EventEmitter<PullRequestIntent> for CodeTab {}
 
 impl CodeTab {
+    /// How far the tab is scrolled; the header condenses once it is.
+    pub fn scroll_top(&self) -> gpui_kit::ListOffset {
+        self.list_state.logical_scroll_top()
+    }
+
     pub fn new(data: Entity<PullRequestData>, cx: &mut Context<Self>) -> Self {
         let pr = data.read(cx).pr.clone();
         let events = bus(cx);
@@ -170,6 +180,8 @@ impl CodeTab {
             started: false,
             pages: Vec::new(),
             loading: None,
+            highlighting: None,
+            mounted_at: None,
             load_error: None,
             next_stamp: 0,
             shown: Vec::new(),
@@ -247,6 +259,7 @@ impl CodeTab {
     /// Read the first page and the ticks; called on the first draw.
     fn start(&mut self, cx: &mut Context<Self>) {
         self.started = true;
+        self.mounted_at = Some(Instant::now());
         self.load_page(None, cx);
         self.read_viewed(cx);
     }
@@ -283,10 +296,10 @@ impl CodeTab {
             return;
         };
         let (pr, commit, scope) = (self.pr.clone(), self.commit.clone(), self.scope);
-        // Captured here: the highlighting is computed off the UI thread.
-        let theme = cx.theme().highlight_theme.clone();
         self.loading = Some(cx.spawn(async move |this, cx| {
+            let started = Instant::now();
             let result = service.pull_request_diff(pr, commit, cursor.clone()).await;
+            tracing::debug!(?cursor, elapsed = ?started.elapsed(), "pull request diff page read");
             let page = match result {
                 Ok(fetched) => fetched.value,
                 Err(error) => {
@@ -316,9 +329,13 @@ impl CodeTab {
                 return;
             }
             let (next_cursor, truncated) = (page.next_cursor.clone(), page.truncated);
-            let files = cx
-                .background_spawn(async move { parse_page(&page, &theme) })
-                .await;
+            let parsing = Instant::now();
+            let files = cx.background_spawn(async move { parse_page(&page) }).await;
+            tracing::debug!(
+                files = files.len(),
+                elapsed = ?parsing.elapsed(),
+                "pull request diff page parsed"
+            );
             this.update(cx, |this, cx| {
                 if this.scope == scope {
                     this.page_arrived(
@@ -351,6 +368,52 @@ impl CodeTab {
         cx.notify();
     }
 
+    /// Highlight the next file without syntax, nearest the view first,
+    /// one at a time off the UI thread. The rows show plain until then;
+    /// highlighting changes no height, so the list needs no splice.
+    fn highlight_next(&mut self, cx: &mut Context<Self>) {
+        if self.highlighting.is_some() {
+            return;
+        }
+        self.sync_rows();
+        let top = self.list_state.logical_scroll_top().item_ix;
+        let Some(shown) = files_by_proximity(&self.rows, self.shown.len(), top)
+            .into_iter()
+            .map(|ix| self.shown[ix])
+            .find(|&shown| !self.file(shown).highlighted)
+        else {
+            return;
+        };
+        let file = self.file(shown);
+        let (path, hunks) = (file.path.clone(), file.diff.hunks.clone());
+        let (page, print, scope) = (shown.page, self.pages[shown.page].fingerprint, self.scope);
+        // Captured here: the line styles are computed off the UI thread.
+        let theme = cx.theme().highlight_theme.clone();
+        self.highlighting = Some(cx.spawn(async move |this, cx| {
+            let started = Instant::now();
+            let (syntax, path) = cx
+                .background_spawn(async move { (highlight_patch(&path, &hunks, &theme), path) })
+                .await;
+            tracing::debug!(%path, elapsed = ?started.elapsed(), "pull request file highlighted");
+            this.update(cx, |this, cx| {
+                this.highlighting = None;
+                if this.scope == scope
+                    && let Some(file) = this
+                        .pages
+                        .get_mut(page)
+                        .filter(|p| p.fingerprint == print)
+                        .and_then(|p| p.files.iter_mut().find(|f| f.path == path))
+                {
+                    file.diff.set_syntax(syntax);
+                    file.highlighted = true;
+                    cx.notify();
+                }
+                this.highlight_next(cx);
+            })
+            .ok();
+        }));
+    }
+
     fn stamp(&mut self) -> u64 {
         self.next_stamp += 1;
         self.next_stamp
@@ -365,6 +428,7 @@ impl CodeTab {
         self.scope += 1;
         self.pages.clear();
         self.loading = None;
+        self.highlighting = None;
         self.load_error = None;
         self.selection.clear();
         self.draft = None;
@@ -420,6 +484,7 @@ impl CodeTab {
             self.draft = None;
         }
         self.place_annotations(cx);
+        self.highlight_next(cx);
     }
 
     fn set_hide_tests(&mut self, hide: bool, cx: &mut Context<Self>) {
@@ -658,6 +723,11 @@ impl CodeTab {
         let rows = flatten(&outlines, footer);
         if let Some((old, count)) = changed_span(&self.rows, &rows) {
             self.list_state.splice(old, count);
+        }
+        if !rows.is_empty()
+            && let Some(mounted) = self.mounted_at.take()
+        {
+            tracing::debug!(elapsed = ?mounted.elapsed(), "pull request code tab: first rows");
         }
         self.rows = rows;
     }

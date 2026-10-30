@@ -16,8 +16,10 @@ use super::conversation::logic::{
     ConversationItem, ReviewOutcome, conversation_items, is_verdict_stale, newest_commit_at,
     splice_list,
 };
+use super::conversation::parts::open_on_github;
 use super::conversation::{CardStyle, CommentCard, Location, ThreadCard};
 use super::data::PullRequestData;
+use super::preferences;
 use super::presentation::{Tone, diff_stat, relative_time};
 use chrono::{DateTime, Utc};
 use github::model::{Activity, Actor, Comment, Commit, Detail};
@@ -56,6 +58,8 @@ pub struct TimelineTab {
     detail: Option<Arc<Detail>>,
     activity: Option<Arc<Activity>>,
     newest_first: bool,
+    /// The remembered order was taken over.
+    order_read: bool,
     /// Newest first.
     events: Vec<TimelineEvent>,
     rows: Vec<TimelineRow>,
@@ -96,12 +100,19 @@ fn row_key(row: &TimelineRow) -> String {
 }
 
 impl TimelineTab {
+    /// How far the tab is scrolled; the header condenses once it is.
+    pub fn scroll_top(&self) -> gpui_kit::ListOffset {
+        self.list.logical_scroll_top()
+    }
+
     pub fn new(data: Entity<PullRequestData>) -> Self {
         Self {
             data,
             detail: None,
             activity: None,
+            // Taken from the preferences when first drawn.
             newest_first: true,
+            order_read: false,
             events: Vec::new(),
             rows: Vec::new(),
             keys: Vec::new(),
@@ -117,8 +128,10 @@ impl TimelineTab {
     }
 
     pub fn set_newest_first(&mut self, newest_first: bool, cx: &mut Context<Self>) {
+        self.order_read = true;
         if self.newest_first != newest_first {
             self.newest_first = newest_first;
+            preferences::update(cx, |p| p.conversation.timeline_oldest_first = !newest_first);
             self.rebuild_rows();
             cx.notify();
         }
@@ -131,6 +144,16 @@ impl TimelineTab {
     /// Take over what the page knows now (each frame; cheap unless it
     /// changed).
     fn sync(&mut self, cx: &mut Context<Self>) {
+        if !self.order_read {
+            self.order_read = true;
+            let newest_first = !preferences::read(cx).conversation.timeline_oldest_first;
+            if newest_first != self.newest_first {
+                self.newest_first = newest_first;
+                self.rebuild_rows();
+                // The tab row shows the order.
+                cx.notify();
+            }
+        }
         let (detail, activity) = {
             let data = self.data.read(cx);
             (data.detail.clone(), data.activity.clone())
@@ -224,8 +247,10 @@ impl TimelineTab {
         let comment = comment.clone();
         let id = comment.id.clone();
         let card = cx.new(|cx| {
-            let mut card =
-                CommentCard::new(data, comment, CardStyle::Entry, cx).with_location(location);
+            let mut card = CommentCard::new(data, comment, CardStyle::Entry, cx)
+                .with_location(location)
+                .with_agent_button(true)
+                .with_github_link(true);
             card.set_stale(stale, cx);
             card
         });
@@ -257,7 +282,11 @@ impl TimelineTab {
         let data = self.data.clone();
         let item = item.clone();
         let id = item.thread.id.clone();
-        let card = cx.new(|_| ThreadCard::new(data, item).show_location(true));
+        let card = cx.new(|_| {
+            ThreadCard::new(data, item)
+                .show_location(true)
+                .with_github_link(true)
+        });
         let intents = cx.subscribe(&card, |_, _, intent: &PullRequestIntent, cx| {
             cx.emit(intent.clone())
         });
@@ -325,6 +354,10 @@ impl TimelineTab {
     }
 
     fn render_commit(&self, commit: &Commit, cx: &mut Context<Self>) -> (AnyElement, AnyElement) {
+        let github_link = self.detail.as_ref().map(|detail| {
+            let url = format!("{}/commits/{}", detail.url, commit.oid);
+            open_on_github(format!("commit-{}-github", commit.oid).into(), url, cx)
+        });
         let theme = cx.theme();
         let muted = theme.muted_foreground;
         let marker = match commit.authors.first() {
@@ -342,8 +375,10 @@ impl TimelineTab {
             (Some(additions), Some(deletions)) => diff_stat(additions, deletions, cx),
             _ => None,
         };
-        let content = div()
+        let row = div()
             .id(SharedString::from(format!("commit-{}", commit.oid)))
+            .flex_1()
+            .min_w_0()
             .debug_selector({
                 let selector = format!("pr-commit-{short}");
                 move || selector.clone()
@@ -386,7 +421,13 @@ impl TimelineTab {
                     ),
             )
             .children(stat.map(|stat| div().flex_none().text_xs().child(stat)))
-            .on_click(cx.listener(move |_, _, _, cx| cx.emit(OpenCommit(oid.clone()))))
+            .on_click(cx.listener(move |_, _, _, cx| cx.emit(OpenCommit(oid.clone()))));
+        let content = div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .child(row)
+            .children(github_link)
             .into_any_element();
         (marker, content)
     }
@@ -601,7 +642,9 @@ impl Render for TimelineTab {
 
 #[cfg(test)]
 mod tests {
-    use super::super::conversation::fixtures::{comment, commit, data_with_detail, review, window};
+    use super::super::conversation::fixtures::{
+        click, comment, commit, data_with_detail, review, window,
+    };
     use super::*;
     use crate::main_screen::right_panel::pull_request::fixtures::{actor, hours_ago};
     use github::model::ReviewState;
@@ -664,6 +707,44 @@ mod tests {
         let row = cx.debug_bounds("pr-commit-d9aea40").expect("a commit row");
         cx.simulate_click(row.center(), gpui_kit::Modifiers::none());
         assert_eq!(opened.borrow().as_slice(), [OpenCommit("d9aea40f".into())]);
+    }
+
+    #[gpui_kit::test]
+    fn events_open_on_github(cx: &mut TestAppContext) {
+        let (tab, cx) = timeline(cx);
+        let opened = Rc::new(RefCell::new(Vec::new()));
+        let sink = opened.clone();
+        cx.update(|_, cx| {
+            cx.subscribe(&tab, move |_, intent: &PullRequestIntent, _| {
+                sink.borrow_mut().push(intent.clone())
+            })
+            .detach()
+        });
+        click(cx, "commit-d9aea40f-github");
+        click(cx, "c-v-github");
+        assert_eq!(
+            opened.borrow().as_slice(),
+            [
+                PullRequestIntent::OpenUrl(
+                    "https://github.com/stippi/code-assistant/pull/290/commits/d9aea40f".into()
+                ),
+                PullRequestIntent::OpenUrl("https://github.com/c/v".into()),
+            ]
+        );
+    }
+
+    #[gpui_kit::test]
+    fn the_remembered_order_applies(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let mut settings = crate::shared::settings::UiSettings::default();
+            settings.pull_requests.conversation.timeline_oldest_first = true;
+            cx.set_global(crate::UiSettingsGlobal(settings));
+        });
+        let (tab, cx) = timeline(cx);
+        tab.read_with(cx, |tab, _| {
+            assert!(!tab.newest_first());
+            assert_eq!(tab.row_keys()[0], "opened");
+        });
     }
 
     #[gpui_kit::test]
