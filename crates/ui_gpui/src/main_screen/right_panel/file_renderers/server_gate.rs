@@ -290,6 +290,7 @@ mod tests {
                             args: vec![],
                             env: Default::default(),
                             timeout_seconds: 1,
+                            stop: None,
                         },
                     };
                     ServerGate::new(

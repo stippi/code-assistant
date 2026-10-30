@@ -24,7 +24,7 @@ pub use catalog::{
 };
 pub use manifest::{
     MANIFEST_PATH, PluginFileRenderer, PluginManifest, ProviderTemplate, RendererKind,
-    RendererOutput, ServerStart,
+    RendererOutput, ServerStart, ServerStop,
 };
 pub use server::{ServerLease, ServerTarget};
 pub use store::{InstalledPlugin, PluginListing, PluginRecord, PluginSource, PluginStore};

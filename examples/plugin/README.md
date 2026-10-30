@@ -23,8 +23,9 @@ What it adds:
   graphs (`dot -Tsvg`, needs [Graphviz](https://graphviz.org)), and
   `.drawio` files open in draw.io as a web editor (macOS and Windows); edits
   are saved to the file. Its `start` command runs draw.io in Docker
-  (`jgraph/drawio`) when nothing answers at `localhost:8080`; a command,
-  not a shell script, so it works on Windows too. A draw.io you run
+  (`jgraph/drawio`) when nothing answers at `localhost:8080`, and its
+  `stop` command (`docker stop`) ends the container when the app lets the
+  server go; commands, not shell scripts, so they work on Windows too. A draw.io you run
   yourself on that port is used as is.
 
 The manifest format is described in `docs/plugins.md`.

@@ -210,10 +210,12 @@ says how to start it:
 
 ```json
 "start": {
-  "command": "scripts/start-drawio.sh",
+  "command": "docker",
+  "args": ["run", "--rm", "--name", "drawio", "-p", "127.0.0.1:8080:8080", "jgraph/drawio"],
   "url": "http://localhost:8080/",
-  "args": [], "env": {},
-  "timeoutSeconds": 300
+  "env": {},
+  "timeoutSeconds": 300,
+  "stop": { "command": "docker", "args": ["stop", "drawio"] }
 }
 ```
 
@@ -223,11 +225,22 @@ says how to start it:
   there), in its own process group, with `PLUGIN_ROOT` and `SERVER_URL`
   set. It should stay in the foreground (no daemonizing).
 - **`timeoutSeconds`** (default 120) is how long to wait for the server.
+- **`stop`** (optional) stops the server cleanly: `command`, `args`, `env`
+  like the start command's, and `timeoutSeconds` (default 20). Give one
+  when ending the start command does not end the server: a container keeps
+  running when `docker run` is ended, and on Windows ending a process does
+  not end what it started.
+
+Stopping a started server (5 minutes after its last view closed, or when
+the app quits) runs the `stop` command and waits for it, gives the start
+command 5 seconds to exit, and then ends it: with its whole process group
+(SIGTERM) on Unix, the process alone on Windows. Without a `stop` command
+the start command is ended at once. When the app quits, it waits for these
+stops before it exits.
 
 On Windows the command is started as a program, so a shell script does not
 run as is: name a program (`docker` with its arguments, say) or a `.cmd`
 file through `cmd` (`"command": "cmd", "args": ["/C", "scripts/serve.cmd"]`).
-Stopping it there ends that process only, not what it started.
 
 Opening a file with such a renderer shows "Starting the server of …"
 (`file_renderers/server_gate.rs`) until something accepts connections at

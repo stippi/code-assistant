@@ -83,7 +83,8 @@ servers), so the settings page says to install only plugins you trust.
     "scripts": [],                      // injected into the editor, from the plugin folder
     "start": {                          // optional: a server the renderer needs
       "command": "scripts/start-drawio.sh",  // relative: from the plugin root
-      "timeoutSeconds": 300             // default 120; "url" defaults to the editor's
+      "timeoutSeconds": 300,            // default 120; "url" defaults to the editor's
+      "stop": { "command": "docker", "args": ["stop", "drawio"] }  // optional
     }
   }]
 }
@@ -146,9 +147,10 @@ started are described in
 - A **web** renderer shows a web editor in a native webview over the view
   (`wry`; macOS and Windows, not offered on Linux). It loads the
   file and saves every autosave back through the editor's auto-save.
-- **`start`** runs the plugin's script when nothing answers at the
+- **`start`** runs the plugin's command when nothing answers at the
   renderer's address and waits for it; the server is shared, stops 5
-  minutes after the last view closed, and stops when the app quits.
+  minutes after the last view closed, and stops when the app quits,
+  through the plugin's `stop` command when it has one (`docker stop`).
 
 | Part | Code |
 |---|---|

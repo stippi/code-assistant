@@ -156,10 +156,35 @@ pub struct ServerStart {
     /// How long to wait for the server to answer.
     #[serde(default = "default_start_timeout")]
     pub timeout_seconds: u64,
+    /// How to stop the server cleanly (`docker stop <name>`, say), when
+    /// ending the start command is not enough: its servers outlive it (a
+    /// container), or the platform has no signal to end them with
+    /// (Windows).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop: Option<ServerStop>,
 }
 
 fn default_start_timeout() -> u64 {
     120
+}
+
+/// A command that stops a started server.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServerStop {
+    /// The program; a relative path is taken from the plugin root.
+    pub command: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub env: HashMap<String, String>,
+    /// How long it may take before it is ended.
+    #[serde(default = "default_stop_timeout")]
+    pub timeout_seconds: u64,
+}
+
+fn default_stop_timeout() -> u64 {
+    20
 }
 
 impl PluginManifest {
@@ -300,13 +325,26 @@ fn is_http(url: &str) -> bool {
 impl ServerStart {
     /// The program to run: a relative path is taken from the plugin root.
     pub fn program(&self, root: &Path) -> PathBuf {
-        let command = substitute_root(&self.command, root);
-        let path = PathBuf::from(&command);
-        if path.is_relative() && (command.contains('/') || root.join(&path).exists()) {
-            root.join(path)
-        } else {
-            path
-        }
+        program(&self.command, root)
+    }
+}
+
+impl ServerStop {
+    /// The program to run: a relative path is taken from the plugin root.
+    pub fn program(&self, root: &Path) -> PathBuf {
+        program(&self.command, root)
+    }
+}
+
+/// `command` as a program path: a relative path is taken from `root`, a bare
+/// name (`docker`) is looked up on the `PATH`.
+fn program(command: &str, root: &Path) -> PathBuf {
+    let command = substitute_root(command, root);
+    let path = PathBuf::from(&command);
+    if path.is_relative() && (command.contains('/') || root.join(&path).exists()) {
+        root.join(path)
+    } else {
+        path
     }
 }
 
@@ -337,7 +375,8 @@ mod tests {
         }, {
             "label": "draw.io", "files": ["*.drawio", "*.drawio.svg"], "kind": "web",
             "url": "http://localhost:8080/?embed=1&proto=json&dark={dark}",
-            "start": { "command": "scripts/start.sh" }
+            "start": { "command": "scripts/start.sh",
+                       "stop": { "command": "docker", "args": ["stop", "drawio"] } }
         }]
     }"#;
 
@@ -353,7 +392,10 @@ mod tests {
         };
         assert_eq!(graphviz.kind, RendererKind::Command);
         assert_eq!(graphviz.server_url(), None);
-        assert_eq!(drawio.start.as_ref().unwrap().timeout_seconds, 120);
+        let start = drawio.start.as_ref().unwrap();
+        assert_eq!(start.timeout_seconds, 120);
+        let stop = start.stop.as_ref().unwrap();
+        assert_eq!((stop.args.len(), stop.timeout_seconds), (2, 20));
         assert_eq!(drawio.server_url(), drawio.url.as_deref());
         assert_eq!(
             manifest.contributions_summary(),
@@ -432,6 +474,7 @@ mod tests {
             args: vec![],
             env: HashMap::new(),
             timeout_seconds: 1,
+            stop: None,
         };
         assert_eq!(
             start("scripts/start.sh").program(root),
