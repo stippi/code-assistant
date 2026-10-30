@@ -8,7 +8,7 @@
 //! switches to the theme's background for drawings made for dark ones.
 //! Draw.io's `.drawio.svg` files show their diagram this way too.
 
-use super::{FileRenderer, RendererHandle, RendererView, has_extension};
+use super::{BuiltIn, RendererHandle, RendererView, TextEdit, has_extension};
 use crate::comments::CommentChange;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size};
@@ -23,7 +23,7 @@ use std::sync::Arc;
 use tools_core::image::parse_svg;
 use tools_core::image::resvg::{self, tiny_skia, usvg};
 
-pub const RENDERER: FileRenderer = FileRenderer {
+pub const RENDERER: BuiltIn = BuiltIn {
     id: "svg",
     label: "Image",
     accepts: |path| has_extension(path, &["svg"]),
@@ -79,9 +79,10 @@ pub struct SvgPreview {
 }
 
 impl EventEmitter<CommentChange> for SvgPreview {}
+impl EventEmitter<TextEdit> for SvgPreview {}
 
 impl SvgPreview {
-    fn new(file: PathBuf) -> Self {
+    pub(super) fn new(file: PathBuf) -> Self {
         Self {
             file,
             source: String::new(),

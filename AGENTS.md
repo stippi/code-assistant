@@ -192,10 +192,11 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
   inside a tokio `block_on` (tokio's cooperation budget would never renew on
   the main thread), so `main` is not `#[tokio::main]`
 - The Files view can show a file other ways than as text (rendered
-  Markdown, drawn SVG, a plugin's web viewer), picked in a dropdown above the
-  file; built-in renderers are a static table in
-  `main_screen/right_panel/file_renderers/`, plugin viewers follow them:
-  `docs/file-renderers.md`
+  Markdown, drawn SVG), picked in a dropdown above the file; built-in
+  renderers are a static table in `main_screen/right_panel/file_renderers/`,
+  custom ones from `file-renderers.json` (*Settings → File Renderers*,
+  `shared::custom_renderers`): commands, or web editors in a native webview
+  (`wry`, `shared::native_views`, macOS): `docs/file-renderers.md`
 - Frame profiling of the GPUI frontend (opt-in via
   `CODE_ASSISTANT_FRAME_PROFILE`, sweep runner and `sample` analysis in
   `scripts/frame-profile/`): `docs/frame-profiling.md`

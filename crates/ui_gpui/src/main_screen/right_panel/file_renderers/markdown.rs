@@ -9,7 +9,7 @@
 //! Relative links (and links from the project root, `/docs/a.md`) open the
 //! linked file in the Files view; other links open in the browser.
 
-use super::{FileRenderer, RendererHandle, RendererView, has_extension};
+use super::{BuiltIn, RendererHandle, RendererView, TextEdit, has_extension};
 use crate::comments::editor::{CommentEditor, CommentEditorEvent};
 use crate::comments::{AnchorTracker, CommentChange, floating, selection_pill};
 use crate::shared::open_file::{self, OpenFileRequest};
@@ -27,7 +27,7 @@ use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
 
-pub const RENDERER: FileRenderer = FileRenderer {
+pub const RENDERER: BuiltIn = BuiltIn {
     id: "markdown",
     label: "Markdown",
     accepts: |path| has_extension(path, &["md", "markdown", "mdx"]),
@@ -83,6 +83,7 @@ pub struct MarkdownPreview {
 }
 
 impl EventEmitter<CommentChange> for MarkdownPreview {}
+impl EventEmitter<TextEdit> for MarkdownPreview {}
 
 impl MarkdownPreview {
     fn new(file: PathBuf, root: PathBuf, cx: &mut Context<Self>) -> Self {

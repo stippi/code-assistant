@@ -131,9 +131,11 @@ impl Focusable for RootView {
 impl Render for RootView {
     fn render(
         &mut self,
-        _window: &mut gpui_kit::Window,
+        window: &mut gpui_kit::Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        // Native views (web editors) not painted in this frame hide.
+        crate::shared::native_views::begin_frame(window, cx);
         div()
             .size_full()
             .track_focus(&self.focus_handle(cx))

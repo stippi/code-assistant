@@ -19,10 +19,11 @@
 //! rendered Markdown. The editor still holds the text then, so loading and
 //! saving work the same; the renderer gets the editor's text.
 
-use super::file_renderers::{self, RendererHandle};
+use super::file_renderers::{self, FileRenderer, RendererHandle};
 use crate::Gpui;
 use crate::comments::editor::{CommentEditor, CommentEditorEvent};
 use crate::comments::{AnchorTracker, CommentChange, floating, selection_pill};
+use crate::shared::custom_renderers::CustomRenderersGlobal;
 use crate::tool_cards::diff_syntax::language_for_path;
 use code_assistant_core::line_comments::{self, LineComment};
 use code_assistant_core::session::FileContent;
@@ -32,8 +33,8 @@ use gpui_kit::component::input::{
 };
 use gpui_kit::component::{ActiveTheme, Sizable, v_flex};
 use gpui_kit::{
-    Context, Entity, EventEmitter, FocusHandle, Focusable, HighlightStyle, KeyDownEvent, Pixels,
-    Point, Render, Subscription, Task, Window, div, point, prelude::*, px,
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, HighlightStyle, KeyDownEvent,
+    Pixels, Point, Render, SharedString, Subscription, Task, Window, div, point, prelude::*, px,
 };
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -89,8 +90,12 @@ pub struct FileViewer {
     /// The renderer picked per kind of file ([`file_renderers::chosen`]).
     renderer_picks: BTreeMap<String, String>,
     /// The shown renderer and its view, when it is not the text editor.
-    renderer: Option<(&'static str, Box<dyn RendererHandle>)>,
-    _renderer_subscription: Option<Subscription>,
+    renderer: Option<(FileRenderer, Box<dyn RendererHandle>)>,
+    _renderer_subscriptions: Vec<Subscription>,
+    /// Text a renderer changed the file to, for the editor in `render`.
+    pending_edit: Option<String>,
+    /// Shows renderers changed in the settings.
+    _custom_renderers: Subscription,
     /// The open file shows as text, whatever renderer was picked: it was
     /// asked to show a line or comment its renderer cannot.
     text_override: bool,
@@ -126,7 +131,9 @@ impl FileViewer {
             renderer_picks: BTreeMap::new(),
             text_override: false,
             renderer: None,
-            _renderer_subscription: None,
+            _renderer_subscriptions: Vec::new(),
+            pending_edit: None,
+            _custom_renderers: cx.observe_global::<CustomRenderersGlobal>(|_, cx| cx.notify()),
         }
     }
 
@@ -140,28 +147,30 @@ impl FileViewer {
 
     /// The ways the shown file can be shown, as `(id, label)`, the text
     /// editor first.
-    pub fn renderer_options(&self) -> Vec<(&'static str, &'static str)> {
-        let others = self
-            .path
-            .as_deref()
-            .into_iter()
-            .flat_map(|path| file_renderers::for_path(path).map(|r| (r.id, r.label)));
-        std::iter::once((file_renderers::TEXT, "Text"))
+    pub fn renderer_options(&self, cx: &App) -> Vec<(String, SharedString)> {
+        let renderers = file_renderers::all(cx);
+        let others = self.path.as_deref().into_iter().flat_map(|path| {
+            file_renderers::for_path(&renderers, path)
+                .map(|r| (r.id(), r.label()))
+                .collect::<Vec<_>>()
+        });
+        std::iter::once((file_renderers::TEXT.to_owned(), "Text".into()))
             .chain(others)
             .collect()
     }
 
     /// The renderer the shown file is shown with.
-    pub fn renderer_id(&self) -> &'static str {
-        self.chosen_renderer()
-            .map_or(file_renderers::TEXT, |r| r.id)
+    pub fn renderer_id(&self, cx: &App) -> String {
+        self.chosen_renderer(cx)
+            .map_or_else(|| file_renderers::TEXT.to_owned(), |r| r.id())
     }
 
-    fn chosen_renderer(&self) -> Option<&'static file_renderers::FileRenderer> {
+    fn chosen_renderer(&self, cx: &App) -> Option<FileRenderer> {
         if self.text_override {
             return None;
         }
-        file_renderers::chosen(&self.renderer_picks, self.path.as_deref()?)
+        let renderers = file_renderers::all(cx);
+        file_renderers::chosen(&renderers, &self.renderer_picks, self.path.as_deref()?).cloned()
     }
 
     pub fn renderer_picks(&self) -> &BTreeMap<String, String> {
@@ -209,7 +218,8 @@ impl FileViewer {
         self.marks = None;
         self._editor_subscriptions.clear();
         self.renderer = None;
-        self._renderer_subscription = None;
+        self._renderer_subscriptions.clear();
+        self.pending_edit = None;
         self.text_override = false;
         self.dirty = false;
         self.disk_changed = false;
@@ -375,32 +385,54 @@ impl FileViewer {
     /// called from `render` (creating a view needs the window).
     fn sync_renderer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let wanted = self
-            .chosen_renderer()
+            .chosen_renderer(cx)
             .filter(|_| matches!(self.state, ViewerState::Editing));
         let (Some(wanted), Some(editor), Some(file), Some(root)) =
             (wanted, &self.editor, self.file(), self.root.clone())
         else {
             if self.renderer.take().is_some() {
-                self._renderer_subscription = None;
+                self._renderer_subscriptions.clear();
             }
             return;
         };
         if self
             .renderer
             .as_ref()
-            .is_some_and(|(id, _)| *id == wanted.id)
+            .is_some_and(|(shown, _)| *shown == wanted)
         {
             return;
         }
         let text = editor.read(cx).value();
-        let renderer = (wanted.create)(file, root, window, cx);
+        let renderer = wanted.create(file, root, window, cx);
         renderer.set_text(&text, cx);
         renderer.set_comments(&self.comments, cx);
-        self._renderer_subscription = Some(renderer.forward_comments(cx));
-        self.renderer = Some((wanted.id, renderer));
+        self._renderer_subscriptions = renderer.forward_events(cx);
+        self.renderer = Some((wanted, renderer));
         // The editor's selection pill or comment card are not in view now.
         if self.comment_editor.is_some() {
             self.close_comment_editor(cx);
+        }
+    }
+
+    /// The shown renderer changed the file's text to `text` (a web editor); it
+    /// goes into the editor, and is saved, in `render`.
+    pub(super) fn renderer_edited(&mut self, text: String, cx: &mut Context<Self>) {
+        self.pending_edit = Some(text);
+        cx.notify();
+    }
+
+    /// Put a renderer's edit into the editor as if typed there.
+    fn apply_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(text), Some(editor)) = (self.pending_edit.take(), &self.editor) else {
+            return;
+        };
+        if editor.read(cx).value().as_ref() == text {
+            return;
+        }
+        editor.update(cx, |editor, cx| editor.set_value(text.clone(), window, cx));
+        self.dirty = text != self.saved_text;
+        if self.dirty {
+            self.schedule_auto_save(cx);
         }
     }
 
@@ -821,6 +853,7 @@ impl Render for FileViewer {
             self.apply_loaded(text, window, cx);
         }
         self.sync_renderer(window, cx);
+        self.apply_edit(window, cx);
         self.reveal_in_renderer(window, cx);
         if self.editor.is_some()
             && let Some(comment) = self.pending_reveal.take()
