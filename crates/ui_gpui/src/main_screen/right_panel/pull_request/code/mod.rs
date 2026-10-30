@@ -37,6 +37,7 @@ use super::PullRequestIntent;
 use super::bus::{PullRequestEvent, bus};
 use super::conversation::thread::ThreadCard;
 use super::data::{PullRequestData, session_service};
+use super::detail::TabScroll;
 use super::review_draft::{ReviewDrafts, review_drafts};
 use crate::comments::AnchorTracker;
 use crate::diff::prepare::highlight_patch;
@@ -83,7 +84,7 @@ pub struct CodeTab {
     data: Entity<PullRequestData>,
     pr: PullRequestRef,
     /// The commit the diff is scoped to; `None` for all of them.
-    commit: Option<String>,
+    pub(super) commit: Option<String>,
     /// Bumped with each new scope; arrivals for an older one are dropped.
     scope: u64,
     /// The first page was asked for (on the first draw).
@@ -146,8 +147,8 @@ impl EventEmitter<PullRequestIntent> for CodeTab {}
 
 impl CodeTab {
     /// How far the tab is scrolled; the header condenses once it is.
-    pub fn scroll_top(&self) -> gpui_kit::ListOffset {
-        self.list_state.logical_scroll_top()
+    pub fn scroll(&self) -> TabScroll {
+        TabScroll::of(&self.list_state)
     }
 
     pub fn new(data: Entity<PullRequestData>, cx: &mut Context<Self>) -> Self {
@@ -420,7 +421,7 @@ impl CodeTab {
     }
 
     /// Show the diff of `commit` (`None`: all commits), from the top.
-    fn select_commit(&mut self, commit: Option<String>, cx: &mut Context<Self>) {
+    pub(super) fn select_commit(&mut self, commit: Option<String>, cx: &mut Context<Self>) {
         if commit == self.commit {
             return;
         }

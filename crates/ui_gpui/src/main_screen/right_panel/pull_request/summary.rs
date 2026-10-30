@@ -29,6 +29,7 @@ use super::conversation::{
     ThreadCard,
 };
 use super::data::PullRequestData;
+use super::detail::TabScroll;
 use super::preferences;
 use super::presentation::{GLYPH_SIZE, check_status_glyph};
 use candidates::{OpenPicker, PickerKind};
@@ -101,8 +102,8 @@ fn same<T>(a: &Option<Arc<T>>, b: &Option<Arc<T>>) -> bool {
 
 impl SummaryTab {
     /// How far the tab is scrolled; the header condenses once it is.
-    pub fn scroll_top(&self) -> gpui_kit::ListOffset {
-        self.list.logical_scroll_top()
+    pub fn scroll(&self) -> TabScroll {
+        TabScroll::of(&self.list)
     }
 
     pub fn new(data: Entity<PullRequestData>, cx: &mut Context<Self>) -> Self {

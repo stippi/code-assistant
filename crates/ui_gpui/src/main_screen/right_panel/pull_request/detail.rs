@@ -12,13 +12,13 @@ use super::header::DetailHeader;
 use super::preferences;
 use super::summary::SummaryTab;
 use super::tab_bar::{checks_slot, render_tab_row, timeline_slot};
-use super::timeline::TimelineTab;
+use super::timeline::{OpenCommit, TimelineTab};
 use github::PullRequestRef;
 use github::model::{Action, ListEntry, PullRequestUpdate};
 use gpui_kit::component::{ActiveTheme, Icon, Sizable, button::Button, button::ButtonVariants};
 use gpui_kit::{
-    AnyElement, Context, Entity, EventEmitter, Pixels, Render, SharedString, Subscription, Task,
-    Window, div, prelude::*, px,
+    AnyElement, Context, Entity, EventEmitter, ListState, Pixels, Render, SharedString,
+    Subscription, Task, Window, div, prelude::*, px,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -41,6 +41,8 @@ pub struct DetailView {
     pr: PullRequestRef,
     data: Entity<PullRequestData>,
     tab: DetailTab,
+    /// The header is condensed (see [`condenses`]).
+    condensed: bool,
     header: Entity<DetailHeader>,
     summary: Entity<SummaryTab>,
     timeline: Entity<TimelineTab>,
@@ -83,6 +85,12 @@ impl DetailView {
             cx.subscribe(&timeline, |_, _, intent: &PullRequestIntent, cx| {
                 cx.emit(intent.clone())
             }),
+            // A commit clicked in the timeline: its diff in the Code tab.
+            cx.subscribe(&timeline, |this, _, OpenCommit(oid): &OpenCommit, cx| {
+                this.code
+                    .update(cx, |code, cx| code.select_commit(Some(oid.clone()), cx));
+                this.select_tab(DetailTab::Code, cx);
+            }),
             cx.subscribe(&code, |_, _, intent: &PullRequestIntent, cx| {
                 cx.emit(intent.clone())
             }),
@@ -93,6 +101,7 @@ impl DetailView {
             pr,
             data,
             tab: DetailTab::default(),
+            condensed: false,
             header,
             summary,
             timeline,
@@ -233,19 +242,52 @@ impl DetailView {
     }
 }
 
+/// How far a tab's list is scrolled, and how far it could be.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TabScroll {
+    pub offset: Pixels,
+    pub max: Pixels,
+}
+
+impl TabScroll {
+    pub fn of(list: &ListState) -> Self {
+        Self {
+            offset: -list.scroll_px_offset_for_scrollbar().y,
+            max: list.max_offset_for_scrollbar().y,
+        }
+    }
+}
+
 /// Scrolled this far, the tab's content has left the header's room.
 const CONDENSE_AFTER: Pixels = px(24.);
+/// More than the header gives up when it condenses (title, meta, branch
+/// and behind-by rows become one line).
+const CONDENSE_ROOM: Pixels = px(160.);
+
+/// Whether the header is condensed next, given whether it is now. It
+/// condenses past [`CONDENSE_AFTER`] only when the tab could stay scrolled
+/// that far in the taller view condensing gives it: otherwise the list
+/// clamps its scroll, the header expands, the view shrinks and the two
+/// states alternate every frame. Condensed, it stays so until the tab is
+/// back at its top.
+fn condenses(now: bool, scroll: TabScroll) -> bool {
+    match now {
+        true => scroll.offset > px(0.),
+        false => scroll.offset > CONDENSE_AFTER && scroll.max > CONDENSE_AFTER + CONDENSE_ROOM,
+    }
+}
 
 impl Render for DetailView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // The header condenses while the shown tab is scrolled; read each
         // frame, it costs a field read per tab.
-        let top = match self.tab {
-            DetailTab::Summary => self.summary.read(cx).scroll_top(),
-            DetailTab::Timeline => self.timeline.read(cx).scroll_top(),
-            DetailTab::Code => self.code.read(cx).scroll_top(),
+        let scroll = match self.tab {
+            DetailTab::Summary => self.summary.read(cx).scroll(),
+            DetailTab::Timeline => self.timeline.read(cx).scroll(),
+            DetailTab::Code => self.code.read(cx).scroll(),
         };
-        let condensed = top.item_ix > 0 || top.offset_in_item > CONDENSE_AFTER;
+        self.condensed = condenses(self.condensed, scroll);
+        let condensed = self.condensed;
         self.header
             .update(cx, |header, cx| header.set_condensed(condensed, cx));
         let body = match self.tab {
@@ -277,7 +319,9 @@ impl Render for DetailView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::main_screen::right_panel::pull_request::fixtures::{detail, repo};
+    use crate::main_screen::right_panel::pull_request::conversation::fixtures::{click, commit};
+    use crate::main_screen::right_panel::pull_request::fixtures::{detail, hours_ago, repo};
+    use github::model::Activity;
     use github::model::MergeMethod;
     use gpui_kit::{TestAppContext, VisualTestContext};
     use std::sync::Arc;
@@ -301,6 +345,61 @@ mod tests {
         });
         cx.run_until_parked();
         (view, cx)
+    }
+
+    fn scrolled(offset: f32, max: f32) -> TabScroll {
+        TabScroll {
+            offset: px(offset),
+            max: px(max),
+        }
+    }
+
+    #[test]
+    fn a_long_tab_condenses_the_header_past_the_fold() {
+        assert!(!condenses(false, scrolled(20., 800.)));
+        assert!(condenses(false, scrolled(30., 800.)));
+    }
+
+    #[test]
+    fn a_tab_the_taller_view_would_fit_never_condenses() {
+        // Condensing would give the list more room than it can scroll; its
+        // clamp would expand the header again, every frame.
+        assert!(!condenses(false, scrolled(30., 60.)));
+        assert!(!condenses(false, scrolled(60., 150.)));
+    }
+
+    #[test]
+    fn a_condensed_header_stays_until_the_tab_is_back_at_its_top() {
+        assert!(condenses(true, scrolled(5., 40.)));
+        assert!(!condenses(true, scrolled(0., 800.)));
+    }
+
+    #[gpui_kit::test]
+    fn a_commit_clicked_in_the_timeline_opens_the_code_tab_on_it(cx: &mut TestAppContext) {
+        let (view, cx) = page(cx);
+        let data = view.read_with(cx, |view, _| view.data().clone());
+        data.update(cx, |data, cx| {
+            data.activity = Some(Arc::new(Activity {
+                author: None,
+                reviewers: Vec::new(),
+                comments: Vec::new(),
+                comment_count: 0,
+                comments_truncated: false,
+                review_threads: Vec::new(),
+                review_threads_truncated: false,
+                commits: vec![commit("d9aea40f", hours_ago(2))],
+                reactions: Vec::new(),
+            }));
+            cx.notify();
+        });
+        view.update(cx, |view, cx| view.select_tab(DetailTab::Timeline, cx));
+        cx.run_until_parked();
+
+        click(cx, "pr-commit-d9aea40");
+        view.read_with(cx, |view, cx| {
+            assert_eq!(view.tab, DetailTab::Code);
+            assert_eq!(view.code.read(cx).commit.as_deref(), Some("d9aea40f"));
+        });
     }
 
     #[gpui_kit::test]

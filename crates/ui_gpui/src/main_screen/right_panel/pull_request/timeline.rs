@@ -19,6 +19,7 @@ use super::conversation::logic::{
 use super::conversation::parts::open_on_github;
 use super::conversation::{CardStyle, CommentCard, Location, ThreadCard};
 use super::data::PullRequestData;
+use super::detail::TabScroll;
 use super::preferences;
 use super::presentation::{Tone, diff_stat, relative_time};
 use chrono::{DateTime, Utc};
@@ -101,8 +102,8 @@ fn row_key(row: &TimelineRow) -> String {
 
 impl TimelineTab {
     /// How far the tab is scrolled; the header condenses once it is.
-    pub fn scroll_top(&self) -> gpui_kit::ListOffset {
-        self.list.logical_scroll_top()
+    pub fn scroll(&self) -> TabScroll {
+        TabScroll::of(&self.list)
     }
 
     pub fn new(data: Entity<PullRequestData>) -> Self {
