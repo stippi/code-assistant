@@ -3,15 +3,15 @@
 The Files view of the right panel shows a file in the text editor. Some
 files read better another way: Markdown rendered as in the chat, SVG
 files drawn, diagrams in their editor. A *renderer* is such a way: built
-in (Markdown, SVG) or defined in the settings: a command that turns a file
+in (Markdown, SVG) or contributed by a plugin: a command that turns a file
 into an SVG or an image, or a web editor that edits the file in place
-([custom renderers](#custom-renderers)).
+([plugin renderers](#plugin-renderers)).
 When the open file has one or more, a dropdown in the viewer's header
 switches between them and **Text**, which every file has.
 
 ## Behavior
 
-- A file shows with the first renderer that takes it, custom renderers
+- A file shows with the first renderer that takes it, plugin renderers
   before the built-in ones; files no renderer takes show as text, without a
   dropdown.
 - Picking an entry in the dropdown holds for files of the same kind (the
@@ -80,16 +80,21 @@ the model as PNG on white, the longer edge at least 1024 px (an icon large
 enough to make out) and at most `MAX_IMAGE_EDGE`. System fonts load once,
 and only for drawings with text.
 
-## Custom renderers
+## Plugin renderers
 
-*Settings → File Renderers* lists renderers of your own, stored in
-`<config_dir>/file-renderers.json`. **Add** opens a form for either kind.
-Changes apply at once: the Files view offers a new renderer in its
-dropdown, and an open file shows with a changed one again.
+Renderers beyond the built-in ones come with plugins
+([plugins.md](plugins.md)): a plugin's manifest lists them under
+`fileRenderers`, nothing is configured in the settings. Installing,
+switching or removing a plugin in *Settings → Plugins* changes what the
+Files view offers at once (`shared::custom_renderers::reload`; a plugin
+changed with the command line is picked up at the next start). For
+renderers of your own, make a plugin in a local folder and install that:
+it is linked, so edits to its manifest show without reinstalling.
 
 ```json
 {
-  "renderers": [
+  "name": "diagrams",
+  "fileRenderers": [
     {
       "label": "Graphviz",
       "files": ["*.dot", "*.gv"],
@@ -101,8 +106,9 @@ dropdown, and an open file shows with a changed one again.
       "label": "Diagrams",
       "files": ["*.diagram"],
       "kind": "web",
-      "url": "https://editor.example/?embed=1&proto=json&dark={dark}",
-      "scripts": ["~/editor/shapes.js"]
+      "url": "http://localhost:8080/?embed=1&proto=json&dark={dark}",
+      "scripts": ["editor/shapes.js"],
+      "start": { "command": "scripts/serve-editor.sh" }
     }
   ]
 }
@@ -110,12 +116,19 @@ dropdown, and an open file shows with a changed one again.
 
 Every renderer has:
 
-- **`label`**, its name in the dropdown, which also identifies it (picks
-  are remembered as `custom:<label>`), so labels are unique.
+- **`label`**, its name in the dropdown, unique within the plugin; picks
+  are remembered as `plugin:<plugin>/<label>`.
 - **`files`**, patterns for file names (not paths): `*` and `?` are
   wildcards, case is ignored. `*.diagram.svg` takes those SVG files only,
   ahead of the built-in SVG view.
 - **`kind`**: `command` or `web`.
+- **`start`** (optional): a command that starts a server the renderer
+  needs, see [Servers](#servers).
+
+`${PLUGIN_ROOT}` in a command, an address or a script entry is the
+plugin's folder. A manifest whose renderers lack what their kind needs (a
+`command`, an http(s) `url`) or carry the other kind's fields does not
+load.
 
 A renderer that cannot show lines or comments (both kinds) leaves those
 requests to the text editor, as for SVG.
@@ -150,14 +163,13 @@ How it runs (`shared/custom_renderers.rs`, view in
 ### Web editors
 
 A web app that edits the file in place, shown in a webview over the view
-(macOS only for now; elsewhere such renderers are listed in the settings
-but not offered). View in `file_renderers/web_editor.rs`.
+(macOS only for now; elsewhere such renderers are not offered). View in
+`file_renderers/web_editor.rs`.
 
 - **`url`** is the editor's address, with whatever it needs to talk the
   embed protocol below. `{dark}` becomes `1` in a dark theme, else `0`.
-- **`scripts`** are files injected into the editor (`~/` for the home
-  folder, relative paths from the config folder), for example plugins of
-  the editor. Each runs once the editor's page has loaded; one that fails
+- **`scripts`** are files injected into the editor, paths in the plugin's
+  folder, for example plugins of the editor. Each runs once the editor's page has loaded; one that fails
   because what it uses is not there yet (a `ReferenceError` or
   `TypeError`) is tried again for up to 30 s, so it can wait for the
   editor's own hooks. A script that still fails is logged as a warning.
@@ -190,6 +202,38 @@ window, not part of GPUI's element tree (`shared/native_views.rs`):
   frame reports it), or GPUI's key bindings would take keys meant for the
   editor, such as Delete.
 - The theme is picked when the editor opens.
+
+### Servers
+
+A renderer may need a server: a web editor served on localhost (a
+self-hosted draw.io), or a command calling a local service. Its `start`
+says how to start it:
+
+```json
+"start": {
+  "command": "scripts/start-drawio.sh",
+  "url": "http://localhost:8080/",
+  "args": [], "env": {},
+  "timeoutSeconds": 300
+}
+```
+
+- **`url`** is where the server answers once it runs; a web editor's own
+  `url` when left out, needed for a command renderer.
+- **`command`** runs in the plugin's folder (a relative path is taken from
+  there), in its own process group, with `PLUGIN_ROOT` and `SERVER_URL`
+  set. It should stay in the foreground (no daemonizing).
+- **`timeoutSeconds`** (default 120) is how long to wait for the server.
+
+Opening a file with such a renderer shows "Starting the server of …"
+(`file_renderers/server_gate.rs`) until something accepts connections at
+the address's host and port: a server already running there (the user's
+own, or a remote one) is used as it is; otherwise the command runs. A
+command that exits first, or a server that does not answer in time, shows
+why with the last lines of its output and a *Try again* button. Then the
+renderer's own view takes over. A started server is shared by all views of
+that renderer, stopped (its whole process group) 5 minutes after the last
+one closed, and stopped when the app quits (`plugin_host::server`).
 
 ## Adding a built-in renderer
 

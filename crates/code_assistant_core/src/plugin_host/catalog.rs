@@ -6,7 +6,8 @@
 //! second, reloading when `plugins.json` or a manifest changed. Changes made
 //! through [`PluginStore`] take effect at once.
 
-use super::manifest::{FileViewerSpec, PluginManifest, ProviderTemplate, substitute_root};
+use super::manifest::{PluginFileRenderer, PluginManifest, ProviderTemplate, substitute_root};
+use super::server::ServerTarget;
 use super::store::{InstalledPlugin, PluginStore};
 use mcp_client::{McpServerStatus, McpServersConfig, McpTransport};
 use std::collections::BTreeMap;
@@ -40,18 +41,38 @@ impl PluginProviderTemplate {
     }
 }
 
-/// A file viewer and the plugin offering it.
-#[derive(Debug, Clone)]
-pub struct PluginFileViewer {
+/// A file renderer and the plugin offering it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PluginRenderer {
     pub plugin: String,
     pub root: PathBuf,
-    pub spec: FileViewerSpec,
+    pub spec: PluginFileRenderer,
 }
 
-impl PluginFileViewer {
-    /// Unique across plugins: `<plugin>/<viewer>`.
+impl PluginRenderer {
+    /// Unique across plugins: `<plugin>/<label>`.
     pub fn key(&self) -> String {
-        format!("{}/{}", self.plugin, self.spec.id)
+        format!("{}/{}", self.plugin, self.spec.label)
+    }
+
+    /// The server to make sure of before the renderer shows a file.
+    pub fn server(&self) -> Option<ServerTarget> {
+        Some(ServerTarget {
+            key: self.key(),
+            url: self.spec.server_url()?.to_string(),
+            root: self.root.clone(),
+            start: self.spec.start.clone()?,
+        })
+    }
+
+    /// `${PLUGIN_ROOT}` in `value` replaced with the plugin's folder.
+    pub fn localize(&self, value: &str) -> String {
+        substitute_root(value, &self.root)
+    }
+
+    /// The path of a script entry: relative ones from the plugin's folder.
+    pub fn script_path(&self, entry: &str) -> PathBuf {
+        self.root.join(self.localize(entry.trim()))
     }
 }
 
@@ -133,26 +154,21 @@ impl Catalog {
             .collect()
     }
 
-    pub fn file_viewers(&self) -> Vec<PluginFileViewer> {
+    pub fn file_renderers(&self) -> Vec<PluginRenderer> {
         self.plugins
             .iter()
             .flat_map(|plugin| {
                 plugin
                     .manifest
-                    .file_viewers
+                    .file_renderers
                     .iter()
-                    .map(|spec| PluginFileViewer {
+                    .map(|spec| PluginRenderer {
                         plugin: plugin.name.clone(),
                         root: plugin.root.clone(),
                         spec: spec.clone(),
                     })
             })
             .collect()
-    }
-
-    /// The viewer `key` (`<plugin>/<viewer>`).
-    pub fn file_viewer(&self, key: &str) -> Option<PluginFileViewer> {
-        self.file_viewers().into_iter().find(|v| v.key() == key)
     }
 
     /// The plugins' MCP servers: `${PLUGIN_ROOT}` replaced in commands,
@@ -313,21 +329,31 @@ mod tests {
         );
         plugin(
             &b,
-            r#"{ "name": "b", "fileViewers": [
-                { "id": "v", "label": "V", "files": ["*.x"], "url": "http://localhost:1/" }] }"#,
+            r#"{ "name": "b", "fileRenderers": [
+                { "label": "V", "files": ["*.x"], "kind": "web", "url": "http://localhost:1/",
+                  "scripts": ["${PLUGIN_ROOT}/a.js", "b.js"], "start": { "command": "run.sh" } }] }"#,
         );
         store.install(a.to_str().unwrap()).unwrap();
         store.install(b.to_str().unwrap()).unwrap();
 
         let catalog = Catalog::load(&store);
         assert_eq!(catalog.provider_templates()[0].key(), "a/t");
-        assert_eq!(catalog.file_viewers()[0].key(), "b/v");
-        assert!(catalog.file_viewer("b/v").is_some());
+        let renderer = &catalog.file_renderers()[0];
+        let root = std::fs::canonicalize(&b).unwrap();
+        assert_eq!(renderer.key(), "b/V");
+        assert_eq!(
+            renderer.script_path("${PLUGIN_ROOT}/a.js"),
+            root.join("a.js")
+        );
+        assert_eq!(renderer.script_path("b.js"), root.join("b.js"));
+        let server = renderer.server().expect("it starts a server");
+        assert_eq!(server.url, "http://localhost:1/");
+        assert_eq!(server.root, root);
 
         let before = catalog.fingerprint().to_string();
         store.set_enabled("b", false).unwrap();
         let catalog = Catalog::load(&store);
-        assert!(catalog.file_viewers().is_empty());
+        assert!(catalog.file_renderers().is_empty());
         assert_ne!(catalog.fingerprint(), before);
     }
 

@@ -155,15 +155,6 @@ file argument (e.g. `prettier --write {path}`); omit it for whole-project
 formatters (e.g. `cargo fmt`). Full details in
 [format-on-save-feature.md](format-on-save-feature.md).
 
-## File renderers — `file-renderers.json`
-
-The Files view can show files through renderers of your own: a command that
-turns a file into an SVG or an image (Graphviz, PlantUML), or a web editor
-that edits the file in place (macOS). Configure them in the Settings screen
-("File Renderers") or in `~/.config/code-assistant/file-renderers.json`;
-details and examples in
-[file-renderers.md](file-renderers.md#custom-renderers).
-
 ## MCP client mode
 
 code-assistant can connect to external Model Context Protocol servers and
@@ -196,7 +187,8 @@ over HTTP (streamable transport):
 
 ## Plugins
 
-Plugins add provider templates, read-only MCP servers and file viewers (such
+Plugins add provider templates, read-only MCP servers and file renderers (a
+command turning a file into an image, such as Graphviz, or a web editor such
 as draw.io for `.drawio` files). Install them in *Settings → Plugins* or with
 `code-assistant plugin add <git-url | owner/repo[#ref] | folder>`; they live
 in `~/.config/code-assistant/plugins/`. See [plugins.md](plugins.md) and the

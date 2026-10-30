@@ -19,9 +19,11 @@ What it adds:
 - **An MCP server** — `fetch` (`uvx mcp-server-fetch`), listed under *From
   plugins* in *Settings → MCP Servers*, read-only, and in every session's
   *Tools* menu. Needs [uv](https://docs.astral.sh/uv/).
-- **A file viewer** — `.drawio` and `.drawio.svg` files open in draw.io in
-  the Files view; edits are saved to the file. `scripts/start-drawio.sh`
-  starts draw.io in Docker when nothing answers at `localhost:8080`. A
-  draw.io you run yourself on that port is used as is.
+- **File renderers** — in the Files view, `.dot` and `.gv` files show as
+  graphs (`dot -Tsvg`, needs [Graphviz](https://graphviz.org)), and
+  `.drawio` files open in draw.io as a web editor (macOS for now); edits
+  are saved to the file. `scripts/start-drawio.sh` starts draw.io in
+  Docker when nothing answers at `localhost:8080`. A draw.io you run
+  yourself on that port is used as is.
 
 The manifest format is described in `docs/plugins.md`.

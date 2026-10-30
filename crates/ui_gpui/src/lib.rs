@@ -787,17 +787,14 @@ impl Gpui {
 
             // Store settings as a GPUI global so entities can access/update them
             cx.set_global(UiSettingsGlobal(ui_settings.clone()));
-            // File renderers from the settings, for the Files view
-            shared::custom_renderers::set_current(
-                &shared::custom_renderers::CustomRenderersConfig::load(),
-                cx,
-            );
+            // File renderers of the enabled plugins, for the Files view
+            shared::custom_renderers::reload(cx);
 
             // Flush pending debounced writes (UI settings + per-session UI
             // state) before the process exits, closing the debounce window.
             cx.on_app_quit(|cx| {
-                // Servers plugin file viewers started end with the app.
-                code_assistant_core::plugin_host::viewer::server::stop_all();
+                // Servers plugin file renderers started end with the app.
+                code_assistant_core::plugin_host::server::stop_all();
                 let settings = cx
                     .try_global::<UiSettingsGlobal>()
                     .map(|global| global.0.clone());

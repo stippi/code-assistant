@@ -5,7 +5,7 @@
 //! Installing and updating run git, so they run off the main thread; the
 //! list shows what each plugin contributes. Changes apply at once: provider
 //! templates show in the next *Add provider*, MCP servers join the next agent
-//! run, file viewers the Files view.
+//! run, file renderers the Files view.
 
 use code_assistant_core::plugin_host::{PluginListing, PluginSource, PluginStore};
 use gpui_kit::component::input::{Input, InputState};
@@ -81,6 +81,7 @@ impl PluginsSection {
                     Err(e) => Err(format!("{e:#}")),
                 });
                 this.reload();
+                crate::shared::custom_renderers::reload(cx);
                 cx.notify();
             })
             .ok();
@@ -107,6 +108,7 @@ impl PluginsSection {
                     Err(e) => Err(format!("Could not update '{name}': {e:#}")),
                 });
                 this.reload();
+                crate::shared::custom_renderers::reload(cx);
                 cx.notify();
             })
             .ok();
@@ -124,6 +126,7 @@ impl PluginsSection {
             Err(e) => Err(format!("Could not remove '{name}': {e:#}")),
         });
         self.reload();
+        crate::shared::custom_renderers::reload(cx);
         cx.notify();
     }
 
@@ -132,6 +135,7 @@ impl PluginsSection {
             self.message = Some(Err(format!("{e:#}")));
         }
         self.reload();
+        crate::shared::custom_renderers::reload(cx);
         cx.notify();
     }
 
@@ -349,7 +353,7 @@ impl Render for PluginsSection {
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
                     .child(
-                        "Plugins add provider templates, MCP servers and file viewers. Install \
+                        "Plugins add provider templates, MCP servers and file renderers. Install \
                          one from its git repository; it is cloned with your git setup, so \
                          private repositories work too. Plugins can start programs on this \
                          computer — install only plugins you trust.",

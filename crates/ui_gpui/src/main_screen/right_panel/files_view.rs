@@ -1675,24 +1675,25 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn renderers_from_the_settings_are_offered(cx: &mut TestAppContext) {
+    fn renderers_from_plugins_are_offered(cx: &mut TestAppContext) {
         use crate::shared::custom_renderers::{
-            self, CommandRenderer, CustomRenderer, CustomRenderersConfig, OutputFormat,
-            RendererKind,
+            self, CommandRenderer, CustomRenderer, OutputFormat, RendererKind,
         };
         let (view, cx) = view(cx);
         cx.update(|_, cx| {
-            let config = CustomRenderersConfig {
-                renderers: vec![CustomRenderer {
+            custom_renderers::set_current(
+                vec![CustomRenderer {
+                    key: "graphs/Graphviz".into(),
                     label: "Graphviz".into(),
                     files: vec!["*.dot".into()],
                     kind: RendererKind::Command(CommandRenderer {
                         command: "dot -Tsvg".into(),
                         output: OutputFormat::Svg,
                     }),
+                    server: None,
                 }],
-            };
-            custom_renderers::set_current(&config, cx);
+                cx,
+            );
         });
         view.update(cx, |view, cx| view.open_file("docs/flow.dot".into(), cx));
         let labels = |view: &Entity<FilesView>, cx: &mut VisualTestContext| {
@@ -1710,12 +1711,12 @@ mod tests {
             labels(&view, cx),
             (
                 vec!["Text".into(), "Graphviz".into()],
-                "custom:Graphviz".into()
+                "plugin:graphs/Graphviz".into()
             )
         );
 
-        // Removed in the settings: the file is text again.
-        cx.update(|_, cx| custom_renderers::set_current(&CustomRenderersConfig::default(), cx));
+        // The plugin was switched off: the file is text again.
+        cx.update(|_, cx| custom_renderers::set_current(Vec::new(), cx));
         assert_eq!(labels(&view, cx), (vec!["Text".into()], "text".into()));
     }
 

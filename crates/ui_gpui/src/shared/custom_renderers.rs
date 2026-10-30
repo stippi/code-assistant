@@ -1,22 +1,24 @@
-//! File renderers the user defines, of two kinds: a command that turns a
+//! File renderers plugins contribute, of two kinds: a command that turns a
 //! file into an SVG or an image, which the Files view shows; or a web
-//! editor, a web app editing the file in place. Stored in
-//! `<config_dir>/file-renderers.json` and edited in *Settings → File
-//! Renderers*; see `docs/file-renderers.md`.
+//! editor, a web app editing the file in place. They come from the enabled
+//! plugins' manifests (`fileRenderers`, read through
+//! `code_assistant_core::plugin_host::catalog`); see `docs/file-renderers.md`
+//! and `docs/plugins.md`.
 //!
-//! This module holds the configuration and runs commands; the views are
+//! This module holds the renderers and runs commands; the views are
 //! `file_renderers::command` and `file_renderers::web_editor`.
 
 use anyhow::{Context as _, Result, bail};
+use code_assistant_core::plugin_host::{
+    PluginRenderer, RendererKind as PluginKind, RendererOutput, ServerTarget,
+};
 use gpui_kit::{App, Global};
-use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
-use tracing::warn;
 
 /// How long a command may run before it is stopped.
 pub const TIMEOUT: Duration = Duration::from_secs(60);
@@ -24,59 +26,56 @@ pub const TIMEOUT: Duration = Duration::from_secs(60);
 const ERROR_LINES: usize = 20;
 
 /// What the command produces.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum OutputFormat {
     /// An SVG drawing, drawn sharp at any size.
     #[default]
     Svg,
     /// A raster image: PNG, JPEG, or another format the `image` crate reads.
-    #[serde(alias = "png")]
     Image,
 }
 
-/// One user-defined renderer.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// One renderer a plugin contributes.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CustomRenderer {
-    /// The name in the viewer's dropdown; also identifies the renderer, so
-    /// it is unique.
+    /// `<plugin>/<label>`, which identifies it.
+    pub key: String,
+    /// The name in the viewer's dropdown.
     pub label: String,
     /// Patterns for the file names it takes, e.g. `*.dot`; `*` and `?`
     /// are wildcards, case is ignored.
     pub files: Vec<String>,
-    #[serde(flatten)]
     pub kind: RendererKind,
+    /// A server to make sure of before it shows a file.
+    pub server: Option<ServerTarget>,
 }
 
-/// What a renderer does, by `"kind"`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "lowercase")]
+/// What a renderer does.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RendererKind {
     Command(CommandRenderer),
     Web(WebEditor),
 }
 
 /// A command that turns the file into an SVG or an image.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandRenderer {
     /// A shell command line. `{file}` is the file's path, `{output}` the
     /// path to write the result to; without `{output}` the result is read
     /// from standard output. The file's text is also on standard input.
     pub command: String,
-    #[serde(default)]
     pub output: OutputFormat,
 }
 
 /// A web app editing the file in place, talking the embed protocol (macOS
 /// only for now; see `file_renderers::web_editor`).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WebEditor {
     /// The editor's address, with what it needs to talk the embed
     /// protocol; `{dark}` is `1` in a dark theme, else `0`.
     pub url: String,
-    /// Scripts injected into the editor: paths, `~/` for the home folder,
-    /// relative ones from the config folder.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Scripts injected into the editor: absolute paths (`~/` for the home
+    /// folder).
     pub scripts: Vec<String>,
 }
 
@@ -88,10 +87,40 @@ pub fn script_path(entry: &str) -> PathBuf {
     {
         return home.join(rest);
     }
-    code_assistant_core::config_dir::config_dir().join(entry)
+    PathBuf::from(entry)
 }
 
 impl CustomRenderer {
+    /// The renderer as a plugin's manifest describes it, with
+    /// `${PLUGIN_ROOT}` replaced and its scripts found in the plugin's folder.
+    pub fn from_plugin(renderer: &PluginRenderer) -> Self {
+        let spec = &renderer.spec;
+        let kind = match spec.kind {
+            PluginKind::Command => RendererKind::Command(CommandRenderer {
+                command: renderer.localize(spec.command.as_deref().unwrap_or_default()),
+                output: match spec.output.unwrap_or_default() {
+                    RendererOutput::Svg => OutputFormat::Svg,
+                    RendererOutput::Image => OutputFormat::Image,
+                },
+            }),
+            PluginKind::Web => RendererKind::Web(WebEditor {
+                url: renderer.localize(spec.url.as_deref().unwrap_or_default()),
+                scripts: spec
+                    .scripts
+                    .iter()
+                    .map(|entry| renderer.script_path(entry).display().to_string())
+                    .collect(),
+            }),
+        };
+        Self {
+            key: renderer.key(),
+            label: spec.label.clone(),
+            files: spec.files.clone(),
+            kind,
+            server: renderer.server(),
+        }
+    }
+
     /// Whether this platform can show it.
     pub fn is_supported(&self) -> bool {
         match self.kind {
@@ -102,7 +131,7 @@ impl CustomRenderer {
 
     /// The renderer id remembered for picks.
     pub fn id(&self) -> String {
-        format!("custom:{}", self.label)
+        format!("plugin:{}", self.key)
     }
 
     /// Whether it takes the file at the `/`-separated `path`.
@@ -114,55 +143,38 @@ impl CustomRenderer {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CustomRenderersConfig {
-    #[serde(default)]
-    pub renderers: Vec<CustomRenderer>,
+/// The renderers of the enabled plugins.
+pub fn from_plugins() -> Vec<CustomRenderer> {
+    code_assistant_core::plugin_host::catalog()
+        .file_renderers()
+        .iter()
+        .map(CustomRenderer::from_plugin)
+        .collect()
 }
 
-impl CustomRenderersConfig {
-    pub fn path() -> PathBuf {
-        code_assistant_core::config_dir::config_dir().join("file-renderers.json")
-    }
-
-    /// Load the config; a missing or malformed file has no renderers.
-    pub fn load() -> Self {
-        Self::load_from(&Self::path())
-    }
-
-    pub fn load_from(path: &Path) -> Self {
-        let Ok(content) = std::fs::read_to_string(path) else {
-            return Self::default();
-        };
-        serde_json::from_str(&content).unwrap_or_else(|e| {
-            warn!(
-                "Failed to parse {}: {e}; no custom renderers",
-                path.display()
-            );
-            Self::default()
-        })
-    }
-
-    pub fn save(&self) -> Result<()> {
-        code_assistant_core::utils::file_utils::atomic_write_json(&Self::path(), self)
-    }
-}
-
-/// The custom renderers as the Files view offers them.
+/// The renderers as the Files view offers them.
 pub struct CustomRenderersGlobal(pub Arc<Vec<CustomRenderer>>);
 
 impl Global for CustomRenderersGlobal {}
 
-/// The custom renderers currently configured.
+/// The renderers currently offered.
 pub fn current(cx: &App) -> Arc<Vec<CustomRenderer>> {
     cx.try_global::<CustomRenderersGlobal>()
         .map(|global| global.0.clone())
         .unwrap_or_default()
 }
 
-/// Offer `config`'s renderers from now on.
-pub fn set_current(config: &CustomRenderersConfig, cx: &mut App) {
-    cx.set_global(CustomRenderersGlobal(Arc::new(config.renderers.clone())));
+/// Offer `renderers` from now on.
+pub fn set_current(renderers: Vec<CustomRenderer>, cx: &mut App) {
+    cx.set_global(CustomRenderersGlobal(Arc::new(renderers)));
+}
+
+/// Offer the enabled plugins' renderers (at start, and when plugins change).
+pub fn reload(cx: &mut App) {
+    let renderers = from_plugins();
+    if *current(cx) != renderers {
+        set_current(renderers, cx);
+    }
 }
 
 /// Whether `name` matches `pattern`, where `*` stands for any run of
@@ -359,9 +371,11 @@ mod tests {
 
     fn renderer(files: &[&str]) -> CustomRenderer {
         CustomRenderer {
+            key: "p/test".into(),
             label: "test".into(),
             files: files.iter().map(|f| f.to_string()).collect(),
             kind: RendererKind::Web(WebEditor::default()),
+            server: None,
         }
     }
 
@@ -396,63 +410,61 @@ mod tests {
     }
 
     #[test]
-    fn the_config_reads_with_defaults() {
-        let config: CustomRenderersConfig = serde_json::from_str(
-            r#"{"renderers": [
-                {"label": "png", "files": ["*.x"], "kind": "command", "command": "x", "output": "png"},
-                {"label": "dot", "files": ["*.dot"], "kind": "command", "command": "dot -Tsvg"},
-                {"label": "Plain", "files": ["*.a"], "kind": "web", "url": "https://a.example/"},
-                {"label": "Shapes", "files": ["*.b"], "kind": "web",
-                 "url": "https://b.example/?dark={dark}", "scripts": ["~/shapes.js"]}
-            ]}"#,
+    fn plugin_renderers_are_localized() {
+        use code_assistant_core::plugin_host::PluginManifest;
+        let manifest = PluginManifest::parse(
+            r#"{ "name": "p", "fileRenderers": [
+                { "label": "png", "files": ["*.x"], "kind": "command",
+                  "command": "${PLUGIN_ROOT}/bin/render {file}", "output": "png" },
+                { "label": "dot", "files": ["*.dot"], "kind": "command", "command": "dot -Tsvg" },
+                { "label": "Shapes", "files": ["*.b"], "kind": "web",
+                  "url": "http://localhost:9/?dark={dark}", "scripts": ["shapes.js"],
+                  "start": { "command": "serve.sh" } }
+            ] }"#,
         )
         .unwrap();
-        let kinds: Vec<_> = config.renderers.iter().map(|r| r.kind.clone()).collect();
+        let root = PathBuf::from("/plugins/p");
+        let renderers: Vec<CustomRenderer> = manifest
+            .file_renderers
+            .iter()
+            .map(|spec| {
+                CustomRenderer::from_plugin(&PluginRenderer {
+                    plugin: "p".into(),
+                    root: root.clone(),
+                    spec: spec.clone(),
+                })
+            })
+            .collect();
+        let kinds: Vec<_> = renderers.iter().map(|r| r.kind.clone()).collect();
         assert_eq!(
             kinds,
             [
                 RendererKind::Command(CommandRenderer {
-                    command: "x".into(),
+                    command: "/plugins/p/bin/render {file}".into(),
                     output: OutputFormat::Image,
                 }),
                 RendererKind::Command(command("dot -Tsvg")),
                 RendererKind::Web(WebEditor {
-                    url: "https://a.example/".into(),
-                    scripts: Vec::new(),
-                }),
-                RendererKind::Web(WebEditor {
-                    url: "https://b.example/?dark={dark}".into(),
-                    scripts: vec!["~/shapes.js".into()],
+                    url: "http://localhost:9/?dark={dark}".into(),
+                    scripts: vec!["/plugins/p/shapes.js".into()],
                 }),
             ]
         );
-        assert_eq!(config.renderers[1].id(), "custom:dot");
-        let json = serde_json::to_string(&config).unwrap();
-        assert!(
-            json.contains(r#""kind":"command","command":"x","output":"image""#),
-            "{json}"
-        );
-        assert!(
-            json.contains(r#""kind":"web","url":"https://a.example/"}"#),
-            "{json}"
-        );
-        let read: CustomRenderersConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(read, config);
-        assert_eq!(
-            CustomRenderersConfig::load_from(Path::new("/nonexistent/file-renderers.json")),
-            CustomRenderersConfig::default()
-        );
+        assert_eq!(renderers[1].id(), "plugin:p/dot");
+        assert!(renderers[1].server.is_none());
+        let server = renderers[2].server.as_ref().expect("it starts a server");
+        assert_eq!(server.url, "http://localhost:9/?dark={dark}");
+        assert_eq!(server.key, "p/Shapes");
     }
 
     #[test]
-    fn script_paths_resolve_home_and_config_folders() {
+    fn script_paths_resolve_the_home_folder() {
         let home = dirs::home_dir().unwrap();
         assert_eq!(script_path(" ~/s/shapes.js "), home.join("s/shapes.js"));
         assert_eq!(
             script_path("/abs/shapes.js"),
             PathBuf::from("/abs/shapes.js")
         );
-        assert!(script_path("scripts/shapes.js").ends_with("scripts/shapes.js"));
     }
 
     #[cfg(unix)]

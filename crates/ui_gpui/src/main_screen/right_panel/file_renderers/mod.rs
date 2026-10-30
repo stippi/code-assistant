@@ -8,10 +8,11 @@
 //! the draft's comments and reports comments made in it. The text editor is
 //! always offered as [`TEXT`] and is not a renderer here.
 //!
-//! Renderers are compiled in ([`BUILT_IN`]) or defined by the user in the
-//! settings ([`custom_renderers`]): a command that turns the file into an
-//! SVG or an image (shown by [`command`]), or a web app editing it in place
-//! (`web_editor`, macOS only). The user's come first.
+//! Renderers are compiled in ([`BUILT_IN`]) or come from enabled plugins
+//! ([`custom_renderers`]): a command that turns the file into an SVG or an
+//! image (shown by [`command`]), or a web app editing it in place
+//! (`web_editor`, macOS only). A plugin renderer that needs a server shows
+//! through [`server_gate`] until the server answers. Plugins' come first.
 //!
 //! A file shows with the first renderer that takes it, unless the user
 //! picked another way (the text editor, too) for its kind of file
@@ -25,6 +26,7 @@
 
 mod command;
 mod markdown;
+mod server_gate;
 mod svg;
 #[cfg(target_os = "macos")]
 mod web_editor;
@@ -38,6 +40,7 @@ use gpui_kit::{
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 
 /// The id of the text editor, which every file can be shown in.
@@ -68,8 +71,8 @@ pub const BUILT_IN: &[BuiltIn] = &[markdown::RENDERER, svg::RENDERER];
 #[derive(Clone)]
 pub enum FileRenderer {
     BuiltIn(&'static BuiltIn),
-    /// A command from the settings.
-    Custom(Arc<CustomRenderer>),
+    /// A command or web editor from a plugin.
+    Plugin(Arc<CustomRenderer>),
 }
 
 impl PartialEq for FileRenderer {
@@ -77,7 +80,7 @@ impl PartialEq for FileRenderer {
         match (self, other) {
             (Self::BuiltIn(a), Self::BuiltIn(b)) => a.id == b.id,
             // A changed command is another renderer: its view is made anew.
-            (Self::Custom(a), Self::Custom(b)) => a == b,
+            (Self::Plugin(a), Self::Plugin(b)) => a == b,
             _ => false,
         }
     }
@@ -88,7 +91,7 @@ impl FileRenderer {
     pub fn id(&self) -> String {
         match self {
             Self::BuiltIn(r) => r.id.to_owned(),
-            Self::Custom(r) => r.id(),
+            Self::Plugin(r) => r.id(),
         }
     }
 
@@ -96,7 +99,7 @@ impl FileRenderer {
     pub fn label(&self) -> SharedString {
         match self {
             Self::BuiltIn(r) => r.label.into(),
-            Self::Custom(r) => r.label.clone().into(),
+            Self::Plugin(r) => r.label.clone().into(),
         }
     }
 
@@ -104,7 +107,7 @@ impl FileRenderer {
     pub fn accepts(&self, path: &str) -> bool {
         match self {
             Self::BuiltIn(r) => (r.accepts)(path),
-            Self::Custom(r) => r.accepts(path),
+            Self::Plugin(r) => r.accepts(path),
         }
     }
 
@@ -119,34 +122,55 @@ impl FileRenderer {
     ) -> Box<dyn RendererHandle> {
         match self {
             Self::BuiltIn(r) => (r.create)(file, root, window, cx),
-            Self::Custom(r) => match &r.kind {
-                RendererKind::Command(command) => command::create(
-                    r.label.clone().into(),
-                    command.clone(),
-                    file,
-                    root,
-                    window,
-                    cx,
-                ),
-                #[cfg(target_os = "macos")]
-                RendererKind::Web(editor) => {
-                    web_editor::create(r.label.clone().into(), editor.clone(), file, cx)
+            Self::Plugin(r) => match &r.server {
+                Some(server) => {
+                    let renderer = r.clone();
+                    server_gate::create(
+                        r.label.clone().into(),
+                        server.clone(),
+                        Box::new(move |window, cx| {
+                            create_plugin(&renderer, file, root, window, cx)
+                        }),
+                        cx,
+                    )
                 }
-                // Not offered elsewhere (`all`).
-                #[cfg(not(target_os = "macos"))]
-                RendererKind::Web(_) => unreachable!("web editors are macOS only"),
+                None => create_plugin(r, file, root, window, cx),
             },
         }
     }
 }
 
-/// Every renderer besides the text editor: the user's this platform can
+/// The view of a plugin's renderer.
+fn create_plugin(
+    renderer: &CustomRenderer,
+    file: PathBuf,
+    root: PathBuf,
+    window: &mut Window,
+    cx: &mut App,
+) -> Box<dyn RendererHandle> {
+    let label: SharedString = renderer.label.clone().into();
+    match &renderer.kind {
+        RendererKind::Command(command) => {
+            command::create(label, command.clone(), file, root, window, cx)
+        }
+        #[cfg(target_os = "macos")]
+        RendererKind::Web(editor) => {
+            let _ = (root, window);
+            web_editor::create(label, editor.clone(), file, cx)
+        }
+        // Not offered elsewhere (`all`).
+        #[cfg(not(target_os = "macos"))]
+        RendererKind::Web(_) => unreachable!("web editors are macOS only"),
+    }
+}
+
+/// Every renderer besides the text editor: the plugins' this platform can
 /// show, then the built-in ones.
 pub fn all(cx: &App) -> Vec<FileRenderer> {
     custom_renderers::current(cx)
         .iter()
         .filter(|r| r.is_supported())
-        .map(|r| FileRenderer::Custom(Arc::new(r.clone())))
+        .map(|r| FileRenderer::Plugin(Arc::new(r.clone())))
         .chain(BUILT_IN.iter().map(FileRenderer::BuiltIn))
         .collect()
 }
@@ -243,6 +267,11 @@ pub trait RendererView:
     fn start_comment(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
 }
 
+/// Receives a wrapped view's comment changes ([`RendererHandle::forward_to`]).
+pub type OnComment = Rc<dyn Fn(&CommentChange, &mut App)>;
+/// Receives a wrapped view's edits ([`RendererHandle::forward_to`]).
+pub type OnEdit = Rc<dyn Fn(&TextEdit, &mut App)>;
+
 /// A renderer's view as the [`FileViewer`] holds it, whatever its type.
 pub trait RendererHandle {
     fn view(&self) -> AnyView;
@@ -254,6 +283,9 @@ pub trait RendererHandle {
     /// Pass the view's comment changes on as the viewer's, and its edits to
     /// the viewer.
     fn forward_events(&self, cx: &mut Context<FileViewer>) -> Vec<Subscription>;
+    /// Pass the view's comment changes and edits to a view wrapping it.
+    fn forward_to(&self, on_comment: OnComment, on_edit: OnEdit, cx: &mut App)
+    -> Vec<Subscription>;
 }
 
 impl<V: RendererView> RendererHandle for Entity<V> {
@@ -291,6 +323,20 @@ impl<V: RendererView> RendererHandle for Entity<V> {
             }),
         ]
     }
+
+    fn forward_to(
+        &self,
+        on_comment: OnComment,
+        on_edit: OnEdit,
+        cx: &mut App,
+    ) -> Vec<Subscription> {
+        vec![
+            cx.subscribe(self, move |_, change: &CommentChange, cx| {
+                on_comment(change, cx)
+            }),
+            cx.subscribe(self, move |_, edit: &TextEdit, cx| on_edit(edit, cx)),
+        ]
+    }
 }
 
 #[cfg(test)]
@@ -302,14 +348,16 @@ mod tests {
         BUILT_IN.iter().map(FileRenderer::BuiltIn).collect()
     }
 
-    fn custom(label: &str, files: &[&str]) -> FileRenderer {
-        FileRenderer::Custom(Arc::new(CustomRenderer {
+    fn plugin(label: &str, files: &[&str]) -> FileRenderer {
+        FileRenderer::Plugin(Arc::new(CustomRenderer {
+            key: format!("p/{label}"),
             label: label.into(),
             files: files.iter().map(|f| f.to_string()).collect(),
             kind: RendererKind::Command(CommandRenderer {
                 command: "true".into(),
                 output: OutputFormat::Svg,
             }),
+            server: None,
         }))
     }
 
@@ -351,44 +399,44 @@ mod tests {
     }
 
     #[test]
-    fn custom_renderers_come_first_and_picks_fall_back() {
-        let mut renderers = vec![custom("Diagram", &["*.diagram.svg", "*.diagram"])];
+    fn plugin_renderers_come_first_and_picks_fall_back() {
+        let mut renderers = vec![plugin("Diagram", &["*.diagram.svg", "*.diagram"])];
         renderers.extend(built_in());
         let ids = |path| {
             for_path(&renderers, path)
                 .map(|r| r.id())
                 .collect::<Vec<_>>()
         };
-        assert_eq!(ids("flow.diagram.svg"), ["custom:Diagram", "svg"]);
-        assert_eq!(ids("flow.diagram"), ["custom:Diagram"]);
+        assert_eq!(ids("flow.diagram.svg"), ["plugin:p/Diagram", "svg"]);
+        assert_eq!(ids("flow.diagram"), ["plugin:p/Diagram"]);
         assert_eq!(ids("logo.svg"), ["svg"]);
 
         // A pick for `.svg` made on a `.diagram.svg` file leaves other
         // SVGs drawn.
         let mut picks = BTreeMap::new();
-        picks.insert(file_kind("flow.diagram.svg"), "custom:Diagram".to_owned());
+        picks.insert(file_kind("flow.diagram.svg"), "plugin:p/Diagram".to_owned());
         let id = |path| chosen(&renderers, &picks, path).map(|r| r.id());
-        assert_eq!(id("flow.diagram.svg").as_deref(), Some("custom:Diagram"));
+        assert_eq!(id("flow.diagram.svg").as_deref(), Some("plugin:p/Diagram"));
         assert_eq!(id("logo.svg").as_deref(), Some("svg"));
-        picks.insert("diagram".into(), "custom:removed".into());
+        picks.insert("diagram".into(), "plugin:p/removed".into());
         assert_eq!(
             chosen(&renderers, &picks, "a.diagram")
                 .map(|r| r.id())
                 .as_deref(),
-            Some("custom:Diagram")
+            Some("plugin:p/Diagram")
         );
     }
 
     #[test]
     fn a_changed_command_is_another_renderer() {
-        let a = custom("x", &["*.x"]);
-        let FileRenderer::Custom(inner) = &a else {
+        let a = plugin("x", &["*.x"]);
+        let FileRenderer::Plugin(inner) = &a else {
             unreachable!()
         };
         let mut changed = (**inner).clone();
         changed.kind = RendererKind::Web(Default::default());
-        assert!(a == custom("x", &["*.x"]));
-        assert!(a != FileRenderer::Custom(Arc::new(changed)));
+        assert!(a == plugin("x", &["*.x"]));
+        assert!(a != FileRenderer::Plugin(Arc::new(changed)));
         assert!(built_in()[0] == built_in()[0]);
     }
 
