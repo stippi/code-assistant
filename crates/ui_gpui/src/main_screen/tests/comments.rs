@@ -159,6 +159,21 @@ fn the_title_bar_switch_opens_switches_and_closes_the_panel(cx: &mut TestAppCont
 }
 
 #[gpui_kit::test]
+fn the_pull_request_view_opens_from_the_title_bar_and_is_remembered(cx: &mut TestAppContext) {
+    let mut test = MainScreenTest::new(cx);
+    test.view_session("a");
+    test.click("right-panel-view-PR");
+    assert_eq!(panel_state(&mut test), Some(RightPanelView::PullRequest));
+    let stored = test.stores.ui_state.stored("a").expect("UI state saved");
+    assert_eq!(stored.right_panel_view.as_deref(), Some("pull-request"));
+
+    test.view_session("b");
+    test.click("right-panel-view-Files");
+    test.view_session("a");
+    assert_eq!(panel_state(&mut test), Some(RightPanelView::PullRequest));
+}
+
+#[gpui_kit::test]
 fn a_comment_on_a_message_reaches_the_draft_and_the_transcript(cx: &mut TestAppContext) {
     let mut test = MainScreenTest::new(cx);
     test.view_session("a");

@@ -1,6 +1,6 @@
 use gpui_kit::component::highlighter::{HighlightTheme, HighlightThemeStyle};
 use gpui_kit::component::theme::{Theme, ThemeMode};
-use gpui_kit::{App, rgb, rgba};
+use gpui_kit::{App, Hsla, hsla, rgb, rgba};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 
@@ -80,6 +80,12 @@ pub fn custom_light_theme() -> gpui_kit::component::theme::ThemeColor {
     colors.accent_foreground = rgba(0x333333FF).into();
 
     colors
+}
+
+/// The violet GitHub and other tools use for merged work and branches; the
+/// theme has no token for it.
+pub fn merged_violet() -> Hsla {
+    hsla(0.75, 0.55, 0.65, 1.)
 }
 
 /// Our syntax colors per mode: few hues (red keywords, blue functions, green

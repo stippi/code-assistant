@@ -663,6 +663,8 @@ impl Gpui {
 
         app.run(move |cx| {
             gpui_clone.install(cx);
+            // Remote images (`img(url)`, e.g. GitHub avatars) load through it.
+            cx.set_http_client(std::sync::Arc::new(reqwest_client::ReqwestClient::new()));
 
             // Opt-in frame profiling (see shared::frame_profile).
             let frame_profile_mode = shared::frame_profile::init_from_env();

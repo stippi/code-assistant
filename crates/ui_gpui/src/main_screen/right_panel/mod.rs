@@ -1,10 +1,11 @@
 //! The right sidebar's views.
 //!
 //! The sidebar hosts the [`review_view::ReviewView`], the project's files
-//! ([`files_view::FilesView`]) and, with the `browser-panel` feature, the
-//! agent's browser ([`browser::BrowserPanel`]). The title bar switches
-//! between them ([`RightPanelView::ALL`]). The shown view is remembered per
-//! session.
+//! ([`files_view::FilesView`]), the session's pull request
+//! ([`pull_request::PullRequestPanel`]) and, with the `browser-panel`
+//! feature, the agent's browser ([`browser::BrowserPanel`]). The title bar
+//! switches between them ([`RightPanelView::ALL`]). The shown view is
+//! remembered per session.
 
 #[cfg(feature = "browser-panel")]
 mod browser;
@@ -13,6 +14,7 @@ mod file_renderers;
 mod file_viewer;
 pub mod files_view;
 mod line_selection;
+pub mod pull_request;
 mod review_rows;
 pub mod review_view;
 
@@ -20,6 +22,7 @@ pub use crate::comments::CommentChange;
 use code_assistant_core::line_comments::LineComment;
 use files_view::FilesView;
 use gpui_kit::{Context, Entity, FocusHandle, Focusable, Render, Window, div, prelude::*};
+use pull_request::PullRequestPanel;
 use review_view::ReviewView;
 
 /// Which view the right panel is currently showing.
@@ -27,6 +30,7 @@ use review_view::ReviewView;
 pub enum RightPanelView {
     Review,
     Files,
+    PullRequest,
     #[cfg(feature = "browser-panel")]
     Browser,
 }
@@ -36,6 +40,7 @@ impl RightPanelView {
     pub const ALL: &[(RightPanelView, &'static str)] = &[
         (RightPanelView::Review, "Review"),
         (RightPanelView::Files, "Files"),
+        (RightPanelView::PullRequest, "PR"),
         #[cfg(feature = "browser-panel")]
         (RightPanelView::Browser, "Browser"),
     ];
@@ -45,6 +50,7 @@ impl RightPanelView {
         match self {
             RightPanelView::Review => "review",
             RightPanelView::Files => "files",
+            RightPanelView::PullRequest => "pull-request",
             #[cfg(feature = "browser-panel")]
             RightPanelView::Browser => "browser",
         }
@@ -55,6 +61,7 @@ impl RightPanelView {
     pub fn from_str(s: &str) -> Self {
         match s {
             "files" => RightPanelView::Files,
+            "pull-request" => RightPanelView::PullRequest,
             #[cfg(feature = "browser-panel")]
             "browser" => RightPanelView::Browser,
             _ => RightPanelView::Review,
@@ -66,6 +73,7 @@ pub struct RightPanel {
     active_view: RightPanelView,
     review_view: Entity<ReviewView>,
     files_view: Entity<FilesView>,
+    pull_request: Entity<PullRequestPanel>,
     #[cfg(feature = "browser-panel")]
     browser: Entity<browser::BrowserPanel>,
     session_id: Option<String>,
@@ -83,6 +91,7 @@ impl RightPanel {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let review_view = cx.new(|cx| ReviewView::new(window, cx));
         let files_view = cx.new(|cx| FilesView::new(window, cx));
+        let pull_request = cx.new(|cx| PullRequestPanel::new(window, cx));
         let comment_subscriptions = vec![
             cx.subscribe(&review_view, |_, _, change: &CommentChange, cx| {
                 cx.emit(change.clone())
@@ -97,6 +106,7 @@ impl RightPanel {
             active_view: RightPanelView::Review,
             review_view,
             files_view,
+            pull_request,
             #[cfg(feature = "browser-panel")]
             _browser_events: cx.subscribe(&browser, |this, _, event, cx| match event {
                 // The agent started browsing: show it.
@@ -166,7 +176,7 @@ impl RightPanel {
                 store.set_right_panel_view(session_id, view.as_str())
             });
         }
-        self.sync_files_session(cx);
+        self.sync_view_sessions(cx);
         cx.notify();
     }
 
@@ -185,20 +195,28 @@ impl RightPanel {
         self.browser.update(cx, |browser, cx| {
             browser.set_session(session_id.clone(), cx)
         });
-        self.sync_files_session(cx);
+        self.sync_view_sessions(cx);
         self.review_view
             .update(cx, |v, cx| v.set_session(session_id, cx));
         cx.notify();
     }
 
-    /// The Files view follows the session only while it is shown, so a
-    /// hidden one neither lists nor watches.
-    fn sync_files_session(&mut self, cx: &mut Context<Self>) {
-        let session_id = (self.active_view == RightPanelView::Files)
-            .then(|| self.session_id.clone())
-            .flatten();
+    /// The Files and Pull request views follow the session only while
+    /// shown, so a hidden one neither lists, watches nor polls.
+    fn sync_view_sessions(&mut self, cx: &mut Context<Self>) {
+        let shown = |view| {
+            (self.active_view == view)
+                .then(|| self.session_id.clone())
+                .flatten()
+        };
+        let (files, pull_request) = (
+            shown(RightPanelView::Files),
+            shown(RightPanelView::PullRequest),
+        );
         self.files_view
-            .update(cx, |files, cx| files.set_session(session_id, cx));
+            .update(cx, |view, cx| view.set_session(files, cx));
+        self.pull_request
+            .update(cx, |view, cx| view.set_session(pull_request, cx));
     }
 
     /// Re-request data for the active view.
@@ -221,6 +239,7 @@ impl Render for RightPanel {
         let body = match self.active_view {
             RightPanelView::Review => self.review_view.clone().into_any_element(),
             RightPanelView::Files => self.files_view.clone().into_any_element(),
+            RightPanelView::PullRequest => self.pull_request.clone().into_any_element(),
             #[cfg(feature = "browser-panel")]
             RightPanelView::Browser => self.browser.clone().into_any_element(),
         };
