@@ -1,4 +1,3 @@
-use crate::agent::SubAgentMode;
 use crate::tools::ToolServicesAccess;
 use crate::tools::core::{
     Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec, capabilities,
@@ -15,24 +14,17 @@ pub struct SpawnAgentInput {
     /// If true, instruct the sub-agent to include file references with line ranges.
     #[serde(default, skip_serializing_if = "is_false")]
     pub require_file_references: bool,
-    /// The mode for the sub-agent: "read_only" or "default".
-    #[serde(default = "default_mode", skip_serializing_if = "is_default_mode")]
-    pub mode: String,
     /// If true, return right away; the result arrives as a message later.
     #[serde(default, skip_serializing_if = "is_false")]
     pub background: bool,
+    /// If true, work in a copy of the project on a branch of its own and
+    /// merge back when done.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub worktree: bool,
 }
 
 fn is_false(b: &bool) -> bool {
     !b
-}
-
-fn is_default_mode(mode: &str) -> bool {
-    mode == "read_only"
-}
-
-fn default_mode() -> String {
-    "read_only".to_string()
 }
 
 /// Output from the spawn_agent tool.
@@ -137,10 +129,19 @@ impl Tool for SpawnAgentTool {
             "Use this for exploratory or repetitive work that shouldn't pollute the main conversation history. ",
             "Never use a sub-agent to just read files you already know you have to read and return their content verbatim, as this is both wasteful and expensive for the user. ",
             "Instead read those files directly yourself. The most effective way of using sub-agents is when you are unsure which files to explore.\n\n",
-            "The sub-agent has access to read-only tools by default (file reading, searching, web access). ",
-            "You can spawn multiple read-only sub-agents which are then executed in parallel. ",
-            "Normal sub-agents (mode: default) are executed sequentially if you spawn more than one.\n\n",
-            "Set `background: true` to not wait for a read-only sub-agent: the tool returns right away and the ",
+            "The sub-agent has the same tools as you: it can read, search, edit files and run commands. ",
+            "Multiple sub-agents spawned in one response run in parallel. ",
+            "By default a sub-agent works in your working tree: its edits land there right away, ",
+            "and edits to the same file by several agents are serialized, so none is lost.\n\n",
+            "Set `worktree: true` when a sub-agent will change files while you or other sub-agents change files too, ",
+            "typically for background or parallel work. In a git project it then works in a copy of your project ",
+            "on a branch of its own, with your uncommitted work, build outputs and installed dependencies, ",
+            "so it can build and test right away. When it finishes, its changes are merged into your working tree ",
+            "and the result says which files changed. Files ignored by git, such as build outputs, are not merged back. ",
+            "If its changes conflict with edits made meanwhile, nothing is applied and the result names a branch holding them: ",
+            "you then resolve the conflict yourself. Give parallel sub-agents separate parts of the code to keep conflicts rare. ",
+            "Research and other read-only work doesn't need a worktree.\n\n",
+            "Set `background: true` to not wait for a sub-agent: the tool returns right away and the ",
             "sub-agent's answer arrives later as a message starting with `[sub-agent #<id>]`. ",
             "Meanwhile continue with other work, or end your turn if there is nothing else to do: ",
             "the arriving result starts a new turn."
@@ -161,16 +162,15 @@ impl Tool for SpawnAgentTool {
                         "default": false,
                         "description": "If true, the sub-agent will be instructed to include exact file references with line ranges (e.g. `path/to/file.rs:10-20`)"
                     },
-                    "mode": {
-                        "type": "string",
-                        "enum": ["read_only", "default"],
-                        "default": "read_only",
-                        "description": "The mode for the sub-agent. 'read_only' restricts to read-only tools. 'default' allows to perform edits."
-                    },
                     "background": {
                         "type": "boolean",
                         "default": false,
-                        "description": "If true, don't wait for the sub-agent: its answer arrives later as a message. Only for mode 'read_only'."
+                        "description": "If true, don't wait for the sub-agent: its answer arrives later as a message."
+                    },
+                    "worktree": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "If true, the sub-agent works in a copy of the project on a branch of its own, and its changes are merged back when it finishes. Use it when it will change files while others do too."
                     }
                 },
                 "required": ["instructions"]
@@ -202,11 +202,6 @@ impl Tool for SpawnAgentTool {
             .clone()
             .ok_or_else(|| anyhow!("Tool ID not available"))?;
 
-        let mode = match input.mode.as_str() {
-            "default" => SubAgentMode::Default,
-            _ => SubAgentMode::ReadOnly, // Default to read-only for safety
-        };
-
         // Build final instructions
         let mut final_instructions = input.instructions.clone();
         if input.require_file_references {
@@ -218,14 +213,13 @@ impl Tool for SpawnAgentTool {
             );
         }
 
+        let options = crate::agent::sub_agent::SubAgentOptions {
+            require_file_references: input.require_file_references,
+            worktree: input.worktree,
+        };
         if input.background {
             let started = sub_agent_runner
-                .start_background(
-                    &tool_id,
-                    final_instructions,
-                    mode,
-                    input.require_file_references,
-                )
+                .start_background(&tool_id, final_instructions, options)
                 .await?;
             return Ok(SpawnAgentOutput::background_started(
                 started.agent_id,
@@ -235,12 +229,7 @@ impl Tool for SpawnAgentTool {
 
         // Run the sub-agent
         let result = sub_agent_runner
-            .run(
-                &tool_id,
-                final_instructions,
-                mode,
-                input.require_file_references,
-            )
+            .run(&tool_id, final_instructions, options)
             .await;
 
         match result {

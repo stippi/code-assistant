@@ -1,6 +1,7 @@
 mod binary;
 mod branch;
 mod diff;
+pub mod isolation;
 mod merged;
 mod patch;
 pub mod pull_request;
