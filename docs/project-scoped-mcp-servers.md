@@ -8,17 +8,20 @@ committed file serves both tools.
 
 ## The `.mcp.json` format
 
-```jsonc
+The `filesystem` example uses stdio; its `type` field may be omitted.
+For `internal-api`, `sse` and `streamable-http` are aliases for `http`.
+
+```json
 {
   "mcpServers": {
-    "filesystem": {                         // stdio: "type" may be omitted
+    "filesystem": {
       "type": "stdio",
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
       "env": { "NODE_ENV": "production" }
     },
     "internal-api": {
-      "type": "http",                       // "sse" / "streamable-http" alias http
+      "type": "http",
       "url": "https://api.example.com/mcp",
       "headers": { "Authorization": "Bearer ${API_TOKEN}" }
     }
