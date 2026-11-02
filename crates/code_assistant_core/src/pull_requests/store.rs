@@ -3,7 +3,9 @@
 
 use super::cache::{Cache, Policy, Refreshed};
 use super::snapshots::{Kind, Snapshots};
-use super::{Fetched, PullRequestPart, SessionPullRequests, github_remote, own_pull_request};
+use super::{
+    Fetched, PullRequestPart, SessionPullRequests, github_remote, own_pull_request, working_branch,
+};
 use crate::session::event_stream::EventStream;
 use crate::ui::UiEvent;
 use anyhow::Result;
@@ -230,12 +232,7 @@ impl PullRequests {
         let checkout = tokio::task::spawn_blocking(move || {
             let repo = git::GitRepository::open(&path).ok()?;
             let github = github_remote(&repo)?;
-            let checked_out = repo.current_branch().filter(|branch| {
-                !repo
-                    .default_base_branch()
-                    .is_some_and(|base| crate::session::lifecycle::is_base_branch(branch, &base))
-            });
-            Some((github, checked_out))
+            Some((github, working_branch(&repo)))
         })
         .await?;
         let Some((repo, checked_out)) = checkout else {
