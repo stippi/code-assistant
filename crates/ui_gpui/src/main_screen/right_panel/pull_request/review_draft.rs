@@ -154,6 +154,25 @@ impl ReviewDrafts {
         }
     }
 
+    /// Add `quote` to the comment on `pr` and open the composer on it.
+    pub fn quote(&mut self, pr: &PullRequestRef, quote: &str, cx: &mut Context<Self>) {
+        let text = match self.comment(pr).trim_end() {
+            "" => quote.to_owned(),
+            written => format!("{written}\n\n{quote}"),
+        };
+        self.set_comment(pr, &text, cx);
+        self.ask_to_open(pr, ComposerMode::Comment, cx);
+    }
+
+    /// Drop the review's text and its line comments.
+    pub fn discard_review(&mut self, pr: &PullRequestRef, cx: &mut Context<Self>) {
+        if let Some(draft) = self.drafts.get_mut(pr) {
+            draft.summary.clear();
+            draft.pending.clear();
+            self.changed(pr, cx);
+        }
+    }
+
     /// Ask the composer of `pr` to open on `mode`.
     pub fn ask_to_open(&mut self, pr: &PullRequestRef, mode: ComposerMode, cx: &mut Context<Self>) {
         self.opening = Some((pr.clone(), mode));
@@ -318,6 +337,19 @@ mod tests {
         });
         cx.run_until_parked();
         assert!(notified.get() > 0);
+    }
+
+    #[gpui_kit::test]
+    fn a_quote_goes_below_what_is_written_and_opens_the_composer(cx: &mut TestAppContext) {
+        let drafts = cx.update(|cx| cx.new(|_| ReviewDrafts::default()));
+        drafts.update(cx, |drafts, cx| {
+            drafts.quote(&pr(1), "> one\n\n", cx);
+            assert_eq!(drafts.comment(&pr(1)), "> one\n\n");
+            assert_eq!(drafts.opening(&pr(1)), Some(ComposerMode::Comment));
+            drafts.set_comment(&pr(1), "> one\n\nSure\n", cx);
+            drafts.quote(&pr(1), "> two\n\n", cx);
+            assert_eq!(drafts.comment(&pr(1)), "> one\n\nSure\n\n> two\n\n");
+        });
     }
 
     #[gpui_kit::test]

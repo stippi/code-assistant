@@ -12,6 +12,7 @@
 //! text is cleared.
 
 use super::actions::{Confirmable, InlineConfirm, can};
+use super::conversation::editor::set_text_at_end;
 use super::data::PullRequestData;
 use super::review_draft::{ReviewDrafts, review_drafts};
 use crate::shared::dismiss::{TriggerBounds, dismiss_layer};
@@ -158,8 +159,12 @@ impl Composer {
                     drafts.summary(&pr).to_owned(),
                 )
             };
-            comment.update(cx, |input, cx| input.set_value(saved_comment, window, cx));
-            summary.update(cx, |input, cx| input.set_value(saved_summary, window, cx));
+            comment.update(cx, |input, cx| {
+                set_text_at_end(input, saved_comment, window, cx)
+            });
+            summary.update(cx, |input, cx| {
+                set_text_at_end(input, saved_summary, window, cx)
+            });
             let subscriptions = vec![
                 cx.subscribe_in(&comment, window, |this, input, event, window, cx| {
                     if matches!(
@@ -214,7 +219,7 @@ impl Composer {
         };
         for (input, text) in [(comment, comment_text), (summary, summary_text)] {
             if input.read(cx).value() != text {
-                input.update(cx, |input, cx| input.set_value(text, window, cx));
+                input.update(cx, |input, cx| set_text_at_end(input, text, window, cx));
             }
         }
         cx.notify();
@@ -405,7 +410,8 @@ impl Composer {
     fn render_trigger(&self, comment: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let pending = self.pending(cx);
-        let written = !self.comment_text(cx).is_empty() || !self.summary_text(cx).is_empty();
+        let written =
+            !self.comment_text(cx).trim().is_empty() || !self.summary_text(cx).trim().is_empty();
         let badge = div()
             .absolute()
             .top(px(-4.))
@@ -884,6 +890,14 @@ mod tests {
         view.read_with(cx, |view, cx| {
             let input = &view.forms.as_ref().unwrap().comment;
             assert_eq!(input.read(cx).value(), "From before", "in the field");
+        });
+        cx.simulate_input(", and now");
+        drafts.read_with(cx, |drafts, _| {
+            assert_eq!(
+                drafts.comment(&pr),
+                "From before, and now",
+                "goes on after it"
+            );
         });
 
         // Discarded elsewhere, the field follows.
