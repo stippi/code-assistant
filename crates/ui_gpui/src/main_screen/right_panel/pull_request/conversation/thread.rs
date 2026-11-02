@@ -157,7 +157,9 @@ impl ThreadCard {
         let data = self.data.clone();
         let comment = comment.clone();
         let id = comment.id.clone();
-        let card = cx.new(|cx| CommentCard::new(data, comment, CardStyle::Entry, cx));
+        let thread = cx.entity().downgrade();
+        let card =
+            cx.new(|cx| CommentCard::new(data, comment, CardStyle::Entry, cx).with_thread(thread));
         let intents = cx.subscribe(&card, |_, _, intent: &PullRequestIntent, cx| {
             cx.emit(intent.clone())
         });
@@ -257,6 +259,14 @@ impl ThreadCard {
         );
         self.reply = Some((editor, subscription));
         cx.notify();
+    }
+
+    /// Answer with `quote` in the reply box.
+    pub fn quote(&mut self, quote: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.start_reply(window, cx);
+        if let Some((editor, _)) = &self.reply {
+            editor.update(cx, |editor, cx| editor.append(quote, window, cx));
+        }
     }
 
     fn send_reply(&mut self, editor: Entity<MarkdownEditor>, body: String, cx: &mut Context<Self>) {
@@ -579,6 +589,21 @@ mod tests {
         view.read_with(cx, |view, _| {
             assert!(!view.loading_more);
             assert_eq!(view.next_cursor().as_deref(), Some("c1"));
+        });
+    }
+
+    #[gpui_kit::test]
+    fn a_quote_goes_into_the_reply_box_ready_to_answer(cx: &mut TestAppContext) {
+        let (view, cx) = card(thread("t1", &[("a", hours_ago(3))]), cx);
+        view.update_in(cx, |view, window, cx| {
+            view.quote("> one\n\n", window, cx);
+            view.quote("> two\n\n", window, cx);
+        });
+        cx.run_until_parked();
+        cx.simulate_input("Sure");
+        view.read_with(cx, |view, cx| {
+            let (editor, _) = view.reply.as_ref().expect("the reply box opened");
+            assert_eq!(editor.read(cx).text(cx), "> one\n\n> two\n\nSure");
         });
     }
 }
