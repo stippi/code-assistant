@@ -1,6 +1,6 @@
-//! The floating composer at the detail page's bottom right: a round button
-//! (with the number of pending line comments) opening a popover to comment
-//! on the pull request or to review it. Ported from T3 Code's
+//! The composer in the detail page's header: a button (with the number of
+//! pending line comments) opening a popover to comment on the pull request
+//! or to review it. Ported from T3 Code's
 //! `PullRequestComposer`, `PullRequestCommentForm` and
 //! `PullRequestReviewForm`.
 //!
@@ -23,7 +23,7 @@ use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme, Disableable, Icon, Sizable};
 use gpui_kit::{
     Anchor, AnyElement, Context, Edges, Entity, MouseButton, Render, Subscription, Task, Window,
-    anchored, deferred, div, prelude::*, px, svg,
+    anchored, deferred, div, prelude::*, px,
 };
 use std::time::Duration;
 
@@ -250,11 +250,16 @@ impl Composer {
         }
         // A review under way is what the user comes back to.
         let started = self.pending(cx) > 0 || !self.summary_text(cx).trim().is_empty();
-        self.requested = if started {
+        let mode = if started {
             ComposerMode::Review
         } else {
             ComposerMode::Comment
         };
+        self.open_on(mode, window, cx);
+    }
+
+    fn open_on(&mut self, mode: ComposerMode, window: &mut Window, cx: &mut Context<Self>) {
+        self.requested = mode;
         self.open = true;
         self.focus_form(window, cx);
         cx.notify();
@@ -395,55 +400,54 @@ impl Composer {
         });
     }
 
-    fn render_trigger(&self, pending: usize, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The button in the page's header: with the number of pending line
+    /// comments, or a dot for a text not sent yet.
+    fn render_trigger(&self, comment: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
+        let pending = self.pending(cx);
+        let written = !self.comment_text(cx).is_empty() || !self.summary_text(cx).is_empty();
+        let badge = div()
+            .absolute()
+            .top(px(-4.))
+            .right(px(-4.))
+            .rounded_full()
+            .bg(theme.info);
         div()
-            .id("pr-composer")
             .debug_selector(|| "pr-composer".into())
             .relative()
-            .occlude()
-            // It floats over the tabs: what lies beneath (a diff line) must
-            // not take the press too.
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .size(px(36.))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_full()
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.popover)
-            .shadow_md()
-            .cursor_pointer()
-            .hover(|s| s.bg(theme.muted))
             .child(self.trigger.probe())
             .child(
-                svg()
-                    .size(px(16.))
-                    .path("icons/message_square.svg")
-                    .text_color(theme.foreground),
+                Button::new("pr-composer")
+                    .outline()
+                    .xsmall()
+                    .icon(Icon::default().path("icons/message_square.svg"))
+                    .label(if comment { "Comment" } else { "Review" })
+                    .on_click(cx.listener(|this, _, window, cx| this.toggle(window, cx))),
             )
-            .when(pending > 0, |el| {
-                el.child(
-                    div()
-                        .absolute()
-                        .top(px(-4.))
-                        .right(px(-4.))
-                        .h(px(16.))
-                        .min_w(px(16.))
-                        .px_1()
-                        .rounded_full()
-                        .bg(theme.info)
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .text_size(px(10.))
-                        .text_color(gpui_kit::white())
-                        .child(pending.to_string()),
-                )
+            .map(|el| {
+                if pending > 0 {
+                    el.child(
+                        badge
+                            .h(px(16.))
+                            .min_w(px(16.))
+                            .px_1()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(10.))
+                            .text_color(gpui_kit::white())
+                            .child(pending.to_string()),
+                    )
+                } else if written {
+                    el.child(
+                        badge
+                            .debug_selector(|| "pr-composer-written".into())
+                            .size(px(8.)),
+                    )
+                } else {
+                    el
+                }
             })
-            .on_click(cx.listener(|this, _, window, cx| this.toggle(window, cx)))
     }
 
     fn render_comment_form(
@@ -653,11 +657,12 @@ impl Composer {
         let muted = theme.muted_foreground;
         div()
             .id("pr-composer-popover")
+            .debug_selector(|| "pr-composer-popover".into())
             .occlude()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .w(px(420.))
-            .mb_2()
+            .mt_7()
             .p_3()
             .flex()
             .flex_col()
@@ -715,11 +720,18 @@ impl Render for Composer {
         if !can_comment && verdicts.is_empty() {
             return div().into_any_element();
         }
-        let pending = self.pending(cx);
+        let asked = self.drafts.read(cx).opening(&self.data.read(cx).pr);
+        if let Some(mode) = asked {
+            cx.defer_in(window, move |this, window, cx| {
+                this.drafts.update(cx, |drafts, _| drafts.opened());
+                this.open_on(mode, window, cx);
+            });
+        }
         let mut root = div()
             .relative()
             .flex()
-            .child(self.render_trigger(pending, cx));
+            .items_start()
+            .child(self.render_trigger(can_comment, cx));
         if self.open {
             let popover = self.render_popover(&detail, window, cx);
             root = root
@@ -730,7 +742,7 @@ impl Render for Composer {
                 ))
                 .child(deferred(
                     anchored()
-                        .anchor(Anchor::BottomRight)
+                        .anchor(Anchor::TopRight)
                         .snap_to_window_with_margin(Edges::all(px(8.)))
                         .child(popover),
                 ));
@@ -832,54 +844,6 @@ mod tests {
         });
     }
 
-    /// The composer over a surface that counts the presses reaching it.
-    struct Over {
-        composer: Entity<Composer>,
-        presses: std::rc::Rc<std::cell::Cell<usize>>,
-    }
-
-    impl Render for Over {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            let presses = self.presses.clone();
-            div()
-                .size_full()
-                .relative()
-                .on_mouse_down(gpui_kit::MouseButton::Left, move |_, _, _| {
-                    presses.set(presses.get() + 1)
-                })
-                .child(
-                    div()
-                        .absolute()
-                        .top_4()
-                        .left_4()
-                        .child(self.composer.clone()),
-                )
-        }
-    }
-
-    #[gpui_kit::test]
-    fn a_press_on_the_composer_stays_there(cx: &mut TestAppContext) {
-        let presses = std::rc::Rc::new(std::cell::Cell::new(0));
-        let window = cx.update(|cx| {
-            gpui_kit::component::init(cx);
-            let presses = presses.clone();
-            cx.open_window(Default::default(), move |_, cx| {
-                let data = cx.new(|cx| PullRequestData::new(repo().pull_request(1), cx));
-                data.update(cx, |data, _| data.detail = Some(Arc::new(detail(1))));
-                let composer = cx.new(|cx| Composer::new(data, cx));
-                cx.new(|_| Over { composer, presses })
-            })
-            .unwrap()
-        });
-        let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
-        cx.run_until_parked();
-        let bounds = cx.debug_bounds("pr-composer").unwrap();
-        cx.simulate_click(bounds.center(), gpui_kit::Modifiers::none());
-        cx.run_until_parked();
-        assert!(cx.debug_bounds("pr-comment-post").is_some(), "it opened");
-        assert_eq!(presses.get(), 0, "nothing beneath took the press");
-    }
-
     #[gpui_kit::test]
     fn a_comment_that_did_not_post_is_kept(cx: &mut TestAppContext) {
         let (view, cx) = composer(detail(1), cx);
@@ -893,5 +857,60 @@ mod tests {
             assert_eq!(view.comment_text(cx), "Looks good");
             assert!(view.data.read(cx).error.is_some());
         });
+    }
+
+    #[gpui_kit::test]
+    fn the_popover_opens_below_the_button(cx: &mut TestAppContext) {
+        let (_, cx) = composer(detail(1), cx);
+        let button = cx.debug_bounds("pr-composer").unwrap();
+        cx.simulate_click(button.center(), gpui_kit::Modifiers::none());
+        cx.run_until_parked();
+        let popover = cx.debug_bounds("pr-composer-popover").unwrap();
+        assert!(popover.top() >= button.bottom());
+    }
+
+    #[gpui_kit::test]
+    fn a_written_text_shows_on_the_button_and_comes_back_when_reopened(cx: &mut TestAppContext) {
+        let (view, cx) = composer(detail(1), cx);
+        assert!(cx.debug_bounds("pr-composer-written").is_none());
+        let drafts = cx.update(|_, cx| review_drafts(cx));
+        let pr = repo().pull_request(1);
+        drafts.update(cx, |drafts, cx| drafts.set_comment(&pr, "From before", cx));
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("pr-composer-written").is_some());
+
+        view.update_in(cx, |view, window, cx| view.toggle(window, cx));
+        cx.run_until_parked();
+        view.read_with(cx, |view, cx| {
+            let input = &view.forms.as_ref().unwrap().comment;
+            assert_eq!(input.read(cx).value(), "From before", "in the field");
+        });
+
+        // Discarded elsewhere, the field follows.
+        drafts.update(cx, |drafts, cx| drafts.set_comment(&pr, "", cx));
+        cx.run_until_parked();
+        view.read_with(cx, |view, cx| {
+            let input = &view.forms.as_ref().unwrap().comment;
+            assert_eq!(input.read(cx).value(), "");
+        });
+    }
+
+    #[gpui_kit::test]
+    fn a_draft_can_ask_for_the_composer(cx: &mut TestAppContext) {
+        let (view, cx) = composer(detail(1), cx);
+        let drafts = cx.update(|_, cx| review_drafts(cx));
+        let pr = repo().pull_request(1);
+        drafts.update(cx, |drafts, cx| {
+            drafts.ask_to_open(&repo().pull_request(2), ComposerMode::Comment, cx)
+        });
+        cx.run_until_parked();
+        view.read_with(cx, |view, _| assert!(!view.open, "another's"));
+
+        drafts.update(cx, |drafts, cx| {
+            drafts.ask_to_open(&pr, ComposerMode::Comment, cx)
+        });
+        cx.run_until_parked();
+        view.read_with(cx, |view, _| assert!(view.open));
+        drafts.read_with(cx, |drafts, _| assert_eq!(drafts.opening(&pr), None));
     }
 }

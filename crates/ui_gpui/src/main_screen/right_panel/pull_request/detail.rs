@@ -73,7 +73,6 @@ pub struct DetailView {
     summary: Entity<SummaryTab>,
     timeline: Entity<TimelineTab>,
     code: Entity<CodeTab>,
-    composer: Entity<Composer>,
     /// The tab row's "Approve workflows to run" waits for its second click.
     confirm: InlineConfirm,
     _confirm_timeout: Option<Task<()>>,
@@ -98,11 +97,13 @@ impl DetailView {
     pub fn new(pr: PullRequestRef, seed: Option<ListEntry>, cx: &mut Context<Self>) -> Self {
         let data = cx.new(|cx| PullRequestData::new(pr.clone(), cx));
         let merge_method = preferences::read(cx).merge_method(&pr.repo);
-        let header = cx.new(|_| DetailHeader::new(pr.clone(), seed, merge_method));
+        let composer = cx.new(|cx| Composer::new(data.clone(), cx));
+        let header = cx.new(|_| {
+            DetailHeader::new(pr.clone(), seed, merge_method).with_composer(composer.clone())
+        });
         let summary = cx.new(|cx| SummaryTab::new(data.clone(), cx));
         let timeline = cx.new(|_| TimelineTab::new(data.clone()));
         let code = cx.new(|cx| CodeTab::new(data.clone(), cx));
-        let composer = cx.new(|cx| Composer::new(data.clone(), cx));
         let subscriptions = vec![
             cx.observe(&data, |this, _, cx| this.sync_header(cx)),
             cx.subscribe(&header, |_, _, intent: &PullRequestIntent, cx| {
@@ -151,7 +152,6 @@ impl DetailView {
             summary,
             timeline,
             code,
-            composer,
             confirm: InlineConfirm::default(),
             _confirm_timeout: None,
             approving: false,
@@ -718,13 +718,6 @@ impl Render for DetailView {
             .children(notice.map(|notice| self.render_notice(notice, cx)))
             .child(render_tab_row(self.tab, slot, window, cx))
             .child(div().flex_1().min_h_0().child(body))
-            .child(
-                div()
-                    .absolute()
-                    .bottom_4()
-                    .right_4()
-                    .child(self.composer.clone()),
-            )
             .children(
                 self.stack_confirm
                     .and_then(|kind| self.render_stack_confirm(kind, cx)),
