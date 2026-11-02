@@ -754,7 +754,7 @@ mod tests {
         assert_eq!(done.session_id, id);
         assert_eq!(done.path, tool);
         assert_eq!(git_out(&tool, &["rev-parse", "HEAD"]), head);
-        let mut manager = manager.lock().await;
+        let manager = manager.lock().await;
         let config = &manager.get_session(&id).unwrap().session.config;
         assert_eq!(config.branch, None);
         assert_eq!(config.worktree_path, None);

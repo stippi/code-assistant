@@ -124,6 +124,73 @@ fn the_tab_lists_the_projects_pull_requests_and_refreshes_them(cx: &mut TestAppC
 }
 
 #[gpui_kit::test]
+fn a_folder_of_checkouts_lists_the_repository_chosen(cx: &mut TestAppContext) {
+    let fake = scripted_github(None);
+    let folder = tempfile::tempdir().unwrap();
+    for name in ["alpha", "beta"] {
+        let checkout = folder.path().join(name);
+        std::fs::create_dir(&checkout).unwrap();
+        git(&checkout, &["init", "-q", "-b", "main"]);
+        let remote = format!("git@github.com:team/{name}.git");
+        git(&checkout, &["remote", "add", "origin", &remote]);
+    }
+    let core = TestCore::with_github(PendingLLMProvider::default().into_factory(), &fake);
+    let config = SessionConfig {
+        init_path: Some(folder.path().to_path_buf()),
+        ..SessionConfig::default()
+    };
+    let session_id = core
+        .block_on(core.service.create_session_with_config(None, config, None))
+        .unwrap();
+    let other = core
+        .block_on(core.service.create_session(None, None))
+        .unwrap();
+    let mut test = MainScreenTest::with_core(cx, core);
+    test.gpui.cmd_load_session(session_id.clone(), None);
+    test.wait_until("the session is shown", |test| {
+        test.gpui.get_current_session_id().as_deref() == Some(session_id.as_str())
+    });
+    let searched = |name: &str| {
+        let repo = format!("repo:team/{name}");
+        fake.requests().iter().any(|request| {
+            request.operation.as_deref() == Some("PullRequestSearch")
+                && request
+                    .variables
+                    .as_ref()
+                    .is_some_and(|variables| variables.to_string().contains(&repo))
+        })
+    };
+
+    test.click("right-panel-view-PR");
+    test.wait_until("the choice is offered", |test| test.shows("pr-repo-beta"));
+    assert!(searches(&fake) == 0, "nothing is read before a choice");
+
+    test.click("pr-repo-beta");
+    test.wait_until("beta is listed", |_| searched("beta"));
+    assert!(!searched("alpha"));
+    test.wait_until("the list shows", |test| test.shows("pr-row-291"));
+
+    test.click("pr-repo-picker");
+    test.wait_until("the others are offered", |test| test.shows("pr-repo-alpha"));
+    test.click("pr-repo-alpha");
+    test.wait_until("alpha is listed", |_| searched("alpha"));
+
+    // The session comes back to the repository it listed, with no question.
+    test.gpui.cmd_load_session(other.clone(), None);
+    test.wait_until("the other session is shown", |test| {
+        test.gpui.get_current_session_id().as_deref() == Some(other.as_str())
+    });
+    test.gpui.cmd_load_session(session_id.clone(), None);
+    test.wait_until("the session is shown again", |test| {
+        test.gpui.get_current_session_id().as_deref() == Some(session_id.as_str())
+    });
+    test.wait_until("its repository is listed", |test| {
+        test.shows("pr-repo-picker")
+    });
+    assert!(!test.shows("pr-repo-alpha"), "no question");
+}
+
+#[gpui_kit::test]
 fn the_sessions_pull_request_shows_and_takes_a_comment(cx: &mut TestAppContext) {
     let fake = scripted_github(Some(291));
     fake.on_graphql("PullRequestNodeId")

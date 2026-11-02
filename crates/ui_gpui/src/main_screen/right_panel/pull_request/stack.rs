@@ -8,6 +8,7 @@ use super::PullRequestIntent;
 use super::actions::{allowed_merge_methods, can};
 use super::header::DetailHeader;
 use super::presentation::{Glyph, Tone};
+use github::RepoRef;
 use github::model::{Detail, PullRequestAction, PullRequestState, Stack, StackHead, StackLayer};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::popover::{Popover, PopoverState};
@@ -381,6 +382,7 @@ pub fn render_stack_controls(
         let weak = cx.entity().downgrade();
         let stack = stack.clone();
         let number = detail.number;
+        let repo = header.repo().clone();
         let notice = view.notice();
         Popover::new("pr-stack")
             .anchor(gpui_kit::Anchor::TopRight)
@@ -388,6 +390,7 @@ pub fn render_stack_controls(
             .content(move |state, window, cx| {
                 stack_menu(
                     &stack,
+                    &repo,
                     number,
                     StackMenuOptions {
                         notice,
@@ -450,6 +453,7 @@ struct StackMenuOptions {
 #[allow(clippy::too_many_arguments)]
 fn stack_menu(
     stack: &Stack,
+    repo: &RepoRef,
     number: u64,
     options: StackMenuOptions,
     header: &WeakEntity<DetailHeader>,
@@ -529,7 +533,10 @@ fn stack_menu(
                 .hover(|d| d.bg(hover))
                 .child(layer_row(layer, current, false, cx))
                 .when(!current, |row| {
-                    row.on_click(send(Some(PullRequestIntent::Open(layer.number)), None))
+                    row.on_click(send(
+                        Some(PullRequestIntent::Open(repo.pull_request(layer.number))),
+                        None,
+                    ))
                 })
         }));
     menu = menu.child(layers).child(base_row(&stack.base, cx));

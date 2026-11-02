@@ -95,6 +95,10 @@ impl EventEmitter<PullRequestIntent> for DetailHeader {}
 impl EventEmitter<StackRequest> for DetailHeader {}
 
 impl DetailHeader {
+    pub(super) fn repo(&self) -> &github::RepoRef {
+        &self.pr.repo
+    }
+
     /// `merge_method` is the one last used in the repository.
     pub fn new(
         pr: PullRequestRef,

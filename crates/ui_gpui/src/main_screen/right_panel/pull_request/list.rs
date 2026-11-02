@@ -31,8 +31,10 @@ use super::preferences;
 use super::presentation::{
     GLYPH_SIZE, Tone, checks_glyph, conflict_glyph, diff_stat, relative_time, review_glyph,
 };
+use super::repo_picker::{RepoPicked, RepoPicker};
 use super::stack::{LAYERS_ICON, base_row, layer_row, position_label};
 use chrono::Utc;
+use code_assistant_core::pull_requests::RepoCheckout;
 use github::RepoRef;
 use github::model::{
     Action, DiffStat, Involvement, ListEntry, ListPage, ListQuery, ListState as ListedState,
@@ -104,6 +106,8 @@ pub struct PullRequestList {
     involvement: Involvement,
     sort: SortMode,
     filters: Filters,
+    repo_picker: Entity<RepoPicker>,
+    repo_picker_open: bool,
     search: Entity<InputState>,
     /// The search field's text.
     query: String,
@@ -122,7 +126,14 @@ impl PullRequestList {
         let search = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Search pull requests, or label:bug")
         });
-        let subscriptions = vec![cx.subscribe_in(&search, window, Self::on_search_event)];
+        let repo_picker = cx.new(|cx| RepoPicker::new(window, cx));
+        let subscriptions = vec![
+            cx.subscribe_in(&search, window, Self::on_search_event),
+            cx.subscribe(&repo_picker, |this, _, picked: &RepoPicked, cx| {
+                this.repo_picker_open = false;
+                cx.emit(PullRequestIntent::Focus(picked.0.clone()));
+            }),
+        ];
         let remembered = preferences::read(cx).list;
         Self {
             repo: None,
@@ -149,6 +160,8 @@ impl PullRequestList {
             involvement: remembered.involvement,
             sort: remembered.sort,
             filters: remembered.filters,
+            repo_picker,
+            repo_picker_open: false,
             search,
             query: String::new(),
             listed_text: String::new(),
@@ -164,15 +177,26 @@ impl PullRequestList {
         if self.repo == repo {
             return;
         }
+        self.repo_picker.update(cx, |picker, cx| {
+            picker.set_selected(repo.clone(), cx);
+        });
         self.repo = repo;
         self.entries.clear();
         self.overrides.clear();
         self.stats.clear();
         self.stats_asked.clear();
+        self.stacks.clear();
         self.next_cursor = None;
         self.loaded = false;
         self.error = None;
         self.rebuild_rows();
+        cx.notify();
+    }
+
+    /// The repositories to choose from, recent ones first.
+    pub fn set_checkouts(&mut self, checkouts: Vec<RepoCheckout>, cx: &mut Context<Self>) {
+        self.repo_picker
+            .update(cx, |picker, cx| picker.set_checkouts(checkouts, cx));
         cx.notify();
     }
 
@@ -299,6 +323,13 @@ impl PullRequestList {
             text: (!text.trim().is_empty()).then_some(text),
             limit: PAGE_SIZE,
             cursor: None,
+        }
+    }
+
+    /// Ask for pull request `number` of the listed repository.
+    fn open(&self, number: u64, cx: &mut Context<Self>) {
+        if let Some(repo) = &self.repo {
+            cx.emit(PullRequestIntent::Open(repo.pull_request(number)));
         }
     }
 
@@ -656,9 +687,7 @@ impl PullRequestList {
                             .child(line_one)
                             .child(line_two),
                     )
-                    .on_click(
-                        cx.listener(move |_, _, _, cx| cx.emit(PullRequestIntent::Open(number))),
-                    ),
+                    .on_click(cx.listener(move |this, _, _, cx| this.open(number, cx))),
             )
             .into_any_element()
     }
@@ -703,10 +732,52 @@ impl PullRequestList {
             .into_any_element()
     }
 
-    /// Search field, then Sort, Filters and refresh.
+    /// The repository listed, and the popover to choose another.
+    fn render_repo_trigger(&self, repo: &RepoRef, cx: &mut Context<Self>) -> AnyElement {
+        let this = cx.entity().downgrade();
+        let picker = self.repo_picker.clone();
+        div()
+            .debug_selector(|| "pr-repo-picker".into())
+            .child(
+                Popover::new("pr-repo-picker")
+                    .anchor(gpui_kit::Anchor::TopLeft)
+                    .open(self.repo_picker_open)
+                    .on_open_change(move |open, window, cx| {
+                        let open = *open;
+                        this.update(cx, |this, cx| {
+                            this.repo_picker_open = open;
+                            if open {
+                                this.repo_picker
+                                    .update(cx, |picker, cx| picker.start_search(window, cx));
+                            }
+                            cx.notify();
+                        })
+                        .ok();
+                    })
+                    .trigger(
+                        Button::new("pr-repo-picker-trigger")
+                            .outline()
+                            .small()
+                            .icon(Icon::default().path("icons/git_branch.svg"))
+                            .label(repo.name.clone())
+                            .dropdown_caret(true)
+                            .tooltip(repo.full_name()),
+                    )
+                    .content(move |_, _, _| picker.clone().into_any_element()),
+            )
+            .into_any_element()
+    }
+
+    /// The repository when there is a choice, the search field, then Sort,
+    /// Filters and refresh.
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let list = cx.entity().downgrade();
         let sort_list = list.clone();
+        let repo_trigger = self
+            .repo
+            .as_ref()
+            .filter(|_| self.repo_picker.read(cx).offers_a_choice())
+            .map(|repo| self.render_repo_trigger(repo, cx));
         div()
             .flex_none()
             .px_4()
@@ -715,6 +786,7 @@ impl PullRequestList {
             .flex()
             .flex_col()
             .gap_2()
+            .children(repo_trigger)
             .child(
                 Input::new(&self.search)
                     .with_size(Size::Small)
@@ -1131,6 +1203,9 @@ fn toggle_label(filters: &mut Filters, name: String) {
 
 impl Render for PullRequestList {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.repo.is_none() && self.repo_picker.read(cx).offers_a_choice() {
+            return self.repo_picker.clone().into_any_element();
+        }
         let note = self.render_note(cx);
         div()
             .size_full()
@@ -1159,6 +1234,7 @@ impl Render for PullRequestList {
                     .size_full(),
                 ),
             )
+            .into_any_element()
     }
 }
 
@@ -1311,8 +1387,7 @@ fn row_stack_menu(
                         popover
                             .update(cx, |state, cx| state.dismiss(window, cx))
                             .ok();
-                        list.update(cx, |_, cx| cx.emit(PullRequestIntent::Open(target)))
-                            .ok();
+                        list.update(cx, |list, cx| list.open(target, cx)).ok();
                     })
             })),
     )
@@ -1529,7 +1604,10 @@ mod tests {
         let (_, intents, cx) = list_view(cx);
         let bounds = cx.debug_bounds("pr-row-107").unwrap();
         cx.simulate_click(bounds.center(), gpui_kit::Modifiers::none());
-        assert_eq!(intents.borrow().as_slice(), [PullRequestIntent::Open(107)]);
+        assert_eq!(
+            intents.borrow().as_slice(),
+            [PullRequestIntent::Open(repo().pull_request(107))]
+        );
     }
 
     #[gpui_kit::test]
