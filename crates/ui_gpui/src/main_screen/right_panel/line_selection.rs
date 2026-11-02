@@ -187,6 +187,7 @@ pub(crate) fn row_selection<V: SelectsLines>(
         marked: marks.marked,
         mark_color: marks.mark_color,
         anchor: marks.anchor,
+        gutter_add: None,
         on_start,
         on_drag,
         on_end,
