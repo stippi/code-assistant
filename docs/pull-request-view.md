@@ -323,8 +323,9 @@ read again when the tab shows again.
   per-file sticky header with Viewed checkbox (shift-click range, ticking
   folds), dual-gutter diff with syntax highlighting, inline review threads
   (reply, resolve, load more, reactions, edit), threads not on the diff,
-  new comments on a line or range → pending review (or → agent, as today's
-  line comments), diff pages loaded as the end scrolls into view.
+  new comments on a line or range (the "+" over a line number, a drag from
+  it for a range, or a selection and its pill) → pending review (or → agent,
+  as today's line comments), diff pages loaded as the end scrolls into view.
   Toolbar toggles (remembered): hide whitespace changes (default on;
   client-side like T3: each hunk re-diffed without whitespace, per page
   off the UI thread), stacked | split (old left, new right, paired runs;
@@ -336,9 +337,20 @@ read again when the tab shows again.
   highlights both whole sides. The file tree (right, min(320 px, 40 %))
   compacts single-folder chains, tints files by change with their letter,
   and a click unfolds the file and scrolls to it.
-- **Composer**: floating button with the pending-comment count; Comment
-  (post, close with comment) and Review (Comment / Approve / Request
-  changes + pending comments).
+- **Composer**: a button in the header with the pending-comment count, or a
+  dot for an unsent text; its popover has Comment (post, close with comment)
+  and Review (Comment / Approve / Request changes + pending comments).
+- **Drafts** (`review_draft.rs`): the comment, the review's text and the
+  pending line comments, per pull request and app-wide, written 500 ms after
+  a change to `sessions/pull-request-drafts.json`
+  (`shared::review_draft_store`, injected through `Stores`). They outlast the
+  popover, the tab and the app, and nothing of them is on GitHub. The Summary
+  tab shows them as dashed cards above the comments (Continue; Discard takes
+  two clicks). A line comment kept across a push may point at a line the diff
+  no longer has; GitHub then refuses the review, the error shows and the
+  comment stays.
+- **Quote reply**: a comment card's "…" menu puts the comment, quoted, into
+  its thread's reply box, else into the composer's comment.
 - **Optimistic**: files viewed (overlay, writes batched 400 ms, serialized),
   reactions (pending map keyed by the host's reaction signature); list after
   merge/close. Everything else waits for the server, then refreshes.
