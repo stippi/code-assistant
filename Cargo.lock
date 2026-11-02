@@ -11245,6 +11245,7 @@ dependencies = [
  "base64 0.22.1",
  "command_executor",
  "image",
+ "indexmap 2.14.0",
  "regex",
  "resvg 0.45.1",
  "serde",

@@ -2,11 +2,15 @@ use std::any::{Any, TypeId};
 use std::borrow::Cow;
 use std::collections::HashMap;
 
+use indexmap::IndexMap;
+
 use crate::dyn_tool::{AnyOutput, DynTool};
 use crate::spec::{AnnotatedToolDefinition, ToolSpec};
 use crate::tool::ToolContext;
 
-/// Registry holding a set of tools, keyed by name.
+/// Registry holding a set of tools, keyed by name, in the order they were
+/// registered. That order reaches the model and is part of the prefix prompt
+/// caches key on, so it must not change from one registry to the next.
 ///
 /// Selection is expressed through capability tags (see
 /// [`crate::spec::ToolSpec::capabilities`]); the registry itself knows
@@ -16,7 +20,7 @@ use crate::tool::ToolContext;
 /// that belongs to the tool set it built (e.g. the live connections behind
 /// its tools) and travels wherever the registry goes.
 pub struct ToolRegistry {
-    tools: HashMap<String, Box<dyn DynTool>>,
+    tools: IndexMap<String, Box<dyn DynTool>>,
     extensions: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
 }
 
@@ -24,7 +28,7 @@ impl ToolRegistry {
     /// Create a new empty registry
     pub fn new() -> Self {
         Self {
-            tools: HashMap::new(),
+            tools: IndexMap::new(),
             extensions: HashMap::new(),
         }
     }
@@ -45,7 +49,8 @@ impl ToolRegistry {
             .expect("extensions are keyed by their type")
     }
 
-    /// Register a tool in the registry
+    /// Register a tool in the registry; one of the same name is replaced in
+    /// its place.
     pub fn register(&mut self, tool: Box<dyn DynTool>) {
         self.tools.insert(tool.spec().name.to_string(), tool);
     }
@@ -54,16 +59,16 @@ impl ToolRegistry {
     /// group a consumer switches on and off as a whole. Unknown names are
     /// ignored.
     pub fn add_capability(&mut self, tool_name: &str, capability: impl Into<Cow<'static, str>>) {
-        if let Some(inner) = self.tools.remove(tool_name) {
+        if let Some((index, name, inner)) = self.tools.shift_remove_full(tool_name) {
             let tagged = Tagged {
                 inner,
                 capability: capability.into(),
             };
-            self.tools.insert(tool_name.to_string(), Box::new(tagged));
+            self.tools.shift_insert(index, name, Box::new(tagged));
         }
     }
 
-    /// The names of all registered tools, in no particular order.
+    /// The names of all registered tools, in the order they were registered.
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.tools.keys().map(String::as_str)
     }
@@ -277,5 +282,34 @@ mod tests {
         );
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].name, "edit");
+    }
+
+    #[test]
+    fn tools_keep_the_order_they_were_registered_in() {
+        let names = [
+            "zeta", "alpha", "mid", "beta", "omega", "gamma", "delta", "eta",
+        ];
+        let mut registry = ToolRegistry::new();
+        for name in names {
+            registry.register(tool(name, &["scope:agent"]));
+        }
+        let listed = |registry: &ToolRegistry| -> Vec<String> {
+            registry
+                .get_tool_definitions_with_capability("scope:agent")
+                .into_iter()
+                .map(|definition| definition.name)
+                .collect()
+        };
+        assert_eq!(listed(&registry), names);
+        assert_eq!(registry.names().collect::<Vec<_>>(), names);
+
+        // Neither a further tag nor a replacement moves a tool.
+        registry.add_capability("alpha", "toolset:x");
+        registry.register(tool("mid", &["scope:agent"]));
+        assert_eq!(listed(&registry), names);
+        let excluding = registry
+            .get_tool_definitions_with_capability_excluding("scope:agent", &["toolset:x".into()]);
+        assert_eq!(excluding[0].name, "zeta");
+        assert_eq!(excluding[1].name, "mid", "a filter keeps the rest in order");
     }
 }
