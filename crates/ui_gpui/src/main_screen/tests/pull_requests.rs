@@ -172,6 +172,18 @@ fn a_folder_of_checkouts_lists_the_repository_chosen(cx: &mut TestAppContext) {
 
     test.click("pr-repo-picker");
     test.wait_until("the others are offered", |test| test.shows("pr-repo-alpha"));
+
+    // A search does not outlive the popover it was typed in.
+    test.cx.simulate_input("beta");
+    test.wait_until("the search narrows them", |test| {
+        !test.shows("pr-repo-alpha")
+    });
+    test.click("pr-repo-picker");
+    test.wait_until("the popover closes", |test| !test.shows("pr-repo-beta"));
+    test.click("pr-repo-picker");
+    test.wait_until("the popover opens again", |test| test.shows("pr-repo-beta"));
+    test.wait_until("all are offered again", |test| test.shows("pr-repo-alpha"));
+
     test.click("pr-repo-alpha");
     test.wait_until("alpha is listed", |_| searched("alpha"));
 

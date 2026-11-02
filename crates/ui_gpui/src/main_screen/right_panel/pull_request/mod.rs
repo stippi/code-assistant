@@ -995,6 +995,60 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn a_long_list_of_repositories_scrolls(cx: &mut TestAppContext) {
+        fn scrolls(cx: &mut gpui_kit::VisualTestContext) -> bool {
+            let before = cx.debug_bounds("pr-repo-repo000").unwrap();
+            cx.simulate_event(gpui_kit::ScrollWheelEvent {
+                position: before.center(),
+                delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+                    gpui_kit::px(0.),
+                    gpui_kit::px(-40.),
+                )),
+                ..Default::default()
+            });
+            cx.run_until_parked();
+            cx.debug_bounds("pr-repo-repo000").unwrap().top() < before.top()
+        }
+
+        let (panel, cx) = panel(cx);
+        let names: Vec<String> = (0..200).map(|n| format!("repo{n:03}")).collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        panel.update(cx, |panel, cx| {
+            assert_eq!(panel.checkouts_found(Some(folder(&names)), cx), None);
+        });
+        cx.run_until_parked();
+        assert!(scrolls(cx), "in place of the list");
+
+        click(cx, "pr-repo-repo001");
+        click(cx, "pr-repo-picker");
+        let top = cx.debug_bounds("pr-repo-repo000").unwrap().top();
+        assert!(scrolls(cx), "in the popover");
+
+        click(cx, "pr-repo-picker");
+        click(cx, "pr-repo-picker");
+        let reopened = cx.debug_bounds("pr-repo-repo000").unwrap().top();
+        assert_eq!(reopened, top, "opens at the top again");
+    }
+
+    #[gpui_kit::test]
+    fn a_short_list_of_repositories_shows_whole_in_the_popover(cx: &mut TestAppContext) {
+        let (panel, cx) = panel(cx);
+        panel.update(cx, |panel, cx| {
+            let found = folder(&["alpha", "beta", "gamma"]);
+            assert_eq!(panel.checkouts_found(Some(found), cx), None);
+        });
+        cx.run_until_parked();
+        click(cx, "pr-repo-alpha");
+        click(cx, "pr-repo-picker");
+
+        // A click only lands on what the list does not clip.
+        click(cx, "pr-repo-gamma");
+        panel.read_with(cx, |panel, _| {
+            assert_eq!(panel.repo.as_ref().map(|r| r.name.as_str()), Some("gamma"));
+        });
+    }
+
+    #[gpui_kit::test]
     fn one_repository_offers_no_choice(cx: &mut TestAppContext) {
         let (panel, cx) = panel(cx);
         panel.update(cx, |panel, cx| {

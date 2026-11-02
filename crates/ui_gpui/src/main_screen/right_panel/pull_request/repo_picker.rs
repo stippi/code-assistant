@@ -5,9 +5,11 @@
 use code_assistant_core::pull_requests::{RepoCheckout, SessionCheckouts};
 use github::RepoRef;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::{ActiveTheme, Sizable, Size};
 use gpui_kit::{
-    Context, Entity, EventEmitter, Render, Subscription, Window, div, prelude::*, px, svg,
+    Context, Entity, EventEmitter, Render, ScrollHandle, Subscription, Window, div, point,
+    prelude::*, px, svg,
 };
 
 /// The repository to list instead.
@@ -65,6 +67,7 @@ pub struct RepoPicker {
     selected: Option<RepoRef>,
     search: Entity<InputState>,
     query: String,
+    list_scroll: ScrollHandle,
     _search: Subscription,
 }
 
@@ -93,6 +96,7 @@ impl RepoPicker {
             selected: None,
             search,
             query: String::new(),
+            list_scroll: ScrollHandle::new(),
             _search: subscription,
         }
     }
@@ -113,6 +117,9 @@ impl RepoPicker {
 
     /// Start a new search, ready for typing.
     pub fn start_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // `set_value` reports no change, so the query does not follow by itself.
+        self.query.clear();
+        self.list_scroll.set_offset(point(px(0.), px(0.)));
         self.search.update(cx, |search, cx| {
             search.set_value("", window, cx);
             search.focus(window, cx);
@@ -208,7 +215,7 @@ impl Render for RepoPicker {
             .flex_col()
             .gap_1()
             .when(in_place, |el| el.size_full().px_4().py_3())
-            .when(!in_place, |el| el.w(px(320.)))
+            .when(!in_place, |el| el.w(px(320.)).max_h(px(360.)))
             .when(in_place, |el| {
                 el.child(
                     div()
@@ -221,21 +228,31 @@ impl Render for RepoPicker {
             .child(Input::new(&self.search).with_size(Size::Small))
             .child(
                 div()
-                    .id("pr-repos")
-                    .when(in_place, |el| el.flex_1().min_h_0())
-                    .when(!in_place, |el| el.max_h(px(320.)))
-                    .overflow_y_scroll()
-                    .when(shown.is_empty(), |el| {
-                        el.child(
-                            div()
-                                .px_2()
-                                .py_1()
-                                .text_xs()
-                                .text_color(muted)
-                                .child("No repository matches that."),
-                        )
-                    })
-                    .children(shown.iter().map(|checkout| self.render_row(checkout, cx))),
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .id("pr-repos")
+                            .flex_1()
+                            .min_h_0()
+                            .track_scroll(&self.list_scroll)
+                            .overflow_y_scroll()
+                            .when(shown.is_empty(), |el| {
+                                el.child(
+                                    div()
+                                        .px_2()
+                                        .py_1()
+                                        .text_xs()
+                                        .text_color(muted)
+                                        .child("No repository matches that."),
+                                )
+                            })
+                            .children(shown.iter().map(|checkout| self.render_row(checkout, cx))),
+                    )
+                    .vertical_scrollbar(&self.list_scroll),
             )
     }
 }
