@@ -737,33 +737,34 @@ impl PullRequestList {
         let this = cx.entity().downgrade();
         let picker = self.repo_picker.clone();
         div()
-            .debug_selector(|| "pr-repo-picker".into())
+            .flex()
             .child(
-                Popover::new("pr-repo-picker")
-                    .anchor(gpui_kit::Anchor::TopLeft)
-                    .open(self.repo_picker_open)
-                    .on_open_change(move |open, window, cx| {
-                        let open = *open;
-                        this.update(cx, |this, cx| {
-                            this.repo_picker_open = open;
-                            if open {
-                                this.repo_picker
-                                    .update(cx, |picker, cx| picker.start_search(window, cx));
-                            }
-                            cx.notify();
+                div().debug_selector(|| "pr-repo-picker".into()).child(
+                    Popover::new("pr-repo-picker")
+                        .anchor(gpui_kit::Anchor::TopLeft)
+                        .open(self.repo_picker_open)
+                        .on_open_change(move |open, window, cx| {
+                            let open = *open;
+                            this.update(cx, |this, cx| {
+                                this.repo_picker_open = open;
+                                if open {
+                                    this.repo_picker
+                                        .update(cx, |picker, cx| picker.start_search(window, cx));
+                                }
+                                cx.notify();
+                            })
+                            .ok();
                         })
-                        .ok();
-                    })
-                    .trigger(
-                        Button::new("pr-repo-picker-trigger")
-                            .outline()
-                            .small()
-                            .icon(Icon::default().path("icons/git_branch.svg"))
-                            .label(repo.name.clone())
-                            .dropdown_caret(true)
-                            .tooltip(repo.full_name()),
-                    )
-                    .content(move |_, _, _| picker.clone().into_any_element()),
+                        .trigger(
+                            Button::new("pr-repo-picker-trigger")
+                                .outline()
+                                .small()
+                                .label(repo.name.clone())
+                                .dropdown_caret(true)
+                                .tooltip(repo.full_name()),
+                        )
+                        .content(move |_, _, _| picker.clone().into_any_element()),
+                ),
             )
             .into_any_element()
     }
