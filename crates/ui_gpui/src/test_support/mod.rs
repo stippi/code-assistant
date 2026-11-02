@@ -6,6 +6,7 @@ mod main_screen;
 pub use self::core::TestCore;
 pub use main_screen::MainScreenTest;
 
+use crate::shared::review_draft_store::{ReviewDraftStore, SavedReviewDraft};
 use crate::shared::ui_state::{UiSessionState, UiStatePersistence};
 use crate::stores::Stores;
 use anyhow::Result;
@@ -20,6 +21,7 @@ use std::sync::{Arc, Mutex};
 pub struct MockStores {
     pub drafts: MockDraftStore,
     pub ui_state: MockUiStatePersistence,
+    pub review_drafts: MockReviewDraftStore,
 }
 
 impl MockStores {
@@ -27,7 +29,31 @@ impl MockStores {
         Stores {
             drafts: Arc::new(self.drafts.clone()),
             ui_state: Arc::new(self.ui_state.clone()),
+            review_drafts: Arc::new(self.review_drafts.clone()),
         }
+    }
+}
+
+/// In-memory [`ReviewDraftStore`].
+#[derive(Default, Clone)]
+pub struct MockReviewDraftStore {
+    drafts: Arc<Mutex<Vec<SavedReviewDraft>>>,
+}
+
+impl MockReviewDraftStore {
+    pub fn saved(&self) -> Vec<SavedReviewDraft> {
+        self.drafts.lock().unwrap().clone()
+    }
+}
+
+impl ReviewDraftStore for MockReviewDraftStore {
+    fn load(&self) -> Result<Vec<SavedReviewDraft>> {
+        Ok(self.saved())
+    }
+
+    fn save(&self, drafts: &[SavedReviewDraft]) -> Result<()> {
+        *self.drafts.lock().unwrap() = drafts.to_vec();
+        Ok(())
     }
 }
 

@@ -7,8 +7,9 @@
 //! **Comment**: ⌘Enter or "Comment" posts; "Close with comment" (two
 //! clicks) or "Reopen with comment" post and then act. **Review**: a
 //! summary and a verdict (those the viewer may give) sent with the pending
-//! line comments of [`review_drafts`]. Both texts live as long as the page,
-//! so dismissing the popover keeps them; a sent text is cleared.
+//! line comments of [`review_drafts`]. Both texts live in those drafts, so
+//! dismissing the popover, closing the page or quitting keeps them; a sent
+//! text is cleared.
 
 use super::actions::{Confirmable, InlineConfirm, can};
 use super::data::PullRequestData;
@@ -149,8 +150,18 @@ impl Composer {
                     .auto_grow(3, 12)
                     .placeholder("Summarize your review")
             });
+            let pr = self.data.read(cx).pr.clone();
+            let (saved_comment, saved_summary) = {
+                let drafts = self.drafts.read(cx);
+                (
+                    drafts.comment(&pr).to_owned(),
+                    drafts.summary(&pr).to_owned(),
+                )
+            };
+            comment.update(cx, |input, cx| input.set_value(saved_comment, window, cx));
+            summary.update(cx, |input, cx| input.set_value(saved_summary, window, cx));
             let subscriptions = vec![
-                cx.subscribe_in(&comment, window, |this, _, event, window, cx| {
+                cx.subscribe_in(&comment, window, |this, input, event, window, cx| {
                     if matches!(
                         event,
                         InputEvent::PressEnter {
@@ -160,13 +171,23 @@ impl Composer {
                     ) {
                         this.send_comment(None, window, cx);
                     } else if matches!(event, InputEvent::Change) {
-                        cx.notify();
+                        let text = input.read(cx).value().to_string();
+                        let pr = this.data.read(cx).pr.clone();
+                        this.drafts
+                            .update(cx, |drafts, cx| drafts.set_comment(&pr, &text, cx));
                     }
                 }),
-                cx.subscribe(&summary, |_, _, event: &InputEvent, cx| {
+                cx.subscribe(&summary, |this, input, event: &InputEvent, cx| {
                     if matches!(event, InputEvent::Change) {
-                        cx.notify();
+                        let text = input.read(cx).value().to_string();
+                        let pr = this.data.read(cx).pr.clone();
+                        this.drafts
+                            .update(cx, |drafts, cx| drafts.set_summary(&pr, &text, cx));
                     }
+                }),
+                // A draft changed from elsewhere (discarded, quoted into).
+                cx.observe_in(&self.drafts, window, |this, _, window, cx| {
+                    this.sync_forms(window, cx)
                 }),
             ];
             self.forms = Some(Forms {
@@ -178,12 +199,35 @@ impl Composer {
         self.forms.as_ref().expect("made above")
     }
 
-    /// One of the texts, empty before the composer first opened.
-    fn text(&self, input: fn(&Forms) -> &Entity<TextareaState>, cx: &gpui_kit::App) -> String {
-        self.forms
-            .as_ref()
-            .map(|forms| input(forms).read(cx).value().to_string())
-            .unwrap_or_default()
+    fn sync_forms(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(forms) = &self.forms else {
+            return;
+        };
+        let (comment, summary) = (forms.comment.clone(), forms.summary.clone());
+        let pr = self.data.read(cx).pr.clone();
+        let (comment_text, summary_text) = {
+            let drafts = self.drafts.read(cx);
+            (
+                drafts.comment(&pr).to_owned(),
+                drafts.summary(&pr).to_owned(),
+            )
+        };
+        for (input, text) in [(comment, comment_text), (summary, summary_text)] {
+            if input.read(cx).value() != text {
+                input.update(cx, |input, cx| input.set_value(text, window, cx));
+            }
+        }
+        cx.notify();
+    }
+
+    fn comment_text(&self, cx: &gpui_kit::App) -> String {
+        let pr = &self.data.read(cx).pr;
+        self.drafts.read(cx).comment(pr).to_owned()
+    }
+
+    fn summary_text(&self, cx: &gpui_kit::App) -> String {
+        let pr = &self.data.read(cx).pr;
+        self.drafts.read(cx).summary(pr).to_owned()
     }
 
     fn pending(&self, cx: &gpui_kit::App) -> usize {
@@ -205,7 +249,7 @@ impl Composer {
             return;
         }
         // A review under way is what the user comes back to.
-        let started = self.pending(cx) > 0 || !self.text(|f| &f.summary, cx).trim().is_empty();
+        let started = self.pending(cx) > 0 || !self.summary_text(cx).trim().is_empty();
         self.requested = if started {
             ComposerMode::Review
         } else {
@@ -245,7 +289,7 @@ impl Composer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let body = self.text(|f| &f.comment, cx).trim().to_owned();
+        let body = self.comment_text(cx).trim().to_owned();
         if body.is_empty() || self.sending.is_some() {
             return;
         }
@@ -274,11 +318,12 @@ impl Composer {
                     let _ = acted.await;
                 }
             }
-            this.update_in(cx, |this, window, cx| {
+            this.update(cx, |this, cx| {
                 this.sending = None;
                 if posted {
-                    let comment = this.forms(window, cx).comment.clone();
-                    comment.update(cx, |input, cx| input.set_value("", window, cx));
+                    let pr = this.data.read(cx).pr.clone();
+                    this.drafts
+                        .update(cx, |drafts, cx| drafts.set_comment(&pr, "", cx));
                     this.close(cx);
                 }
                 cx.notify();
@@ -311,7 +356,7 @@ impl Composer {
         if self.sending.is_some() {
             return;
         }
-        let summary = self.text(|f| &f.summary, cx);
+        let summary = self.summary_text(cx);
         let pr = self.data.read(cx).pr.clone();
         let (review, ids) =
             self.drafts
@@ -324,15 +369,16 @@ impl Composer {
         });
         self._sending = Some(cx.spawn_in(window, async move |this, cx| {
             let sent = sent.await.is_ok();
-            this.update_in(cx, |this, window, cx| {
+            this.update(cx, |this, cx| {
                 this.sending = None;
                 if sent {
-                    this.drafts
-                        .update(cx, |drafts, cx| drafts.remove_submitted(&pr, &ids, cx));
-                    if this.text(|f| &f.summary, cx) == summary {
-                        let input = this.forms(window, cx).summary.clone();
-                        input.update(cx, |input, cx| input.set_value("", window, cx));
-                    }
+                    let edited = this.summary_text(cx) != summary;
+                    this.drafts.update(cx, |drafts, cx| {
+                        drafts.remove_submitted(&pr, &ids, cx);
+                        if !edited {
+                            drafts.set_summary(&pr, "", cx);
+                        }
+                    });
                     this.close(cx);
                 }
                 cx.notify();
@@ -781,8 +827,8 @@ mod tests {
         cx.run_until_parked();
         assert!(cx.debug_bounds("pr-review-submit").is_some());
         view.read_with(cx, |view, cx| {
-            assert_eq!(view.text(|f| &f.comment, cx), "Needs a test");
-            assert_eq!(view.text(|f| &f.summary, cx), "Mostly fine");
+            assert_eq!(view.comment_text(cx), "Needs a test");
+            assert_eq!(view.summary_text(cx), "Mostly fine");
         });
     }
 
@@ -844,7 +890,7 @@ mod tests {
         // No session service: nothing reaches GitHub.
         view.read_with(cx, |view, cx| {
             assert!(view.open);
-            assert_eq!(view.text(|f| &f.comment, cx), "Looks good");
+            assert_eq!(view.comment_text(cx), "Looks good");
             assert!(view.data.read(cx).error.is_some());
         });
     }
