@@ -550,3 +550,63 @@ async fn test_tool_dispatch_via_registry() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn built_in_tools_are_ordered_by_topic_the_same_every_time() {
+    let registry = crate::tools::test_registry();
+    let names: Vec<&str> = registry.names().collect();
+    let without_browser: Vec<&str> = names
+        .iter()
+        .copied()
+        .filter(|name| !name.starts_with("browser_"))
+        .collect();
+    assert_eq!(
+        without_browser,
+        [
+            "list_projects",
+            "list_files",
+            "glob_files",
+            "search_files",
+            "read_files",
+            "view_documents",
+            "view_images",
+            "edit",
+            "replace_in_file",
+            "write_file",
+            "delete_files",
+            "execute_command",
+            "write_stdin",
+            "monitor",
+            "stop_monitor",
+            "web_search",
+            "web_fetch",
+            "update_plan",
+            "spawn_agent",
+            "schedule_wakeup",
+            "cancel_wakeup",
+            "name_session",
+            "search_sessions",
+            "get_session_content",
+            "list_skills",
+            "read_skill",
+        ]
+    );
+    // The browser's tools stay together, after the web's.
+    let first = names
+        .iter()
+        .position(|n| n.starts_with("browser_"))
+        .unwrap();
+    let last = names
+        .iter()
+        .rposition(|n| n.starts_with("browser_"))
+        .unwrap();
+    assert_eq!(names[first - 1], "web_fetch");
+    assert!(
+        names[first..=last]
+            .iter()
+            .all(|n| n.starts_with("browser_"))
+    );
+
+    let again = crate::tools::test_registry();
+    assert_eq!(again.names().collect::<Vec<_>>(), names);
+}

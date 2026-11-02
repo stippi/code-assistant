@@ -208,6 +208,31 @@ async fn disabled_tools_are_not_registered() {
 }
 
 #[tokio::test]
+async fn a_servers_tools_keep_the_order_it_lists_them_in() {
+    let (connection, _server) = connect_test_server().await;
+    let listed: Vec<String> = connection
+        .list_tools()
+        .await
+        .unwrap()
+        .iter()
+        .map(|tool| tool.name.to_string())
+        .collect();
+    let config = server_config(serde_json::json!({ "command": "unused" }));
+    let mut registry = ToolRegistry::new();
+    let registered = register_connection_tools(&mut registry, connection, &config, &[])
+        .await
+        .unwrap();
+    assert!(listed.len() > 1, "a server with more than one tool");
+    assert_eq!(registry.names().collect::<Vec<_>>(), registered);
+    for (registered, listed) in registered.iter().zip(&listed) {
+        assert!(
+            registered.ends_with(listed.as_str()),
+            "{registered} {listed}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn dead_server_degrades_to_tool_error() {
     let (connection, server) = connect_test_server().await;
     let mut registry = ToolRegistry::new();

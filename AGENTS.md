@@ -41,6 +41,7 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
 
 ### Tool Architecture
 - `ToolRegistry` is an instance, not a singleton; `ToolSpec` carries capability tags (e.g. `read_only`)
+- Tools reach the model in registration order (built-ins by topic in `register_default_tools`, then each MCP server in config order with its tools as listed); capability tags only filter. The order is part of the prompt-cache prefix, so it must not vary between registries
 - **Tool modes** (configured per agent instance via `ToolDialect`):
   - `native` — LLM provider's native tool calling (default in `agent_core`)
   - `xml` — XML-based tool syntax in system messages
