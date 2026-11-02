@@ -26,9 +26,12 @@ pub use store::{PullRequestSource, PullRequests};
 
 pub(crate) use checkout::pull_request_head;
 
-pub(crate) use repo::{github_remote, github_repo, own_pull_request};
+pub(crate) use repo::{
+    github_checkouts, github_remote, github_repo, own_pull_request, working_branch,
+};
 
 use github::RepoRef;
+use std::path::PathBuf;
 use std::time::SystemTime;
 
 /// A cached read: the value plus whether a background refresh is under way
@@ -50,6 +53,23 @@ pub enum PullRequestPart {
     Diff,
     FilesViewed,
     Stack,
+}
+
+/// A checkout of a GitHub repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoCheckout {
+    pub path: PathBuf,
+    pub repo: RepoRef,
+    /// The branch checked out, unless it is the base branch.
+    pub branch: Option<String>,
+}
+
+/// The repositories a session can look at: that of its directory and those
+/// checked out directly below it, as in a project folder holding several.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionCheckouts {
+    pub directory: PathBuf,
+    pub checkouts: Vec<RepoCheckout>,
 }
 
 /// Where a session's pull requests live and which one is its own.

@@ -1,6 +1,7 @@
 //! The "Pull request" view of the right panel (`docs/pull-request-view.md`):
-//! the pull requests of the session's repository, and a tab for each one
-//! opened from there ([`tabs`]), the session's own first.
+//! the pull requests of one repository of the session, and a tab for each
+//! one opened from there ([`tabs`]), the session's own first. Tabs stay open
+//! when the list moves to another repository, so they may name several.
 //!
 //! The views ([`list::PullRequestList`], [`detail::DetailView`] with its
 //! header and tab bodies) render model values from the `github` crate and
@@ -27,6 +28,7 @@ mod list_overrides;
 mod markdown;
 pub mod preferences;
 mod presentation;
+mod repo_picker;
 pub mod review_draft;
 mod stack;
 mod summary;
@@ -37,16 +39,18 @@ mod timeline;
 
 use crate::shared::ui_state::{PullRequestTabState, PullRequestTabsState};
 use bus::{PullRequestEvent, bus};
-use code_assistant_core::pull_requests::{CheckoutPlace, PullRequestCheckout};
+use code_assistant_core::pull_requests::{CheckoutPlace, PullRequestCheckout, SessionCheckouts};
 use data::session_service;
 use detail::{DetailTab, DetailTabChanged, DetailView};
-use github::RepoRef;
 use github::model::{Action, ListQuery, PullRequestUpdate};
+use github::{PullRequestRef, RepoRef};
 use gpui_kit::{
     ClipboardItem, Context, Entity, Render, ScrollHandle, Subscription, Task, Window, div,
     prelude::*,
 };
 use list::PullRequestList;
+use repo_picker::{first_focus, recent_first};
+use std::path::PathBuf;
 use tabs::Tabs;
 
 /// How often relative times ("9h ago") are drawn anew.
@@ -55,8 +59,10 @@ const CLOCK_TICK: std::time::Duration = std::time::Duration::from_secs(60);
 /// What the user asks of the pull request view.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PullRequestIntent {
-    /// Show a pull request of the listed repository in its tab.
-    Open(u64),
+    /// Show a pull request in its tab.
+    Open(PullRequestRef),
+    /// List this repository's pull requests from now on.
+    Focus(RepoRef),
     /// List the repository's pull requests anew.
     List(ListQuery),
     /// Read the next page of the listing.
@@ -87,13 +93,18 @@ pub struct PullRequestPanel {
     session_id: Option<String>,
     /// The tab is shown (the detail polls only then).
     visible: bool,
+    /// The folder the session looks at, with the repositories it offers.
+    directory: Option<PathBuf>,
+    /// The repository listed.
     repo: Option<RepoRef>,
     list: Entity<PullRequestList>,
     /// A page per opened pull request; the shown one, or the list.
-    tabs: Tabs<OpenTab>,
+    tabs: Tabs<PullRequestRef, OpenTab>,
     strip_scroll: ScrollHandle,
     /// Finding the session's repository and pull request.
     resolve: Option<Task<()>>,
+    /// Looking for repositories anew.
+    scan: Option<Task<()>>,
     list_read: Option<Task<()>>,
     more_read: Option<Task<()>>,
     viewer_read: Option<Task<()>>,
@@ -127,11 +138,13 @@ impl PullRequestPanel {
         Self {
             session_id: None,
             visible: false,
+            directory: None,
             repo: None,
             list,
             tabs: Tabs::default(),
             strip_scroll: ScrollHandle::new(),
             resolve: None,
+            scan: None,
             list_read: None,
             more_read: None,
             viewer_read: None,
@@ -156,9 +169,13 @@ impl PullRequestPanel {
         if self.session_id.as_deref() == Some(session_id.as_str()) {
             // Back from hiding: the listing may have changed meanwhile.
             self.load_list(cx);
+            self.scan_checkouts(session_id, cx);
             return;
         }
         self.session_id = Some(session_id.clone());
+        self.directory = None;
+        self.list
+            .update(cx, |list, cx| list.set_checkouts(Vec::new(), cx));
         self.set_repository(None, None, cx);
         self.resolve_repository(session_id, cx);
     }
@@ -181,7 +198,8 @@ impl PullRequestPanel {
         })
     }
 
-    /// Ask the core where the session's pull requests live.
+    /// Ask the core which repositories the session has, then, for the one
+    /// of its directory, which pull request is its own.
     fn resolve_repository(&mut self, session_id: String, cx: &mut Context<Self>) {
         let Some(service) = session_service(cx) else {
             return;
@@ -189,23 +207,120 @@ impl PullRequestPanel {
         self.list
             .update(cx, |list, cx| list.set_resolving(true, cx));
         self.resolve = Some(cx.spawn(async move |this, cx| {
-            let found = service.session_pull_requests(session_id.clone()).await;
+            let found = service.session_checkouts(session_id.clone()).await;
+            let of_directory = this.update(cx, |this, cx| {
+                if this.session_id.as_deref() != Some(session_id.as_str()) {
+                    return None;
+                }
+                match found {
+                    Ok(found) => this.checkouts_found(found, cx),
+                    Err(error) => {
+                        this.resolve_failed(error, cx);
+                        None
+                    }
+                }
+            });
+            let Ok(Some(repo)) = of_directory else {
+                return;
+            };
+            let own = service.session_pull_requests(session_id.clone()).await;
             this.update(cx, |this, cx| {
                 if this.session_id.as_deref() != Some(session_id.as_str()) {
                     return;
                 }
-                this.list
-                    .update(cx, |list, cx| list.set_resolving(false, cx));
-                match found {
-                    Ok(Some(found)) => this.set_repository(Some(found.repo), found.own, cx),
-                    Ok(None) => {}
-                    Err(error) => this.list.update(cx, |list, cx| {
-                        list.set_error(Some(format!("{error:#}")), cx)
-                    }),
+                match own {
+                    Ok(own) => {
+                        this.list
+                            .update(cx, |list, cx| list.set_resolving(false, cx));
+                        this.set_repository(Some(repo), own.and_then(|own| own.own), cx);
+                    }
+                    Err(error) => this.resolve_failed(error, cx),
                 }
             })
             .ok();
         }));
+    }
+
+    fn resolve_failed(&mut self, error: anyhow::Error, cx: &mut Context<Self>) {
+        self.list.update(cx, |list, cx| {
+            list.set_resolving(false, cx);
+            list.set_error(Some(format!("{error:#}")), cx)
+        });
+    }
+
+    /// Offer the repositories found and list the first one. The one of the
+    /// session's directory is returned instead: its own pull request is
+    /// still to be found.
+    fn checkouts_found(
+        &mut self,
+        found: Option<SessionCheckouts>,
+        cx: &mut Context<Self>,
+    ) -> Option<RepoRef> {
+        let Some(found) = found else {
+            self.list
+                .update(cx, |list, cx| list.set_resolving(false, cx));
+            return None;
+        };
+        let listed_last = self.session_id.as_ref().and_then(|session_id| {
+            crate::shared::ui_state::read(cx, |store| store.get_pull_request_tabs(session_id).repo)
+                .flatten()
+        });
+        let preferences = preferences::read(cx);
+        let recent = preferences.recent_repos(&found.directory);
+        let first = first_focus(&found, listed_last.as_ref(), recent)
+            .map(|first| (first.repo.clone(), first.path == found.directory));
+        let checkouts = recent_first(found.checkouts, recent);
+        self.directory = Some(found.directory);
+        self.list
+            .update(cx, |list, cx| list.set_checkouts(checkouts, cx));
+        match first {
+            Some((repo, true)) => Some(repo),
+            other => {
+                self.list
+                    .update(cx, |list, cx| list.set_resolving(false, cx));
+                self.set_repository(other.map(|(repo, _)| repo), None, cx);
+                None
+            }
+        }
+    }
+
+    /// Look for repositories that came or went while the panel was hidden.
+    fn scan_checkouts(&mut self, session_id: String, cx: &mut Context<Self>) {
+        let Some(service) = session_service(cx) else {
+            return;
+        };
+        self.scan = Some(cx.spawn(async move |this, cx| {
+            let Ok(Some(found)) = service.session_checkouts(session_id.clone()).await else {
+                return;
+            };
+            this.update(cx, |this, cx| {
+                if this.session_id.as_deref() == Some(session_id.as_str()) {
+                    let preferences = preferences::read(cx);
+                    let recent = preferences.recent_repos(&found.directory);
+                    let checkouts = recent_first(found.checkouts, recent);
+                    this.list
+                        .update(cx, |list, cx| list.set_checkouts(checkouts, cx));
+                }
+            })
+            .ok();
+        }));
+    }
+
+    /// List `repo` from now on; open tabs stay.
+    fn focus(&mut self, repo: RepoRef, cx: &mut Context<Self>) {
+        if self.repo.as_ref() != Some(&repo) {
+            self.repo = Some(repo.clone());
+            self.more_read = None;
+            self.list.update(cx, |list, cx| {
+                list.set_repo(Some(repo.clone()), cx);
+                list.set_viewer(None, cx);
+            });
+            self.read_viewer(cx);
+            if let Some(directory) = self.directory.clone() {
+                preferences::update(cx, |preferences| preferences.chose_repo(&directory, &repo));
+            }
+        }
+        self.activate(None, cx);
     }
 
     /// Where the session's pull requests live and which one is its own.
@@ -222,23 +337,33 @@ impl PullRequestPanel {
         self.list.update(cx, |list, cx| list.set_repo(repo, cx));
         self.load_list(cx);
         self.read_viewer(cx);
-        let remembered = match (&self.session_id, &self.repo) {
-            (Some(session_id), Some(_)) => {
+        let remembered = self
+            .session_id
+            .as_ref()
+            .and_then(|session_id| {
                 crate::shared::ui_state::read(cx, |store| store.get_pull_request_tabs(session_id))
-                    .unwrap_or_default()
-            }
-            _ => Default::default(),
-        };
+            })
+            .unwrap_or_default();
         if remembered.open.is_empty() {
-            if let Some(number) = own {
-                self.open(number, cx);
+            if let Some(pr) = own.and_then(|number| Some(self.repo.as_ref()?.pull_request(number)))
+            {
+                self.open(pr, cx);
             }
         } else {
-            for open in &remembered.open {
-                let tab = open.tab.as_deref().and_then(DetailTab::parse);
-                self.open_tab(open.number, tab, cx);
+            let listed = self.repo.clone();
+            let opened = |repo: Option<RepoRef>, number| {
+                Some(repo.or_else(|| listed.clone())?.pull_request(number))
+            };
+            for open in remembered.open {
+                if let Some(pr) = opened(open.repo, open.number) {
+                    let tab = open.tab.as_deref().and_then(DetailTab::parse);
+                    self.open_tab(pr, tab, cx);
+                }
             }
-            let active = remembered.active.and_then(|n| self.tabs.position(n));
+            let active = remembered
+                .active
+                .and_then(|number| opened(remembered.active_repo, number))
+                .and_then(|pr| self.tabs.position(&pr));
             self.tabs.activate(active);
             self.sync_visibility(cx);
         }
@@ -340,11 +465,15 @@ impl PullRequestPanel {
             return;
         };
         let prs = numbers.iter().map(|n| repo.pull_request(*n)).collect();
-        let list = self.list.downgrade();
         cx.spawn(
-            async move |_, cx| match service.pull_request_list_stats(prs).await {
+            async move |this, cx| match service.pull_request_list_stats(prs).await {
                 Ok(stats) => {
-                    list.update(cx, |list, cx| list.set_stats(&stats, cx)).ok();
+                    this.update(cx, |this, cx| {
+                        if this.repo.as_ref() == Some(&repo) {
+                            this.list.update(cx, |list, cx| list.set_stats(&stats, cx));
+                        }
+                    })
+                    .ok();
                 }
                 Err(error) => tracing::debug!("no line counts: {error:#}"),
             },
@@ -410,7 +539,8 @@ impl PullRequestPanel {
 
     fn handle(&mut self, intent: &PullRequestIntent, cx: &mut Context<Self>) {
         match intent {
-            PullRequestIntent::Open(number) => self.open(*number, cx),
+            PullRequestIntent::Open(pr) => self.open(pr.clone(), cx),
+            PullRequestIntent::Focus(repo) => self.focus(repo.clone(), cx),
             PullRequestIntent::OpenUrl(url) => cx.open_url(url),
             PullRequestIntent::Copy(text) => {
                 cx.write_to_clipboard(ClipboardItem::new_string(text.clone()))
@@ -423,11 +553,15 @@ impl PullRequestPanel {
             PullRequestIntent::Act(action) => {
                 if let Some(detail) = self.detail() {
                     let action = *action;
-                    let number = detail.read(cx).pr().number;
+                    let pr = detail.read(cx).pr().clone();
+                    let number = pr.number;
                     // The list shows the outcome already, as after a quick action.
-                    let token = self
-                        .list
-                        .update(cx, |list, cx| list.override_row(number, &action, cx));
+                    let token = (self.repo.as_ref() == Some(&pr.repo))
+                        .then(|| {
+                            self.list
+                                .update(cx, |list, cx| list.override_row(number, &action, cx))
+                        })
+                        .flatten();
                     let done = detail.update(cx, |detail, cx| detail.act(action, cx));
                     self.revert_unless(done, number, token, cx);
                 }
@@ -491,28 +625,25 @@ impl PullRequestPanel {
         .detach();
     }
 
-    /// Show pull request `number` in its tab, opened when it is not.
-    fn open(&mut self, number: u64, cx: &mut Context<Self>) {
-        let Some(ix) = self.open_tab(number, None, cx) else {
-            return;
-        };
+    /// Show `pr` in its tab, opened when it is not.
+    fn open(&mut self, pr: PullRequestRef, cx: &mut Context<Self>) {
+        let ix = self.open_tab(pr, None, cx);
         self.tabs.activate(Some(ix));
         self.strip_scroll.scroll_to_item(ix + 1);
         self.tabs_changed(cx);
     }
 
-    /// The tab of `number`, opened (on `tab`) when it is not; shows it.
+    /// The tab of `pr`, opened (on `tab`) when it is not; shows it.
     fn open_tab(
         &mut self,
-        number: u64,
+        pr: PullRequestRef,
         tab: Option<DetailTab>,
         cx: &mut Context<Self>,
-    ) -> Option<usize> {
-        let repo = self.repo.clone()?;
-        let seed = self.list.read(cx).entry(number).cloned();
-        let ix = self.tabs.open(number, || {
+    ) -> usize {
+        let seed = self.listed_entry(&pr, cx).cloned();
+        self.tabs.open(pr.clone(), || {
             let view = cx.new(|cx| {
-                let mut detail = DetailView::new(repo.pull_request(number), seed, cx);
+                let mut detail = DetailView::new(pr, seed, cx);
                 if let Some(tab) = tab {
                     detail.select_tab(tab, cx);
                 }
@@ -529,8 +660,19 @@ impl PullRequestPanel {
                 ],
                 view,
             }
-        });
-        Some(ix)
+        })
+    }
+
+    /// `pr`'s row in the list, if the list is of its repository.
+    fn listed_entry<'a>(
+        &self,
+        pr: &PullRequestRef,
+        cx: &'a Context<Self>,
+    ) -> Option<&'a github::model::ListEntry> {
+        if self.repo.as_ref() != Some(&pr.repo) {
+            return None;
+        }
+        self.list.read(cx).entry(pr.number)
     }
 
     /// Show the tab at `ix`, or the list.
@@ -593,16 +735,20 @@ impl PullRequestPanel {
         let Some(session_id) = self.session_id.clone() else {
             return;
         };
+        let active = self.tabs.active_item().map(|(pr, _)| pr);
         let state = PullRequestTabsState {
+            repo: self.repo.clone(),
             open: self
                 .tabs
                 .iter()
-                .map(|(number, tab)| PullRequestTabState {
-                    number,
+                .map(|(pr, tab)| PullRequestTabState {
+                    repo: Some(pr.repo.clone()),
+                    number: pr.number,
                     tab: Some(tab.view.read(cx).tab().as_str().to_owned()),
                 })
                 .collect(),
-            active: self.tabs.active_item().map(|(number, _)| number),
+            active: active.map(|pr| pr.number),
+            active_repo: active.map(|pr| pr.repo.clone()),
         };
         crate::shared::ui_state::update(cx, |store| {
             store.set_pull_request_tabs(&session_id, state)
@@ -734,7 +880,9 @@ mod tests {
         click(cx, "pr-tab-list");
         click(cx, "pr-row-290");
         let tabs = |panel: &Entity<PullRequestPanel>, cx: &mut VisualTestContext| {
-            panel.read_with(cx, |panel, _| panel.tabs.numbers().collect::<Vec<_>>())
+            panel.read_with(cx, |panel, _| {
+                panel.tabs.keys().map(|pr| pr.number).collect::<Vec<_>>()
+            })
         };
         assert_eq!(tabs(&panel, cx), [281, 290]);
         first.read_with(cx, |view, _| {
@@ -769,7 +917,7 @@ mod tests {
         panel.update(cx, |panel, cx| {
             panel.set_repository(Some(repo()), None, cx);
             for number in [1, 2, 3] {
-                panel.open(number, cx);
+                panel.open(repo().pull_request(number), cx);
             }
         });
         cx.run_until_parked();
@@ -784,9 +932,131 @@ mod tests {
         cx.simulate_mouse_up(to, gpui_kit::MouseButton::Left, gpui_kit::Modifiers::none());
         cx.run_until_parked();
         panel.read_with(cx, |panel, _| {
-            assert_eq!(panel.tabs.numbers().collect::<Vec<_>>(), [3, 1, 2]);
-            assert_eq!(panel.tabs.active_item().map(|(n, _)| n), Some(3));
+            let numbers: Vec<_> = panel.tabs.keys().map(|pr| pr.number).collect();
+            assert_eq!(numbers, [3, 1, 2]);
+            assert_eq!(panel.tabs.active_item().map(|(pr, _)| pr.number), Some(3));
         });
+    }
+
+    /// A folder holding checkouts of these repositories.
+    fn folder(names: &[&str]) -> SessionCheckouts {
+        let directory = PathBuf::from("/folder");
+        SessionCheckouts {
+            checkouts: names
+                .iter()
+                .map(|name| code_assistant_core::pull_requests::RepoCheckout {
+                    path: directory.join(name),
+                    repo: RepoRef::new("github.com", "team", *name),
+                    branch: None,
+                })
+                .collect(),
+            directory,
+        }
+    }
+
+    #[gpui_kit::test]
+    fn a_folder_of_checkouts_asks_which_one_and_tabs_outlast_the_choice(cx: &mut TestAppContext) {
+        let (panel, cx) = panel(cx);
+        let found = folder(&["alpha", "beta"]);
+        panel.update(cx, |panel, cx| {
+            assert_eq!(panel.checkouts_found(Some(found), cx), None);
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("pr-repo-alpha").is_some(), "asked at first");
+        assert!(cx.debug_bounds("pr-list-refresh").is_none());
+
+        click(cx, "pr-repo-beta");
+        let (alpha, beta) = (
+            RepoRef::new("github.com", "team", "alpha"),
+            RepoRef::new("github.com", "team", "beta"),
+        );
+        panel.read_with(cx, |panel, _| assert_eq!(panel.repo, Some(beta.clone())));
+        assert!(
+            cx.debug_bounds("pr-repo-picker").is_some(),
+            "chosen again here"
+        );
+        assert!(cx.debug_bounds("pr-list-refresh").is_some());
+
+        // A tab stays open when the list moves on; it is the one of its repository.
+        panel.update(cx, |panel, cx| panel.open(beta.pull_request(7), cx));
+        cx.run_until_parked();
+        click(cx, "pr-tab-list");
+        click(cx, "pr-repo-picker");
+        click(cx, "pr-repo-alpha");
+        panel.update(cx, |panel, cx| {
+            assert_eq!(panel.repo, Some(alpha.clone()));
+            assert!(panel.detail().is_none(), "the list of the one chosen shows");
+            panel.open(alpha.pull_request(7), cx);
+            let open: Vec<_> = panel.tabs.keys().cloned().collect();
+            assert_eq!(open, [beta.pull_request(7), alpha.pull_request(7)]);
+            let shown = panel.detail().unwrap();
+            assert_eq!(shown.read(cx).pr(), &alpha.pull_request(7));
+        });
+    }
+
+    #[gpui_kit::test]
+    fn a_long_list_of_repositories_scrolls(cx: &mut TestAppContext) {
+        fn scrolls(cx: &mut gpui_kit::VisualTestContext) -> bool {
+            let before = cx.debug_bounds("pr-repo-repo000").unwrap();
+            cx.simulate_event(gpui_kit::ScrollWheelEvent {
+                position: before.center(),
+                delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+                    gpui_kit::px(0.),
+                    gpui_kit::px(-40.),
+                )),
+                ..Default::default()
+            });
+            cx.run_until_parked();
+            cx.debug_bounds("pr-repo-repo000").unwrap().top() < before.top()
+        }
+
+        let (panel, cx) = panel(cx);
+        let names: Vec<String> = (0..200).map(|n| format!("repo{n:03}")).collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        panel.update(cx, |panel, cx| {
+            assert_eq!(panel.checkouts_found(Some(folder(&names)), cx), None);
+        });
+        cx.run_until_parked();
+        assert!(scrolls(cx), "in place of the list");
+
+        click(cx, "pr-repo-repo001");
+        click(cx, "pr-repo-picker");
+        let top = cx.debug_bounds("pr-repo-repo000").unwrap().top();
+        assert!(scrolls(cx), "in the popover");
+
+        click(cx, "pr-repo-picker");
+        click(cx, "pr-repo-picker");
+        let reopened = cx.debug_bounds("pr-repo-repo000").unwrap().top();
+        assert_eq!(reopened, top, "opens at the top again");
+    }
+
+    #[gpui_kit::test]
+    fn a_short_list_of_repositories_shows_whole_in_the_popover(cx: &mut TestAppContext) {
+        let (panel, cx) = panel(cx);
+        panel.update(cx, |panel, cx| {
+            let found = folder(&["alpha", "beta", "gamma"]);
+            assert_eq!(panel.checkouts_found(Some(found), cx), None);
+        });
+        cx.run_until_parked();
+        click(cx, "pr-repo-alpha");
+        click(cx, "pr-repo-picker");
+
+        // A click only lands on what the list does not clip.
+        click(cx, "pr-repo-gamma");
+        panel.read_with(cx, |panel, _| {
+            assert_eq!(panel.repo.as_ref().map(|r| r.name.as_str()), Some("gamma"));
+        });
+    }
+
+    #[gpui_kit::test]
+    fn one_repository_offers_no_choice(cx: &mut TestAppContext) {
+        let (panel, cx) = panel(cx);
+        panel.update(cx, |panel, cx| {
+            assert_eq!(panel.checkouts_found(Some(folder(&["alpha"])), cx), None);
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("pr-list-refresh").is_some());
+        assert!(cx.debug_bounds("pr-repo-picker").is_none());
     }
 
     #[gpui_kit::test]
@@ -818,7 +1088,7 @@ mod tests {
                     cx,
                 )
             });
-            panel.open(290, cx);
+            panel.open(repo().pull_request(290), cx);
         });
         let listed = |panel: &Entity<PullRequestPanel>, cx: &mut VisualTestContext| {
             panel.read_with(cx, |panel, cx| panel.list().read(cx).shows(290))

@@ -116,6 +116,13 @@ deleted modes, binary markers, `\ No newline at end of file`, CRLF) and
   unless it is the base branch. The session's own PR comes from the
   lifecycle snapshot (number) or a head-branch lookup (newest PR not from a
   fork, cached 60 s).
+- **Several repositories**: a project folder may hold checkouts instead of
+  being one (`session_checkouts`, `pull_requests::github_checkouts`): the
+  folder's own repository, then the checkouts directly below it by directory
+  name; hidden directories (so `.worktrees`) are not looked into, a
+  repository checked out twice counts once. Only local git is read.
+  `session_pull_requests` stays about the session's directory itself; a
+  checkout below has no pull request "of the session".
 - **Client**: one `PullRequests` store per `SessionService`, built from
   `AgentRuntimeOptions::pull_requests` (`PullRequestSource {client,
   snapshot_dir}`; `None` = `github::Client::new()` and
@@ -184,10 +191,13 @@ deleted modes, binary markers, `\ No newline at end of file`, CRLF) and
   (no remote added), tracking the fork's URL and branch when maintainers
   may push, else the pull request's ref; a fork's branch named like the
   default (or base) branch becomes `owner/branch`; an existing branch only
-  fast-forwards. *Here* refuses tracked changes; *in a worktree* reuses the
-  branch's worktree or adds one beside the project, and a new session for
-  the project works in it. The session knows the pull request as its own
-  (lifecycle snapshot).
+  fast-forwards. It happens in the checkout of the pull request's
+  repository, found as above. *Here* refuses tracked changes; *in a worktree*
+  reuses the branch's worktree or adds one beside the checkout, and a new
+  session for the project works in it, on that one repository. The session
+  knows the pull request as its own (lifecycle snapshot), except after *here*
+  in a checkout below its folder: a session spanning several repositories
+  has no one branch.
 - **Stack rebase** (`git::stack_rebase`, after T3's cascade): in a scratch
   repository each open layer is replayed onto the rebased one below and
   pushed with a lease on the head it had; the credential goes through
@@ -210,8 +220,13 @@ pub struct Fetched<T> { pub value: T, pub fetched_at: SystemTime, pub refreshing
 
 pub enum PullRequestPart { Detail, Checks, Activity, Diff, FilesViewed, Stack }
 
-// Where a session's pull requests live and which one is its own; `None`
-// without a project or a GitHub remote.
+// The repositories of the session's folder; `None` without a project.
+async fn session_checkouts(&self, session_id: String) -> Result<Option<SessionCheckouts>>;
+//   SessionCheckouts { directory: PathBuf, checkouts: Vec<RepoCheckout> }
+//   RepoCheckout { path: PathBuf, repo: RepoRef, branch: Option<String> }
+
+// Where the pull requests of the session's directory live and which one is
+// its own; `None` without a project or a GitHub remote.
 async fn session_pull_requests(&self, session_id: String) -> Result<Option<SessionPullRequests>>;
 //   SessionPullRequests { repo: RepoRef, head_branch: Option<String>, own: Option<u64> }
 
@@ -266,6 +281,19 @@ sub-tab, drafts) while open; only the shown page reads and polls. Open tabs
 and their sub-tabs are remembered per session; without any, the session's
 own PR opens. Detail tabs: **Summary**, **Timeline**, **Code** (T3's Guide
 tab, an agent-written review tour, is out of scope).
+
+A folder of several checkouts offers a choice of repository
+(`repo_picker.rs`), one repository none at all. The first time, the choice
+fills the view: a search field over the checkouts (Enter takes the first),
+each row with name, owner, a host other than github.com, and the branch
+unless it is the base branch. Afterwards a button above the list's search
+field opens it as a popover, recently chosen ones first. The repository
+listed is remembered per session (with the tabs); a new session starts on
+the folder's own repository if it has one, else the one last chosen in the
+folder (`PullRequestPreferences::recent_repos`). Choosing another moves the
+list only, tabs stay open, as a change often spans repositories; as soon as
+one is not of the repository listed, tabs read "tool #12". The checkouts are
+read again when the tab shows again.
 
 - **Header**: repo · `#N ↗` in the state colour; editable title; author ·
   updated; `base ← head` (copy), files, `+A −D`; behind-by warning with

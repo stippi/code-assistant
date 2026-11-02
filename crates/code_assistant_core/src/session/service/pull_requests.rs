@@ -5,7 +5,8 @@
 
 use super::*;
 use crate::pull_requests::{
-    CheckoutPlace, Fetched, PullRequestCheckout, SessionPullRequests, pull_request_head,
+    CheckoutPlace, Fetched, PullRequestCheckout, SessionCheckouts, SessionPullRequests,
+    github_checkouts, pull_request_head,
 };
 use crate::session::pull_request::PullRequestSnapshot;
 use github::model::{
@@ -49,10 +50,36 @@ impl SessionService {
         .await
     }
 
-    /// Check `pr` out as `gh pr checkout` does: `Here` in the session's
-    /// directory (its branch switches), or in a worktree of its own with a
-    /// new session for the project on it. The session working on it knows
-    /// it as its pull request.
+    /// The GitHub repositories of the session's directory: its own and those
+    /// checked out directly below it. Only local git is read. `None` for a
+    /// session without a project.
+    pub async fn session_checkouts(&self, session_id: String) -> Result<Option<SessionCheckouts>> {
+        self.call_io(move |ctx| async move {
+            let directory = {
+                let manager = ctx.manager.lock().await;
+                let session = manager
+                    .get_session(&session_id)
+                    .ok_or_else(|| anyhow!("Session {session_id} not found"))?;
+                session.session.config.effective_project_path().cloned()
+            };
+            let Some(directory) = directory else {
+                return Ok(None);
+            };
+            let found = directory.clone();
+            let checkouts = tokio::task::spawn_blocking(move || github_checkouts(&found)).await?;
+            Ok(Some(SessionCheckouts {
+                directory,
+                checkouts,
+            }))
+        })
+        .await
+    }
+
+    /// Check `pr` out as `gh pr checkout` does, in the checkout of its
+    /// repository: `Here` in the session's directory (its branch switches)
+    /// or the checkout below it (the session stays as it is), or in a
+    /// worktree of its own with a new session for the project on it. The
+    /// session working on it knows it as its pull request.
     pub async fn pull_request_checkout(
         &self,
         session_id: String,
@@ -74,11 +101,22 @@ impl SessionService {
                 )
             };
             let detail = ctx.pull_requests.detail(pr.clone()).await?.value;
-            let path = match place {
+            let directory = match place {
                 CheckoutPlace::Here => here,
                 // Worktrees hang off the repository itself.
-                CheckoutPlace::Worktree => project_root.clone(),
+                CheckoutPlace::Worktree => project_root,
             };
+            let path = {
+                let (directory, wanted) = (directory.clone(), pr.repo.clone());
+                tokio::task::spawn_blocking(move || {
+                    github_checkouts(&directory)
+                        .into_iter()
+                        .find(|checkout| checkout.repo == wanted)
+                        .map(|checkout| checkout.path)
+                })
+                .await?
+            }
+            .ok_or_else(|| anyhow!("{} is not checked out in this project", pr.repo.full_name()))?;
             let repo = git::GitRepository::open(&path).context("Failed to open git repository")?;
             let remotes: Vec<(String, String)> = repo
                 .remotes()
@@ -96,6 +134,15 @@ impl SessionService {
 
             let mut manager = ctx.manager.lock().await;
             let session_id = match place {
+                // A session spanning several repositories has no one branch.
+                CheckoutPlace::Here if path != directory => {
+                    return Ok(PullRequestCheckout {
+                        session_id,
+                        path: done.path,
+                        branch: done.branch,
+                        on_head: done.on_head,
+                    });
+                }
                 CheckoutPlace::Here => {
                     manager.set_session_worktree(
                         &session_id,
@@ -105,7 +152,7 @@ impl SessionService {
                     session_id
                 }
                 CheckoutPlace::Worktree => {
-                    let mut config = manager.new_session_config(Some(project_root));
+                    let mut config = manager.new_session_config(Some(path));
                     config.initial_project = project;
                     let model = SessionModelConfig::new(manager.default_model_name());
                     let name = format!("#{} {}", detail.number, detail.title);
@@ -503,6 +550,63 @@ mod tests {
         assert_eq!(service.session_pull_requests(bare).await.unwrap(), None);
     }
 
+    /// A repository at `dir` with a commit and `url` as its `origin`.
+    fn checkout_with_origin(dir: &std::path::Path, url: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        git(dir, &["init", "-q", "-b", "main"]);
+        git(dir, &["config", "user.email", "t@t.t"]);
+        git(dir, &["config", "user.name", "t"]);
+        git(dir, &["config", "commit.gpgsign", "false"]);
+        git(dir, &["commit", "-q", "--allow-empty", "-m", "init"]);
+        git(dir, &["remote", "add", "origin", url]);
+    }
+
+    #[tokio::test]
+    async fn a_project_folder_offers_the_checkouts_below_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        checkout_with_origin(&project.join("alpha"), "git@github.com:team/alpha.git");
+        checkout_with_origin(&project.join("beta"), "git@github.com:team/beta.git");
+        git(
+            &project.join("beta"),
+            &["checkout", "-q", "-b", "feature/x"],
+        );
+        let source = PullRequestSource {
+            client: FakeTransport::new().client(),
+            snapshot_dir: tmp.path().join("pull-requests"),
+        };
+        let (service, _manager) =
+            test_service_with_pull_requests(&tmp.path().join("sessions"), source);
+        let config = crate::session::SessionConfig {
+            init_path: Some(project.clone()),
+            ..crate::session::SessionConfig::default()
+        };
+        let id = service
+            .create_session_with_config(None, config, None)
+            .await
+            .unwrap();
+        service.load_session(id.clone(), None).await.unwrap();
+
+        let found = service
+            .session_checkouts(id.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.directory, project);
+        let repos: Vec<_> = found
+            .checkouts
+            .iter()
+            .map(|c| (c.repo.name.as_str(), c.branch.as_deref()))
+            .collect();
+        assert_eq!(repos, [("alpha", None), ("beta", Some("feature/x"))]);
+        // The folder itself is no repository, as far as pull requests go.
+        assert_eq!(service.session_pull_requests(id).await.unwrap(), None);
+
+        let bare = service.create_session(None, None).await.unwrap();
+        service.load_session(bare.clone(), None).await.unwrap();
+        assert_eq!(service.session_checkouts(bare).await.unwrap(), None);
+    }
+
     /// `git` in `dir`, its output.
     fn git_out(dir: &std::path::Path, args: &[&str]) -> String {
         let output = std::process::Command::new("git")
@@ -522,11 +626,11 @@ mod tests {
         String::from_utf8(output.stdout).unwrap().trim().to_owned()
     }
 
-    #[tokio::test]
-    async fn a_forks_pull_request_is_checked_out_in_a_worktree_with_a_session_of_its_own() {
-        let tmp = tempfile::tempdir().unwrap();
-        // "GitHub": main, and the fork's head at refs/pull/291/head.
-        let upstream = tmp.path().join("upstream");
+    /// A clone at `project` of `stippi/code-assistant` that fetches over a
+    /// stand-in for ssh from a local "GitHub": main, and a fork's head at
+    /// refs/pull/291/head, which is returned.
+    fn clone_of_github(tmp: &std::path::Path, project: &std::path::Path) -> String {
+        let upstream = tmp.join("upstream");
         std::fs::create_dir(&upstream).unwrap();
         git_out(&upstream, &["init", "-q", "-b", "main"]);
         git_out(&upstream, &["commit", "-q", "--allow-empty", "-m", "init"]);
@@ -537,9 +641,8 @@ mod tests {
         let head = git_out(&upstream, &["rev-parse", "HEAD"]);
         git_out(&upstream, &["update-ref", "refs/pull/291/head", &head]);
         git_out(&upstream, &["reset", "-q", "--hard", "HEAD~1"]);
-        let project = tmp.path().join("code-assistant");
         git_out(
-            tmp.path(),
+            tmp,
             &[
                 "clone",
                 "-q",
@@ -547,20 +650,136 @@ mod tests {
                 project.to_str().unwrap(),
             ],
         );
+        let ssh = tmp.join("ssh.sh");
+        std::fs::write(
+            &ssh,
+            format!("#!/bin/sh\nexec git upload-pack '{}'\n", upstream.display()),
+        )
+        .unwrap();
+        git_out(
+            project,
+            &[
+                "config",
+                "core.sshCommand",
+                &format!("sh {}", ssh.display()),
+            ],
+        );
+        git_out(
+            project,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                "git@github.com:stippi/code-assistant.git",
+            ],
+        );
+        head
+    }
+
+    /// GitHub's answer for that fork's pull request; maintainers may push.
+    fn fork_pull_request(head: &str) -> serde_json::Value {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../github/tests/fixtures/pull_request_core.json"
+        );
+        let text = std::fs::read_to_string(path).unwrap();
+        let mut data = serde_json::from_str::<serde_json::Value>(&text).unwrap()["data"].take();
+        data["repository"]["pullRequest"]["headRefOid"] = head.into();
+        data
+    }
+
+    #[tokio::test]
+    async fn a_pull_request_of_a_checkout_below_is_checked_out_there() {
+        let tmp = tempfile::tempdir().unwrap();
+        let folder = tmp.path().join("folder");
+        std::fs::create_dir(&folder).unwrap();
+        let tool = folder.join("tool");
+        let head = clone_of_github(tmp.path(), &tool);
+        let fake = FakeTransport::new();
+        fake.on_graphql("PullRequestCore")
+            .data(fork_pull_request(&head));
+        let source = PullRequestSource {
+            client: fake.client(),
+            snapshot_dir: tmp.path().join("pull-requests"),
+        };
+        let (service, manager) =
+            test_service_with_pull_requests(&tmp.path().join("sessions"), source);
+        let config = crate::session::SessionConfig {
+            init_path: Some(folder.clone()),
+            initial_project: "folder".into(),
+            ..crate::session::SessionConfig::default()
+        };
+        let id = service
+            .create_session_with_config(None, config, None)
+            .await
+            .unwrap();
+        service.load_session(id.clone(), None).await.unwrap();
+        let pr = RepoRef::new("github.com", "stippi", "code-assistant").pull_request(291);
+
+        // In a worktree: a session of its own, of the same project.
+        let done = service
+            .pull_request_checkout(id.clone(), pr.clone(), CheckoutPlace::Worktree)
+            .await
+            .unwrap();
+        assert_ne!(done.session_id, id);
+        assert_eq!(git_out(&done.path, &["rev-parse", "HEAD"]), head);
+        {
+            let manager = manager.lock().await;
+            let config = &manager
+                .get_session(&done.session_id)
+                .unwrap()
+                .session
+                .config;
+            assert_eq!(config.init_path.as_ref(), Some(&tool));
+            assert_eq!(config.worktree_path.as_ref(), Some(&done.path));
+            assert_eq!(config.initial_project, "folder");
+        }
+        let in_worktree = service
+            .session_checkouts(done.session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            in_worktree.checkouts.len(),
+            1,
+            "a session on one repository"
+        );
+
+        // Here: the checkout below moves, the session spans them still.
+        git_out(&done.path, &["checkout", "-q", "--detach"]);
+        let done = service
+            .pull_request_checkout(id.clone(), pr.clone(), CheckoutPlace::Here)
+            .await
+            .unwrap();
+        assert_eq!(done.session_id, id);
+        assert_eq!(done.path, tool);
+        assert_eq!(git_out(&tool, &["rev-parse", "HEAD"]), head);
+        let manager = manager.lock().await;
+        let config = &manager.get_session(&id).unwrap().session.config;
+        assert_eq!(config.branch, None);
+        assert_eq!(config.worktree_path, None);
+        let lifecycle = manager.session_lifecycles().unwrap().remove(&id);
+        assert!(lifecycle.is_none_or(|lifecycle| lifecycle.pull_request.is_none()));
+
+        // A repository not checked out here says so.
+        drop(manager);
+        let other = RepoRef::new("github.com", "stippi", "other").pull_request(291);
+        let refused = service
+            .pull_request_checkout(id, other, CheckoutPlace::Here)
+            .await
+            .unwrap_err();
+        assert!(format!("{refused:#}").contains("stippi/other is not checked out"));
+    }
+
+    #[tokio::test]
+    async fn a_forks_pull_request_is_checked_out_in_a_worktree_with_a_session_of_its_own() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("code-assistant");
+        let head = clone_of_github(tmp.path(), &project);
 
         let fake = FakeTransport::new();
-        let core = {
-            let path = concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../github/tests/fixtures/pull_request_core.json"
-            );
-            let text = std::fs::read_to_string(path).unwrap();
-            let mut data = serde_json::from_str::<serde_json::Value>(&text).unwrap()["data"].take();
-            // A fork's pull request, maintainers may push.
-            data["repository"]["pullRequest"]["headRefOid"] = head.clone().into();
-            data
-        };
-        fake.on_graphql("PullRequestCore").data(core);
+        fake.on_graphql("PullRequestCore")
+            .data(fork_pull_request(&head));
         let source = PullRequestSource {
             client: fake.client(),
             snapshot_dir: tmp.path().join("pull-requests"),
@@ -591,7 +810,7 @@ mod tests {
         // Pushed back to the fork, like `gh pr checkout`.
         assert_eq!(
             git_out(&project, &["config", "branch.feature/pr-view.remote"]),
-            "https://github.com/contributor/code-assistant.git"
+            "git@github.com:contributor/code-assistant.git"
         );
 
         let manager = manager.lock().await;

@@ -152,6 +152,9 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
 - Client and snapshot dir injected via `AgentRuntimeOptions::pull_requests`;
   the lifecycle sweep reads sessions' PRs through it in batches; see
   `docs/pull-request-view.md`
+- A project folder holding several checkouts offers a choice of repository
+  above the list (`session_checkouts`, `right_panel/pull_request/repo_picker.rs`);
+  tabs are keyed by `PullRequestRef` and stay open when the list moves on
 - Checkout like `gh pr checkout` (`git::pull_request`, here or in a new
   worktree session) and stack rebases (`git::stack_rebase`, scratch repo)
   are git-crate work the core drives

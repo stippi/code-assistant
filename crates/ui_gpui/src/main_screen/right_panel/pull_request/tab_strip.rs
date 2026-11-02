@@ -6,6 +6,7 @@
 
 use super::presentation::Tone;
 use super::{OpenTab, PullRequestPanel};
+use github::{PullRequestRef, RepoRef};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme, Icon, Sizable};
@@ -78,7 +79,7 @@ impl PullRequestPanel {
             .tabs
             .iter()
             .enumerate()
-            .map(|(ix, (number, tab))| self.render_tab(ix, number, tab, cx))
+            .map(|(ix, (pr, tab))| self.render_tab(ix, pr, tab, cx))
             .collect();
         let overflow = self.strip_scroll.max_offset().x > px(0.);
         let arrow =
@@ -131,24 +132,25 @@ impl PullRequestPanel {
     fn render_tab(
         &self,
         ix: usize,
-        number: u64,
+        pr: &PullRequestRef,
         tab: &OpenTab,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = cx.theme();
         let active = self.tabs.active() == Some(ix);
-        let label: SharedString = format!("#{number}").into();
-        let (icon, color) = match tab_tone(self, number, tab, cx) {
+        let number = pr.number;
+        let label = tab_label(pr, self.repo.as_ref(), self.tabs.iter().map(|(pr, _)| pr));
+        let (icon, color) = match tab_tone(self, pr, tab, cx) {
             Some(tone) => (tone.icon(), tone.color(cx)),
             None => (
                 "icons/git_pull_request.svg",
                 theme.muted_foreground.opacity(0.6),
             ),
         };
-        let group: SharedString = format!("pr-tab-{number}").into();
+        let group: SharedString = format!("pr-tab-{pr}").into();
         let line = theme.drag_border;
         let panel = cx.entity().downgrade();
-        let close = Button::new(SharedString::from(format!("pr-tab-close-{number}")))
+        let close = Button::new(SharedString::from(format!("pr-tab-close-{pr}")))
             .ghost()
             .xsmall()
             .icon(Icon::default().path("icons/close.svg"))
@@ -186,7 +188,7 @@ impl PullRequestPanel {
             .group(group)
             .debug_selector(move || format!("pr-tab-{number}"))
             .flex_none()
-            .max_w(px(144.))
+            .max_w(px(192.))
             .h(px(24.))
             .pl_1()
             .pr_2()
@@ -249,9 +251,49 @@ impl PullRequestPanel {
 }
 
 /// A tab's state glyph: from its page once read, else the list's row.
-fn tab_tone(panel: &PullRequestPanel, number: u64, tab: &OpenTab, cx: &App) -> Option<Tone> {
+fn tab_tone(
+    panel: &PullRequestPanel,
+    pr: &PullRequestRef,
+    tab: &OpenTab,
+    cx: &App,
+) -> Option<Tone> {
     tab.view.read(cx).tone(cx).or_else(|| {
-        let entry = panel.list.read(cx).entry(number)?;
+        if panel.repo.as_ref() != Some(&pr.repo) {
+            return None;
+        }
+        let entry = panel.list.read(cx).entry(pr.number)?;
         Some(Tone::of(entry.state, entry.is_draft))
     })
+}
+
+/// "#290", or "tool #290" as soon as a number alone would not say which
+/// repository a tab is of: some tab is not of the one listed.
+fn tab_label<'a>(
+    pr: &PullRequestRef,
+    listed: Option<&RepoRef>,
+    mut open: impl Iterator<Item = &'a PullRequestRef>,
+) -> SharedString {
+    if open.all(|other| Some(&other.repo) == listed) {
+        format!("#{}", pr.number).into()
+    } else {
+        format!("{} #{}", pr.repo.name, pr.number).into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_tab_names_its_repository_once_a_number_alone_would_not_say() {
+        let (tool, other) = (
+            RepoRef::new("github.com", "team", "tool"),
+            RepoRef::new("github.com", "team", "other"),
+        );
+        let (a, b) = (tool.pull_request(1), other.pull_request(2));
+        assert_eq!(tab_label(&a, Some(&tool), [&a].into_iter()), "#1");
+        assert_eq!(tab_label(&a, Some(&other), [&a].into_iter()), "tool #1");
+        assert_eq!(tab_label(&a, Some(&tool), [&a, &b].into_iter()), "tool #1");
+        assert_eq!(tab_label(&a, None, [&a].into_iter()), "tool #1");
+    }
 }

@@ -1,6 +1,7 @@
 //! What the pull request view remembers across restarts: how the list is
-//! sorted and filtered, the merge method last used per repository, and how
-//! the Code tab shows diffs.
+//! sorted and filtered, the merge method last used per repository, the
+//! repositories last chosen per folder of several, and how the Code tab
+//! shows diffs.
 //! Kept with the other UI settings ([`UiSettings`](crate::shared::settings::UiSettings)).
 
 use super::list_logic::{Filters, SortMode};
@@ -9,6 +10,10 @@ use github::model::{Involvement, ListState, MergeMethod};
 use gpui_kit::App;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+/// How many chosen repositories a folder remembers.
+const RECENT_REPOS: usize = 8;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -17,6 +22,10 @@ pub struct PullRequestPreferences {
     /// The merge method last used, by repository (`host/owner/name`).
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub merge_methods: BTreeMap<String, MergeMethod>,
+    /// The repositories last chosen in a folder of several, by folder,
+    /// the last one first.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub recent_repos: BTreeMap<PathBuf, Vec<RepoRef>>,
     /// The Summary's comment filter and order, the Timeline's order.
     pub conversation: super::conversation::preferences::ConversationPreferences,
     pub code: CodePreferences,
@@ -70,6 +79,18 @@ impl PullRequestPreferences {
     pub fn merge_method(&self, repo: &RepoRef) -> Option<MergeMethod> {
         self.merge_methods.get(&repo.to_string()).copied()
     }
+
+    pub fn recent_repos(&self, folder: &Path) -> &[RepoRef] {
+        self.recent_repos.get(folder).map_or(&[], Vec::as_slice)
+    }
+
+    /// `repo` was chosen in `folder`.
+    pub fn chose_repo(&mut self, folder: &Path, repo: &RepoRef) {
+        let recent = self.recent_repos.entry(folder.to_path_buf()).or_default();
+        recent.retain(|other| other != repo);
+        recent.insert(0, repo.clone());
+        recent.truncate(RECENT_REPOS);
+    }
 }
 
 /// The remembered preferences; the defaults before settings are loaded.
@@ -89,6 +110,22 @@ mod tests {
     use super::*;
     use crate::main_screen::right_panel::pull_request::fixtures::repo;
     use crate::main_screen::right_panel::pull_request::list_logic::DraftFilter;
+
+    #[test]
+    fn a_folder_remembers_its_last_choices_the_last_one_first() {
+        let mut preferences = PullRequestPreferences::default();
+        let folder = Path::new("/folder");
+        let named = |name: String| RepoRef::new("github.com", "team", name);
+        for n in 0..=RECENT_REPOS {
+            preferences.chose_repo(folder, &named(n.to_string()));
+        }
+        preferences.chose_repo(folder, &named("3".into()));
+        let recent = preferences.recent_repos(folder);
+        assert_eq!(recent.len(), RECENT_REPOS);
+        assert_eq!(recent[0], named("3".into()));
+        assert_eq!(recent[1], named(RECENT_REPOS.to_string()));
+        assert!(preferences.recent_repos(Path::new("/other")).is_empty());
+    }
 
     #[test]
     fn preferences_survive_a_round_trip_and_default_when_missing() {
