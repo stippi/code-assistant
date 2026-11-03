@@ -139,6 +139,20 @@ impl GitRepository {
             .flatten()
             .map(|name| name.shorten().to_string())
     }
+
+    /// The remote-tracking branch of the checked-out branch (e.g.
+    /// `origin/feature/x`). `None` on a detached `HEAD`, on a branch without
+    /// upstream and when the tracking ref is gone (remote branch deleted and
+    /// pruned, or never fetched).
+    pub fn head_upstream(&self) -> Option<String> {
+        let repo = self.repo.to_thread_local();
+        let head = repo.head_name().ok().flatten()?;
+        let tracking = repo
+            .branch_remote_tracking_ref_name(head.as_ref(), gix::remote::Direction::Fetch)?
+            .ok()?;
+        repo.find_reference(tracking.as_ref()).ok()?;
+        Some(tracking.shorten().to_string())
+    }
 }
 
 /// The local remote-tracking ref of `branch` (e.g. `origin/main`), if set.

@@ -149,6 +149,9 @@ pub enum ReviewMode {
     WorkingTree,
     /// The current branch vs a base branch, using merge-base (PR) semantics.
     BranchVsBase,
+    /// What the current branch has committed but not pushed: the branch vs its
+    /// upstream, using merge-base semantics. Nothing to show without upstream.
+    Unpushed,
 }
 
 /// Progress of one repo's background review scan, carried alongside the data
@@ -1525,9 +1528,7 @@ impl SessionService {
     }
 
     /// Scan a single repo for the Review panel: changed files, diff stats, and
-    /// the selector metadata. In `BranchVsBase` mode a `None` `base_override`
-    /// defaults to the current branch's upstream, else the first remote
-    /// candidate.
+    /// the selector metadata. The ref compared with comes from [`review_base`].
     pub async fn scan_review_repo(
         &self,
         repo_root: PathBuf,
@@ -1551,8 +1552,8 @@ impl SessionService {
                     let stats = repo.diff_stats_working_tree().await.unwrap_or_default();
                     (files, stats, None)
                 }
-                ReviewMode::BranchVsBase => {
-                    let resolved = resolve_review_base(&repo, base_override, &base_candidates);
+                ReviewMode::BranchVsBase | ReviewMode::Unpushed => {
+                    let resolved = review_base(&repo, mode, base_override, &base_candidates);
                     match &resolved {
                         Some(b) => {
                             let files = repo
@@ -1599,9 +1600,9 @@ impl SessionService {
                     .file_diff_working_tree(&file)
                     .await
                     .context("Failed to load working-tree diff"),
-                ReviewMode::BranchVsBase => {
+                ReviewMode::BranchVsBase | ReviewMode::Unpushed => {
                     let base_candidates = repo.list_base_candidates().unwrap_or_default();
-                    let resolved = resolve_review_base(&repo, base, &base_candidates)
+                    let resolved = review_base(&repo, mode, base, &base_candidates)
                         .ok_or_else(|| anyhow!("No base branch available for comparison"))?;
                     repo.file_diff_vs_base(&resolved, &file)
                         .await
@@ -1805,6 +1806,21 @@ fn session_effective_path(manager: &SessionManager, session_id: &str) -> Result<
         .ok_or_else(|| anyhow!("Session has no project path configured"))
 }
 
+/// The ref `mode` compares `HEAD` with. `Unpushed` only ever means the upstream:
+/// falling back to another branch would present its diff as unpushed work.
+fn review_base(
+    repo: &git::GitRepository,
+    mode: ReviewMode,
+    base: Option<String>,
+    candidates: &[String],
+) -> Option<String> {
+    match mode {
+        ReviewMode::WorkingTree => None,
+        ReviewMode::BranchVsBase => resolve_review_base(repo, base, candidates),
+        ReviewMode::Unpushed => repo.head_upstream(),
+    }
+}
+
 /// Choose the base ref for `BranchVsBase` mode. Prefers an explicit `base`
 /// (validated against candidates), then the current branch's upstream, then
 /// the first `origin/*` candidate, then any candidate that is not the current
@@ -1822,14 +1838,8 @@ fn resolve_review_base(
 
     let current = repo.current_branch();
 
-    if let Some(branch) = repo.list_branches().ok().and_then(|branches| {
-        branches
-            .into_iter()
-            .find(|b| b.is_head)
-            .and_then(|b| b.upstream)
-    }) && candidates.iter().any(|c| c == &branch)
-    {
-        return Some(branch);
+    if let Some(upstream) = repo.head_upstream() {
+        return Some(upstream);
     }
 
     if let Some(origin) = candidates.iter().find(|c| c.starts_with("origin/")) {
@@ -1890,6 +1900,58 @@ fn discover_review_repos(root: &Path) -> Vec<(PathBuf, String)> {
     }
     repos.sort_by_key(|(_, label)| label.to_lowercase());
     repos
+}
+
+#[cfg(test)]
+mod review_base_tests {
+    use super::{ReviewMode, review_base};
+    use std::process::Command;
+
+    fn git(dir: &std::path::Path, args: &[&str]) {
+        let ok = Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .expect("run git")
+            .success();
+        assert!(ok, "git {args:?} failed");
+    }
+
+    #[test]
+    fn unpushed_compares_with_the_upstream_or_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        git(dir, &["init", "-q", "-b", "main"]);
+        git(dir, &["commit", "-q", "--allow-empty", "-m", "first"]);
+        git(dir, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        git(dir, &["update-ref", "refs/remotes/origin/other", "HEAD"]);
+        let repo = git::GitRepository::open(dir).unwrap();
+        let candidates = repo.list_base_candidates().unwrap();
+        let chosen = Some("origin/other".to_string());
+
+        // Without upstream, other modes fall back; this one must not.
+        assert_eq!(
+            review_base(&repo, ReviewMode::Unpushed, chosen.clone(), &candidates),
+            None
+        );
+        assert_eq!(
+            review_base(&repo, ReviewMode::BranchVsBase, chosen.clone(), &candidates),
+            chosen
+        );
+
+        git(
+            dir,
+            &["remote", "add", "origin", "https://example.com/r.git"],
+        );
+        git(dir, &["config", "branch.main.remote", "origin"]);
+        git(dir, &["config", "branch.main.merge", "refs/heads/main"]);
+        let repo = git::GitRepository::open(dir).unwrap();
+        assert_eq!(
+            review_base(&repo, ReviewMode::Unpushed, chosen, &candidates).as_deref(),
+            Some("origin/main")
+        );
+    }
 }
 
 #[cfg(test)]

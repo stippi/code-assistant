@@ -17,6 +17,12 @@ pub(super) enum ReviewRow {
     BaseSelector {
         repo: usize,
     },
+    /// The upstream `Unpushed` compares with. A row kind of its own: the list
+    /// keeps measured heights of rows that stay equal, and this one is not as
+    /// tall as the selector.
+    Upstream {
+        repo: usize,
+    },
     FileHeader {
         repo: usize,
         file: usize,
@@ -51,9 +57,17 @@ pub(super) struct FileOutline {
     pub diff: Option<(u64, DiffBody)>,
 }
 
+/// What a repo shows above its files, depending on the compare mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BaseLine {
+    Nothing,
+    Selector,
+    Upstream,
+}
+
 pub(super) struct RepoOutline {
     pub collapsed: bool,
-    pub base_selector: bool,
+    pub base_line: BaseLine,
     pub files: Vec<FileOutline>,
 }
 
@@ -64,8 +78,10 @@ pub(super) fn flatten(repos: &[RepoOutline]) -> Vec<ReviewRow> {
         if section.collapsed {
             continue;
         }
-        if section.base_selector {
-            rows.push(ReviewRow::BaseSelector { repo });
+        match section.base_line {
+            BaseLine::Nothing => {}
+            BaseLine::Selector => rows.push(ReviewRow::BaseSelector { repo }),
+            BaseLine::Upstream => rows.push(ReviewRow::Upstream { repo }),
         }
         for (file, outline) in section.files.iter().enumerate() {
             rows.push(ReviewRow::FileHeader { repo, file });
@@ -152,11 +168,27 @@ mod tests {
     }
 
     #[test]
+    fn switching_selector_for_upstream_replaces_the_row() {
+        let outline = |base_line| {
+            flatten(&[RepoOutline {
+                collapsed: false,
+                base_line,
+                files: Vec::new(),
+            }])
+        };
+        let selector = outline(BaseLine::Selector);
+        let upstream = outline(BaseLine::Upstream);
+        assert_eq!(upstream[1], ReviewRow::Upstream { repo: 0 });
+        // The list must measure it anew: the two are not equally tall.
+        assert_eq!(changed_span(&selector, &upstream), Some((1..2, 1)));
+    }
+
+    #[test]
     fn flatten_lists_headers_and_diff_chunks_in_order() {
         let rows = flatten(&[
             RepoOutline {
                 collapsed: false,
-                base_selector: true,
+                base_line: BaseLine::Selector,
                 files: vec![
                     file(false, Some((7, DiffBody::Chunks(2)))),
                     file(false, None),
@@ -166,7 +198,7 @@ mod tests {
             },
             RepoOutline {
                 collapsed: false,
-                base_selector: false,
+                base_line: BaseLine::Nothing,
                 files: vec![],
             },
         ]);
@@ -206,12 +238,12 @@ mod tests {
         let rows = flatten(&[
             RepoOutline {
                 collapsed: true,
-                base_selector: true,
+                base_line: BaseLine::Selector,
                 files: vec![file(false, Some((1, DiffBody::Chunks(3))))],
             },
             RepoOutline {
                 collapsed: false,
-                base_selector: false,
+                base_line: BaseLine::Nothing,
                 files: vec![file(true, Some((2, DiffBody::Chunks(3))))],
             },
         ]);
@@ -290,7 +322,7 @@ mod tests {
         let rows = flatten(&[
             RepoOutline {
                 collapsed: false,
-                base_selector: true,
+                base_line: BaseLine::Selector,
                 files: vec![
                     file(false, Some((1, DiffBody::Chunks(2)))),
                     file(false, None),
@@ -298,7 +330,7 @@ mod tests {
             },
             RepoOutline {
                 collapsed: false,
-                base_selector: false,
+                base_line: BaseLine::Nothing,
                 files: vec![file(false, None), file(true, None)],
             },
         ]);

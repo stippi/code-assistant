@@ -31,7 +31,8 @@ mod comments;
 use super::line_selection::ChunkMarks;
 use super::line_selection::{LineSelection, SelectsLines, row_selection};
 use super::review_rows::{
-    DiffBody, FileOutline, RepoOutline, ReviewRow, changed_span, files_by_proximity, flatten,
+    BaseLine, DiffBody, FileOutline, RepoOutline, ReviewRow, changed_span, files_by_proximity,
+    flatten,
 };
 use crate::comments::CommentChange;
 use crate::comments::editor::CommentEditor;
@@ -91,6 +92,10 @@ fn mode_options() -> Vec<ModeOption> {
         ModeOption {
             label: "Branch vs base".to_string(),
             value: ReviewMode::BranchVsBase,
+        },
+        ModeOption {
+            label: "Unpushed".to_string(),
+            value: ReviewMode::Unpushed,
         },
     ]
 }
@@ -320,6 +325,7 @@ impl ReviewView {
             {
                 self.mode = match mode.as_deref() {
                     Some("branch_vs_base") => ReviewMode::BranchVsBase,
+                    Some("unpushed") => ReviewMode::Unpushed,
                     _ => ReviewMode::WorkingTree,
                 };
             }
@@ -338,6 +344,7 @@ impl ReviewView {
         let mode = match self.mode {
             ReviewMode::WorkingTree => "working_tree",
             ReviewMode::BranchVsBase => "branch_vs_base",
+            ReviewMode::Unpushed => "unpushed",
         };
         crate::shared::ui_state::update(cx, |store| {
             store.set_review_compare_mode(session_id, mode.to_string())
@@ -560,7 +567,9 @@ impl ReviewView {
         // and re-requesting makes the default actually take effect. This
         // terminates: once the backend echoes the default as the repo's base,
         // the `base != default` guard stops further seeding.
-        if let Some(default) = self.default_base.clone() {
+        if let Some(default) = self.default_base.clone()
+            && self.mode == ReviewMode::BranchVsBase
+        {
             let mut seeded = false;
             for data in &listing.repos {
                 if !self.base_overrides.contains_key(&data.repo_root)
@@ -697,6 +706,9 @@ impl ReviewView {
     /// The base ref to preselect for a repo: an explicit session override, else
     /// the persisted default (when it is a candidate), else the resolved base.
     fn effective_base(&self, data: &RepoReviewData) -> Option<String> {
+        if self.mode != ReviewMode::BranchVsBase {
+            return data.base.clone();
+        }
         if let Some(base) = self.base_overrides.get(&data.repo_root) {
             return Some(base.clone());
         }
@@ -789,13 +801,17 @@ impl ReviewView {
     /// span that changed is spliced, so everything else keeps its measured
     /// height and the scroll position holds.
     fn sync_rows(&mut self) {
-        let base_selector = matches!(self.mode, ReviewMode::BranchVsBase);
+        let base_line = match self.mode {
+            ReviewMode::WorkingTree => BaseLine::Nothing,
+            ReviewMode::BranchVsBase => BaseLine::Selector,
+            ReviewMode::Unpushed => BaseLine::Upstream,
+        };
         let outline: Vec<RepoOutline> = self
             .repos
             .iter()
             .map(|section| RepoOutline {
                 collapsed: section.collapsed,
-                base_selector,
+                base_line,
                 files: section
                     .files
                     .iter()
@@ -845,6 +861,10 @@ impl ReviewView {
             },
             ReviewRow::BaseSelector { repo } => match self.repos.get(repo) {
                 Some(section) => self.render_base_selector(section, cx),
+                None => empty(),
+            },
+            ReviewRow::Upstream { repo } => match self.repos.get(repo) {
+                Some(section) => Self::render_upstream(section, cx),
                 None => empty(),
             },
             ReviewRow::FileHeader { repo, file } => {
@@ -947,6 +967,26 @@ impl ReviewView {
                 this.ensure_diff_request(cx);
                 cx.notify();
             }))
+            .into_any_element()
+    }
+
+    /// What `Unpushed` compares with: not a choice, so plain text. Always one
+    /// line, the list does not remeasure this row when the text changes.
+    fn render_upstream(section: &RepoSection, cx: &Context<Self>) -> gpui_kit::AnyElement {
+        let text = match &section.base {
+            Some(upstream) if section.files.is_empty() => format!("Up to date with {upstream}"),
+            Some(upstream) => format!("Not yet in {upstream}"),
+            None if section.scan_state == ReviewScanState::Done => {
+                "No upstream branch to compare with".to_string()
+            }
+            None => "Looking for the upstream branch…".to_string(),
+        };
+        div()
+            .px_3()
+            .py_1()
+            .text_xs()
+            .text_color(cx.theme().muted_foreground)
+            .child(text)
             .into_any_element()
     }
 
