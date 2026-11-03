@@ -205,13 +205,15 @@ impl CodeTab {
                     .anchors_selection_end(&file.path, lines.start, lines.len())
                     .then(|| self.selection_anchor.clone()),
             };
-            row_selection(
+            let mut selection = row_selection(
                 file.path.clone(),
                 base_line,
                 marks,
                 self.focus_handle.clone(),
                 cx,
-            )
+            );
+            selection.gutter_add = Some(self.gutter_add(file.path.clone(), cx));
+            selection
         });
         let scroll = (!self.code.wrap).then(|| file.scroll.clone());
         let rows = match &file.split {

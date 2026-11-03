@@ -14,6 +14,8 @@ pub enum Row {
     Meta,
     Description,
     Checks,
+    /// What the viewer wrote and has not sent.
+    Draft,
     /// "Comments (N)" with the filter and the order.
     CommentsHeader,
     /// Loading, nothing to show, or the conversation read only in part.
@@ -39,15 +41,16 @@ pub struct CommentsLayout<'a> {
     pub open: bool,
     /// There is something to say above the items.
     pub note: bool,
+    /// The viewer has something unsent to show.
+    pub draft: bool,
 }
 
 pub fn summary_rows(layout: CommentsLayout) -> Vec<Row> {
-    let mut rows = vec![
-        Row::Meta,
-        Row::Description,
-        Row::Checks,
-        Row::CommentsHeader,
-    ];
+    let mut rows = vec![Row::Meta, Row::Description, Row::Checks];
+    if layout.draft {
+        rows.push(Row::Draft);
+    }
+    rows.push(Row::CommentsHeader);
     if !layout.open {
         return rows;
     }
@@ -79,7 +82,7 @@ pub fn pinned_section(rows: &[Row], top: usize, offset: Pixels) -> Option<Row> {
     let scrolled = offset > Pixels::ZERO;
     match row {
         Row::Description | Row::Checks | Row::CommentsHeader if scrolled => Some(row.clone()),
-        Row::Meta | Row::Description | Row::Checks | Row::CommentsHeader => None,
+        Row::Meta | Row::Description | Row::Checks | Row::Draft | Row::CommentsHeader => None,
         _ => Some(Row::CommentsHeader),
     }
 }
@@ -106,6 +109,28 @@ mod tests {
     }
 
     #[test]
+    fn a_draft_shows_above_the_comments_even_when_they_are_folded() {
+        let rows = summary_rows(CommentsLayout {
+            ids: &ids(1),
+            newest_first: true,
+            count: PAGE,
+            open: false,
+            note: false,
+            draft: true,
+        });
+        assert_eq!(
+            rows,
+            [
+                Row::Meta,
+                Row::Description,
+                Row::Checks,
+                Row::Draft,
+                Row::CommentsHeader
+            ]
+        );
+    }
+
+    #[test]
     fn the_newest_ten_show_first() {
         let ids = ids(12);
         let rows = summary_rows(CommentsLayout {
@@ -114,6 +139,7 @@ mod tests {
             count: PAGE,
             open: true,
             note: false,
+            draft: false,
         });
         assert_eq!(
             rows[..4],
@@ -141,6 +167,7 @@ mod tests {
             count: PAGE,
             open: true,
             note: true,
+            draft: false,
         });
         assert_eq!(&shown(&rows)[..3], ["note", "older 2", "2"]);
         assert_eq!(shown(&rows).last().unwrap(), "11");
@@ -155,6 +182,7 @@ mod tests {
             count: 2 * PAGE,
             open: true,
             note: false,
+            draft: false,
         });
         let shown = shown(&rows);
         assert_eq!(shown.len(), 13);
@@ -170,6 +198,7 @@ mod tests {
             count: PAGE,
             open: false,
             note: true,
+            draft: false,
         });
         assert_eq!(rows.len(), 4);
     }
@@ -184,6 +213,7 @@ mod tests {
             count: PAGE,
             open: true,
             note: false,
+            draft: false,
         });
         assert_eq!(pinned_section(&rows, 0, px(30.)), None);
         assert_eq!(pinned_section(&rows, 1, px(0.)), None, "its header shows");

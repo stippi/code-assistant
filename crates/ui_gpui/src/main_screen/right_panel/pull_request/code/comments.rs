@@ -1,5 +1,6 @@
-//! New comments on the diff: rows selected with the shared line selection
-//! show the pill (copy, comment); commenting opens a box below the last
+//! New comments on the diff: the "+" over a line number, or rows selected
+//! with the shared line selection, which show the pill (copy, comment);
+//! the "+" and "comment" open a box below the last
 //! row, from which the comment goes to the pending review ("Add to
 //! review", a dashed card on its line until the review is submitted) or to
 //! the agent's draft ("Add to agent", like the Review view's line
@@ -12,6 +13,7 @@ use super::body::annotation;
 use super::pages::LoadedFile;
 use crate::comments::{CommentChange, floating, selection_pill};
 use crate::diff::model::DiffLine;
+use crate::diff::rows::GutterAdd;
 use code_assistant_core::line_comments::LineComment;
 use github::model::DiffSide;
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -23,6 +25,7 @@ use gpui_kit::{
 use similar::ChangeTag;
 use std::ops::Range;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use super::super::review_draft::PendingComment;
 
@@ -130,6 +133,42 @@ impl CodeTab {
                 .collect::<Vec<_>>()
                 .join("\n");
             cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+    }
+
+    /// The "+" over the line numbers of `path`: a press selects like any
+    /// other, releasing it opens the comment box on what is selected then.
+    pub(super) fn gutter_add(&self, path: String, cx: &Context<Self>) -> GutterAdd {
+        let theme = cx.theme();
+        let focus = self.focus_handle.clone();
+        let view = cx.entity().downgrade();
+        let (press, release, repaint) = (view.clone(), view.clone(), view);
+        GutterAdd {
+            show: self.draft.is_none() && !self.selection.is_dragging(),
+            color: theme.info,
+            glyph: gpui_kit::white(),
+            on_press: Rc::new(move |line, window, cx| {
+                window.focus(&focus, cx);
+                press
+                    .update(cx, |view, cx| {
+                        view.selection.begin(path.clone(), line, false);
+                        view.comment_on_release = true;
+                        cx.notify();
+                    })
+                    .ok();
+            }),
+            on_release: Rc::new(move |window, cx| {
+                release
+                    .update(cx, |view, cx| {
+                        if std::mem::take(&mut view.comment_on_release) {
+                            view.start_comment(window, cx);
+                        }
+                    })
+                    .ok();
+            }),
+            repaint: Rc::new(move |_, cx| {
+                repaint.update(cx, |_, cx| cx.notify()).ok();
+            }),
         }
     }
 

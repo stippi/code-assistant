@@ -166,6 +166,8 @@ pub struct CodeTab {
     dirty: bool,
 
     selection: LineSelection<String>,
+    /// The press came from a "+": releasing it opens the comment box.
+    comment_on_release: bool,
     /// Window bounds of the selection's last row, written when painted.
     selection_anchor: Rc<Cell<Option<Bounds<Pixels>>>>,
     anchor: AnchorTracker,
@@ -248,6 +250,7 @@ impl CodeTab {
             list_state: ListState::new(0, ListAlignment::Top, LIST_OVERDRAW).measure_all(),
             dirty: true,
             selection: LineSelection::default(),
+            comment_on_release: false,
             selection_anchor: Rc::default(),
             anchor: AnchorTracker::default(),
             pill_dismissed: None,

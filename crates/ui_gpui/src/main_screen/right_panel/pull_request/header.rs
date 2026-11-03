@@ -18,6 +18,7 @@ use super::actions::{
     resolve_merge_method,
 };
 use super::avatar::avatar;
+use super::composer::Composer;
 use super::preferences;
 use super::presentation::{Tone, diff_stat, format_count, relative_time};
 use super::stack::{self, StackRequest, StackView};
@@ -62,6 +63,7 @@ struct Facts {
 
 pub struct DetailHeader {
     pr: PullRequestRef,
+    composer: Option<Entity<Composer>>,
     detail: Option<Arc<Detail>>,
     checks_state: Option<ChecksState>,
     /// A newer detail is being read.
@@ -107,6 +109,7 @@ impl DetailHeader {
     ) -> Self {
         Self {
             pr,
+            composer: None,
             detail: None,
             checks_state: None,
             refreshing: false,
@@ -123,6 +126,11 @@ impl DetailHeader {
             copied: None,
             _copied_reset: None,
         }
+    }
+
+    pub fn with_composer(mut self, composer: Entity<Composer>) -> Self {
+        self.composer = Some(composer);
+        self
     }
 
     pub fn set_condensed(&mut self, condensed: bool, cx: &mut Context<Self>) {
@@ -657,6 +665,7 @@ impl Render for DetailHeader {
                     self.checking_out,
                     weak.clone(),
                 ))
+                .children(self.composer.clone())
                 .children(actions::render_primary(self, detail, cx))
                 .child(actions::render_more_menu(
                     detail,

@@ -422,6 +422,7 @@ impl DiffCardSelection {
             marked: Vec::new(),
             mark_color: self.color,
             anchor: None,
+            gutter_add: None,
             on_start,
             on_drag,
             on_end,

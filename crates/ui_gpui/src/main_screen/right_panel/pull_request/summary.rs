@@ -15,6 +15,7 @@ mod picker;
 mod rows;
 
 use super::PullRequestIntent;
+use super::composer::ComposerMode;
 use super::conversation::add_to_agent_button;
 use super::conversation::agent::check_text;
 use super::conversation::logic::{
@@ -32,6 +33,7 @@ use super::data::PullRequestData;
 use super::detail::TabScroll;
 use super::preferences;
 use super::presentation::{GLYPH_SIZE, check_status_glyph, group_checks};
+use super::review_draft::{ReviewDrafts, review_drafts};
 use candidates::{OpenPicker, PickerKind};
 use chrono::{DateTime, Utc};
 use github::model::{Activity, CheckStatus, Detail, PullRequestUpdate, Reaction, ReactionContent};
@@ -40,15 +42,19 @@ use gpui_kit::component::menu::{DropdownMenu, PopupMenu, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme, Icon, Side, Sizable};
 use gpui_kit::{
     AnyElement, App, Context, Entity, EventEmitter, FontWeight, ListAlignment, ListOffset,
-    ListState, Pixels, Render, SharedString, Subscription, WeakEntity, Window, div, list,
+    ListState, Pixels, Render, SharedString, Subscription, Task, WeakEntity, Window, div, list,
     prelude::*, px, svg,
 };
 use meta::{label_chip, meta_label, none_label, reviewer_avatars};
 use rows::{CommentsLayout, PAGE, Row, pinned_section, summary_rows};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 const LIST_OVERDRAW: Pixels = px(600.);
+
+/// How long "Discard" waits for its confirming click.
+const DISCARD_TIMEOUT: Duration = Duration::from_secs(3);
 
 enum Card {
     Comment(Entity<CommentCard>),
@@ -87,7 +93,14 @@ pub struct SummaryTab {
     cards: HashMap<SharedString, MountedCard>,
     reviewer_picker: Option<OpenPicker>,
     label_picker: Option<OpenPicker>,
+    drafts: Entity<ReviewDrafts>,
+    /// The list has a [`Row::Draft`].
+    shows_draft: bool,
+    /// The draft whose "Discard" waits for its confirming click.
+    discard_armed: Option<ComposerMode>,
+    _discard_timeout: Option<Task<()>>,
     _data: Subscription,
+    _drafts: Subscription,
 }
 
 impl EventEmitter<PullRequestIntent> for SummaryTab {}
@@ -108,6 +121,8 @@ impl SummaryTab {
 
     pub fn new(data: Entity<PullRequestData>, cx: &mut Context<Self>) -> Self {
         let observe = cx.observe(&data, |this, _, cx| this.sync(cx));
+        let drafts = review_drafts(cx);
+        let observe_drafts = cx.observe(&drafts, |this, _, cx| this.sync_draft(cx));
         let remembered = preferences::read(cx).conversation;
         let mut this = Self {
             data,
@@ -132,12 +147,175 @@ impl SummaryTab {
             cards: HashMap::new(),
             reviewer_picker: None,
             label_picker: None,
+            drafts,
+            shows_draft: false,
+            discard_armed: None,
+            _discard_timeout: None,
             _data: observe,
+            _drafts: observe_drafts,
         };
         // The sections show before anything is read.
+        this.shows_draft = this.has_draft(cx);
         this.rebuild_rows();
         this.sync(cx);
         this
+    }
+
+    fn has_draft(&self, cx: &App) -> bool {
+        let pr = &self.data.read(cx).pr;
+        let drafts = self.drafts.read(cx);
+        !drafts.comment(pr).trim().is_empty()
+            || !drafts.summary(pr).trim().is_empty()
+            || drafts.count(pr) > 0
+    }
+
+    /// The draft row follows what is written.
+    fn sync_draft(&mut self, cx: &mut Context<Self>) {
+        let shows = self.has_draft(cx);
+        if shows != self.shows_draft {
+            self.shows_draft = shows;
+            self.rebuild_rows();
+        } else {
+            self.remeasure(Row::Draft);
+        }
+        cx.notify();
+    }
+
+    fn continue_draft(&mut self, mode: ComposerMode, cx: &mut Context<Self>) {
+        let pr = self.data.read(cx).pr.clone();
+        self.drafts
+            .update(cx, |drafts, cx| drafts.ask_to_open(&pr, mode, cx));
+    }
+
+    /// Discarding takes two clicks: it may be a lot of text.
+    fn click_discard_draft(&mut self, mode: ComposerMode, cx: &mut Context<Self>) {
+        if self.discard_armed != Some(mode) {
+            self.discard_armed = Some(mode);
+            self._discard_timeout = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(DISCARD_TIMEOUT).await;
+                this.update(cx, |this, cx| {
+                    this.discard_armed = None;
+                    cx.notify();
+                })
+                .ok();
+            }));
+            cx.notify();
+            return;
+        }
+        self.discard_armed = None;
+        self._discard_timeout = None;
+        let pr = self.data.read(cx).pr.clone();
+        self.drafts.update(cx, |drafts, cx| match mode {
+            ComposerMode::Comment => drafts.set_comment(&pr, "", cx),
+            ComposerMode::Review => drafts.discard_review(&pr, cx),
+        });
+    }
+
+    fn render_draft_block(
+        &self,
+        mode: ComposerMode,
+        title: &'static str,
+        text: String,
+        note: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (name, armed) = (
+            match mode {
+                ComposerMode::Comment => "comment",
+                ComposerMode::Review => "review",
+            },
+            self.discard_armed == Some(mode),
+        );
+        let theme = cx.theme();
+        let selector = format!("pr-draft-{name}");
+        let discard = format!("pr-draft-{name}-discard");
+        let discard_selector = discard.clone();
+        div()
+            .debug_selector(move || selector)
+            .flex()
+            .flex_col()
+            .gap_1()
+            .p_2()
+            .rounded_lg()
+            .border_1()
+            .border_dashed()
+            .border_color(theme.warning.opacity(0.6))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child(
+                        div()
+                            .px_1p5()
+                            .rounded_sm()
+                            .bg(theme.warning.opacity(0.15))
+                            .text_color(theme.warning)
+                            .child("Draft"),
+                    )
+                    .child(title)
+                    .children(note)
+                    .child(div().flex_1())
+                    .child(
+                        Button::new(SharedString::from(format!("pr-draft-{name}-continue")))
+                            .ghost()
+                            .xsmall()
+                            .label("Continue")
+                            .on_click(
+                                cx.listener(move |this, _, _, cx| this.continue_draft(mode, cx)),
+                            ),
+                    )
+                    .child(
+                        div().debug_selector(move || discard_selector).child(
+                            Button::new(SharedString::from(discard))
+                                .ghost()
+                                .xsmall()
+                                .label(if armed { "Confirm discard?" } else { "Discard" })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.click_discard_draft(mode, cx)
+                                })),
+                        ),
+                    ),
+            )
+            .when(!text.trim().is_empty(), |card| {
+                card.child(div().text_sm().line_clamp(6).child(text))
+            })
+            .into_any_element()
+    }
+
+    /// What the viewer wrote and has not sent, so it is not only in a
+    /// popover that closes with any click.
+    fn render_draft(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let (comment, summary, pending) = {
+            let pr = &self.data.read(cx).pr;
+            let drafts = self.drafts.read(cx);
+            (
+                drafts.comment(pr).to_owned(),
+                drafts.summary(pr).to_owned(),
+                drafts.count(pr),
+            )
+        };
+        let note = (pending > 0).then(|| {
+            format!(
+                "{pending} line {}",
+                if pending == 1 { "comment" } else { "comments" }
+            )
+        });
+        let comment_block = (!comment.trim().is_empty())
+            .then(|| self.render_draft_block(ComposerMode::Comment, "Comment", comment, None, cx));
+        let review_block = (!summary.trim().is_empty() || pending > 0)
+            .then(|| self.render_draft_block(ComposerMode::Review, "Review", summary, note, cx));
+        div()
+            .px_4()
+            .pb_3()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .children(comment_block)
+            .children(review_block)
+            .into_any_element()
     }
 
     /// Take over what the page knows now.
@@ -236,6 +414,7 @@ impl SummaryTab {
             count: self.count,
             open: self.comments_open,
             note: self.activity.is_none() || ids.is_empty() || truncated,
+            draft: self.shows_draft,
         });
         splice_list(&self.list, &self.rows, &rows);
         self.rows = rows;
@@ -897,6 +1076,7 @@ impl SummaryTab {
             Row::Meta => self.render_meta(cx),
             Row::Description => self.render_description(cx),
             Row::Checks => self.render_checks(cx),
+            Row::Draft => self.render_draft(cx),
             Row::CommentsHeader => self.comments_header(false, cx),
             Row::CommentsNote => self.render_comments_note(cx),
             Row::ShowOlder { hidden } => {
@@ -1302,5 +1482,65 @@ mod tests {
             .expect("the comments header");
         cx.simulate_click(header.center(), gpui_kit::Modifiers::none());
         tab.read_with(cx, |tab, _| assert!(items(tab).is_empty()));
+    }
+
+    #[gpui_kit::test]
+    fn a_draft_shows_above_the_comments_and_goes_with_two_clicks(cx: &mut TestAppContext) {
+        let (tab, cx) = summary(activity(1), cx);
+        assert!(cx.debug_bounds("pr-draft-comment").is_none());
+        let pr = tab.read_with(cx, |tab, cx| tab.data.read(cx).pr.clone());
+        let drafts = cx.update(|_, cx| review_drafts(cx));
+
+        drafts.update(cx, |drafts, cx| drafts.set_comment(&pr, "Almost there", cx));
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("pr-draft-comment").is_some());
+        assert!(cx.debug_bounds("pr-draft-review").is_none());
+        tab.read_with(cx, |tab, _| {
+            let draft = tab.rows().iter().position(|r| *r == Row::Draft).unwrap();
+            assert_eq!(tab.rows()[draft + 1], Row::CommentsHeader);
+        });
+
+        click(cx, "pr-draft-comment-discard");
+        drafts.read_with(cx, |drafts, _| {
+            assert_eq!(drafts.comment(&pr), "Almost there", "one click keeps it");
+        });
+        click(cx, "pr-draft-comment-discard");
+        drafts.read_with(cx, |drafts, _| assert_eq!(drafts.comment(&pr), ""));
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("pr-draft-comment").is_none());
+        tab.read_with(cx, |tab, _| assert!(!tab.rows().contains(&Row::Draft)));
+    }
+
+    #[gpui_kit::test]
+    fn a_review_under_way_shows_with_its_text_and_line_comments(cx: &mut TestAppContext) {
+        let (tab, cx) = summary(activity(1), cx);
+        let pr = tab.read_with(cx, |tab, cx| tab.data.read(cx).pr.clone());
+        let drafts = cx.update(|_, cx| review_drafts(cx));
+        drafts.update(cx, |drafts, cx| {
+            drafts.add(
+                &pr,
+                super::super::review_draft::PendingComment {
+                    id: 0,
+                    path: "a.rs".into(),
+                    side: github::model::DiffSide::Right,
+                    line: 1,
+                    start_side: None,
+                    start_line: None,
+                    body: "Why?".into(),
+                    excerpt: "+x".into(),
+                },
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("pr-draft-review").is_some(),
+            "no text needed"
+        );
+
+        tab.update(cx, |tab, cx| tab.continue_draft(ComposerMode::Review, cx));
+        drafts.read_with(cx, |drafts, _| {
+            assert_eq!(drafts.opening(&pr), Some(ComposerMode::Review));
+        });
     }
 }

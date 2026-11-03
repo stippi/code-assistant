@@ -118,6 +118,31 @@ pub(crate) type LineCallback = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 /// Reports that a selection drag has ended.
 pub(crate) type EndCallback = Rc<dyn Fn(&mut Window, &mut App)>;
 
+/// The "+" that shows over a row's line number under the pointer. Pressing
+/// it starts a selection like any press (a drag makes it a range); the owner
+/// is told, so it can act when the button is released.
+#[derive(Clone)]
+pub(crate) struct GutterAdd {
+    /// Off while it would only be in the way (a drag, an open comment box).
+    pub show: bool,
+    pub color: Hsla,
+    pub glyph: Hsla,
+    pub on_press: LineCallback,
+    /// The button went up anywhere.
+    pub on_release: EndCallback,
+    /// The pointer moved to another line number: paint again.
+    pub repaint: EndCallback,
+}
+
+/// Where a row's "+" sits: at the left of its gutter.
+fn plus_bounds(column_left: Pixels, row_top: Pixels, line_height: Pixels) -> Bounds<Pixels> {
+    let side = line_height.min(px(18.));
+    Bounds::new(
+        point(column_left + px(3.), row_top + (line_height - side) / 2.),
+        size(side, side),
+    )
+}
+
 #[derive(Clone)]
 pub(crate) struct RowSelection {
     /// What a cell's `line` counts from.
@@ -134,6 +159,8 @@ pub(crate) struct RowSelection {
     /// selection's end.
     pub anchor: Option<Rc<Cell<Option<Bounds<Pixels>>>>>,
     /// Pointer pressed on a row: the flat line under it.
+    /// Offers the "+" over the line numbers.
+    pub gutter_add: Option<GutterAdd>,
     pub on_start: LineCallback,
     /// Pointer dragged over a row while the button is held.
     pub on_drag: LineCallback,
@@ -485,6 +512,16 @@ fn paint_rows(
     }
 }
 
+fn paint_plus(bounds: Bounds<Pixels>, add: &GutterAdd, window: &mut Window) {
+    window.paint_quad(fill(bounds, add.color).corner_radii(px(4.)));
+    let center = bounds.center();
+    let (arm, thickness) = (bounds.size.width * 0.3, px(1.5));
+    for size in [size(arm * 2., thickness), size(thickness, arm * 2.)] {
+        let origin = point(center.x - size.width / 2., center.y - size.height / 2.);
+        window.paint_quad(fill(Bounds::new(origin, size), add.glyph));
+    }
+}
+
 impl IntoElement for DiffRows {
     type Element = Self;
 
@@ -647,6 +684,8 @@ impl Element for DiffRows {
             let tops = Rc::new(tops);
             let base = sel.base_line;
             let row_count = layout.rows.len();
+            let line_height = layout.line_height;
+            let gutter_add = sel.gutter_add.clone();
             let (on_start, on_drag, on_end) = (
                 sel.on_start.clone(),
                 sel.on_drag.clone(),
@@ -656,8 +695,9 @@ impl Element for DiffRows {
             // The flat line under a pointer position.
             let rows = self.rows.clone();
             let columns = shape.columns;
+            let line_tops = tops.clone();
             let line_at = Rc::new(move |position: Point<Pixels>| {
-                let row = row_at(&tops, row_count, position.y);
+                let row = row_at(&line_tops, row_count, position.y);
                 let column = (((position.x - bounds.origin.x) / column_width).floor() as usize)
                     .min(columns - 1);
                 rows.get(row)
@@ -665,33 +705,92 @@ impl Element for DiffRows {
                     .map(|line| base + line)
             });
 
-            let line_down = line_at.clone();
-            let hitbox = hitbox.clone();
-            window.on_mouse_event(move |e: &MouseDownEvent, phase, window, cx| {
-                if phase == DispatchPhase::Bubble
-                    && e.button == MouseButton::Left
-                    && hitbox
+            // The line number under a pointer position, if it has a row: its
+            // line and where its "+" sits.
+            let plus_at = {
+                let (rows, tops) = (self.rows.clone(), tops.clone());
+                let gutter_width = shape.geometry.gutter_width;
+                Rc::new(move |position: Point<Pixels>| {
+                    if !bounds.contains(&position) {
+                        return None;
+                    }
+                    let row = row_at(&tops, row_count, position.y);
+                    let column = (((position.x - bounds.origin.x) / column_width).floor() as usize)
+                        .min(columns - 1);
+                    let left = bounds.origin.x + column_width * column as f32;
+                    let cell = rows.get(row)?.get(column)?.as_ref()?;
+                    (position.x < left + gutter_width)
+                        .then(|| (base + cell.line, plus_bounds(left, tops[row], line_height)))
+                })
+            };
+            let is_over = {
+                let hitbox = hitbox.clone();
+                move |position: Point<Pixels>, window: &Window| {
+                    hitbox
                         .as_ref()
-                        .map_or(bounds.contains(&e.position), |h| h.is_hovered(window))
-                    && let Some(line) = line_down(e.position)
+                        .map_or(bounds.contains(&position), |h| h.is_hovered(window))
+                }
+            };
+
+            let mut painted_plus = None;
+            if let Some(add) = gutter_add.as_ref().filter(|add| add.show) {
+                let position = window.mouse_position();
+                if is_over(position, window)
+                    && let Some((line, plus)) = plus_at(position)
                 {
+                    paint_plus(plus, add, window);
+                    painted_plus = Some(line);
+                }
+            }
+
+            let line_down = line_at.clone();
+            let press_over = is_over.clone();
+            let press_plus = plus_at.clone();
+            let press_add = gutter_add.clone();
+            window.on_mouse_event(move |e: &MouseDownEvent, phase, window, cx| {
+                if phase != DispatchPhase::Bubble
+                    || e.button != MouseButton::Left
+                    || !press_over(e.position, window)
+                {
+                    return;
+                }
+                if let Some(add) = press_add.as_ref().filter(|add| add.show)
+                    && let Some((line, plus)) = press_plus(e.position)
+                    && plus.contains(&e.position)
+                {
+                    (add.on_press)(line, window, cx);
+                } else if let Some(line) = line_down(e.position) {
                     on_start(line, window, cx);
                 }
             });
 
+            let move_add = gutter_add.clone();
             window.on_mouse_event(move |e: &MouseMoveEvent, phase, window, cx| {
-                if phase == DispatchPhase::Bubble
-                    && e.pressed_button == Some(MouseButton::Left)
+                if phase != DispatchPhase::Bubble {
+                    return;
+                }
+                if e.pressed_button == Some(MouseButton::Left)
                     && bounds.contains(&e.position)
                     && let Some(line) = line_at(e.position)
                 {
                     on_drag(line, window, cx);
+                }
+                if let Some(add) = move_add.as_ref().filter(|add| add.show) {
+                    let under = is_over(e.position, window)
+                        .then(|| plus_at(e.position).map(|(line, _)| line))
+                        .flatten();
+                    if under != painted_plus {
+                        (add.repaint)(window, cx);
+                    }
                 }
             });
 
             window.on_mouse_event(move |e: &MouseUpEvent, phase, window, cx| {
                 if phase == DispatchPhase::Bubble && e.button == MouseButton::Left {
                     on_end(window, cx);
+                    if let Some(add) = &gutter_add {
+                        (add.on_release)(window, cx);
+                    }
                 }
             });
         }

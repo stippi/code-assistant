@@ -1,10 +1,11 @@
-//! The pending review of each pull request: line comments added "to
-//! review" in the Code tab, which wait (as dashed cards on their lines)
-//! until the review is submitted with a verdict and a summary. In memory
-//! only, app-wide, like T3 Code's `pullRequestReviewStore`.
+//! What is written but not sent on each pull request: the comment, the text
+//! of the review and the line comments added "to review" in the Code tab,
+//! which wait (as dashed cards on their lines) until the review is submitted
+//! with a verdict. App-wide, one [`ReviewDrafts`] entity ([`review_drafts`]);
+//! views observe it. Saved shortly after each change, so they outlast the
+//! page and the app.
 //!
-//! One [`ReviewDrafts`] entity per app ([`review_drafts`]); views observe
-//! it. Submitting, for the composer:
+//! Submitting, for the composer:
 //!
 //! ```ignore
 //! let drafts = review_drafts(cx);
@@ -16,65 +17,183 @@
 //! Only the submitted comments go: one added while the review was under
 //! way stays pending.
 
+use super::composer::ComposerMode;
+pub use crate::shared::review_draft_store::PendingComment;
+use crate::shared::review_draft_store::{PullRequestDraft, ReviewDraftStore, SavedReviewDraft};
 use github::PullRequestRef;
-use github::model::{DiffSide, ReviewCommentDraft, ReviewSubmission, ReviewVerdict};
-use gpui_kit::{App, AppContext, Context, Entity, Global};
+use github::model::{ReviewSubmission, ReviewVerdict};
+use gpui_kit::{App, AppContext, Context, Entity, Global, Subscription, Task};
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
 
-/// A line comment of the pending review, anchored like GitHub wants it:
-/// `line` on `side` (LEFT the old file, RIGHT the new one), a range from
-/// `start_line` on `start_side`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PendingComment {
-    /// Unique in the app; given by [`ReviewDrafts::add`].
-    pub id: u64,
-    pub path: String,
-    pub side: DiffSide,
-    pub line: u64,
-    pub start_side: Option<DiffSide>,
-    pub start_line: Option<u64>,
-    pub body: String,
-    /// The commented rows as shown, `+`/`-`/` ` prefixed.
-    pub excerpt: String,
-}
-
-impl PendingComment {
-    pub fn draft(&self) -> ReviewCommentDraft {
-        ReviewCommentDraft {
-            path: self.path.clone(),
-            line: self.line,
-            side: self.side,
-            start_line: self.start_line,
-            start_side: self.start_side,
-            body: self.body.clone(),
-        }
-    }
-}
+/// How long changes gather before they are written.
+const SAVE_DELAY: Duration = Duration::from_millis(500);
 
 #[derive(Default)]
 pub struct ReviewDrafts {
-    pending: HashMap<PullRequestRef, Vec<PendingComment>>,
+    drafts: HashMap<PullRequestRef, PullRequestDraft>,
     last_id: u64,
+    /// The form the composer of a pull request is asked to open.
+    opening: Option<(PullRequestRef, ComposerMode)>,
+    store: Option<Arc<dyn ReviewDraftStore>>,
+    _save: Option<Task<()>>,
+    _quit: Option<Subscription>,
 }
 
 struct ReviewDraftsGlobal(Entity<ReviewDrafts>);
 
 impl Global for ReviewDraftsGlobal {}
 
-/// The app's pending reviews, created with the first use.
+/// The app's drafts, read from the app's store with the first use.
 pub fn review_drafts(cx: &mut App) -> Entity<ReviewDrafts> {
     if let Some(global) = cx.try_global::<ReviewDraftsGlobal>() {
         return global.0.clone();
     }
-    let drafts = cx.new(|_| ReviewDrafts::default());
+    let store = cx
+        .try_global::<crate::Gpui>()
+        .map(|gpui| gpui.stores.review_drafts.clone());
+    let drafts = cx.new(|cx| match store {
+        Some(store) => ReviewDrafts::with_store(store, cx),
+        None => ReviewDrafts::default(),
+    });
     cx.set_global(ReviewDraftsGlobal(drafts.clone()));
     drafts
 }
 
 impl ReviewDrafts {
+    /// The drafts `store` holds, saved there from now on. A store that can't
+    /// be read leaves them empty; the text is not worth keeping the page from.
+    pub fn with_store(store: Arc<dyn ReviewDraftStore>, cx: &mut Context<Self>) -> Self {
+        let mut this = Self::default();
+        match store.load() {
+            Ok(saved) => {
+                for SavedReviewDraft { pr, mut draft } in saved {
+                    for comment in &mut draft.pending {
+                        this.last_id += 1;
+                        comment.id = this.last_id;
+                    }
+                    this.drafts.insert(pr, draft);
+                }
+            }
+            Err(error) => tracing::warn!("Couldn't read the pull request drafts: {error:#}"),
+        }
+        this.store = Some(store);
+        this._quit = Some(cx.on_app_quit(|this: &mut Self, _| {
+            // What the delay still holds back.
+            if this._save.take().is_some() {
+                this.save_now();
+            }
+            async {}
+        }));
+        this
+    }
+
+    fn saved(&self) -> Vec<SavedReviewDraft> {
+        self.drafts
+            .iter()
+            .map(|(pr, draft)| SavedReviewDraft {
+                pr: pr.clone(),
+                draft: draft.clone(),
+            })
+            .collect()
+    }
+
+    fn save_now(&self) {
+        if let Some(store) = &self.store
+            && let Err(error) = store.save(&self.saved())
+        {
+            tracing::warn!("Couldn't save the pull request drafts: {error:#}");
+        }
+    }
+
+    /// Tell the views, and write it all once changes pause.
+    fn changed(&mut self, pr: &PullRequestRef, cx: &mut Context<Self>) {
+        if self.drafts.get(pr).is_some_and(PullRequestDraft::is_empty) {
+            self.drafts.remove(pr);
+        }
+        cx.notify();
+        if self.store.is_none() {
+            return;
+        }
+        self._save = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SAVE_DELAY).await;
+            let write = this.read_with(cx, |this, _| (this.store.clone(), this.saved()));
+            if let Ok((Some(store), saved)) = write {
+                cx.background_spawn(async move {
+                    if let Err(error) = store.save(&saved) {
+                        tracing::warn!("Couldn't save the pull request drafts: {error:#}");
+                    }
+                })
+                .await;
+            }
+        }));
+    }
+
+    /// The unsent comment on `pr`.
+    pub fn comment(&self, pr: &PullRequestRef) -> &str {
+        self.drafts.get(pr).map_or("", |draft| &draft.comment)
+    }
+
+    /// The unsent text of `pr`'s review.
+    pub fn summary(&self, pr: &PullRequestRef) -> &str {
+        self.drafts.get(pr).map_or("", |draft| &draft.summary)
+    }
+
+    pub fn set_comment(&mut self, pr: &PullRequestRef, text: &str, cx: &mut Context<Self>) {
+        if self.comment(pr) != text {
+            self.drafts.entry(pr.clone()).or_default().comment = text.to_owned();
+            self.changed(pr, cx);
+        }
+    }
+
+    pub fn set_summary(&mut self, pr: &PullRequestRef, text: &str, cx: &mut Context<Self>) {
+        if self.summary(pr) != text {
+            self.drafts.entry(pr.clone()).or_default().summary = text.to_owned();
+            self.changed(pr, cx);
+        }
+    }
+
+    /// Add `quote` to the comment on `pr` and open the composer on it.
+    pub fn quote(&mut self, pr: &PullRequestRef, quote: &str, cx: &mut Context<Self>) {
+        let text = match self.comment(pr).trim_end() {
+            "" => quote.to_owned(),
+            written => format!("{written}\n\n{quote}"),
+        };
+        self.set_comment(pr, &text, cx);
+        self.ask_to_open(pr, ComposerMode::Comment, cx);
+    }
+
+    /// Drop the review's text and its line comments.
+    pub fn discard_review(&mut self, pr: &PullRequestRef, cx: &mut Context<Self>) {
+        if let Some(draft) = self.drafts.get_mut(pr) {
+            draft.summary.clear();
+            draft.pending.clear();
+            self.changed(pr, cx);
+        }
+    }
+
+    /// Ask the composer of `pr` to open on `mode`.
+    pub fn ask_to_open(&mut self, pr: &PullRequestRef, mode: ComposerMode, cx: &mut Context<Self>) {
+        self.opening = Some((pr.clone(), mode));
+        cx.notify();
+    }
+
+    /// The form the composer of `pr` is asked to open.
+    pub fn opening(&self, pr: &PullRequestRef) -> Option<ComposerMode> {
+        self.opening
+            .as_ref()
+            .filter(|(asked, _)| asked == pr)
+            .map(|&(_, mode)| mode)
+    }
+
+    pub fn opened(&mut self) {
+        self.opening = None;
+    }
+
     /// `pr`'s pending comments, in the order they were added.
     pub fn comments(&self, pr: &PullRequestRef) -> &[PendingComment] {
-        self.pending.get(pr).map_or(&[], Vec::as_slice)
+        self.drafts.get(pr).map_or(&[], |draft| &draft.pending)
     }
 
     pub fn count(&self, pr: &PullRequestRef) -> usize {
@@ -90,8 +209,12 @@ impl ReviewDrafts {
     ) -> u64 {
         self.last_id += 1;
         comment.id = self.last_id;
-        self.pending.entry(pr.clone()).or_default().push(comment);
-        cx.notify();
+        self.drafts
+            .entry(pr.clone())
+            .or_default()
+            .pending
+            .push(comment);
+        self.changed(pr, cx);
         self.last_id
     }
 
@@ -120,16 +243,13 @@ impl ReviewDrafts {
 
     /// Drop the comments a submitted review carried.
     pub fn remove_submitted(&mut self, pr: &PullRequestRef, ids: &[u64], cx: &mut Context<Self>) {
-        let Some(comments) = self.pending.get_mut(pr) else {
+        let Some(draft) = self.drafts.get_mut(pr) else {
             return;
         };
-        let before = comments.len();
-        comments.retain(|c| !ids.contains(&c.id));
-        if comments.len() != before {
-            if comments.is_empty() {
-                self.pending.remove(pr);
-            }
-            cx.notify();
+        let before = draft.pending.len();
+        draft.pending.retain(|c| !ids.contains(&c.id));
+        if draft.pending.len() != before {
+            self.changed(pr, cx);
         }
     }
 }
@@ -137,7 +257,9 @@ impl ReviewDrafts {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::MockReviewDraftStore;
     use github::RepoRef;
+    use github::model::{DiffSide, ReviewCommentDraft};
     use gpui_kit::TestAppContext;
 
     fn pr(number: u64) -> PullRequestRef {
@@ -215,5 +337,58 @@ mod tests {
         });
         cx.run_until_parked();
         assert!(notified.get() > 0);
+    }
+
+    #[gpui_kit::test]
+    fn a_quote_goes_below_what_is_written_and_opens_the_composer(cx: &mut TestAppContext) {
+        let drafts = cx.update(|cx| cx.new(|_| ReviewDrafts::default()));
+        drafts.update(cx, |drafts, cx| {
+            drafts.quote(&pr(1), "> one\n\n", cx);
+            assert_eq!(drafts.comment(&pr(1)), "> one\n\n");
+            assert_eq!(drafts.opening(&pr(1)), Some(ComposerMode::Comment));
+            drafts.set_comment(&pr(1), "> one\n\nSure\n", cx);
+            drafts.quote(&pr(1), "> two\n\n", cx);
+            assert_eq!(drafts.comment(&pr(1)), "> one\n\nSure\n\n> two\n\n");
+        });
+    }
+
+    #[gpui_kit::test]
+    fn drafts_outlast_the_app_once_changes_pause(cx: &mut TestAppContext) {
+        let store = MockReviewDraftStore::default();
+        let shared: Arc<dyn ReviewDraftStore> = Arc::new(store.clone());
+        let drafts = cx.update(|cx| cx.new(|cx| ReviewDrafts::with_store(shared.clone(), cx)));
+        drafts.update(cx, |drafts, cx| {
+            drafts.set_comment(&pr(1), "Almost", cx);
+            drafts.set_summary(&pr(1), "Fine", cx);
+            drafts.add(&pr(2), comment("a.rs", 3, "Why?"), cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(store.saved().len(), 0, "not with every key");
+
+        cx.executor().advance_clock(SAVE_DELAY);
+        cx.run_until_parked();
+        assert_eq!(store.saved().len(), 2);
+
+        let again = cx.update(|cx| cx.new(|cx| ReviewDrafts::with_store(shared.clone(), cx)));
+        again.read_with(cx, |again, _| {
+            assert_eq!(again.comment(&pr(1)), "Almost");
+            assert_eq!(again.summary(&pr(1)), "Fine");
+            assert_eq!(again.comments(&pr(2))[0].body, "Why?");
+            assert_ne!(again.comments(&pr(2))[0].id, 0, "usable ids");
+        });
+    }
+
+    #[gpui_kit::test]
+    fn a_draft_emptied_again_is_not_kept(cx: &mut TestAppContext) {
+        let store = MockReviewDraftStore::default();
+        let shared: Arc<dyn ReviewDraftStore> = Arc::new(store.clone());
+        let drafts = cx.update(|cx| cx.new(|cx| ReviewDrafts::with_store(shared, cx)));
+        drafts.update(cx, |drafts, cx| {
+            drafts.set_comment(&pr(1), "Almost", cx);
+            drafts.set_comment(&pr(1), "", cx);
+        });
+        cx.executor().advance_clock(SAVE_DELAY);
+        cx.run_until_parked();
+        assert_eq!(store.saved().len(), 0);
     }
 }

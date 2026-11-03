@@ -2,27 +2,32 @@
 //! comment), a review's verdict, the reactions, an edit pencil for the
 //! viewer's own comments (the [`MarkdownEditor`] in place, saved through
 //! `pull_request_update_comment`), where it sits in the code, and the body.
+//! Its "…" menu quotes it in a reply: below the thread it belongs to, else in
+//! the composer.
 //!
 //! A card keeps its own state across refreshes of the conversation: the
 //! parsed body, an open editor, pending reactions.
 
 use super::super::PullRequestIntent;
 use super::super::data::PullRequestData;
+use super::super::review_draft::review_drafts;
 use super::agent::{add_to_agent_button, comment_text};
 use super::body::CommentBody;
 use super::editor::{EditorEvent, EditorOptions, MarkdownEditor};
-use super::logic::{can_edit, preview_text, visible_body};
+use super::logic::{can_edit, preview_text, quoted, visible_body};
 use super::parts::{
     Collapsed, Location, identity, location_line, open_on_github, render_collapsed, review_badge,
 };
 use super::reaction_bar::reaction_bar;
 use super::reactions::PendingReactions;
+use super::thread::ThreadCard;
 use github::model::{Comment, CommentKind, EditableCommentKind, ReactionContent};
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme, Icon, Sizable};
 use gpui_kit::{
-    AnyElement, Context, Entity, EventEmitter, Render, SharedString, Subscription, Window, div,
-    prelude::*,
+    Anchor, AnyElement, Context, Entity, EventEmitter, Render, SharedString, Subscription,
+    WeakEntity, Window, div, prelude::*,
 };
 
 /// How a card sits on the page.
@@ -50,6 +55,8 @@ pub struct CommentCard {
     agent_button: bool,
     /// Shows ↗ to the comment on GitHub.
     github_link: bool,
+    /// The thread a quote answers in.
+    thread: Option<WeakEntity<ThreadCard>>,
 }
 
 impl EventEmitter<PullRequestIntent> for CommentCard {}
@@ -75,7 +82,14 @@ impl CommentCard {
             reactions: PendingReactions::default(),
             agent_button: false,
             github_link: false,
+            thread: None,
         }
+    }
+
+    /// Part of `thread`, which takes the quotes.
+    pub fn with_thread(mut self, thread: WeakEntity<ThreadCard>) -> Self {
+        self.thread = Some(thread);
+        self
     }
 
     /// Show where the comment sits in the code under its header.
@@ -138,6 +152,26 @@ impl CommentCard {
     fn viewer_can_edit(&self, cx: &gpui_kit::App) -> bool {
         let viewer = self.data.read(cx).viewer.as_ref().map(|v| v.login.as_str());
         can_edit(&self.comment, viewer)
+    }
+
+    fn viewer_can_quote(&self, cx: &gpui_kit::App) -> bool {
+        let detail = self.data.read(cx).detail.as_ref();
+        detail.is_some_and(|d| d.viewer_permissions.comment)
+            && visible_body(&self.comment.body).is_some()
+    }
+
+    /// Answer this comment, quoting it.
+    pub fn quote_reply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(quote) = quoted(&self.comment.body) else {
+            return;
+        };
+        match self.thread.as_ref().and_then(WeakEntity::upgrade) {
+            Some(thread) => thread.update(cx, |thread, cx| thread.quote(&quote, window, cx)),
+            None => {
+                let pr = self.data.read(cx).pr.clone();
+                review_drafts(cx).update(cx, |drafts, cx| drafts.quote(&pr, &quote, cx));
+            }
+        }
     }
 
     pub fn start_editing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -285,6 +319,32 @@ impl CommentCard {
             })
             .children(handed)
             .children(github_link)
+            .when(self.viewer_can_quote(cx), |row| {
+                let this = cx.entity().downgrade();
+                let more = format!("{id}-more");
+                let selector = more.clone();
+                row.child(
+                    div().debug_selector(move || selector).child(
+                        Button::new(SharedString::from(more))
+                            .ghost()
+                            .xsmall()
+                            .icon(Icon::default().path("icons/ellipsis.svg").text_color(muted))
+                            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+                                let this = this.clone();
+                                menu.item(
+                                    PopupMenuItem::new("Quote reply")
+                                        .icon(Icon::default().path("icons/quote.svg"))
+                                        .on_click(move |_, window, cx| {
+                                            this.update(cx, |this, cx| {
+                                                this.quote_reply(window, cx)
+                                            })
+                                            .ok();
+                                        }),
+                                )
+                            }),
+                    ),
+                )
+            })
             .children(self.render_reactions(cx))
     }
 
@@ -373,7 +433,9 @@ impl Render for CommentCard {
 
 #[cfg(test)]
 mod tests {
-    use super::super::fixtures::{agent_inbox, click, comment, data, review, window};
+    use super::super::fixtures::{
+        agent_inbox, click, comment, data, data_with_detail, review, window,
+    };
     use super::*;
     use crate::main_screen::right_panel::pull_request::fixtures::hours_ago;
     use github::model::{Reaction, ReviewState};
@@ -494,5 +556,43 @@ mod tests {
         cx.simulate_click(expand.center(), gpui_kit::Modifiers::none());
         cx.run_until_parked();
         card.read_with(cx, |card, _| assert!(card.body().is_mounted()));
+    }
+
+    #[gpui_kit::test]
+    fn a_quote_reply_goes_to_the_composer_of_the_pull_request(cx: &mut TestAppContext) {
+        let data = data_with_detail(cx, Some("ann"));
+        let pr = data.read_with(cx, |data, _| data.pr.clone());
+        let mut quoted_comment = comment("c1", "bob", hours_ago(2));
+        quoted_comment.body = "Why?\nReally.".into();
+        let (view, cx) = window(cx, move |cx| {
+            CommentCard::new(data, quoted_comment, CardStyle::Card, cx)
+        });
+        assert!(cx.debug_bounds("c-c1-more").is_some(), "offered");
+
+        view.update_in(cx, |view, window, cx| view.quote_reply(window, cx));
+        let drafts = cx.update(|_, cx| review_drafts(cx));
+        drafts.read_with(cx, |drafts, _| {
+            assert_eq!(drafts.comment(&pr), "> Why?\n> Really.\n\n");
+            assert_eq!(
+                drafts.opening(&pr),
+                Some(
+                    crate::main_screen::right_panel::pull_request::composer::ComposerMode::Comment
+                )
+            );
+        });
+    }
+
+    #[gpui_kit::test]
+    fn who_may_not_comment_gets_no_quote_reply(cx: &mut TestAppContext) {
+        let data = data(cx, None);
+        let (_, cx) = window(cx, move |cx| {
+            CommentCard::new(
+                data,
+                comment("c1", "bob", hours_ago(2)),
+                CardStyle::Card,
+                cx,
+            )
+        });
+        assert!(cx.debug_bounds("c-c1-more").is_none());
     }
 }

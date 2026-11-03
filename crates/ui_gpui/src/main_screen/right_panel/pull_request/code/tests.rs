@@ -6,7 +6,7 @@ use super::super::fixtures::hours_ago;
 use super::super::preferences::DiffLayout;
 use super::*;
 use github::model::{DiffPage, DiffSide};
-use gpui_kit::{Modifiers, TestAppContext, VisualTestContext};
+use gpui_kit::{Modifiers, MouseButton, TestAppContext, VisualTestContext};
 
 fn tab(
     cx: &mut TestAppContext,
@@ -293,6 +293,84 @@ fn a_selection_becomes_a_pending_review_comment(cx: &mut TestAppContext) {
         .is_some()
     );
     tab.read_with(cx, |tab, _| assert!(tab.selection.get().is_none()));
+}
+
+/// The row of flat line `line` of `path`, where it is painted.
+fn row_bounds(
+    tab: &Entity<CodeTab>,
+    cx: &mut VisualTestContext,
+    path: &str,
+    line: usize,
+) -> gpui_kit::Bounds<gpui_kit::Pixels> {
+    tab.update(cx, |tab, cx| {
+        tab.selection.begin(path.into(), line, false);
+        tab.selection.end();
+        tab.pill_dismissed = None;
+        cx.notify();
+    });
+    cx.run_until_parked();
+    let bounds = tab.read_with(cx, |tab, _| tab.selection_anchor.get());
+    tab.update(cx, |tab, cx| {
+        tab.selection.clear();
+        cx.notify();
+    });
+    cx.run_until_parked();
+    bounds.expect("the row is painted")
+}
+
+#[gpui_kit::test]
+fn the_plus_over_a_line_number_opens_the_box_on_one_row_or_a_dragged_range(
+    cx: &mut TestAppContext,
+) {
+    let (tab, _, cx) = tab(cx);
+    arrive(&tab, cx, None, &["src/lib.rs"], None);
+    let (first, second) = (
+        row_bounds(&tab, cx, "src/lib.rs", 1),
+        row_bounds(&tab, cx, "src/lib.rs", 2),
+    );
+    let plus = |row: gpui_kit::Bounds<gpui_kit::Pixels>| {
+        gpui_kit::point(row.left() + gpui_kit::px(8.), row.center().y)
+    };
+
+    cx.simulate_mouse_move(plus(first), None, Modifiers::none());
+    cx.run_until_parked();
+    cx.simulate_mouse_down(plus(first), MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_up(plus(first), MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    tab.read_with(cx, |tab, _| {
+        let draft = tab.draft.as_ref().expect("the box opened");
+        assert_eq!((draft.lo, draft.hi), (1, 1));
+    });
+
+    tab.update(cx, |tab, cx| {
+        tab.draft = None;
+        tab.selection.clear();
+        cx.notify();
+    });
+    cx.run_until_parked();
+    cx.simulate_mouse_down(plus(first), MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_move(plus(second), MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_up(plus(second), MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    tab.read_with(cx, |tab, _| {
+        let draft = tab.draft.as_ref().expect("the box opened");
+        assert_eq!((draft.lo, draft.hi), (1, 2));
+    });
+}
+
+#[gpui_kit::test]
+fn a_press_on_the_code_only_selects(cx: &mut TestAppContext) {
+    let (tab, _, cx) = tab(cx);
+    arrive(&tab, cx, None, &["src/lib.rs"], None);
+    let row = row_bounds(&tab, cx, "src/lib.rs", 1);
+    let code = gpui_kit::point(row.left() + gpui_kit::px(200.), row.center().y);
+    cx.simulate_mouse_down(code, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_up(code, MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    tab.read_with(cx, |tab, _| {
+        assert!(tab.draft.is_none());
+        assert!(tab.selection.get().is_some());
+    });
 }
 
 #[gpui_kit::test]

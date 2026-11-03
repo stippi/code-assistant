@@ -65,6 +65,20 @@ impl EditorOptions {
     };
 }
 
+/// Replace what `input` holds, ready to go on typing after it (`set_value`
+/// leaves the cursor in front).
+pub fn set_text_at_end(
+    input: &mut TextareaState,
+    text: impl Into<SharedString>,
+    window: &mut Window,
+    cx: &mut Context<TextareaState>,
+) {
+    let text = text.into();
+    let end = text.len();
+    input.set_value(text, window, cx);
+    input.set_selected_range(end..end, cx);
+}
+
 pub struct MarkdownEditor {
     repo: RepoRef,
     options: EditorOptions,
@@ -120,6 +134,18 @@ impl MarkdownEditor {
 
     pub fn text(&self, cx: &App) -> String {
         self.input.read(cx).value().to_string()
+    }
+
+    /// Add `text` below what is written, ready to go on typing.
+    pub fn append(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let joined = match self.text(cx).trim_end() {
+            "" => text.to_owned(),
+            written => format!("{written}\n\n{text}"),
+        };
+        self.input.update(cx, |input, cx| {
+            set_text_at_end(input, joined, window, cx);
+            input.focus(window, cx);
+        });
     }
 
     /// A submit is under way: no edits, no second submit.

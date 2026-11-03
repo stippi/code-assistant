@@ -488,10 +488,33 @@ fn unlink(line: &str) -> String {
     out
 }
 
+/// `body` as a Markdown quote to answer below: what the reader sees of it,
+/// `None` when that is nothing.
+pub fn quoted(body: &str) -> Option<String> {
+    let quote = visible_body(body)?
+        .lines()
+        .map(|line| match line {
+            "" => ">".to_owned(),
+            line => format!("> {line}"),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(format!("{quote}\n\n"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::fixtures::{bot, comment, commit, review, thread, thread_reply};
     use super::*;
+
+    #[test]
+    fn a_quote_marks_every_line_and_leaves_room_to_answer() {
+        assert_eq!(
+            quoted("One\n\n  two\n").as_deref(),
+            Some("> One\n>\n>   two\n\n")
+        );
+        assert_eq!(quoted("<!-- only for bots -->"), None);
+    }
     use crate::main_screen::right_panel::pull_request::fixtures::{actor, hours_ago};
 
     fn ids(items: &[ConversationItem]) -> Vec<&str> {
