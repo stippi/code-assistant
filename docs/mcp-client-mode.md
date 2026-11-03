@@ -220,6 +220,16 @@ server of that name on first use. `code-assistant mcp-logout <server>`
 removes every login of the name. A login never starts on its own for a
 server that was never logged in.
 
+The client registers dynamically as a public PKCE client
+(`token_endpoint_auth_method: none`). When the authorization server's
+`token_endpoint_auth_methods_supported` lists `none` but neither
+`client_secret_basic` nor `client_secret_post`, a `client_secret` the
+registration hands out anyway is ignored, so token requests carry
+`client_id` in the form body and no `Authorization` header
+(`mcp_client::client::use_public_client`). Every other server keeps
+rmcp's choice: Basic for `client_secret_basic` or no list, the body for
+`client_secret_post`. Tests: `mcp_client/src/oauth_tests.rs`.
+
 ### Expired OAuth logins
 
 An HTTP server that uses OAuth keeps its tokens in `<config_dir>/mcp-oauth/`

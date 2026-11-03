@@ -30,7 +30,8 @@ use rmcp::model::{
 use rmcp::service::{RoleClient, RunningService, ServiceError};
 use rmcp::transport::IntoTransport;
 use rmcp::transport::auth::{
-    AuthClient, AuthorizationManager, AuthorizationRequest, AuthorizationSession, CredentialStore,
+    AuthClient, AuthorizationManager, AuthorizationMetadata, AuthorizationRequest,
+    AuthorizationSession, CredentialStore, OAuthClientConfig,
 };
 use rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
@@ -256,21 +257,9 @@ impl McpServerConnection {
         headers: &HashMap<String, String>,
         store: Arc<dyn CredentialStore>,
     ) -> Result<Option<RunningService<RoleClient, ()>>> {
-        let mut manager = AuthorizationManager::new(url).await.map_err(|error| {
-            anyhow!("initializing OAuth manager for MCP server '{name}': {error}")
-        })?;
-        manager.set_credential_store(SharedCredentialStore(store));
-        manager.with_client(oauth_http_client()?).map_err(|error| {
-            anyhow!("configuring OAuth client for MCP server '{name}': {error}")
-        })?;
-
-        let has_credentials = manager
-            .initialize_from_store()
-            .await
-            .map_err(|error| anyhow!("loading stored credentials for '{name}': {error}"))?;
-        if !has_credentials {
+        let Some(manager) = stored_login_manager(name, url, store).await? else {
             return Ok(None);
-        }
+        };
 
         let auth_client = AuthClient::new(reqwest::Client::new(), manager);
         let transport = StreamableHttpClientTransport::with_client(
@@ -614,6 +603,69 @@ fn http_transport_config(
     Ok(config)
 }
 
+/// An OAuth manager for `url` holding the login stored in `store` — the one
+/// that authorizes requests and refreshes the token — or `None` when the
+/// store holds no tokens.
+pub(crate) async fn stored_login_manager(
+    name: &str,
+    url: &str,
+    store: Arc<dyn CredentialStore>,
+) -> Result<Option<AuthorizationManager>> {
+    let mut manager = AuthorizationManager::new(url)
+        .await
+        .map_err(|error| anyhow!("initializing OAuth manager for MCP server '{name}': {error}"))?;
+    manager.set_credential_store(SharedCredentialStore(store));
+    manager
+        .with_client(oauth_http_client()?)
+        .map_err(|error| anyhow!("configuring OAuth client for MCP server '{name}': {error}"))?;
+
+    let has_credentials = manager
+        .initialize_from_store()
+        .await
+        .map_err(|error| anyhow!("loading stored credentials for '{name}': {error}"))?;
+    Ok(has_credentials.then_some(manager))
+}
+
+/// Whether the authorization server only lets clients in without a secret:
+/// its `token_endpoint_auth_methods_supported` lists `none` and neither
+/// `client_secret_basic` nor `client_secret_post`. A missing list means
+/// `client_secret_basic` (RFC 8414 §2), so it does not count.
+fn only_public_clients_supported(metadata: &AuthorizationMetadata) -> bool {
+    let Some(methods) = metadata
+        .additional_fields
+        .get("token_endpoint_auth_methods_supported")
+        .and_then(|value| value.as_array())
+    else {
+        return false;
+    };
+    let supports = |method: &str| methods.iter().any(|m| m.as_str() == Some(method));
+    supports("none") && !supports("client_secret_basic") && !supports("client_secret_post")
+}
+
+/// Make the session's client a public PKCE client: no secret, `client_id`
+/// in the token request body.
+///
+/// Dynamic client registration asks for `token_endpoint_auth_method: none`,
+/// but some servers still hand out a `client_secret`. rmcp then configures
+/// the client with that secret and, since the server advertises neither
+/// `client_secret_post` nor `client_secret_basic`, falls back to HTTP Basic
+/// — so the token request carries the client only in an `Authorization`
+/// header a `none`-only server never reads, and fails with
+/// `invalid_client: client_id is required`. Without a secret the `oauth2`
+/// crate sends `client_id` in the form body and no `Authorization` header.
+/// Refreshes already go out this way: a stored login is reloaded by client
+/// ID only.
+async fn use_public_client(
+    session: &mut AuthorizationSession,
+    redirect_uri: &str,
+) -> Result<(), rmcp::transport::auth::AuthError> {
+    let (client_id, _) = session.get_credentials().await?;
+    let mut config = OAuthClientConfig::new(client_id, redirect_uri);
+    // Keep the application type registration used.
+    config.application_type = None;
+    session.auth_manager.configure_client(config)
+}
+
 /// A `reqwest` client for OAuth HTTP operations (discovery, registration,
 /// token exchange, refresh) with a bounded timeout.
 fn oauth_http_client() -> Result<reqwest::Client> {
@@ -660,18 +712,26 @@ pub async fn authenticate_http_server(
         .resolve_metadata()
         .await
         .map_err(|error| anyhow!("discovering OAuth metadata for MCP server '{name}': {error}"))?;
+    let public_client_only = only_public_clients_supported(&resolution.metadata);
     manager.set_metadata(resolution.metadata);
 
     // Select a client (pre-registered / CIMD / dynamic registration) and build
     // the authorization URL.
     let request =
         AuthorizationRequest::new(authorizer.redirect_uri()).with_client_name(client_name);
-    let session =
+    let mut session =
         AuthorizationSession::new(manager, request)
             .await
             .map_err(|(_manager, error)| {
                 anyhow!("starting OAuth authorization for MCP server '{name}': {error}")
             })?;
+    if public_client_only {
+        use_public_client(&mut session, &authorizer.redirect_uri())
+            .await
+            .map_err(|error| {
+                anyhow!("configuring public OAuth client for MCP server '{name}': {error}")
+            })?;
+    }
 
     // Hand the URL to the embedder: open a browser and await the redirect.
     let outcome = authorizer
