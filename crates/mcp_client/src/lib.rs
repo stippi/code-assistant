@@ -18,6 +18,8 @@ pub mod resources;
 pub mod tool;
 
 #[cfg(test)]
+mod oauth_tests;
+#[cfg(test)]
 mod tests;
 
 pub use auth::{
