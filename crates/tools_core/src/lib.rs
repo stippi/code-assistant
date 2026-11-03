@@ -25,8 +25,9 @@ pub mod tool;
 pub use dyn_tool::{AnyOutput, DynTool};
 pub use image::{MAX_IMAGE_EDGE, cap_base64_image, cap_image_data, svg_to_png};
 pub use permissions::{
-    PermissionDecision, PermissionMediator, PermissionRequest, PermissionRequestReason,
-    PermissionTier, ToolPermissions,
+    Clearance, PermissionDecision, PermissionMediator, PermissionRequest, PermissionRequestReason,
+    PermissionTier, ReviewVerdict, ReviewedCallMediator, ToolCallReview, ToolCallReviewer,
+    ToolPermissions,
 };
 pub use registry::ToolRegistry;
 pub use render::{ImageData, Render, ResourcesTracker};

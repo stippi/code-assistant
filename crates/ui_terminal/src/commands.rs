@@ -73,7 +73,7 @@ const ALL_COMMANDS: &[SlashCommand] = &[
     SlashCommand {
         name: "permissions",
         aliases: &[],
-        description: "Show or set the permission tier: /permissions [bypass-all|outward-tools|write-tools|all-tools]",
+        description: "Show or set the permission tier: /permissions [bypass-all|outward-tools|write-tools|all-tools|auto]",
     },
     SlashCommand {
         name: "allow",
@@ -326,12 +326,14 @@ impl CommandProcessor {
                     CommandResult::SetPermissionTier(PermissionTier::WriteTools)
                 }
                 "all-tools" | "all" => CommandResult::SetPermissionTier(PermissionTier::AllTools),
+                "auto" => CommandResult::SetPermissionTier(PermissionTier::Auto),
                 other => CommandResult::InvalidCommand(format!(
-                    "Unknown permission tier '{other}'. Use bypass-all, outward-tools, write-tools or all-tools.",
+                    "Unknown permission tier '{other}'. Use bypass-all, outward-tools, write-tools, all-tools or auto.",
                 )),
             },
             _ => CommandResult::InvalidCommand(
-                "Usage: /permissions [bypass-all|outward-tools|write-tools|all-tools]".to_string(),
+                "Usage: /permissions [bypass-all|outward-tools|write-tools|all-tools|auto]"
+                    .to_string(),
             ),
         }
     }

@@ -6,6 +6,7 @@
 //! session the user has not looked at since it changed is unread: its title
 //! stands out and a dot marks it. Everything else recedes.
 
+use crate::shared::theme::merged_violet;
 use code_assistant_core::persistence::ChatMetadata;
 use code_assistant_core::session::instance::SessionActivityState;
 use code_assistant_core::session::lifecycle::{AwaitingUser, SessionLifecycle, SessionStatus};
@@ -15,7 +16,7 @@ use gpui_kit::component::{ActiveTheme, StyledExt};
 use gpui_kit::{
     Animation, AnimationExt, ClickEvent, Context, EventEmitter, FocusHandle, Focusable, Hsla,
     InteractiveElement, SharedString, StatefulInteractiveElement, Styled, Transformation, Window,
-    div, hsla, percentage, prelude::*, px,
+    div, percentage, prelude::*, px,
 };
 use std::time::SystemTime;
 
@@ -27,12 +28,6 @@ struct GitGlyph {
     tooltip: String,
     /// The pull request page; clicking the glyph opens it.
     url: Option<String>,
-}
-
-/// The violet GitHub and other tools use for merged work and branches; the
-/// theme has no token for it.
-fn violet() -> Hsla {
-    hsla(0.75, 0.55, 0.65, 1.)
 }
 
 /// What a session wants from the user, least urgent first; a collapsed
@@ -187,7 +182,7 @@ impl SessionListItem {
         let Some(pr) = &self.lifecycle.pull_request else {
             return Some(GitGlyph {
                 icon: "icons/git_branch.svg",
-                color: violet().opacity(0.8),
+                color: merged_violet().opacity(0.8),
                 tooltip: branch.to_string(),
                 url: None,
             });
@@ -199,7 +194,7 @@ impl SessionListItem {
                 cx.theme().muted_foreground,
                 "draft",
             ),
-            PullRequestState::Merged => ("icons/git_merge.svg", violet(), "merged"),
+            PullRequestState::Merged => ("icons/git_merge.svg", merged_violet(), "merged"),
             PullRequestState::Closed => (
                 "icons/git_pull_request_closed.svg",
                 cx.theme().danger,

@@ -1,5 +1,5 @@
 use crate::binary::GitBinary;
-use crate::types::{RepoInfo, Worktree};
+use crate::types::{Remote, RepoInfo, Worktree};
 use anyhow::{Context, Result};
 use gix::ThreadSafeRepository;
 use std::path::{Path, PathBuf};
@@ -72,6 +72,23 @@ impl GitRepository {
             head_branch,
             has_origin,
         })
+    }
+
+    /// The configured remotes in name order, each with the URL it fetches
+    /// from (after `insteadOf` rewrites). Remotes without one are left out.
+    pub fn remotes(&self) -> Vec<Remote> {
+        let repo = self.repo.to_thread_local();
+        repo.remote_names()
+            .iter()
+            .filter_map(|name| {
+                let remote = repo.find_remote(name.as_ref()).ok()?;
+                let url = remote.url(gix::remote::Direction::Fetch)?;
+                Some(Remote {
+                    name: name.to_string(),
+                    url: url.to_bstring().to_string(),
+                })
+            })
+            .collect()
     }
 
     /// Return the working directory path.
@@ -161,5 +178,36 @@ mod tests {
         // gix resolves the unborn branch name from config (e.g. "main"), unlike git2
         assert!(info.head_branch.is_some());
         assert!(!info.has_origin);
+    }
+
+    #[test]
+    fn lists_remotes_in_name_order_with_their_fetch_urls() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path());
+        for (name, url) in [
+            ("upstream", "git@github.com:team/tool.git"),
+            ("origin", "https://github.com/me/tool.git"),
+        ] {
+            let status = std::process::Command::new("git")
+                .args(["remote", "add", name, url])
+                .current_dir(dir.path())
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+
+        let remotes = GitRepository::open(dir.path()).unwrap().remotes();
+
+        let listed: Vec<_> = remotes
+            .iter()
+            .map(|r| (r.name.as_str(), r.url.as_str()))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("origin", "https://github.com/me/tool.git"),
+                ("upstream", "git@github.com:team/tool.git"),
+            ]
+        );
     }
 }

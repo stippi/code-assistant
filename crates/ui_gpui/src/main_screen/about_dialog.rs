@@ -2,6 +2,8 @@
 //! (version, git commit + tree state, build timestamp, Rust toolchain and
 //! target triple). Modeled on [`super::project_dialog::NewProjectDialog`].
 
+use crate::Gpui;
+use code_assistant_core::updates::{UpdateState, UpdateStatus, UpdateStep};
 use code_assistant_core::version;
 use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size, StyledExt};
 use gpui_kit::{
@@ -63,6 +65,38 @@ impl AboutDialog {
     }
 }
 
+/// One line on where the self-update stands.
+fn update_summary(state: &UpdateState) -> String {
+    let status = match &state.status {
+        UpdateStatus::Disabled { reason } => return reason.clone(),
+        UpdateStatus::Idle => "not checked yet".to_string(),
+        UpdateStatus::Checking => "checking…".to_string(),
+        UpdateStatus::UpToDate => "up to date".to_string(),
+        UpdateStatus::Available { version } => format!("{version} available"),
+        UpdateStatus::Downloading { version, .. } => format!(
+            "downloading {version} ({}%)",
+            state.download_percent().unwrap_or(0)
+        ),
+        UpdateStatus::Downloaded { version } => {
+            format!("{version} downloaded, restart to update")
+        }
+        UpdateStatus::Installing { version } => format!("installing {version}…"),
+    };
+    let checked = state
+        .checked_at
+        .map(|at| format!(", checked {}", at.format("%H:%M")))
+        .unwrap_or_default();
+    match &state.error {
+        Some(error) if error.step == UpdateStep::Check => {
+            format!(
+                "{status}{checked}; the last check failed: {}",
+                error.message
+            )
+        }
+        _ => format!("{status}{checked}"),
+    }
+}
+
 impl EventEmitter<AboutDialogEvent> for AboutDialog {}
 
 impl Focusable for AboutDialog {
@@ -73,6 +107,16 @@ impl Focusable for AboutDialog {
 
 impl Render for AboutDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let update_state = cx.try_global::<Gpui>().and_then(Gpui::update_state);
+        let can_check = update_state.as_ref().is_some_and(|state| {
+            !matches!(
+                state.status,
+                UpdateStatus::Disabled { .. }
+                    | UpdateStatus::Checking
+                    | UpdateStatus::Downloading { .. }
+                    | UpdateStatus::Installing { .. }
+            )
+        });
         // Full-screen overlay with a backdrop
         div()
             .id("about-dialog-backdrop")
@@ -160,7 +204,10 @@ impl Render for AboutDialog {
                                 "rust",
                                 format!("{} {}", version::RUSTC_VERSION, version::TARGET),
                                 cx,
-                            )),
+                            ))
+                            .when_some(update_state.as_ref(), |el, state| {
+                                el.child(Self::info_row("updates", update_summary(state), cx))
+                            }),
                     )
                     // Buttons row
                     .child(
@@ -168,6 +215,30 @@ impl Render for AboutDialog {
                             .flex()
                             .justify_end()
                             .gap_2()
+                            .when(can_check, |el| {
+                                el.child(
+                                    div()
+                                        .id("about-check-updates-btn")
+                                        .px_3()
+                                        .py_1()
+                                        .rounded_md()
+                                        .cursor_pointer()
+                                        .border_1()
+                                        .border_color(cx.theme().border)
+                                        .hover(|s| s.bg(cx.theme().muted.opacity(0.5)))
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child("Check for updates"),
+                                        )
+                                        .on_click(|_, _, cx| {
+                                            if let Some(gpui) = cx.try_global::<Gpui>() {
+                                                gpui.cmd_check_for_update();
+                                            }
+                                        }),
+                                )
+                            })
                             // Copy button
                             .child(
                                 div()
@@ -207,5 +278,34 @@ impl Render for AboutDialog {
                             ),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use code_assistant_core::updates::{UpdateError, Version};
+
+    #[test]
+    fn summarizes_the_update_state() {
+        let mut state = UpdateState::new(Version::new(0, 2, 18), UpdateStatus::UpToDate);
+        assert_eq!(update_summary(&state), "up to date");
+
+        state.status = UpdateStatus::Available {
+            version: Version::new(0, 2, 19),
+        };
+        state.error = Some(UpdateError {
+            step: UpdateStep::Check,
+            message: "offline".into(),
+        });
+        assert_eq!(
+            update_summary(&state),
+            "0.2.19 available; the last check failed: offline"
+        );
+
+        state.status = UpdateStatus::Disabled {
+            reason: "Not a release build.".into(),
+        };
+        assert_eq!(update_summary(&state), "Not a release build.");
     }
 }

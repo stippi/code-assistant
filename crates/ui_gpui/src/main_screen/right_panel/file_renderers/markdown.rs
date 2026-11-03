@@ -31,6 +31,7 @@ pub const RENDERER: FileRenderer = FileRenderer {
     id: "markdown",
     label: "Markdown",
     accepts: |path| has_extension(path, &["md", "markdown", "mdx"]),
+    reads_file: false,
     create,
 };
 

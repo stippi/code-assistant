@@ -111,6 +111,14 @@
     "reasoning": { "style": "openai-responses", "levels": ["low", "medium", "high", "xhigh"], "default": "high" }
   },
   {
+    "id": "gpt-6-luna",
+    "name": "GPT-6 Luna",
+    "context_window": 1050000,
+    "max_output": 128000,
+    "edit_format": "diff",
+    "reasoning": { "style": "openai-responses", "levels": ["low", "medium", "high", "xhigh"], "default": "high" }
+  },
+  {
     "id": "gpt-5.6-sol",
     "name": "GPT-5.6 Sol",
     "context_window": 272000,
@@ -121,6 +129,14 @@
     "id": "gpt-5.6-lunar",
     "name": "GPT-5.6 Lunar",
     "context_window": 272000,
+    "edit_format": "diff",
+    "reasoning": { "style": "openai-responses", "levels": ["low", "medium", "high", "xhigh"], "default": "high" }
+  },
+  {
+    "id": "gpt-5.6-luna",
+    "name": "GPT-5.6 Luna",
+    "context_window": 1050000,
+    "max_output": 128000,
     "edit_format": "diff",
     "reasoning": { "style": "openai-responses", "levels": ["low", "medium", "high", "xhigh"], "default": "high" }
   },

@@ -307,6 +307,14 @@ impl SessionSidebar {
         cx.notify();
     }
 
+    /// Sessions whose agent runs in this process.
+    pub fn working_session_count(&self) -> usize {
+        self.activity_states
+            .values()
+            .filter(|state| !state.is_terminal() && !state.is_running_externally())
+            .count()
+    }
+
     /// The status the row of `session_id` shows.
     #[cfg(test)]
     pub(crate) fn session_status(

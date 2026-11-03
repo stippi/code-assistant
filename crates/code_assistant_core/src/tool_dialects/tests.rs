@@ -12,7 +12,7 @@ fn test_tool_use_docs_generation() {
         .render_tool_section_for_prompt(&crate::tools::test_registry(), ToolScope::Agent.tag())
     {
         println!("=== XML Tool Documentation ===");
-        println!("{}", &xml_docs[..1500.min(xml_docs.len())]);
+        println!("{}", &xml_docs[..xml_docs.floor_char_boundary(1500)]);
         println!("...\n");
     }
 
@@ -22,7 +22,7 @@ fn test_tool_use_docs_generation() {
         .render_tool_section_for_prompt(&crate::tools::test_registry(), ToolScope::Agent.tag())
     {
         println!("=== Caret Tool Documentation ===");
-        println!("{}", &caret_docs[..1500.min(caret_docs.len())]);
+        println!("{}", &caret_docs[..caret_docs.floor_char_boundary(1500)]);
         println!("...\n");
     }
 
@@ -41,13 +41,16 @@ fn test_tool_use_docs_generation() {
     // Test syntax documentation
     println!("=== XML Syntax Documentation ===");
     if let Some(xml_syntax) = xml_parser.render_format_section_for_prompt() {
-        println!("{}", &xml_syntax[..1500.min(xml_syntax.len())]);
+        println!("{}", &xml_syntax[..xml_syntax.floor_char_boundary(1500)]);
         println!("...\n");
     }
 
     println!("=== Caret Syntax Documentation ===");
     if let Some(caret_syntax) = caret_parser.render_format_section_for_prompt() {
-        println!("{}", &caret_syntax[..1500.min(caret_syntax.len())]);
+        println!(
+            "{}",
+            &caret_syntax[..caret_syntax.floor_char_boundary(1500)]
+        );
         println!("...\n");
     }
 

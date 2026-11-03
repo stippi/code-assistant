@@ -1,0 +1,135 @@
+{
+  "data": {
+    "repository": {
+      "mergeCommitAllowed": false,
+      "squashMergeAllowed": true,
+      "rebaseMergeAllowed": true,
+      "autoMergeAllowed": true,
+      "viewerPermission": "WRITE",
+      "pullRequest": {
+        "number": 291,
+        "title": "Pull request view",
+        "url": "https://github.com/stippi/code-assistant/pull/291",
+        "body": "Adds the pull request view.",
+        "state": "OPEN",
+        "isDraft": false,
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "BLOCKED",
+        "reviewDecision": "REVIEW_REQUIRED",
+        "additions": 2210,
+        "deletions": 140,
+        "changedFiles": 37,
+        "createdAt": "2026-10-28T09:12:44Z",
+        "updatedAt": "2026-10-30T11:02:13Z",
+        "mergedAt": null,
+        "closedAt": null,
+        "headRefName": "feature/pr-view",
+        "baseRefName": "main",
+        "headRefOid": "0123456789abcdef0123456789abcdef01234567",
+        "isCrossRepository": true,
+        "maintainerCanModify": true,
+        "headRepositoryOwner": { "__typename": "User", "login": "contributor" },
+        "headRepository": {
+          "nameWithOwner": "contributor/code-assistant",
+          "viewerPermission": "ADMIN"
+        },
+        "headRef": { "id": "REF_kwDOabc" },
+        "author": {
+          "__typename": "User",
+          "login": "contributor",
+          "avatarUrl": "https://avatars.githubusercontent.com/u/42?v=4",
+          "id": "U_kgDO42",
+          "name": "A Contributor"
+        },
+        "autoMergeRequest": { "mergeMethod": "SQUASH" },
+        "viewerCanUpdate": true,
+        "viewerDidAuthor": true,
+        "viewerCanUpdateBranch": true,
+        "baseRef": { "compare": { "behindBy": 3 } },
+        "reviewRequests": {
+          "nodes": [
+            {
+              "requestedReviewer": {
+                "__typename": "User",
+                "login": "octocat",
+                "name": "The Octocat"
+              }
+            },
+            { "requestedReviewer": { "__typename": "Bot", "login": "review-bot" } },
+            {
+              "requestedReviewer": {
+                "__typename": "Team",
+                "slug": "core",
+                "combinedSlug": "acme/core",
+                "teamName": "Core",
+                "teamAvatarUrl": null
+              }
+            }
+          ]
+        },
+        "labels": {
+          "nodes": [
+            { "name": "enhancement", "color": "a2eeef" },
+            { "name": "ui", "color": null }
+          ]
+        },
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "statusCheckRollup": {
+                  "contexts": {
+                    "nodes": [
+                      {
+                        "__typename": "CheckRun",
+                        "name": "lint",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "startedAt": "2026-10-30T16:00:00Z",
+                        "completedAt": "2026-10-30T16:01:00Z",
+                        "detailsUrl": "https://github.com/stippi/code-assistant/actions/runs/1/job/1",
+                        "isRequired": false,
+                        "checkSuite": { "workflowRun": { "workflow": { "name": "CI" } } }
+                      },
+                      {
+                        "__typename": "CheckRun",
+                        "name": "test",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "startedAt": "2026-10-30T16:00:00Z",
+                        "completedAt": "2026-10-30T16:09:00Z",
+                        "detailsUrl": "https://github.com/stippi/code-assistant/actions/runs/1/job/2",
+                        "isRequired": true,
+                        "checkSuite": { "workflowRun": { "workflow": { "name": "CI" } } }
+                      },
+                      {
+                        "__typename": "CheckRun",
+                        "name": "lint",
+                        "status": "COMPLETED",
+                        "conclusion": "FAILURE",
+                        "startedAt": "2026-10-30T18:00:00Z",
+                        "completedAt": "2026-10-30T18:01:00Z",
+                        "detailsUrl": "https://github.com/stippi/code-assistant/actions/runs/2/job/3",
+                        "isRequired": false,
+                        "checkSuite": { "workflowRun": { "workflow": { "name": "CI" } } }
+                      },
+                      {
+                        "__typename": "StatusContext",
+                        "context": "ci/legacy",
+                        "state": "PENDING",
+                        "targetUrl": "https://ci.example.com/build/7",
+                        "createdAt": "2026-10-30T16:00:00Z",
+                        "description": "Waiting for a runner"
+                      }
+                    ],
+                    "pageInfo": { "hasNextPage": false }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

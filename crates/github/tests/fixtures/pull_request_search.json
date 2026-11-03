@@ -1,0 +1,74 @@
+{
+  "data": {
+    "search": {
+      "pageInfo": { "hasNextPage": true, "endCursor": "Y3Vyc29yOjI=" },
+      "nodes": [
+        {
+          "number": 290,
+          "title": "feat(files): show raster images in the Files view",
+          "url": "https://github.com/stippi/code-assistant/pull/290",
+          "author": {
+            "login": "stippi",
+            "avatarUrl": "https://avatars.githubusercontent.com/u/1234?v=4",
+            "name": "Stephan Aßmus"
+          },
+          "headRefName": "feat/image-file-renderer",
+          "baseRefName": "main",
+          "state": "MERGED",
+          "isDraft": false,
+          "mergeable": "UNKNOWN",
+          "reviewDecision": null,
+          "latestReviews": {
+            "nodes": [{ "state": "APPROVED", "author": { "login": "reviewer-bot" } }]
+          },
+          "additions": 120,
+          "deletions": 8,
+          "createdAt": "2026-10-28T09:12:44Z",
+          "updatedAt": "2026-10-29T17:01:02Z",
+          "mergedAt": "2026-10-29T17:01:00Z",
+          "repository": { "nameWithOwner": "stippi/code-assistant" },
+          "reviewRequests": { "nodes": [] },
+          "labels": { "nodes": [{ "name": "enhancement", "color": "a2eeef" }] },
+          "commits": {
+            "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }]
+          }
+        },
+        {
+          "number": 291,
+          "title": "Draft: pull request view",
+          "url": "https://github.com/stippi/code-assistant/pull/291",
+          "author": { "login": "dependabot", "avatarUrl": null },
+          "headRefName": "feature/pr-view",
+          "baseRefName": "main",
+          "state": "OPEN",
+          "isDraft": true,
+          "mergeable": "MERGEABLE",
+          "reviewDecision": "REVIEW_REQUIRED",
+          "latestReviews": { "nodes": [] },
+          "additions": 3,
+          "deletions": 1,
+          "createdAt": "2026-10-30T08:00:00Z",
+          "updatedAt": "2026-10-30T09:30:00.123Z",
+          "mergedAt": null,
+          "repository": { "nameWithOwner": "stippi/code-assistant" },
+          "reviewRequests": {
+            "nodes": [
+              { "requestedReviewer": { "login": "octocat" } },
+              { "requestedReviewer": { "slug": "core-team" } },
+              { "requestedReviewer": null }
+            ]
+          },
+          "labels": { "nodes": [] },
+          "commits": {
+            "nodes": [{ "commit": { "statusCheckRollup": { "state": "FAILURE" } } }]
+          }
+        },
+        {
+          "title": "A row without its number",
+          "url": "https://github.com/stippi/code-assistant/pull/1"
+        },
+        {}
+      ]
+    }
+  }
+}

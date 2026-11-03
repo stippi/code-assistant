@@ -1,6 +1,6 @@
 use gpui_kit::component::highlighter::{HighlightTheme, HighlightThemeStyle};
 use gpui_kit::component::theme::{Theme, ThemeMode};
-use gpui_kit::{App, rgb, rgba};
+use gpui_kit::{App, Hsla, hsla, rgb, rgba};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 
@@ -17,6 +17,11 @@ pub fn custom_dark_theme() -> gpui_kit::component::theme::ThemeColor {
     // Sidebar
     colors.sidebar = rgb(0x252525).into(); // Sidebar background
     colors.sidebar_border = rgb(0x404040).into(); // Sidebar border
+
+    // Hairlines and control outlines; the stock dark values sit below the
+    // background above and would not show.
+    colors.border = rgb(0x404040).into();
+    colors.input = rgb(0x404040).into();
 
     // Text colors
     colors.foreground = rgba(0xFAFAFAFF).into(); // Main text
@@ -80,6 +85,12 @@ pub fn custom_light_theme() -> gpui_kit::component::theme::ThemeColor {
     colors.accent_foreground = rgba(0x333333FF).into();
 
     colors
+}
+
+/// The violet GitHub and other tools use for merged work and branches; the
+/// theme has no token for it.
+pub fn merged_violet() -> Hsla {
+    hsla(0.75, 0.55, 0.65, 1.)
 }
 
 /// Our syntax colors per mode: few hues (red keywords, blue functions, green
@@ -155,7 +166,7 @@ pub fn toggle_theme(window: Option<&mut gpui_kit::Window>, cx: &mut App) -> Them
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tool_cards::diff_card::{
+    use crate::diff::render::{
         added_row_colors, deleted_row_colors, diff_body_bg, word_emphasis_bg,
     };
     use gpui_kit::{Hsla, Rgba, TestAppContext};

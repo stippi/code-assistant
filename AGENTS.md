@@ -20,7 +20,7 @@ This is a Rust-based AI coding agent harness with multiple operational modes.
 ### Crate Layers
 
 ```
-Layer 0 (generic):    llm  command_executor  pty_session  fs_explorer  sandbox  web  git  terminal  terminal_output  audio
+Layer 0 (generic):    llm  command_executor  pty_session  fs_explorer  sandbox  web  git  github  terminal  terminal_output  audio
 Layer 1 (generic):    tools_core        — tool trait, registry, render, spec, permissions
                       mcp_client        — wraps MCP server tools as registry tools
 Layer 2 (generic):    agent_core        — agent loop, hook traits, dialect trait, AgentUi trait
@@ -41,6 +41,7 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
 
 ### Tool Architecture
 - `ToolRegistry` is an instance, not a singleton; `ToolSpec` carries capability tags (e.g. `read_only`)
+- Tools reach the model in registration order (built-ins by topic in `register_default_tools`, then each MCP server in config order with its tools as listed); capability tags only filter. The order is part of the prompt-cache prefix, so it must not vary between registries
 - **Tool modes** (configured per agent instance via `ToolDialect`):
   - `native` — LLM provider's native tool calling (default in `agent_core`)
   - `xml` — XML-based tool syntax in system messages
@@ -103,7 +104,9 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
 ### Permission Tiers
 - Per-session setting deciding when the agent asks before running a tool:
   `bypass-all` (default), `write-tools` (ask for anything not tagged
-  `read_only`), `all-tools` (ask always)
+  `read_only`), `all-tools` (ask always), `auto` (a model configured
+  centrally in `auto-mode.json` reviews calls, the user is asked only about
+  those it blocks; `session::auto_mode`)
 - Gate lives in the agent loop (`tools_core::ToolPermissions`); prompts go
   through the `PermissionMediator` seam; see `docs/permission-tiers.md`
 
@@ -137,6 +140,38 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
 - `code_assistant_core::session::monitor` (`MonitorHandle`, installed with
   `SessionManager::set_monitor_handle`; `UiEvent::UpdateActiveMonitors`);
   see `docs/background-monitors.md`
+
+### Pull Requests
+- Layer-0 `github` crate: HTTP client for api.github.com (token from
+  `GH_TOKEN` / `gh auth token`), typed model, every PR read and write;
+  `fake::FakeTransport` (feature `test-utils`) for tests
+- `code_assistant_core::pull_requests`: repo resolution for a session
+  (`origin` remote → `RepoRef`), per-part read cache with TTLs, shared
+  in-flight reads, stale-while-revalidate and disk snapshots; reached
+  through `SessionService::pull_request_*`, refreshes announced with
+  app-scoped `UiEvent::PullRequestChanged` / `PullRequestListChanged`
+- Client and snapshot dir injected via `AgentRuntimeOptions::pull_requests`;
+  the lifecycle sweep reads sessions' PRs through it in batches; see
+  `docs/pull-request-view.md`
+- A project folder holding several checkouts offers a choice of repository
+  above the list (`session_checkouts`, `right_panel/pull_request/repo_picker.rs`);
+  tabs are keyed by `PullRequestRef` and stay open when the list moves on
+- Unsent comments, review texts and line comments live per PR in
+  `right_panel/pull_request/review_draft.rs`, saved through `Stores`
+- Checkout like `gh pr checkout` (`git::pull_request`, here or in a new
+  worktree session) and stack rebases (`git::stack_rebase`, scratch repo)
+  are git-crate work the core drives
+
+### Self-update
+- Release builds (the workflow compiles in `CODE_ASSISTANT_UPDATE_FEED`)
+  read `update-manifest.json` from the latest GitHub release; all other
+  builds never update themselves (`version::update_feed()`)
+- Layer-0 `app_update`: manifest, download (resumed with `Range`, retried,
+  sha256-checked), swap next to the installation (macOS bundle after a
+  codesign/team check, bare executable, Windows rename trick), cleanup
+- `code_assistant_core::updates::UpdateService`: checks after 15 s and every
+  4 h, download on click, app-scoped `UiEvent::UpdateStateChanged`; the GPUI
+  title-bar chip installs and calls `cx.restart()`; see `docs/self-update.md`
 
 ### Session Storage
 - One folder per session below `sessions/`, the ID is its path:

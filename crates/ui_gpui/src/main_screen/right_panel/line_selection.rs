@@ -1,10 +1,10 @@
-//! Whole-line selection over [`DiffRows`](crate::tool_cards::diff_rows::DiffRows)
+//! Whole-line selection over [`DiffRows`](crate::diff::rows::DiffRows)
 //! chunks, shared by the right panel's views. A view keeps one
 //! [`LineSelection`] and builds each chunk's [`RowSelection`] with
 //! [`row_selection`]; the element reports pointer positions as flat line
 //! indices, which `key` ties to one file. A selection never spans files.
 
-use crate::tool_cards::diff_rows::{EndCallback, LineCallback, RowSelection};
+use crate::diff::rows::{EndCallback, LineCallback, RowSelection};
 use gpui_kit::{App, Context, FocusHandle, Hsla, Window};
 
 use std::ops::Range;
@@ -101,19 +101,14 @@ impl<K: Clone + PartialEq> LineSelection<K> {
         self.dragging = false;
     }
 
-    /// The rows of a chunk (`row_count` rows starting at flat line
-    /// `base_line` of `key`) to paint as selected, relative to the chunk.
-    pub fn highlight(&self, key: &K, base_line: usize, row_count: usize) -> Range<usize> {
-        let Some(sel) = self.selected.as_ref().filter(|s| &s.key == key) else {
-            return 0..0;
-        };
-        let (lo, hi) = sel.range();
-        let start = lo.max(base_line);
-        let end = hi.min(base_line + row_count.saturating_sub(1));
-        if row_count > 0 && start <= end {
-            (start - base_line)..(end - base_line + 1)
-        } else {
-            0..0
+    /// The flat lines of `key` to paint as selected.
+    pub fn highlight(&self, key: &K) -> Range<usize> {
+        match self.selected.as_ref().filter(|s| &s.key == key) {
+            Some(sel) => {
+                let (lo, hi) = sel.range();
+                lo..hi + 1
+            }
+            None => 0..0,
         }
     }
 }
@@ -125,8 +120,8 @@ pub(crate) trait SelectsLines: 'static + Sized {
     fn line_selection(&mut self) -> &mut LineSelection<Self::Key>;
 }
 
-/// How a chunk paints: the selected rows (from [`LineSelection::highlight`])
-/// and the commented ones, both relative to the chunk.
+/// How a chunk paints: the selected flat lines (from
+/// [`LineSelection::highlight`]) and the commented ones.
 pub(crate) struct ChunkMarks {
     pub highlight: Range<usize>,
     pub color: Hsla,
@@ -192,6 +187,7 @@ pub(crate) fn row_selection<V: SelectsLines>(
         marked: marks.marked,
         mark_color: marks.mark_color,
         anchor: marks.anchor,
+        gutter_add: None,
         on_start,
         on_drag,
         on_end,
@@ -211,11 +207,8 @@ mod tests {
         sel.end();
         assert!(!sel.extend(&"a", 2), "no drag after release");
         assert_eq!(sel.get().unwrap().range(), (5, 8));
-        // Chunk of rows 0..6 holds lines 5 and 6 of the selection.
-        assert_eq!(sel.highlight(&"a", 0, 7), 5..7);
-        assert_eq!(sel.highlight(&"a", 7, 10), 0..2);
-        assert_eq!(sel.highlight(&"a", 9, 10), 0..0);
-        assert_eq!(sel.highlight(&"b", 0, 10), 0..0);
+        assert_eq!(sel.highlight(&"a"), 5..9);
+        assert_eq!(sel.highlight(&"b"), 0..0);
     }
 
     #[test]

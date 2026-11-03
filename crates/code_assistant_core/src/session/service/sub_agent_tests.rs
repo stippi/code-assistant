@@ -84,6 +84,7 @@ fn service_with_background_child(
         }),
         project_manager_factory: Arc::new(|| Box::new(crate::mocks::MockProjectManager::new())),
         llm_client_factory: Some(factory),
+        pull_requests: None,
     });
     let (service, worker) = SessionService::new(manager.clone(), runtime, events);
     tokio::spawn(worker);

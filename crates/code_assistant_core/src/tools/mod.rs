@@ -121,9 +121,9 @@ pub fn register_interactive_tools(registry: &mut ToolRegistry) {
     registry.register(Box::new(impls::AskQuestionTool));
 }
 
-/// Register all of code-assistant's tools in the given registry. Tools that
-/// depend on external services are skipped when their configuration is
-/// missing.
+/// Register all of code-assistant's tools in the given registry, by topic.
+/// Tools that depend on external services are skipped when their
+/// configuration is missing.
 pub fn register_default_tools(registry: &mut ToolRegistry, config: &ToolsConfig) {
     use impls::{
         CancelWakeupTool, DeleteFilesTool, EditTool, ExecuteCommandTool, GetSessionContentTool,
@@ -134,38 +134,54 @@ pub fn register_default_tools(registry: &mut ToolRegistry, config: &ToolsConfig)
         WriteFileTool, WriteStdinTool,
     };
 
-    impls::browser::register(registry);
-    registry.register(Box::new(DeleteFilesTool));
-    registry.register(Box::new(EditTool));
-    registry.register(Box::new(ExecuteCommandTool));
-    registry.register(Box::new(GlobFilesTool));
-    registry.register(Box::new(ListFilesTool));
+    // The order reaches the model: tools that belong together stay together,
+    // and it must stay the same from one registry to the next.
 
+    // Finding and reading
     registry.register(Box::new(ListProjectsTool));
-    registry.register(Box::new(ListSkillsTool));
-    registry.register(Box::new(NameSessionTool));
+    registry.register(Box::new(ListFilesTool));
+    registry.register(Box::new(GlobFilesTool));
+    registry.register(Box::new(SearchFilesTool));
+    registry.register(Box::new(ReadFilesTool));
+    registry.register(Box::new(ViewDocumentsTool));
+    registry.register(Box::new(ViewImagesTool));
+
+    // Changing files
+    registry.register(Box::new(EditTool));
+    registry.register(Box::new(ReplaceInFileTool));
+    registry.register(Box::new(WriteFileTool));
+    registry.register(Box::new(DeleteFilesTool));
+
+    // Running commands
+    registry.register(Box::new(ExecuteCommandTool));
+    registry.register(Box::new(WriteStdinTool));
+    registry.register(Box::new(MonitorTool));
+    registry.register(Box::new(StopMonitorTool));
+
+    // The web
+    registry.register(Box::new(WebSearchTool));
+    registry.register(Box::new(WebFetchTool));
     if let Some(perplexity) = PerplexityAskTool::from_config(config) {
         registry.register(Box::new(perplexity));
     } else {
         tracing::debug!("Tool 'perplexity_ask' is not available (missing configuration)");
     }
-    registry.register(Box::new(ReadFilesTool));
-    registry.register(Box::new(ReadSkillTool));
-    registry.register(Box::new(ReplaceInFileTool));
-    registry.register(Box::new(SearchFilesTool));
-    registry.register(Box::new(SearchSessionsTool));
-    registry.register(Box::new(GetSessionContentTool));
+    impls::browser::register(registry);
+
+    // The agent's own work
+    registry.register(Box::new(UpdatePlanTool));
+    registry.register(Box::new(SpawnAgentTool));
     registry.register(Box::new(ScheduleWakeupTool));
     registry.register(Box::new(CancelWakeupTool));
-    registry.register(Box::new(MonitorTool));
-    registry.register(Box::new(StopMonitorTool));
-    registry.register(Box::new(SpawnAgentTool));
-    registry.register(Box::new(UpdatePlanTool));
-    registry.register(Box::new(ViewDocumentsTool));
-    registry.register(Box::new(ViewImagesTool));
-    registry.register(Box::new(WebFetchTool));
-    registry.register(Box::new(WebSearchTool));
-    registry.register(Box::new(WriteFileTool));
-    registry.register(Box::new(WriteStdinTool));
+    registry.register(Box::new(NameSessionTool));
+
+    // Earlier sessions
+    registry.register(Box::new(SearchSessionsTool));
+    registry.register(Box::new(GetSessionContentTool));
+
+    // Skills
+    registry.register(Box::new(ListSkillsTool));
+    registry.register(Box::new(ReadSkillTool));
+
     builtin_selection::tag_groups(registry);
 }

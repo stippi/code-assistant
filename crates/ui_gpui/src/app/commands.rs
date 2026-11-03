@@ -6,6 +6,7 @@
 //! applied to the shared state and pushed into the UI event queue, which is
 //! the single ingestion point for display updates on the foreground thread.
 
+use crate::diff::prepare::PreparedFileDiff;
 use code_assistant_core::persistence::{DraftAttachment, NodeId};
 use code_assistant_core::session::service::{AddProjectOutcome, SessionService};
 use std::future::Future;
@@ -129,14 +130,17 @@ impl Gpui {
         let gpui = self.clone();
         self.dispatch(async move {
             match service.create_session(name, initial_project).await {
-                Ok(session_id) => {
-                    *gpui.current_session_id.lock().unwrap() = Some(session_id.clone());
-                    gpui.cmd_refresh_chat_list();
-                    gpui.cmd_load_session(session_id, None);
-                }
+                Ok(session_id) => gpui.open_session(session_id),
                 Err(e) => gpui.display_error(format!("Failed to create session: {e:#}")),
             }
         });
+    }
+
+    /// Make `session_id` the current session and show it.
+    pub(crate) fn open_session(&self, session_id: String) {
+        *self.current_session_id.lock().unwrap() = Some(session_id.clone());
+        self.cmd_refresh_chat_list();
+        self.cmd_load_session(session_id, None);
     }
 
     /// Connect a session to the UI: apply the returned snapshot and refresh
@@ -899,7 +903,8 @@ impl Gpui {
         });
     }
 
-    /// Fetch the diff for a single file selected in the Review panel.
+    /// Fetch the diff for a single file selected in the Review panel; its
+    /// line styles are computed for `theme`.
     pub(crate) fn cmd_get_review_file_diff(
         &self,
         session_id: String,
@@ -907,6 +912,7 @@ impl Gpui {
         mode: code_assistant_core::session::ReviewMode,
         base: Option<String>,
         file: git::ChangedFile,
+        theme: Arc<gpui_kit::component::highlighter::HighlightTheme>,
     ) {
         let Some(service) = self.session_service() else {
             return;
@@ -918,13 +924,13 @@ impl Gpui {
             let result = service
                 .get_review_file_diff(session_id.clone(), repo_root, mode, base, file)
                 .await;
-            // Hunks are computed HERE, on the background executor — the UI
-            // thread only ever renders prepared hunks (never runs a diff).
+            // Hunks and line styles are computed HERE, on the background
+            // executor — the UI thread only ever renders prepared hunks.
             let prepared = match &result {
-                Ok(diff) => crate::PreparedReviewDiff::from_content(&path, diff),
+                Ok(diff) => PreparedFileDiff::from_content(&path, diff, Some(&theme)),
                 // An empty prepared diff still completes the view's one-at-a-
                 // time request pipeline; the error itself is surfaced below.
-                Err(_) => crate::PreparedReviewDiff::from_content(
+                Err(_) => PreparedFileDiff::from_content(
                     &path,
                     &git::FileDiffContent {
                         old_text: None,
@@ -932,6 +938,7 @@ impl Gpui {
                         is_binary: false,
                         too_large: false,
                     },
+                    None,
                 ),
             };
             if let Err(e) = &result {
@@ -962,9 +969,7 @@ impl Gpui {
             match service.add_project(name.clone(), path).await {
                 Ok(AddProjectOutcome::Added { session_id }) => {
                     info!("Project '{name}' added, initial session: {session_id}");
-                    *gpui.current_session_id.lock().unwrap() = Some(session_id.clone());
-                    gpui.cmd_refresh_chat_list();
-                    gpui.cmd_load_session(session_id, None);
+                    gpui.open_session(session_id);
                 }
                 Ok(AddProjectOutcome::AlreadyExists) => {
                     info!("Project '{name}' already exists — nothing to do");

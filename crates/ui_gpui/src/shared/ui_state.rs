@@ -12,6 +12,7 @@
 
 use anyhow::Result;
 use code_assistant_core::persistence::SessionLayout;
+use github::RepoRef;
 use gpui_kit::App;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -92,6 +93,41 @@ pub struct UiSessionState {
     /// gitignored entries were shown.
     #[serde(default, skip_serializing_if = "FilesViewState::is_default")]
     pub files_view: FilesViewState,
+
+    /// The pull request tabs open in the right panel.
+    #[serde(default, skip_serializing_if = "PullRequestTabsState::is_empty")]
+    pub pull_request_tabs: PullRequestTabsState,
+}
+
+/// The right panel's pull request view for one session: the repository
+/// listed, the tabs in order, each with its sub-tab, and which one shows
+/// (`None`: the list). A tab without a repository, from before tabs could
+/// show several, belongs to the repository listed.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PullRequestTabsState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<RepoRef>,
+    pub open: Vec<PullRequestTabState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_repo: Option<RepoRef>,
+}
+
+impl PullRequestTabsState {
+    fn is_empty(&self) -> bool {
+        self.repo.is_none() && self.open.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PullRequestTabState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<RepoRef>,
+    pub number: u64,
+    /// "summary", "timeline" or "code".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab: Option<String>,
 }
 
 /// The Files view's state for one session. Paths are `/`-separated and
@@ -362,6 +398,20 @@ impl UiStateStore {
         self.dirty.insert(session_id.to_owned());
     }
 
+    /// The pull request tabs open for a session.
+    pub fn get_pull_request_tabs(&mut self, session_id: &str) -> PullRequestTabsState {
+        self.get(session_id).pull_request_tabs
+    }
+
+    pub fn set_pull_request_tabs(&mut self, session_id: &str, tabs: PullRequestTabsState) {
+        let state = self.states.entry(session_id.to_owned()).or_default();
+        if state.pull_request_tabs == tabs {
+            return;
+        }
+        state.pull_request_tabs = tabs;
+        self.dirty.insert(session_id.to_owned());
+    }
+
     /// Remove the cached and the stored state of a deleted session.
     pub fn remove_session(&mut self, session_id: &str) {
         self.states.remove(session_id);
@@ -440,6 +490,17 @@ mod tests {
             UiStateStore::new(Arc::new(persistence.clone())),
             persistence,
         )
+    }
+
+    #[test]
+    fn pull_request_tabs_stored_before_they_named_a_repository_still_read() {
+        let stored = r#"{"pull_request_tabs":{"open":[{"number":5,"tab":"code"}],"active":5}}"#;
+        let state: UiSessionState = serde_json::from_str(stored).unwrap();
+        let tabs = state.pull_request_tabs;
+        assert_eq!(tabs.repo, None);
+        assert_eq!(tabs.open[0].repo, None);
+        assert_eq!(tabs.open[0].number, 5);
+        assert_eq!(tabs.active, Some(5));
     }
 
     #[test]

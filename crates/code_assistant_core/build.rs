@@ -54,6 +54,12 @@ fn main() {
     // Target triple the binary is being built for, e.g. "aarch64-apple-darwin".
     let target = std::env::var("TARGET").unwrap_or_else(|_| "unknown".to_string());
     println!("cargo:rustc-env=BUILD_TARGET={target}");
+
+    // Update manifest URL; only the release workflow sets it, so only its
+    // builds update themselves (docs/self-update.md). Empty otherwise.
+    println!("cargo:rerun-if-env-changed=CODE_ASSISTANT_UPDATE_FEED");
+    let feed = std::env::var("CODE_ASSISTANT_UPDATE_FEED").unwrap_or_default();
+    println!("cargo:rustc-env=BUILD_UPDATE_FEED={feed}");
 }
 
 /// Run a git subcommand and return its trimmed stdout on success.

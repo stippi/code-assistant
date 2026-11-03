@@ -175,7 +175,7 @@ impl AgentRuntime {
         Ok(LoopFlow::Continue)
     }
 
-    async fn authorize_invocation(&self, request: &ToolRequest) -> Result<()> {
+    async fn authorize_invocation(&self, request: &ToolRequest) -> Result<tools_core::Clearance> {
         self.cancellation.check()?;
         let tool = self
             .registry
@@ -199,12 +199,39 @@ impl AgentRuntime {
             &spec,
             Some(&request.id),
             &request.input,
+            || self.user_messages_for_review(),
         );
         tokio::select! {
             biased;
             _ = self.cancellation.cancelled() => Err(tools_core::Cancelled.into()),
             result = check => result,
         }
+    }
+
+    /// What the user said on the active path, for an auto-mode review: the
+    /// text of user messages without tool results. A compaction summary is
+    /// kept (marked as such) since it carries the earlier requests.
+    fn user_messages_for_review(&self) -> Vec<String> {
+        self.message_history()
+            .into_iter()
+            .filter(|message| message.role == MessageRole::User)
+            .filter_map(|message| {
+                let text = match &message.content {
+                    MessageContent::Text(text) => text.clone(),
+                    MessageContent::Structured(blocks) => {
+                        crate::types::text_summary_from_blocks(blocks)
+                    }
+                };
+                let text = text.trim();
+                if text.is_empty() {
+                    None
+                } else if message.is_compaction_summary && !message.is_new_context {
+                    Some(format!("[Summary of the earlier conversation]\n{text}"))
+                } else {
+                    Some(text.to_string())
+                }
+            })
+            .collect()
     }
 
     /// Outer errors are infrastructure failures and abort dispatch. A rejected
@@ -214,12 +241,15 @@ impl AgentRuntime {
         request: &ToolRequest,
         detached: bool,
     ) -> Result<std::result::Result<Invocation, Completion>> {
-        if let Err(error) = self.authorize_invocation(request).await {
-            return Ok(Err(Completion::runtime(
-                request,
-                RuntimeToolOutput::not_started(Self::format_error_for_user(&error)),
-            )));
-        }
+        let clearance = match self.authorize_invocation(request).await {
+            Ok(clearance) => clearance,
+            Err(error) => {
+                return Ok(Err(Completion::runtime(
+                    request,
+                    RuntimeToolOutput::not_started(Self::format_error_for_user(&error)),
+                )));
+            }
+        };
         // A tool with effects is journaled as started before it runs, so a
         // crash mid-call leaves an "outcome unknown" record instead of
         // nothing. Read-only tools skip this: a missing record means the
@@ -281,7 +311,15 @@ impl AgentRuntime {
             request: request.clone(),
             registry: self.registry.clone(),
             command_executor: self.command_executor.clone(),
-            permission_handler: self.permission_handler.clone(),
+            // An auto-mode reviewer that allowed the call also answers the
+            // escalations its parameters ask for.
+            permission_handler: match clearance {
+                tools_core::Clearance::Reviewed => self.permission_handler.clone().map(|inner| {
+                    Arc::new(tools_core::ReviewedCallMediator::new(inner))
+                        as Arc<dyn PermissionMediator>
+                }),
+                tools_core::Clearance::Allowed => self.permission_handler.clone(),
+            },
             cancellation: self.cancellation.clone(),
             session_id: self.session_id.clone(),
             services,

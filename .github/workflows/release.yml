@@ -179,6 +179,10 @@ jobs:
 
       - name: Build
         uses: actions-rs/cargo@844f36862e911db73fe0815f00a4a2602c279505 # v1.0.3
+        env:
+          # Compiled in by code_assistant_core's build.rs: only builds that
+          # carry a feed update themselves (docs/self-update.md).
+          CODE_ASSISTANT_UPDATE_FEED: https://github.com/${{ github.repository }}/releases/latest/download/update-manifest.json
         with:
           command: build
           args: --locked --release --target ${{ matrix.target }}
@@ -361,6 +365,13 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Tagged $TAG at $TAG_SHA"
 
+      - name: Write update manifest
+        run: |
+          ./scripts/update-manifest.sh "$RELEASE_VERSION" \
+            "https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.tag }}" \
+            dist/*.zip > dist/update-manifest.json
+          cat dist/update-manifest.json
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
@@ -369,7 +380,9 @@ jobs:
           name: Release ${{ steps.tag.outputs.tag }}
           draft: false
           prerelease: false
-          files: dist/*.zip
+          files: |
+            dist/*.zip
+            dist/update-manifest.json
 
       - name: Bump to next development version
         run: |

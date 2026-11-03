@@ -9,6 +9,7 @@ use code_assistant_core::ui::{DisplayFragment, UiEvent};
 use std::collections::HashMap;
 
 use super::super::blocks::{MessageContainer, MessageRole, WakeupLink};
+use crate::main_screen::right_panel::pull_request;
 use gpui_kit::Entity;
 use tracing::{debug, trace, warn};
 
@@ -997,6 +998,20 @@ impl Gpui {
                 cx.refresh();
             }
 
+            // The pull request views read again what changed.
+            UiEvent::PullRequestChanged { pr, part } => cx.update(|cx| {
+                pull_request::bus::report(
+                    pull_request::bus::PullRequestEvent::Changed { pr, part },
+                    cx,
+                )
+            }),
+            UiEvent::PullRequestListChanged { repo } => cx.update(|cx| {
+                pull_request::bus::report(
+                    pull_request::bus::PullRequestEvent::ListChanged { repo },
+                    cx,
+                )
+            }),
+
             UiEvent::RefreshCurrentSession { session_id } => {
                 // Another process modified the session file on disk.
                 // Use incremental refresh which diffs the active path and only
@@ -1192,6 +1207,10 @@ impl Gpui {
             }
             UiEvent::VoiceTranscript { entry } => {
                 self.append_voice_transcript(entry);
+                cx.refresh();
+            }
+            UiEvent::UpdateStateChanged { state } => {
+                self.apply_update_state(state);
                 cx.refresh();
             }
             UiEvent::ConfigChanged => {

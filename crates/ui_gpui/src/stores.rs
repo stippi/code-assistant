@@ -3,6 +3,7 @@
 //! [`Gpui`](crate::Gpui) receives its stores instead of opening files itself,
 //! so tests can inject in-memory stores (and simulate their failures).
 
+use crate::shared::review_draft_store::{FileReviewDraftStore, ReviewDraftStore};
 use crate::shared::ui_state::{FileUiStatePersistence, UiStatePersistence};
 use code_assistant_core::persistence::{DraftStore, FileDraftStore, FileSessionPersistence};
 use std::sync::Arc;
@@ -14,6 +15,8 @@ pub struct Stores {
     pub drafts: Arc<dyn DraftStore>,
     /// Per-session view state (collapsed blocks, scroll position, panels).
     pub ui_state: Arc<dyn UiStatePersistence>,
+    /// Unsent comments and reviews per pull request.
+    pub review_drafts: Arc<dyn ReviewDraftStore>,
 }
 
 impl Stores {
@@ -23,6 +26,7 @@ impl Stores {
         let layout = FileSessionPersistence::new().layout().clone();
         Self {
             drafts: Arc::new(FileDraftStore::new(layout.clone())),
+            review_drafts: Arc::new(FileReviewDraftStore::new(&layout)),
             ui_state: Arc::new(FileUiStatePersistence::new(layout)),
         }
     }

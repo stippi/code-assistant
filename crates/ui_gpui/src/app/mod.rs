@@ -9,4 +9,5 @@ pub(super) mod commands;
 pub(super) mod drafts;
 pub(super) mod event_bridge;
 pub(super) mod event_loop;
+pub(super) mod updates;
 pub(super) mod voice;

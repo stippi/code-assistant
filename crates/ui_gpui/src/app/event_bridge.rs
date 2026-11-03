@@ -232,9 +232,7 @@ impl Gpui {
             }
             UiEvent::SessionHandedOff { to } => {
                 // Follow the work into the new session.
-                *self.current_session_id.lock().unwrap() = Some(to.clone());
-                self.cmd_refresh_chat_list();
-                self.cmd_load_session(to.clone(), None);
+                self.open_session(to.clone());
             }
             _ => {}
         }

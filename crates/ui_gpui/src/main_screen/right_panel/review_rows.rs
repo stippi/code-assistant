@@ -93,7 +93,7 @@ pub(super) fn flatten(repos: &[RepoOutline]) -> Vec<ReviewRow> {
 
 /// The smallest splice turning `old` into `new`: the range of `old` to
 /// replace and the number of rows replacing it. `None` when nothing changed.
-pub(super) fn changed_span(old: &[ReviewRow], new: &[ReviewRow]) -> Option<(Range<usize>, usize)> {
+pub(super) fn changed_span<T: PartialEq>(old: &[T], new: &[T]) -> Option<(Range<usize>, usize)> {
     let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
     if prefix == old.len() && prefix == new.len() {
         return None;
@@ -238,7 +238,7 @@ mod tests {
     fn changed_span_is_none_for_equal_rows() {
         let rows = vec![RepoHeader { repo: 0 }, FileHeader { repo: 0, file: 0 }];
         assert_eq!(changed_span(&rows, &rows), None);
-        assert_eq!(changed_span(&[], &[]), None);
+        assert_eq!(changed_span::<ReviewRow>(&[], &[]), None);
     }
 
     #[test]

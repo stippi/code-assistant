@@ -1,6 +1,6 @@
 [package]
 name = "code_assistant_core"
-version = "0.2.18"
+version = "0.2.19"
 edition = "2024"
 license = "MIT"
 
@@ -14,9 +14,11 @@ test-utils = []
 [dependencies]
 agent_core = { path = "../agent_core" }
 agent_orchestration = { path = "../agent_orchestration" }
+app_update = { path = "../app_update" }
 command_executor = { path = "../command_executor" }
 fs_explorer = { path = "../fs_explorer" }
 git = { path = "../git" }
+github = { path = "../github" }
 llm = { path = "../llm" }
 mcp_client = { path = "../mcp_client" }
 pty_session = { path = "../pty_session" }
@@ -31,6 +33,8 @@ tokio = { version = "1.48", features = ["full"] }
 futures = "0.3"
 tempfile = "3.23"
 fs2 = "0.4"
+# Bounded read caches of pull request data
+lru = "0.19"
 notify = { version = "7", features = ["macos_fsevent"] }
 
 # JSON (de)serialization.
@@ -93,6 +97,10 @@ chrono = "0.4"
 
 [dev-dependencies]
 axum = "0.7"
+# The release archive the self-update tests serve
+zip = { version = "8.6", default-features = false, features = ["deflate"] }
+# The scripted GitHub transport pull request tests read through
+github = { path = "../github", features = ["test-utils"] }
 # An in-process MCP server for the `:mcp:<server>` scope tests
 rmcp = { version = "3.3", default-features = false, features = [
     "base64",

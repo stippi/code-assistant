@@ -34,12 +34,19 @@ ignore = [
     { id = "RUSTSEC-2026-0367", reason = "zip extract() keeps SUID/SGID bits; not reachable, archives are read in memory" },
     { id = "RUSTSEC-2026-0368", reason = "zip extract() follows symlinks out of the target dir; not reachable, see RUSTSEC-2026-0367" },
     { id = "RUSTSEC-2026-0369", reason = "zip extract() applies permissions through symlinks; not reachable, see RUSTSEC-2026-0367" },
+    { id = "RUSTSEC-2026-0429", reason = "zip extract() aborts on a symlink entry with a large declared size; not reachable, see RUSTSEC-2026-0367" },
     # zip 8.x also pins zstd 0.13; the fixes are in zstd 0.14 / zstd-safe 8.2.
     # zip builds zstd without default features (no `legacy`, no `seekable`)
     # and makes a fresh context per stream. Drop with the zip entries above.
     { id = "RUSTSEC-2026-0391", reason = "zstd with_context() reuse leaks stream data; zip never reuses a context" },
     { id = "RUSTSEC-2026-0398", reason = "zstd Seekable::decompress overflow; the seekable feature is not built" },
     { id = "RUSTSEC-2026-0403", reason = "zstd legacy frame decoding exposes uninit memory; the legacy feature is not built" },
+    # lru 0.12 comes in only through ratatui 0.29 (patched fork, no newer lru
+    # there); our own crates use a fixed lru. ratatui's layout cache calls
+    # `get_or_insert` and `resize` only, on keys and values whose Drop cannot
+    # panic. Drop these when ratatui moves to lru >= 0.18.2.
+    { id = "RUSTSEC-2026-0002", reason = "lru IterMut is unsound; ratatui never iterates its layout cache mutably" },
+    { id = "RUSTSEC-2026-0253", reason = "lru pop() lacks panic safety; ratatui's cached Rect/Layout values never panic on drop" },
 ]
 
 # ---------------------------------------------------------------------------

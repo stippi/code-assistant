@@ -1,10 +1,11 @@
 //! General settings section — theme, scale, and other global preferences.
 
 use crate::input::model_selector::ModelItem;
+use code_assistant_core::session::auto_mode::AutoModeConfig;
 use code_assistant_core::session::default_model::DefaultModelConfig;
 use code_assistant_core::session::idle_handoff::HandoffConfig;
 use code_assistant_core::session::lifecycle::LifecycleConfig;
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size};
@@ -27,6 +28,12 @@ pub struct GeneralSection {
     settle_days_input: Entity<InputState>,
     _settle_days_subscription: Subscription,
     settle_on_merge: bool,
+    /// The model reviewing tool calls in auto mode; stored in
+    /// `auto-mode.json` together with the extra rules.
+    auto_mode_model_select: Entity<SelectState<Vec<ModelItem>>>,
+    _auto_mode_model_subscription: Subscription,
+    auto_mode_rules_input: Entity<TextareaState>,
+    _auto_mode_rules_subscription: Subscription,
 }
 
 impl GeneralSection {
@@ -57,6 +64,25 @@ impl GeneralSection {
         });
         let settle_days_subscription =
             cx.subscribe_in(&settle_days_input, window, Self::on_settle_days_input);
+        let auto_mode_model_select =
+            cx.new(|cx| SelectState::new(Vec::<ModelItem>::new(), None, window, cx));
+        let auto_mode_model_subscription = cx.subscribe_in(
+            &auto_mode_model_select,
+            window,
+            Self::on_auto_mode_model_selected,
+        );
+        let auto_mode_rules = AutoModeConfig::load().instructions;
+        let auto_mode_rules_input = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .auto_grow(3, 10)
+                .placeholder("e.g. Pushing to my own feature branches is fine.")
+                .default_value(auto_mode_rules)
+        });
+        let auto_mode_rules_subscription = cx.subscribe_in(
+            &auto_mode_rules_input,
+            window,
+            Self::on_auto_mode_rules_input,
+        );
         let mut this = Self {
             focus_handle: cx.focus_handle(),
             default_model_select,
@@ -66,6 +92,10 @@ impl GeneralSection {
             settle_days_input,
             _settle_days_subscription: settle_days_subscription,
             settle_on_merge: lifecycle.auto_settle_on_merge,
+            auto_mode_model_select,
+            _auto_mode_model_subscription: auto_mode_model_subscription,
+            auto_mode_rules_input,
+            _auto_mode_rules_subscription: auto_mode_rules_subscription,
         };
         this.reload(window, cx);
         this
@@ -84,12 +114,61 @@ impl GeneralSection {
                 .model
                 .and_then(|model| config.resolve_key(&model))
         });
+        let auto_mode_model = config.as_ref().and_then(|config| {
+            AutoModeConfig::load()
+                .model
+                .and_then(|model| config.resolve_key(&model))
+        });
+        let mut auto_mode_models = vec![ModelItem::placeholder("Same as the session")];
+        auto_mode_models.extend(models.iter().cloned());
         self.default_model_select.update(cx, |state, cx| {
             state.set_items(models, window, cx);
             if let Some(model) = &default_model {
                 state.set_selected_value(model, window, cx);
             }
         });
+        self.auto_mode_model_select.update(cx, |state, cx| {
+            state.set_items(auto_mode_models, window, cx);
+            state.set_selected_value(&auto_mode_model.unwrap_or_default(), window, cx);
+        });
+    }
+
+    fn on_auto_mode_model_selected(
+        &mut self,
+        _: &Entity<SelectState<Vec<ModelItem>>>,
+        event: &SelectEvent<Vec<ModelItem>>,
+        _window: &mut gpui_kit::Window,
+        _cx: &mut Context<Self>,
+    ) {
+        let SelectEvent::Confirm(Some(model)) = event else {
+            return;
+        };
+        let model = (!model.is_empty()).then(|| model.clone());
+        Self::save_auto_mode_config(|config| config.model = model);
+    }
+
+    fn on_auto_mode_rules_input(
+        &mut self,
+        input: &Entity<TextareaState>,
+        event: &InputEvent,
+        _window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !matches!(event, InputEvent::Change) {
+            return;
+        }
+        let rules = input.read(cx).value().to_string();
+        Self::save_auto_mode_config(|config| config.instructions = rules);
+    }
+
+    /// Change one setting on top of the stored config, keeping the others
+    /// (e.g. an effort only set in the file).
+    fn save_auto_mode_config(change: impl FnOnce(&mut AutoModeConfig)) {
+        let mut config = AutoModeConfig::load();
+        change(&mut config);
+        if let Err(e) = config.save() {
+            warn!("Failed to save the auto mode settings: {e:#}");
+        }
     }
 
     fn on_default_model_selected(
@@ -285,6 +364,46 @@ impl Render for GeneralSection {
                                 "New sessions start with this model, also in the terminal \
                                  and over ACP, unless --model is given. Existing sessions \
                                  keep their model.",
+                            ),
+                    ),
+            )
+            // Auto mode
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(gpui_kit::FontWeight::MEDIUM)
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Auto mode"),
+                    )
+                    .child(
+                        div().w(px(280.)).child(
+                            Select::new(&self.auto_mode_model_select)
+                                .placeholder("Same as the session")
+                                .with_size(Size::Small)
+                                .icon(
+                                    Icon::default()
+                                        .path("icons/chevron_up_down.svg")
+                                        .with_size(Size::XSmall)
+                                        .text_color(cx.theme().muted_foreground),
+                                ),
+                        ),
+                    )
+                    .child(Textarea::new(&self.auto_mode_rules_input))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(
+                                "With the Auto Mode permission setting, this model reviews \
+                                 every tool call that may change something against what you \
+                                 asked for, in all projects; you are only asked about the calls \
+                                 it holds back. A small, fast model keeps the agent quick. The \
+                                 rules above are added to its instructions.",
                             ),
                     ),
             )

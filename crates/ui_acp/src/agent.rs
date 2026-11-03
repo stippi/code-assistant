@@ -54,6 +54,12 @@ const PERMISSION_MODES: &[(PermissionTier, &str, &str, &str)] = &[
         "Ask before running tools that modify files or state",
     ),
     (
+        PermissionTier::Auto,
+        "auto",
+        "Auto Mode",
+        "A model reviews tool calls and asks only about risky ones",
+    ),
+    (
         PermissionTier::AllTools,
         "all-tools",
         "Ask For All Tools",

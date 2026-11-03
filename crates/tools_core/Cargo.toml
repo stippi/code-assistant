@@ -10,6 +10,7 @@ async-trait = "0.1"
 base64 = "0.22"
 command_executor = { path = "../command_executor" }
 image = "0.25"
+indexmap = "2"
 # SVG drawings rasterized (the version gpui uses)
 resvg = "0.45"
 regex = "1.12"

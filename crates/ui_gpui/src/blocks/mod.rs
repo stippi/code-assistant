@@ -11,9 +11,9 @@ use gpui_kit::component::text::{SelectionFormat, TextView, TextViewState};
 use gpui_kit::prelude::*;
 use gpui_kit::{App, ClipboardItem, Context, Entity, FocusHandle, Pixels, SharedString, Task, px};
 
+use crate::diff::syntax::language_for_path;
 use crate::shared::collapse_animation::CollapseAnimator;
 use crate::tool_cards::diff_prepare::{DiffInput, PreparedDiff, SYNC_DIFF_MAX_BYTES};
-use crate::tool_cards::diff_syntax::language_for_path;
 
 use std::cell::Cell;
 use std::rc::Rc;
