@@ -92,7 +92,7 @@ fn service_with_background_child(
 }
 
 async fn wait_for<T>(mut check: impl AsyncFnMut() -> Option<T>) -> T {
-    for _ in 0..500 {
+    for _ in 0..3000 {
         if let Some(value) = check().await {
             return value;
         }
@@ -367,30 +367,31 @@ async fn a_queued_result_stays_listed_until_the_parent_takes_it() {
     let tmp = tempfile::tempdir().unwrap();
     let parent_gate = Arc::new(tokio::sync::Notify::new());
     let child_gate = Arc::new(tokio::sync::Notify::new());
+    let steps = Arc::new(std::sync::Mutex::new(
+        vec![
+            (
+                None,
+                create_test_response(
+                    "spawn-1",
+                    "spawn_agent",
+                    serde_json::json!({
+                        "instructions": "Find the parser",
+                        "background": true,
+                    }),
+                    "Let me look in the background.",
+                ),
+            ),
+            // The parent is still busy when the result arrives.
+            (
+                Some(parent_gate.clone()),
+                create_test_response_text("Still thinking."),
+            ),
+            (None, create_test_response_text("Got it")),
+        ]
+        .into(),
+    ));
     let parent = ScriptedProvider {
-        steps: Arc::new(std::sync::Mutex::new(
-            vec![
-                (
-                    None,
-                    create_test_response(
-                        "spawn-1",
-                        "spawn_agent",
-                        serde_json::json!({
-                            "instructions": "Find the parser",
-                            "background": true,
-                        }),
-                        "Let me look in the background.",
-                    ),
-                ),
-                // The parent is still busy when the result arrives.
-                (
-                    Some(parent_gate.clone()),
-                    create_test_response_text("Still thinking."),
-                ),
-                (None, create_test_response_text("Got it")),
-            ]
-            .into(),
-        )),
+        steps: steps.clone(),
     };
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let child_release = child_gate.clone();
@@ -415,26 +416,20 @@ async fn a_queued_result_stays_listed_until_the_parent_takes_it() {
         .send_user_message(id.clone(), "Where is the parser?".into(), vec![], None)
         .await
         .unwrap();
-    wait_for(async || {
-        let snapshot = service.load_session(id.clone(), None).await.unwrap();
-        (!snapshot.running_sub_agents.is_empty()).then_some(())
-    })
-    .await;
+    // The parent is at its gate: past the spawn call being stored and past
+    // the check for queued results that precedes each step.
+    wait_for(async || (steps.lock().unwrap().len() == 1).then_some(())).await;
 
     // The sub-agent finishes while the parent runs: its result waits, and
-    // the agent stays listed with it.
+    // the agent stays listed with it. The agent shows as queued just before
+    // the result is, so wait for the result itself: released any earlier,
+    // the parent could end its run and the result would start a turn instead.
     child_gate.notify_one();
-    let snapshot = wait_for(async || {
-        let snapshot = service.load_session(id.clone(), None).await.unwrap();
-        snapshot
-            .running_sub_agents
-            .first()
-            .is_some_and(|agent| agent.result_queued_at.is_some())
-            .then_some(snapshot)
-    })
-    .await;
+    wait_for(async || queued_notifications(&manager, &id).await).await;
+    let snapshot = service.load_session(id.clone(), None).await.unwrap();
     assert!(!snapshot.activity_state.is_terminal());
     assert_eq!(snapshot.running_sub_agents.len(), 1);
+    assert!(snapshot.running_sub_agents[0].result_queued_at.is_some());
 
     // The parent's next step takes the result, and the agent leaves the list.
     parent_gate.notify_one();
