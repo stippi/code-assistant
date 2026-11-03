@@ -779,6 +779,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn upstream_diff_lists_only_unpushed_commits() {
+        let dir = TempDir::new().unwrap();
+        let remote = dir.path().join("remote.git");
+        let local = dir.path().join("local");
+        git(
+            dir.path(),
+            &["init", "-q", "--bare", remote.to_str().unwrap()],
+        );
+        std::fs::create_dir(&local).unwrap();
+        init_repo_with_commit(&local);
+        git(
+            &local,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+
+        git(&local, &["checkout", "-q", "-b", "feature/x"]);
+        let repo = GitRepository::open(&local).unwrap();
+        assert_eq!(repo.head_upstream(), None, "not pushed yet");
+
+        write(&local, "pushed.txt", b"pushed\n");
+        git(&local, &["add", "."]);
+        git(&local, &["commit", "-q", "-m", "pushed"]);
+        git(&local, &["push", "-q", "-u", "origin", "feature/x"]);
+        write(&local, "local.txt", b"local\n");
+        git(&local, &["add", "."]);
+        git(&local, &["commit", "-q", "-m", "not pushed"]);
+
+        let repo = GitRepository::open(&local).unwrap();
+        let upstream = repo.head_upstream().unwrap();
+        assert_eq!(upstream, "origin/feature/x");
+
+        let files = repo.changed_files_vs_base(&upstream).await.unwrap();
+        let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, ["local.txt"]);
+
+        // The remote branch was deleted and pruned: no ref left to diff with.
+        git(
+            &local,
+            &["update-ref", "-d", "refs/remotes/origin/feature/x"],
+        );
+        let repo = GitRepository::open(&local).unwrap();
+        assert_eq!(repo.head_upstream(), None);
+    }
+
+    #[tokio::test]
     async fn base_candidates_include_branches() {
         let dir = TempDir::new().unwrap();
         init_repo_with_commit(dir.path());

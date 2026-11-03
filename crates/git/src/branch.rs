@@ -39,10 +39,7 @@ impl GitRepository {
                 continue;
             }
 
-            let upstream = repo
-                .branch_remote_ref_name(reference.name(), gix::remote::Direction::Fetch)
-                .and_then(Result::ok)
-                .map(|r| r.shorten().to_string());
+            let upstream = upstream_of(&repo, reference.name());
 
             branches.push(Branch {
                 is_head: head_name.as_deref() == Some(&name),
@@ -142,6 +139,27 @@ impl GitRepository {
             .flatten()
             .map(|name| name.shorten().to_string())
     }
+
+    /// The remote-tracking branch of the checked-out branch (e.g.
+    /// `origin/feature/x`). `None` on a detached `HEAD`, on a branch without
+    /// upstream and when the tracking ref is gone (remote branch deleted and
+    /// pruned, or never fetched).
+    pub fn head_upstream(&self) -> Option<String> {
+        let repo = self.repo.to_thread_local();
+        let head = repo.head_name().ok().flatten()?;
+        let tracking = repo
+            .branch_remote_tracking_ref_name(head.as_ref(), gix::remote::Direction::Fetch)?
+            .ok()?;
+        repo.find_reference(tracking.as_ref()).ok()?;
+        Some(tracking.shorten().to_string())
+    }
+}
+
+/// The local remote-tracking ref of `branch` (e.g. `origin/main`), if set.
+fn upstream_of(repo: &gix::Repository, branch: &gix::refs::FullNameRef) -> Option<String> {
+    repo.branch_remote_tracking_ref_name(branch, gix::remote::Direction::Fetch)
+        .and_then(Result::ok)
+        .map(|r| r.shorten().to_string())
 }
 
 /// True if the branch tip is reachable from its upstream (if set) or HEAD.
@@ -195,6 +213,34 @@ mod tests {
         let repo = GitRepository::open(dir.path()).unwrap();
         let branch = repo.current_branch();
         assert!(branch.is_some());
+    }
+
+    #[test]
+    fn upstream_names_the_remote_tracking_branch() {
+        let dir = TempDir::new().unwrap();
+        init_repo_with_commit(dir.path());
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?} failed");
+        };
+        git(&["checkout", "-q", "-b", "feature/x"]);
+        git(&["remote", "add", "origin", "https://example.com/repo.git"]);
+        git(&["config", "branch.feature/x.remote", "origin"]);
+        git(&["config", "branch.feature/x.merge", "refs/heads/feature/x"]);
+        git(&[
+            "config",
+            "remote.origin.fetch",
+            "+refs/heads/*:refs/remotes/origin/*",
+        ]);
+
+        let repo = GitRepository::open(dir.path()).unwrap();
+        let branches = repo.list_branches().unwrap();
+        let head = branches.iter().find(|b| b.is_head).unwrap();
+        assert_eq!(head.upstream.as_deref(), Some("origin/feature/x"));
     }
 
     #[test]
