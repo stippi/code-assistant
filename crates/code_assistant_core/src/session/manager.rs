@@ -1863,6 +1863,27 @@ impl SessionManager {
         }))
     }
 
+    /// Whether the execution of the tool call `tool_id` is stored, as far as
+    /// persistence knows.
+    pub fn is_tool_call_stored(&mut self, session_id: &str, tool_id: &str) -> Result<bool> {
+        let Some(instance) = self.active_sessions.get_mut(session_id) else {
+            return Ok(false);
+        };
+        let stored = |instance: &SessionInstance| {
+            instance
+                .session
+                .tool_executions
+                .iter()
+                .any(|exec| exec.tool_request.id == tool_id)
+        };
+        if stored(instance) {
+            return Ok(true);
+        }
+        // A running agent stores its calls in persistence only.
+        instance.reload_from_persistence(&self.persistence)?;
+        Ok(stored(instance))
+    }
+
     /// Record in the stored `spawn_agent` result that the background
     /// sub-agent started by `tool_id` ended, with its final card state. What
     /// the model saw stays: the result itself arrives as a message.

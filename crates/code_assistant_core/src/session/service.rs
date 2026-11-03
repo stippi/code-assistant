@@ -2296,12 +2296,15 @@ async fn deliver_sub_agent_result_impl(
             debug!("Sub-agent result for unknown session {session_id} dropped");
             return Ok(true);
         };
-        let stored = instance
-            .session
-            .tool_executions
-            .iter()
-            .any(|exec| exec.tool_request.id == finished.tool_id);
-        if !stored && !instance.get_activity_state().is_terminal() {
+        let terminal = instance.get_activity_state().is_terminal();
+        // A failed read counts as not stored yet: the next attempt reads again.
+        let stored = manager
+            .is_tool_call_stored(session_id, &finished.tool_id)
+            .unwrap_or_else(|e| {
+                warn!("Failed to read session {session_id}: {e}");
+                false
+            });
+        if !stored && !terminal {
             return Ok(false);
         }
         manager.mark_sub_agent_finished(session_id, &finished.tool_id, &finished.ui_output)
