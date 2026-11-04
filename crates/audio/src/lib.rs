@@ -24,6 +24,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 pub use playback::Playback;
 
@@ -44,6 +45,10 @@ pub enum AudioReport {
 }
 
 pub type ReportSink = Arc<dyn Fn(AudioReport) + Send + Sync>;
+
+/// Device APIs can wait indefinitely for a driver or an OS permission
+/// interaction. Voice startup must return so its UI can report the failure.
+const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// State shared between the handle and the device callbacks.
 pub(crate) struct Shared {
@@ -107,9 +112,15 @@ impl AudioIo {
                     }
                 }
             })?;
-        ready_rx
-            .recv()
-            .map_err(|_| anyhow::anyhow!("The audio thread ended before starting"))??;
+        ready_rx.recv_timeout(OPEN_TIMEOUT).map_err(|e| match e {
+            mpsc::RecvTimeoutError::Timeout => anyhow::anyhow!(
+                "Timed out after {}s while opening the audio devices",
+                OPEN_TIMEOUT.as_secs()
+            ),
+            mpsc::RecvTimeoutError::Disconnected => {
+                anyhow::anyhow!("The audio thread ended before starting")
+            }
+        })??;
         Ok(Self {
             shared,
             stop: Some(stop_tx),
