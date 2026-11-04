@@ -481,9 +481,14 @@ impl Tool for SearchFilesTool {
             .iter()
             .filter_map(|(_, outside)| outside.clone())
             .collect();
-        super::outside_project::approve_reads(context, "search_files", &outside_paths)
-            .await
-            .map_err(|denial| anyhow!(denial))?;
+        super::outside_project::approve(
+            context,
+            "search_files",
+            tools_core::FileAccess::Read,
+            &outside_paths,
+        )
+        .await
+        .map_err(|denial| anyhow!(denial))?;
 
         // Set up search options with a reasonable initial limit
         let options = SearchOptions {

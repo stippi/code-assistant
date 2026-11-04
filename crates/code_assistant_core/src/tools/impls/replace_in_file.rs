@@ -146,7 +146,7 @@ impl Tool for ReplaceInFileTool {
                     "path": {
                         "examples": ["File path here"],
                         "type": "string",
-                        "description": "Path to the file to modify (relative to project root)"
+                        "description": "Path to the file to modify (relative to project root). A path outside the project (absolute, or leading out with `..`) is written only after the user approves it."
                     },
                     "diff": {
                         "type": "string",
@@ -208,21 +208,24 @@ impl Tool for ReplaceInFileTool {
             }
         };
 
-        // Check for absolute path
+        // A path outside the project is edited only once the user approves.
         let path = PathBuf::from(&input.path);
-        if path.is_absolute() {
-            return Ok(ReplaceInFileOutput {
-                project: input.project.clone(),
-                path,
-                error: Some(FileUpdaterError::Other(
-                    "Absolute paths are not allowed".to_string(),
-                )),
-                match_start_lines: Vec::new(),
-            });
-        }
-
-        // Join with root_dir to get full path
-        let full_path = explorer.root_dir().join(&path);
+        let target =
+            match super::outside_project::write_target(context, "replace_in_file", explorer, &path)
+                .await
+            {
+                Ok(target) => target,
+                Err(error) => {
+                    return Ok(ReplaceInFileOutput {
+                        project: input.project.clone(),
+                        path,
+                        error: Some(FileUpdaterError::Other(error)),
+                        match_start_lines: Vec::new(),
+                    });
+                }
+            };
+        let explorer = target.explorer;
+        let full_path = target.full_path;
 
         // Compute match start line numbers before applying (need the original content)
         let match_start_lines = if let Ok(content) = std::fs::read_to_string(&full_path) {
@@ -232,7 +235,10 @@ impl Tool for ReplaceInFileTool {
         };
 
         // If format-on-save applies, use format-aware path
-        let result = if let Some(command_line) = project_config.format_command_for(&path) {
+        let result = if let Some(command_line) = project_config
+            .format_command_for(&path)
+            .filter(|_| !target.outside)
+        {
             explorer
                 .apply_replacements_with_formatting(
                     &full_path,
@@ -255,8 +261,8 @@ impl Tool for ReplaceInFileTool {
                     input.diff = render_diff_from_replacements(&updated);
                 }
 
-                // Emit resource event
-                if let Some(ui) = context.ui() {
+                // Emit resource event (files outside the project are no resource of it)
+                if let Some(ui) = context.ui().filter(|_| !target.outside) {
                     let _ = ui
                         .send_event(crate::ui::UiEvent::ResourceWritten {
                             project: input.project.clone(),

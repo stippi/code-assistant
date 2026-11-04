@@ -133,9 +133,10 @@ impl Tool for GlobFilesTool {
         let (walk_root, pattern) =
             match fs_explorer::resolve_outside_root(&root_dir, std::path::Path::new(&base)) {
                 Some(outside) => {
-                    super::outside_project::approve_reads(
+                    super::outside_project::approve(
                         context,
                         "glob_files",
+                        tools_core::FileAccess::Read,
                         std::slice::from_ref(&outside),
                     )
                     .await

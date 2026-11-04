@@ -63,23 +63,28 @@ pub fn permission_options_for(reason: &PermissionRequestReason<'_>) -> Vec<Permi
                 "Skip these servers; the agent runs without them",
             ),
         ],
-        PermissionRequestReason::ReadOutsideProject { .. } => vec![
-            PermissionOption::new(
-                PermissionDecision::GrantedOnce,
-                "Allow once",
-                "Read these files; ask again next time",
-            ),
-            PermissionOption::new(
-                PermissionDecision::GrantedSession,
-                "Always (session)",
-                "Let the agent read outside the project for the rest of this session",
-            ),
-            PermissionOption::new(
-                PermissionDecision::Denied,
-                "Deny",
-                "Reject the read; the agent is told not to retry",
-            ),
-        ],
+        PermissionRequestReason::OutsideProject { access, .. } => {
+            let verb = access.verb();
+            vec![
+                PermissionOption::new(
+                    PermissionDecision::GrantedOnce,
+                    "Allow once",
+                    &format!("Allow this {verb}; ask again next time"),
+                ),
+                PermissionOption::new(
+                    PermissionDecision::GrantedSession,
+                    "Always (session)",
+                    &format!(
+                        "Let the agent {verb} outside the project for the rest of this session"
+                    ),
+                ),
+                PermissionOption::new(
+                    PermissionDecision::Denied,
+                    "Deny",
+                    &format!("Reject the {verb}; the agent is told not to retry"),
+                ),
+            ]
+        }
         PermissionRequestReason::ExecuteCommand { .. }
         | PermissionRequestReason::ToolInvocation { .. }
         | PermissionRequestReason::AutoModeBlocked { .. } => vec![
@@ -251,10 +256,15 @@ impl SessionPermissionMediator {
                     "reason": reason,
                 }),
             ),
-            PermissionRequestReason::ReadOutsideProject { paths } => (
-                format!("Read outside the project: {}", display_paths(paths)),
+            PermissionRequestReason::OutsideProject { access, paths } => (
+                format!(
+                    "{} outside the project: {}",
+                    access.label(),
+                    display_paths(paths)
+                ),
                 serde_json::json!({
-                    "type": "read_outside_project",
+                    "type": "outside_project",
+                    "access": access.verb(),
                     "paths": paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
                 }),
             ),

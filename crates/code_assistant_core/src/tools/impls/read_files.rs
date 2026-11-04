@@ -418,10 +418,14 @@ impl Tool for ReadFilesTool {
             .iter()
             .filter_map(|(_, _, outside)| outside.clone())
             .collect();
-        let outside_denial =
-            super::outside_project::approve_reads(context, "read_files", &outside_paths)
-                .await
-                .err();
+        let outside_denial = super::outside_project::approve(
+            context,
+            "read_files",
+            tools_core::FileAccess::Read,
+            &outside_paths,
+        )
+        .await
+        .err();
 
         for (path_str, parsed_path, outside) in requests {
             // Determine the start line for line numbering
@@ -1193,7 +1197,7 @@ mod tests {
         Ok(())
     }
 
-    use super::super::outside_project::tests::{OutsideReadMediator, outside_setup};
+    use super::super::outside_project::tests::{OutsideAccessMediator, outside_setup};
 
     fn read_input(paths: &[&str]) -> ReadFilesInput {
         ReadFilesInput {
@@ -1207,7 +1211,7 @@ mod tests {
     #[tokio::test]
     async fn reading_outside_the_project_asks_once_and_reads_when_allowed() {
         let (dir, fixture) = outside_setup();
-        let mediator = OutsideReadMediator::new(tools_core::PermissionDecision::GrantedOnce);
+        let mediator = OutsideAccessMediator::new(tools_core::PermissionDecision::GrantedOnce);
         let mut fixture = fixture.with_permission_handler(mediator.clone());
         let absolute = dir.path().join("outside.txt");
         let absolute = absolute.to_str().unwrap();
@@ -1238,7 +1242,7 @@ mod tests {
     #[tokio::test]
     async fn denied_outside_read_fails_only_the_outside_paths() {
         let (_dir, fixture) = outside_setup();
-        let mediator = OutsideReadMediator::new(tools_core::PermissionDecision::Denied);
+        let mediator = OutsideAccessMediator::new(tools_core::PermissionDecision::Denied);
         let mut fixture = fixture.with_permission_handler(mediator);
         let mut input = read_input(&["inside.txt", "../outside.txt"]);
 
@@ -1273,7 +1277,7 @@ mod tests {
     #[tokio::test]
     async fn session_grant_for_outside_reads_stops_asking() {
         let (_dir, fixture) = outside_setup();
-        let mediator = OutsideReadMediator::new(tools_core::PermissionDecision::GrantedSession);
+        let mediator = OutsideAccessMediator::new(tools_core::PermissionDecision::GrantedSession);
         let mut fixture = fixture.with_permission_handler(mediator.clone());
 
         for _ in 0..2 {

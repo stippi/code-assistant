@@ -110,7 +110,7 @@ impl Tool for DeleteFilesTool {
                     "paths": {
                         "examples": ["File path here"],
                         "type": "array",
-                        "description": "Paths to the files relative to the project root directory",
+                        "description": "Paths to the files relative to the project root directory. A path outside the project (absolute, or leading out with `..`) is deleted only after the user approves it.",
                         "items": {
                             "type": "string"
                         }
@@ -159,17 +159,39 @@ impl Tool for DeleteFilesTool {
         let mut deleted_contents = Vec::new();
 
         // Process each path
+        // Deleting outside the project needs the user's approval, asked once
+        // for all such paths of this call.
+        let root_dir = explorer.root_dir();
+        let outside_paths: Vec<PathBuf> = input
+            .paths
+            .iter()
+            .filter_map(|p| fs_explorer::resolve_outside_root(&root_dir, std::path::Path::new(p)))
+            .collect();
+        let outside_denial = super::outside_project::approve(
+            context,
+            "delete_files",
+            tools_core::FileAccess::Write,
+            &outside_paths,
+        )
+        .await
+        .err();
+
         for path_str in input.paths.clone() {
             let path = PathBuf::from(&path_str);
 
-            // Check for absolute paths
-            if path.is_absolute() {
-                failed.push((path.clone(), "Absolute paths are not allowed".to_string()));
-                continue;
-            }
-
-            // Join with root_dir to get full path
-            let full_path = explorer.root_dir().join(&path);
+            let outside = fs_explorer::resolve_outside_root(&root_dir, &path);
+            let outside_explorer;
+            let (explorer, full_path) = match (&outside, &outside_denial) {
+                (Some(_), Some(denial)) => {
+                    failed.push((path, denial.clone()));
+                    continue;
+                }
+                (Some(outside), None) => {
+                    outside_explorer = super::outside_project::explorer_for(outside);
+                    (outside_explorer.as_ref(), outside.clone())
+                }
+                (None, _) => (explorer.as_ref(), root_dir.join(&path)),
+            };
 
             // Capture the content before deletion (best effort; binary or
             // unreadable files simply render without a diff)
@@ -183,8 +205,8 @@ impl Tool for DeleteFilesTool {
                         deleted_contents.push((path.clone(), content));
                     }
 
-                    // Emit resource event
-                    if let Some(ui) = context.ui() {
+                    // Emit resource event (files outside the project are no resource of it)
+                    if let Some(ui) = context.ui().filter(|_| outside.is_none()) {
                         let _ = ui
                             .send_event(crate::ui::UiEvent::ResourceDeleted {
                                 project: input.project.clone(),
@@ -344,10 +366,11 @@ mod tests {
             .find(|(path, _)| path == &PathBuf::from("non-existing.txt"));
         assert!(non_existing.is_some());
 
-        // One failure should be the absolute path
+        // One failure should be the path outside the project, since nobody
+        // can approve deleting it
         let absolute_path = result.failed.iter().find(|(path, error)| {
             path == &PathBuf::from("/absolute/path.txt")
-                && error.contains("Absolute paths are not allowed")
+                && error.contains("Access outside project root is not allowed")
         });
         assert!(absolute_path.is_some());
 

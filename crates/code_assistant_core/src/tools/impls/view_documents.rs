@@ -232,10 +232,14 @@ impl Tool for ViewDocumentsTool {
             .iter()
             .filter_map(|p| fs_explorer::resolve_outside_root(&root_dir, std::path::Path::new(p)))
             .collect();
-        let outside_denial =
-            super::outside_project::approve_reads(context, "view_documents", &outside_paths)
-                .await
-                .err();
+        let outside_denial = super::outside_project::approve(
+            context,
+            "view_documents",
+            tools_core::FileAccess::Read,
+            &outside_paths,
+        )
+        .await
+        .err();
         let mut total_output_chars: usize = 0;
 
         for path_str in &input.paths {
