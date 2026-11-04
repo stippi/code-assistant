@@ -9,7 +9,7 @@
 //! As for SVG, the image starts on a white page; a button in the corner
 //! switches to the theme's background.
 
-use super::{FileRenderer, RendererHandle, RendererView, background_button, has_extension};
+use super::{BuiltIn, RendererHandle, RendererView, TextEdit, background_button, has_extension};
 use crate::comments::CommentChange;
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::{
@@ -20,7 +20,7 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub const RENDERER: FileRenderer = FileRenderer {
+pub const RENDERER: BuiltIn = BuiltIn {
     id: "raster",
     label: "Image",
     accepts: |path| has_extension(path, EXTENSIONS),
@@ -76,6 +76,7 @@ pub struct RasterPreview {
 }
 
 impl EventEmitter<CommentChange> for RasterPreview {}
+impl EventEmitter<TextEdit> for RasterPreview {}
 
 impl RasterPreview {
     fn new(file: PathBuf) -> Self {

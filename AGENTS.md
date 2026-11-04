@@ -95,13 +95,12 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
 ### Plugins
 - Git repositories (or local folders) with `.code-assistant-plugin/plugin.json`
   contributing provider templates, MCP servers (read-only, merged between
-  global and project servers) and web file viewers
+  global and project servers) and file renderers
   (`code_assistant_core::plugin_host`: `store` installs/updates, `catalog` is
-  what the app reads, `viewer` opens a page in a headless Chrome tab and
-  starts its server)
+  what the app reads, `server` starts a server a renderer needs)
 - *Settings → Plugins*, `code-assistant plugin add|list|update|remove`;
-  viewers show in the Files view through `file_renderers::Renderer::Plugin`
-  (feature `browser-panel`); see `docs/plugins.md`
+  renderers show in the Files view as `file_renderers::FileRenderer::Plugin`
+  (`shared::custom_renderers`); see `docs/plugins.md`
 
 ### Built-in Tool Toggles
 - Groups of built-in tools (browser, web, terminal, sub-agents, wakeups,
@@ -227,10 +226,11 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
   inside a tokio `block_on` (tokio's cooperation budget would never renew on
   the main thread), so `main` is not `#[tokio::main]`
 - The Files view can show a file other ways than as text (rendered
-  Markdown, drawn SVG, a plugin's web viewer), picked in a dropdown above the
-  file; built-in renderers are a static table in
-  `main_screen/right_panel/file_renderers/`, plugin viewers follow them:
-  `docs/file-renderers.md`
+  Markdown, drawn SVG), picked in a dropdown above the file; built-in
+  renderers are a static table in `main_screen/right_panel/file_renderers/`,
+  plugins add theirs (`shared::custom_renderers`): commands, or web editors
+  in a native webview (`wry`, `shared::native_views`, macOS), behind
+  `server_gate` while a server they need starts: `docs/file-renderers.md`
 - Frame profiling of the GPUI frontend (opt-in via
   `CODE_ASSISTANT_FRAME_PROFILE`, sweep runner and `sample` analysis in
   `scripts/frame-profile/`): `docs/frame-profiling.md`

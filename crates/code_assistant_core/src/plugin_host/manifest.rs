@@ -14,13 +14,19 @@
 //!   "mcpServers": {
 //!     "acme-tools": { "command": "${PLUGIN_ROOT}/bin/acme-mcp", "args": ["--stdio"] }
 //!   },
-//!   "fileViewers": [{
-//!     "id": "drawio", "label": "draw.io", "files": ["*.drawio", "*.drawio.svg"],
-//!     "url": "http://localhost:8080/", "protocol": "drawio",
+//!   "fileRenderers": [{
+//!     "label": "Graphviz", "files": ["*.dot", "*.gv"],
+//!     "kind": "command", "command": "dot -Tsvg", "output": "svg"
+//!   }, {
+//!     "label": "draw.io", "files": ["*.drawio"], "kind": "web",
+//!     "url": "http://localhost:8080/?embed=1&proto=json&dark={dark}",
 //!     "start": { "command": "scripts/start-drawio.sh" }
 //!   }]
 //! }
 //! ```
+//!
+//! File renderers have the shape the Files view's renderers take (see
+//! `docs/file-renderers.md`), plus a `start` command for a server they need.
 //!
 //! Parsing is strict: unknown keys are errors, so a typo does not silently
 //! drop a contribution.
@@ -55,9 +61,10 @@ pub struct PluginManifest {
     /// the plugin is enabled and cannot be edited in the settings.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub mcp_servers: BTreeMap<String, Value>,
-    /// Ways to show files in the Files view, as web pages.
+    /// Ways to show files in the Files view: a command turning a file into
+    /// an image, or a web editor editing it in place.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub file_viewers: Vec<FileViewerSpec>,
+    pub file_renderers: Vec<PluginFileRenderer>,
 }
 
 /// A prefilled provider entry for `providers.json`.
@@ -81,51 +88,72 @@ pub struct ProviderTemplate {
     pub models: Vec<String>,
 }
 
-/// A file viewer shown as a web page.
+/// A file renderer for the Files view.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct FileViewerSpec {
-    /// Unique within the plugin.
-    pub id: String,
-    /// The name in the Files view's dropdown.
+pub struct PluginFileRenderer {
+    /// The name in the Files view's dropdown; unique within the plugin.
     pub label: String,
-    /// File name patterns the viewer takes (`*.drawio`), case-insensitive.
+    /// Patterns for the file names it takes (`*.dot`): `*` and `?` are
+    /// wildcards, case is ignored.
     pub files: Vec<String>,
-    /// The page to show. `{path}` and `{relative_path}` are replaced by the
-    /// file's absolute and project-relative path (URL-encoded).
-    pub url: String,
-    /// How the page gets the file's text and gives edits back.
-    #[serde(default)]
-    pub protocol: ViewerProtocol,
-    /// Starts the server behind `url` when nothing answers there.
+    pub kind: RendererKind,
+    /// `command`: a shell command line, run in the project root; `{file}`
+    /// is the file, `{output}` where to write the result (else standard
+    /// output), the text is on standard input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// `command`: what it produces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<RendererOutput>,
+    /// `web`: the editor's address, talking the embed protocol; `{dark}`
+    /// is `1` in a dark theme.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// `web`: scripts injected into the editor, relative to the plugin root.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scripts: Vec<String>,
+    /// Starts a server the renderer needs, when nothing answers at its
+    /// address (`start.url`, for a web editor its `url` by default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start: Option<ServerStart>,
 }
 
-/// How a viewer page and the app exchange the file's text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ViewerProtocol {
-    /// The page uses `window.codeAssistant` (`onText`, `setText`).
-    #[default]
-    HostApi,
-    /// draw.io's embed protocol; the app adds `embed=1&proto=json`.
-    Drawio,
-    /// No exchange: the page shows the file on its own (from the URL).
-    None,
+/// What a file renderer is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RendererKind {
+    /// A command turning the file into an SVG or an image.
+    Command,
+    /// A web app editing the file in place.
+    Web,
 }
 
-/// A command that starts a viewer's server.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// What a command renderer produces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RendererOutput {
+    #[default]
+    Svg,
+    #[serde(alias = "png")]
+    Image,
+}
+
+/// A command that starts the server a renderer needs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServerStart {
     /// The program; a relative path is taken from the plugin root.
     pub command: String,
+    /// Where the server answers once it runs. A web editor's own `url` when
+    /// left out; needed for a command renderer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub env: HashMap<String, String>,
-    /// How long to wait for the server to answer at `url`.
+    /// How long to wait for the server to answer.
     #[serde(default = "default_start_timeout")]
     pub timeout_seconds: u64,
 }
@@ -165,22 +193,14 @@ impl PluginManifest {
                 bail!("provider template '{}' names no provider", template.id);
             }
         }
-        let mut ids = HashSet::new();
-        for viewer in &self.file_viewers {
-            if viewer.id.is_empty() || !ids.insert(viewer.id.as_str()) {
-                bail!("file viewer ids must be unique and non-empty");
+        let mut labels = HashSet::new();
+        for renderer in &self.file_renderers {
+            if renderer.label.trim().is_empty() || !labels.insert(renderer.label.as_str()) {
+                bail!("file renderer labels must be unique and non-empty");
             }
-            if viewer.files.is_empty() {
-                bail!("file viewer '{}' takes no files", viewer.id);
-            }
-            for pattern in &viewer.files {
-                glob::Pattern::new(pattern).with_context(|| {
-                    format!("file viewer '{}': bad pattern '{pattern}'", viewer.id)
-                })?;
-            }
-            if !(viewer.url.starts_with("http://") || viewer.url.starts_with("https://")) {
-                bail!("file viewer '{}': url must be http(s)", viewer.id);
-            }
+            renderer
+                .validate()
+                .with_context(|| format!("file renderer '{}'", renderer.label))?;
         }
         // The MCP entries parse as `.mcp.json` would.
         self.mcp_servers_config()?;
@@ -210,7 +230,7 @@ impl PluginManifest {
                 "provider templates",
             ),
             count(self.mcp_servers.len(), "MCP server", "MCP servers"),
-            count(self.file_viewers.len(), "file viewer", "file viewers"),
+            count(self.file_renderers.len(), "file renderer", "file renderers"),
         ]
         .into_iter()
         .flatten()
@@ -232,18 +252,49 @@ pub fn is_valid_name(name: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
-impl FileViewerSpec {
-    /// Whether the viewer takes the file at `path` (by its file name).
-    pub fn accepts(&self, path: &str) -> bool {
-        let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
-        let options = glob::MatchOptions {
-            case_sensitive: false,
-            ..Default::default()
-        };
-        self.files
-            .iter()
-            .any(|pattern| glob::Pattern::new(pattern).is_ok_and(|p| p.matches_with(name, options)))
+impl PluginFileRenderer {
+    fn validate(&self) -> Result<()> {
+        if self.files.iter().all(|pattern| pattern.trim().is_empty()) {
+            bail!("takes no files");
+        }
+        match self.kind {
+            RendererKind::Command => {
+                if self.command.as_deref().is_none_or(|c| c.trim().is_empty()) {
+                    bail!("a command renderer needs a `command`");
+                }
+                if self.url.is_some() || !self.scripts.is_empty() {
+                    bail!("`url` and `scripts` are for web editors");
+                }
+                if self.start.as_ref().is_some_and(|s| s.url.is_none()) {
+                    bail!("`start` of a command renderer needs a `url` to wait for");
+                }
+            }
+            RendererKind::Web => {
+                if self.command.is_some() || self.output.is_some() {
+                    bail!("`command` and `output` are for command renderers");
+                }
+                if !self.url.as_deref().is_some_and(is_http) {
+                    bail!("a web editor needs an http(s) `url`");
+                }
+            }
+        }
+        if let Some(url) = self.start.as_ref().and_then(|s| s.url.as_deref())
+            && !is_http(url)
+        {
+            bail!("`start.url` must be http(s)");
+        }
+        Ok(())
     }
+
+    /// The address a started server answers at.
+    pub fn server_url(&self) -> Option<&str> {
+        let start = self.start.as_ref()?;
+        start.url.as_deref().or(self.url.as_deref())
+    }
+}
+
+fn is_http(url: &str) -> bool {
+    url.starts_with("http://") || url.starts_with("https://")
 }
 
 impl ServerStart {
@@ -280,9 +331,12 @@ mod tests {
             "acme-tools": { "command": "${PLUGIN_ROOT}/bin/acme-mcp", "args": ["--stdio"] },
             "acme-remote": { "type": "http", "url": "https://mcp.acme.example/mcp" }
         },
-        "fileViewers": [{
-            "id": "drawio", "label": "draw.io", "files": ["*.drawio", "*.drawio.svg"],
-            "url": "http://localhost:8080/", "protocol": "drawio",
+        "fileRenderers": [{
+            "label": "Graphviz", "files": ["*.dot"], "kind": "command",
+            "command": "dot -Tsvg"
+        }, {
+            "label": "draw.io", "files": ["*.drawio", "*.drawio.svg"], "kind": "web",
+            "url": "http://localhost:8080/?embed=1&proto=json&dark={dark}",
             "start": { "command": "scripts/start.sh" }
         }]
     }"#;
@@ -294,12 +348,16 @@ mod tests {
         assert_eq!(manifest.provider_templates[0].provider, "openai-responses");
         let servers = manifest.mcp_servers_config().unwrap();
         assert!(servers.servers["acme-remote"].transport.is_http());
-        let viewer = &manifest.file_viewers[0];
-        assert_eq!(viewer.protocol, ViewerProtocol::Drawio);
-        assert_eq!(viewer.start.as_ref().unwrap().timeout_seconds, 120);
+        let [graphviz, drawio] = &manifest.file_renderers[..] else {
+            panic!("two renderers");
+        };
+        assert_eq!(graphviz.kind, RendererKind::Command);
+        assert_eq!(graphviz.server_url(), None);
+        assert_eq!(drawio.start.as_ref().unwrap().timeout_seconds, 120);
+        assert_eq!(drawio.server_url(), drawio.url.as_deref());
         assert_eq!(
             manifest.contributions_summary(),
-            "1 provider template, 2 MCP servers, 1 file viewer"
+            "1 provider template, 2 MCP servers, 2 file renderers"
         );
     }
 
@@ -310,9 +368,14 @@ mod tests {
         assert_eq!(manifest.name, "example");
         assert_eq!(
             manifest.contributions_summary(),
-            "2 provider templates, 1 MCP server, 1 file viewer"
+            "2 provider templates, 1 MCP server, 2 file renderers"
         );
-        let start = manifest.file_viewers[0].start.as_ref().unwrap();
+        let drawio = manifest
+            .file_renderers
+            .iter()
+            .find(|r| r.kind == RendererKind::Web)
+            .unwrap();
+        let start = drawio.start.as_ref().unwrap();
         assert!(
             start.program(&root).exists(),
             "the start script ships along"
@@ -326,19 +389,40 @@ mod tests {
         assert!(PluginManifest::parse(r#"{ "name": "ok-1" }"#).is_ok());
         let bad_server = r#"{ "name": "a", "mcpServers": { "x": { "type": "stdio" } } }"#;
         assert!(PluginManifest::parse(bad_server).is_err());
-        let bad_url = r#"{ "name": "a", "fileViewers": [
-            { "id": "v", "label": "V", "files": ["*.x"], "url": "file:///tmp" }] }"#;
-        assert!(PluginManifest::parse(bad_url).is_err());
     }
 
     #[test]
-    fn viewers_match_file_names_case_insensitively() {
-        let manifest = PluginManifest::parse(FULL).unwrap();
-        let viewer = &manifest.file_viewers[0];
-        assert!(viewer.accepts("docs/flow.drawio"));
-        assert!(viewer.accepts("docs/Flow.DRAWIO.svg"));
-        assert!(!viewer.accepts("docs/logo.svg"));
-        assert!(!viewer.accepts("drawio/readme.md"));
+    fn renderers_carry_what_their_kind_needs() {
+        let parse = |renderer: &str| {
+            PluginManifest::parse(&format!(
+                r#"{{ "name": "a", "fileRenderers": [{renderer}] }}"#
+            ))
+        };
+        assert!(
+            parse(r#"{ "label": "W", "files": ["*.x"], "kind": "web", "url": "file:///x" }"#)
+                .is_err()
+        );
+        assert!(parse(r#"{ "label": "W", "files": ["*.x"], "kind": "web", "url": "http://h/", "command": "x" }"#).is_err());
+        assert!(parse(r#"{ "label": "C", "files": ["*.x"], "kind": "command" }"#).is_err());
+        assert!(
+            parse(r#"{ "label": "C", "files": [], "kind": "command", "command": "x" }"#).is_err()
+        );
+        assert!(
+            parse(
+                r#"{ "label": "C", "files": ["*.x"], "kind": "command", "command": "x",
+                           "start": { "command": "s" } }"#
+            )
+            .is_err(),
+            "nothing to wait for"
+        );
+        assert!(parse(r#"{ "label": "C", "files": ["*.x"], "kind": "command", "command": "x",
+                           "output": "png", "start": { "command": "s", "url": "http://localhost:1/" } }"#).is_ok());
+        assert!(parse(r#"{ "label": "C", "files": ["*.x"], "kind": "pdf" }"#).is_err());
+        let twice = r#"{ "label": "C", "files": ["*.x"], "kind": "command", "command": "x" }"#;
+        assert!(
+            parse(&format!("{twice}, {twice}")).is_err(),
+            "labels are unique"
+        );
     }
 
     #[test]
@@ -346,6 +430,7 @@ mod tests {
         let root = Path::new("/plugins/acme");
         let start = |command: &str| ServerStart {
             command: command.into(),
+            url: None,
             args: vec![],
             env: HashMap::new(),
             timeout_seconds: 1,

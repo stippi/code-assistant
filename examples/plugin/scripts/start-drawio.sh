@@ -1,7 +1,7 @@
 #!/bin/sh
-# Serve draw.io on localhost:8080 for the plugin's file viewer. The app runs
-# this only when nothing answers at the viewer's URL, and stops it (with its
-# process group) a while after the last draw.io viewer closed, or when the
+# Serve draw.io on localhost:8080 for the plugin's draw.io renderer. The app
+# runs this only when nothing answers at the renderer's URL, and stops it (with
+# its process group) a while after the last draw.io view closed, or when the
 # app quits. Stay in the foreground: exec, no `-d`.
 #
 # The first run pulls the image, hence the long timeout in plugin.json.

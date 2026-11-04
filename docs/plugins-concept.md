@@ -7,14 +7,16 @@ servers) and a few new ones (file renderers, provider templates, managed
 providers, hooks, commands).
 
 Status: a first part is built — installing from git or a folder,
-provider templates, read-only MCP servers and web file viewers (draw.io);
-see [plugins.md](plugins.md). The manifest that shipped is a single
+provider templates, read-only MCP servers and file renderers (commands and
+web editors, with a start script for a server they need); see
+[plugins.md](plugins.md). The manifest that shipped is a single
 `plugin.json` with the contributions inline (`providerTemplates`,
-`mcpServers`, `fileViewers`); marketplaces, project-declared plugins,
-command and WASM renderers, managed providers, hooks and the rest below are
-still concepts. Naming: the existing module `code_assistant_core::plugins`
-holds the compiled-in agent hooks; the plugin code lives in
-`code_assistant_core::plugin_host`. This document uses "plugin" for the
+`mcpServers`, `fileRenderers`); file renderers take the shape described in
+[file-renderers.md](file-renderers.md#plugin-renderers) rather than the one
+sketched below. Marketplaces, project-declared plugins, WASM renderers,
+managed providers, hooks and the rest below are still concepts. Naming: the
+existing module `code_assistant_core::plugins` holds the compiled-in agent
+hooks; the plugin code lives in `code_assistant_core::plugin_host`. This document uses "plugin" for the
 user-facing thing only.
 
 ## Summary
