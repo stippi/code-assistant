@@ -12,7 +12,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 use tracing::{error, info};
 
 /// Builds the connector for a voice session from its configuration.
@@ -161,15 +161,33 @@ fn start(
     let events = events.clone();
     let audio = audio.clone();
     let task = tokio::spawn(async move {
-        let agent =
-            match VoiceAgent::start(config, connector, sessions, events.clone(), audio).await {
-                Ok(agent) => agent,
-                Err(e) => return fail(&events, e),
-            };
-        info!("Voice mode started");
-        match agent.run(control_rx).await {
-            Ok(()) => info!("Voice mode stopped"),
-            Err(e) => fail(&events, e),
+        // Supervise the agent in a separate task. A panic in a connector or
+        // audio backend must not leave the UI displaying "Connecting…"
+        // forever; JoinError turns it into the same visible failure as any
+        // ordinary startup error.
+        let agent_events = events.clone();
+        // JoinSet aborts its children when this supervisor is itself aborted
+        // by Running::stop during a stuck startup.
+        let mut agent_tasks = JoinSet::new();
+        agent_tasks.spawn(async move {
+            let agent =
+                match VoiceAgent::start(config, connector, sessions, agent_events.clone(), audio)
+                    .await
+                {
+                    Ok(agent) => agent,
+                    Err(e) => return fail(&agent_events, e),
+                };
+            info!("Voice mode started");
+            match agent.run(control_rx).await {
+                Ok(()) => info!("Voice mode stopped"),
+                Err(e) => fail(&agent_events, e),
+            }
+        });
+        if let Some(Err(e)) = agent_tasks.join_next().await {
+            fail(
+                &events,
+                anyhow::anyhow!("The voice task terminated unexpectedly: {e}"),
+            );
         }
     });
     Some(Running { control, task })

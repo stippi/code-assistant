@@ -169,6 +169,15 @@ impl RealtimeConnector for HangingConnector {
     }
 }
 
+struct PanickingConnector;
+
+#[async_trait::async_trait]
+impl RealtimeConnector for PanickingConnector {
+    async fn connect(&self) -> anyhow::Result<RealtimeConnection> {
+        panic!("connector panic for test")
+    }
+}
+
 fn test_config() -> VoiceConfig {
     VoiceConfig {
         provider: "test".into(),
@@ -567,6 +576,26 @@ async fn wait_for_status(
     })
     .await
     .expect("voice status")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_task_panic_is_reported_instead_of_leaving_connecting_visible() {
+    let dir = tempfile::tempdir().unwrap();
+    let (sessions, events) = session_service(&dir);
+    let mut statuses = sessions.subscribe();
+    let (voice, worker) = VoiceService::with_config_loader(
+        sessions,
+        events,
+        FakeAudio::default().factory(),
+        Arc::new(|_| Ok(Arc::new(PanickingConnector) as Arc<dyn RealtimeConnector>)),
+        Arc::new(test_config),
+    );
+    tokio::spawn(worker);
+
+    voice.start();
+    let message = wait_for_failure(&mut statuses, WAIT).await;
+    assert!(message.contains("terminated unexpectedly"), "{message}");
+    assert!(message.contains("panicked"), "{message}");
 }
 
 #[tokio::test(start_paused = true)]
