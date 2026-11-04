@@ -163,6 +163,7 @@ async fn sub_agent_tool_retains_structured_failure_output() {
         tool_id: Some("child".into()),
         session_id: None,
         permission_handler: None,
+        permissions: None,
         extensions: Some(&mut services),
     };
     let mut input = SpawnAgentInput {

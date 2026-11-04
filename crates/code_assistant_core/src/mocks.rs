@@ -1089,6 +1089,7 @@ pub struct ToolTestFixture {
     tool_id: Option<String>,
     session_id: Option<String>,
     permission_handler: Option<Arc<dyn PermissionMediator>>,
+    permissions: tools_core::ToolPermissions,
     services: crate::tools::ToolServices,
 }
 
@@ -1112,6 +1113,7 @@ impl ToolTestFixture {
             tool_id: None,
             session_id: None,
             permission_handler: None,
+            permissions: tools_core::ToolPermissions::default(),
             services,
         }
     }
@@ -1322,6 +1324,7 @@ impl ToolTestFixture {
             tool_id: self.tool_id.clone(),
             session_id: self.session_id.clone(),
             permission_handler: self.permission_handler.as_deref(),
+            permissions: Some(&self.permissions),
             extensions: Some(&mut self.services),
         }
     }

@@ -7,6 +7,6 @@ pub mod file_updater;
 pub mod types;
 pub mod watch;
 
-pub use explorer::{Explorer, is_path_gitignored};
+pub use explorer::{Explorer, is_path_gitignored, resolve_outside_root};
 pub use file_updater::*;
 pub use types::*;

@@ -63,6 +63,23 @@ pub fn permission_options_for(reason: &PermissionRequestReason<'_>) -> Vec<Permi
                 "Skip these servers; the agent runs without them",
             ),
         ],
+        PermissionRequestReason::ReadOutsideProject { .. } => vec![
+            PermissionOption::new(
+                PermissionDecision::GrantedOnce,
+                "Allow once",
+                "Read these files; ask again next time",
+            ),
+            PermissionOption::new(
+                PermissionDecision::GrantedSession,
+                "Always (session)",
+                "Let the agent read outside the project for the rest of this session",
+            ),
+            PermissionOption::new(
+                PermissionDecision::Denied,
+                "Deny",
+                "Reject the read; the agent is told not to retry",
+            ),
+        ],
         PermissionRequestReason::ExecuteCommand { .. }
         | PermissionRequestReason::ToolInvocation { .. }
         | PermissionRequestReason::AutoModeBlocked { .. } => vec![
@@ -158,6 +175,15 @@ impl PendingPermissionRequests {
     }
 }
 
+/// Paths joined for a one-line summary.
+fn display_paths(paths: &[std::path::PathBuf]) -> String {
+    paths
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// [`PermissionMediator`] for sessions driven through [`SessionService`]:
 /// publishes the request on the event stream and awaits the decision from
 /// `respond_permission`.
@@ -223,6 +249,13 @@ impl SessionPermissionMediator {
                     "type": "auto_mode_blocked",
                     "params": params,
                     "reason": reason,
+                }),
+            ),
+            PermissionRequestReason::ReadOutsideProject { paths } => (
+                format!("Read outside the project: {}", display_paths(paths)),
+                serde_json::json!({
+                    "type": "read_outside_project",
+                    "paths": paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
                 }),
             ),
             PermissionRequestReason::TrustLocalMcp {

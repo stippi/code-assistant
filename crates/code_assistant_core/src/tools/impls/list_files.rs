@@ -104,7 +104,7 @@ impl Tool for ListFilesTool {
                     "paths": {
                         "examples": ["File path here"],
                         "type": "array",
-                        "description": "Directory paths relative to project root",
+                        "description": "Directory paths relative to project root. A path outside the project (absolute, or leading out with `..`) is listed only after the user approves it.",
                         "items": {
                             "type": "string"
                         }
@@ -173,20 +173,43 @@ impl Tool for ListFilesTool {
         // Convert max_depth from u64 to usize if present
         let max_depth = input.max_depth.map(|d| d as usize);
 
+        // Listing outside the project needs the user's approval, asked once
+        // for all such paths of this call.
+        let root_dir = explorer.root_dir();
+        let outside_paths: Vec<PathBuf> = input
+            .paths
+            .iter()
+            .filter_map(|p| fs_explorer::resolve_outside_root(&root_dir, std::path::Path::new(p)))
+            .collect();
+        let outside_denial =
+            super::outside_project::approve_reads(context, "list_files", &outside_paths)
+                .await
+                .err();
+
         for path_str in input.paths.clone() {
             let path = PathBuf::from(&path_str);
 
-            // Check if path is absolute and handle it properly
-            if path.is_absolute() {
-                failed_paths.push((
-                    path.display().to_string(),
-                    "Path must be relative to project root".to_string(),
-                ));
-                continue;
-            }
-
-            let full_path = explorer.root_dir().join(&path);
-            match explorer.list_files(&full_path, max_depth).await {
+            let listing = match (
+                fs_explorer::resolve_outside_root(&root_dir, &path),
+                &outside_denial,
+            ) {
+                (Some(_), Some(denial)) => {
+                    failed_paths.push((path_str, denial.clone()));
+                    continue;
+                }
+                // Approved: list through an explorer rooted at that folder.
+                (Some(outside), None) => {
+                    let mut outside_explorer = fs_explorer::Explorer::new(outside.clone());
+                    fs_explorer::CodeExplorer::list_files(
+                        &mut outside_explorer,
+                        &outside,
+                        max_depth,
+                    )
+                    .await
+                }
+                (None, _) => explorer.list_files(&root_dir.join(&path), max_depth).await,
+            };
+            match listing {
                 Ok(tree_entry) => {
                     expanded_paths.push((path, tree_entry));
                 }

@@ -28,13 +28,10 @@ fn mime_type_for_extension(ext: &str) -> Option<&'static str> {
 }
 
 /// Resolve a path relative to the project root and verify it stays within bounds.
-/// Returns the resolved absolute path.  Rejects absolute paths, `..` traversals
-/// that escape the root, and symlinks pointing outside the project.
+/// Returns the resolved absolute path.  Rejects `..` traversals
+/// that escape the root, and symlinks pointing outside the project; those
+/// are read only after the user approves them (see `outside_project`).
 fn resolve_project_path(root_dir: &std::path::Path, rel_path: &std::path::Path) -> Result<PathBuf> {
-    if rel_path.is_absolute() {
-        anyhow::bail!("Absolute paths are not allowed");
-    }
-
     let candidate = root_dir.join(rel_path);
 
     // Canonicalize to resolve symlinks and .. components.
@@ -197,7 +194,7 @@ impl Tool for ViewImagesTool {
                     "paths": {
                         "examples": ["File path here"],
                         "type": "array",
-                        "description": "Paths to image files relative to the project root directory",
+                        "description": "Paths to image files relative to the project root directory. A path outside the project (absolute, or leading out with `..`) is read only after the user approves it.",
                         "items": {
                             "type": "string"
                         }
@@ -244,6 +241,18 @@ impl Tool for ViewImagesTool {
         let mut failed_images = Vec::new();
         let root_dir = explorer.root_dir();
 
+        // Reading outside the project needs the user's approval, asked once
+        // for all such paths of this call.
+        let outside_paths: Vec<PathBuf> = input
+            .paths
+            .iter()
+            .filter_map(|p| fs_explorer::resolve_outside_root(&root_dir, std::path::Path::new(p)))
+            .collect();
+        let outside_denial =
+            super::outside_project::approve_reads(context, "view_images", &outside_paths)
+                .await
+                .err();
+
         for path_str in &input.paths {
             let path = PathBuf::from(path_str);
 
@@ -273,12 +282,22 @@ impl Tool for ViewImagesTool {
             };
 
             // Resolve and validate the path stays within the project root
-            let full_path = match resolve_project_path(&root_dir, &path) {
-                Ok(p) => p,
-                Err(e) => {
-                    failed_images.push((path_str.clone(), e.to_string()));
+            let full_path = match (
+                fs_explorer::resolve_outside_root(&root_dir, &path),
+                &outside_denial,
+            ) {
+                (Some(_), Some(denial)) => {
+                    failed_images.push((path_str.clone(), denial.clone()));
                     continue;
                 }
+                (Some(outside), None) => outside,
+                (None, _) => match resolve_project_path(&root_dir, &path) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        failed_images.push((path_str.clone(), e.to_string()));
+                        continue;
+                    }
+                },
             };
 
             // Read the raw bytes
@@ -535,7 +554,7 @@ mod tests {
 
         let mut tracker = ResourcesTracker::new();
         let output = result.as_render().render(&mut tracker);
-        assert!(output.contains("Absolute paths are not allowed"));
+        assert!(output.contains("Access outside project root is not allowed"));
 
         Ok(())
     }
