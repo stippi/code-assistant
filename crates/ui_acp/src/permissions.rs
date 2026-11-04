@@ -107,8 +107,9 @@ impl AcpPermissionMediator {
                     serde_json::to_string_pretty(params).unwrap_or_else(|_| params.to_string())
                 )
             }
-            PermissionRequestReason::ReadOutsideProject { paths } => format!(
-                "Read files outside the project:\n{}",
+            PermissionRequestReason::OutsideProject { access, paths } => format!(
+                "{} files outside the project:\n{}",
+                access.label(),
                 paths
                     .iter()
                     .map(|p| p.display().to_string())
@@ -149,8 +150,9 @@ impl AcpPermissionMediator {
                 "params": params,
                 "reason": reason,
             }),
-            PermissionRequestReason::ReadOutsideProject { paths } => json!({
-                "type": "read_outside_project",
+            PermissionRequestReason::OutsideProject { access, paths } => json!({
+                "type": "outside_project",
+                "access": access.verb(),
                 "paths": paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
             }),
             PermissionRequestReason::TrustLocalMcp {

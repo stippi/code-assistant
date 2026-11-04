@@ -1,20 +1,25 @@
-//! Reading files outside the project a file tool works in: allowed only
+//! Files outside the project a file tool works in: read or written only
 //! after the user approves it.
 
 use crate::tools::core::ToolContext;
-use std::path::PathBuf;
-use tools_core::PermissionRequestReason;
+use fs_explorer::CodeExplorer;
+use std::path::{Path, PathBuf};
+use tools_core::{FileAccess, PermissionRequestReason};
 
-/// Session grant key: an "always" answer lets every file tool read outside
-/// the project for the rest of the session.
-const READ_OUTSIDE_PROJECT_GRANT: &str = "read_outside_project";
+/// Session grant key: an "always" answer lets every file tool read (or
+/// write) outside the project for the rest of the session. Reads and writes
+/// are granted separately.
+fn grant_key(access: FileAccess) -> String {
+    format!("{}_outside_project", access.verb())
+}
 
-/// Ask the user, once for all of `paths`, to let `tool_name` read them
-/// outside the project. `Err` carries the message to report for each
+/// Ask the user, once for all of `paths`, to let `tool_name` read or write
+/// them outside the project. `Err` carries the message to report for each
 /// refused path.
-pub(crate) async fn approve_reads(
+pub(crate) async fn approve(
     context: &mut ToolContext<'_>,
     tool_name: &str,
+    access: FileAccess,
     paths: &[PathBuf],
 ) -> Result<(), String> {
     if paths.is_empty() {
@@ -25,20 +30,73 @@ pub(crate) async fn approve_reads(
     paths.dedup();
     match context
         .request_escalation(
-            READ_OUTSIDE_PROJECT_GRANT,
+            &grant_key(access),
             tool_name,
-            PermissionRequestReason::ReadOutsideProject { paths: &paths },
+            PermissionRequestReason::OutsideProject {
+                access,
+                paths: &paths,
+            },
         )
         .await
     {
         Ok(true) => Ok(()),
-        Ok(false) => Err(
-            "The user denied reading this file outside the project. Do not simply retry; \
-             ask the user how to proceed."
-                .to_string(),
-        ),
+        Ok(false) => Err(format!(
+            "The user denied the {} outside the project. Do not simply retry; \
+             ask the user how to proceed.",
+            access.verb()
+        )),
         Err(e) => Err(format!("Access outside project root is not allowed ({e})")),
     }
+}
+
+/// Where a file tool writes a file: inside the project, or outside it.
+pub(crate) struct WriteTarget {
+    pub explorer: Box<dyn CodeExplorer>,
+    pub full_path: PathBuf,
+    /// Outside the project: no format-on-save, no resource events.
+    pub outside: bool,
+}
+
+/// Where `tool_name` writes `path`: inside the project through `explorer`,
+/// or — once the user approves — outside it through an explorer rooted at
+/// the file's folder. `Err` carries the message for a refused path.
+pub(crate) async fn write_target(
+    context: &mut ToolContext<'_>,
+    tool_name: &str,
+    explorer: Box<dyn CodeExplorer>,
+    path: &Path,
+) -> Result<WriteTarget, String> {
+    let root = explorer.root_dir();
+    let Some(outside) = fs_explorer::resolve_outside_root(&root, path) else {
+        return Ok(WriteTarget {
+            explorer,
+            full_path: root.join(path),
+            outside: false,
+        });
+    };
+    approve(
+        context,
+        tool_name,
+        FileAccess::Write,
+        std::slice::from_ref(&outside),
+    )
+    .await?;
+    Ok(WriteTarget {
+        explorer: explorer_for(&outside),
+        full_path: outside,
+        outside: true,
+    })
+}
+
+/// An explorer for a path outside the project: rooted at the path itself
+/// when it is a folder, else at its parent.
+pub(crate) fn explorer_for(path: &Path) -> Box<dyn CodeExplorer> {
+    let dir = if path.is_dir() {
+        path
+    } else {
+        path.parent().unwrap_or(path)
+    };
+    Box::new(fs_explorer::Explorer::new(dir.to_path_buf()))
 }
 
 #[cfg(test)]
@@ -51,30 +109,33 @@ pub(crate) mod tests {
 
     /// Answers every request with one decision and records the paths asked
     /// about.
-    pub(crate) struct OutsideReadMediator {
+    pub(crate) struct OutsideAccessMediator {
         decision: PermissionDecision,
         pub(crate) asked: Mutex<Vec<Vec<PathBuf>>>,
+        pub(crate) accesses: Mutex<Vec<FileAccess>>,
     }
 
-    impl OutsideReadMediator {
+    impl OutsideAccessMediator {
         pub(crate) fn new(decision: PermissionDecision) -> Arc<Self> {
             Arc::new(Self {
                 decision,
                 asked: Default::default(),
+                accesses: Default::default(),
             })
         }
     }
 
     #[async_trait::async_trait]
-    impl PermissionMediator for OutsideReadMediator {
+    impl PermissionMediator for OutsideAccessMediator {
         async fn request_permission(
             &self,
             request: PermissionRequest<'_>,
         ) -> anyhow::Result<PermissionDecision> {
-            let PermissionRequestReason::ReadOutsideProject { paths } = request.reason else {
+            let PermissionRequestReason::OutsideProject { access, paths } = request.reason else {
                 panic!("unexpected permission request: {:?}", request.reason);
             };
             self.asked.lock().unwrap().push(paths.to_vec());
+            self.accesses.lock().unwrap().push(access);
             Ok(self.decision)
         }
     }
@@ -156,7 +217,7 @@ pub(crate) mod tests {
     async fn every_file_tool_reads_outside_the_project_once_allowed() {
         for (tool, params, expected) in outside_calls() {
             let (dir, fixture) = outside_setup();
-            let mediator = OutsideReadMediator::new(PermissionDecision::GrantedOnce);
+            let mediator = OutsideAccessMediator::new(PermissionDecision::GrantedOnce);
             let mut fixture = fixture.with_permission_handler(mediator.clone());
 
             let output = invoke(&mut fixture, tool, params).await.unwrap();
@@ -173,7 +234,7 @@ pub(crate) mod tests {
     async fn every_file_tool_refuses_outside_the_project_when_denied() {
         for (tool, params, _) in outside_calls() {
             let (_dir, fixture) = outside_setup();
-            let mediator = OutsideReadMediator::new(PermissionDecision::Denied);
+            let mediator = OutsideAccessMediator::new(PermissionDecision::Denied);
             let mut fixture = fixture.with_permission_handler(mediator);
 
             let error = invoke(&mut fixture, tool, params).await.unwrap_err();
@@ -201,7 +262,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_session_grant_covers_every_file_tool() {
         let (_dir, fixture) = outside_setup();
-        let mediator = OutsideReadMediator::new(PermissionDecision::GrantedSession);
+        let mediator = OutsideAccessMediator::new(PermissionDecision::GrantedSession);
         let mut fixture = fixture.with_permission_handler(mediator.clone());
 
         for (tool, params, expected) in outside_calls() {
@@ -214,7 +275,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn absolute_paths_inside_the_project_need_no_approval() {
         let (dir, fixture) = outside_setup();
-        let mediator = OutsideReadMediator::new(PermissionDecision::Denied);
+        let mediator = OutsideAccessMediator::new(PermissionDecision::Denied);
         let mut fixture = fixture.with_permission_handler(mediator.clone());
         let inside = dir.path().join("proj/inside.txt");
 
@@ -228,5 +289,125 @@ pub(crate) mod tests {
 
         assert!(output.contains("inside"));
         assert!(mediator.asked.lock().unwrap().is_empty());
+    }
+
+    /// One call per writing tool, each changing something in `other`, with
+    /// a check of the result on disk.
+    #[allow(clippy::type_complexity)]
+    fn outside_writes() -> Vec<(&'static str, serde_json::Value, fn(&Path) -> bool)> {
+        vec![
+            (
+                "write_file",
+                json!({"path": "../other/new.txt", "content": "written"}),
+                |other| {
+                    std::fs::read_to_string(other.join("new.txt"))
+                        .is_ok_and(|content| content.trim_end() == "written")
+                },
+            ),
+            (
+                "edit",
+                json!({"path": "../other/note.txt", "old_text": "needle", "new_text": "pin"}),
+                |other| {
+                    std::fs::read_to_string(other.join("note.txt"))
+                        .unwrap()
+                        .trim_end()
+                        == "a pin here"
+                },
+            ),
+            (
+                "replace_in_file",
+                json!({
+                    "path": "../other/note.txt",
+                    "diff": "<<<<<<< SEARCH\nneedle\n=======\npin\n>>>>>>> REPLACE"
+                }),
+                |other| {
+                    std::fs::read_to_string(other.join("note.txt"))
+                        .unwrap()
+                        .trim_end()
+                        == "a pin here"
+                },
+            ),
+            (
+                "delete_files",
+                json!({"paths": ["../other/note.txt"]}),
+                |other| !other.join("note.txt").exists(),
+            ),
+        ]
+    }
+
+    #[tokio::test]
+    async fn every_writing_tool_writes_outside_the_project_once_allowed() {
+        for (tool, params, written) in outside_writes() {
+            let (dir, fixture) = outside_setup();
+            let mediator = OutsideAccessMediator::new(PermissionDecision::GrantedOnce);
+            let mut fixture = fixture.with_permission_handler(mediator.clone());
+
+            invoke(&mut fixture, tool, params).await.unwrap();
+
+            assert!(written(&dir.path().join("other")), "{tool} did not write");
+            assert_eq!(
+                *mediator.accesses.lock().unwrap(),
+                vec![FileAccess::Write],
+                "{tool}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn every_writing_tool_leaves_outside_files_alone_when_denied() {
+        for (tool, params, written) in outside_writes() {
+            let (dir, fixture) = outside_setup();
+            let mediator = OutsideAccessMediator::new(PermissionDecision::Denied);
+            let mut fixture = fixture.with_permission_handler(mediator);
+
+            let error = invoke(&mut fixture, tool, params).await.unwrap_err();
+
+            assert!(error.to_string().contains("denied"), "{tool}: {error}");
+            assert!(!written(&dir.path().join("other")), "{tool} wrote anyway");
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join("other/note.txt")).unwrap(),
+                "a needle here"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn writing_tools_refuse_outside_the_project_when_nobody_can_be_asked() {
+        for (tool, params, written) in outside_writes() {
+            let (dir, mut fixture) = outside_setup();
+
+            let error = invoke(&mut fixture, tool, params).await.unwrap_err();
+
+            assert!(
+                error.to_string().contains("outside project root"),
+                "{tool}: {error}"
+            );
+            assert!(!written(&dir.path().join("other")), "{tool} wrote anyway");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_session_grant_for_reads_does_not_allow_writes() {
+        let (dir, fixture) = outside_setup();
+        let mediator = OutsideAccessMediator::new(PermissionDecision::GrantedSession);
+        let mut fixture = fixture.with_permission_handler(mediator.clone());
+
+        let read = json!({"paths": ["../other/note.txt"]});
+        invoke(&mut fixture, "read_files", read.clone())
+            .await
+            .unwrap();
+        let write = json!({"path": "../other/new.txt", "content": "written"});
+        invoke(&mut fixture, "write_file", write.clone())
+            .await
+            .unwrap();
+        // Both grants are remembered now: neither asks again.
+        invoke(&mut fixture, "read_files", read).await.unwrap();
+        invoke(&mut fixture, "write_file", write).await.unwrap();
+
+        assert_eq!(
+            *mediator.accesses.lock().unwrap(),
+            vec![FileAccess::Read, FileAccess::Write]
+        );
+        assert!(dir.path().join("other/new.txt").exists());
     }
 }

@@ -247,10 +247,14 @@ impl Tool for ViewImagesTool {
             .iter()
             .filter_map(|p| fs_explorer::resolve_outside_root(&root_dir, std::path::Path::new(p)))
             .collect();
-        let outside_denial =
-            super::outside_project::approve_reads(context, "view_images", &outside_paths)
-                .await
-                .err();
+        let outside_denial = super::outside_project::approve(
+            context,
+            "view_images",
+            tools_core::FileAccess::Read,
+            &outside_paths,
+        )
+        .await
+        .err();
 
         for path_str in &input.paths {
             let path = PathBuf::from(path_str);
