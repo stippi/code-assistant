@@ -5,7 +5,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 /// When to ask the user for permission before running a tool.
@@ -251,6 +251,10 @@ pub enum PermissionRequestReason<'a> {
         params: &'a serde_json::Value,
         reason: &'a str,
     },
+    /// A tool wants to read files outside the project it works in. Asked
+    /// independently of the tier, since the project root is the boundary
+    /// the file tools otherwise enforce.
+    ReadOutsideProject { paths: &'a [PathBuf] },
     /// Approve loading a project's local `.mcp.json`, which launches the MCP
     /// servers it defines — i.e. runs project-supplied commands. Not tied to a
     /// tool invocation; raised before a project's registry is built.

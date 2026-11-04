@@ -4,10 +4,11 @@ use crate::tools::core::{
 };
 use crate::tools::parse::PathWithLineRange;
 use anyhow::{Result, anyhow};
+use fs_explorer::CodeExplorer;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Prefix each line of content with its line number.
 /// Format: "  N | line content" where N is right-aligned based on max line number width.
@@ -24,6 +25,21 @@ fn prefix_lines_with_numbers(content: &str, start_line: usize) -> String {
         .map(|(idx, line)| format!("{:>width$} | {}", start_line + idx, line, width = width))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Read a file, or only the requested lines of it.
+async fn read_lines(
+    explorer: &dyn CodeExplorer,
+    full_path: &Path,
+    parsed: &PathWithLineRange,
+) -> Result<String> {
+    if parsed.start_line.is_some() || parsed.end_line.is_some() {
+        explorer
+            .read_file_range(full_path, parsed.start_line, parsed.end_line)
+            .await
+    } else {
+        explorer.read_file(full_path).await
+    }
 }
 
 /// Maximum file size in bytes before requiring explicit opt-in
@@ -328,7 +344,7 @@ impl Tool for ReadFilesTool {
                     "paths": {
                         "examples": ["File path here"],
                         "type": "array",
-                        "description": "Paths to the files relative to the project root directory. Can include line ranges using 'file.txt:10-20' syntax.",
+                        "description": "Paths to the files relative to the project root directory. Can include line ranges using 'file.txt:10-20' syntax. A path outside the project (absolute, or leading out with `..`) is read only after the user approves it.",
                         "items": {
                             "type": "string"
                         }
@@ -381,43 +397,51 @@ impl Tool for ReadFilesTool {
         let mut loaded_files = HashMap::new();
         let mut failed_files = Vec::new();
 
-        // Process each path
+        // Parse each path string to extract line range information, and note
+        // where the paths that leave the project really point.
+        let root = explorer.root_dir();
+        let mut requests = Vec::new();
         for path_str in input.paths.clone() {
-            // Parse the path string to extract line range information
-            let parsed_path = match PathWithLineRange::parse(&path_str) {
-                Ok(parsed) => parsed,
-                Err(e) => {
-                    failed_files.push((PathBuf::from(path_str), e.to_string()));
-                    continue;
+            match PathWithLineRange::parse(&path_str) {
+                Ok(parsed) => {
+                    let outside = fs_explorer::resolve_outside_root(&root, &parsed.path);
+                    requests.push((path_str, parsed, outside));
                 }
-            };
-
-            let path = &parsed_path.path;
-
-            // Check for absolute paths
-            if path.is_absolute() {
-                failed_files.push((path.clone(), "Absolute paths are not allowed".to_string()));
-                continue;
+                Err(e) => failed_files.push((PathBuf::from(path_str), e.to_string())),
             }
+        }
 
-            // Join with root_dir to get full path
-            let full_path = explorer.root_dir().join(path);
+        // Reading outside the project needs the user's approval, asked once
+        // for all such paths of this call.
+        let outside_paths: Vec<PathBuf> = requests
+            .iter()
+            .filter_map(|(_, _, outside)| outside.clone())
+            .collect();
+        let outside_denial =
+            super::outside_project::approve_reads(context, "read_files", &outside_paths)
+                .await
+                .err();
 
+        for (path_str, parsed_path, outside) in requests {
             // Determine the start line for line numbering
             // If a start_line is specified, use it; otherwise default to 1
             let start_line = parsed_path.start_line.unwrap_or(1);
 
-            // Use either read_file_range or read_file based on whether we have line range info
-            let read_result = if parsed_path.start_line.is_some() || parsed_path.end_line.is_some()
-            {
-                // We have line range information, use read_file_range
-                explorer
-                    .read_file_range(&full_path, parsed_path.start_line, parsed_path.end_line)
-                    .await
-            } else {
-                // No line range specified, read the whole file
-                explorer.read_file(&full_path).await
+            let outside_explorer;
+            let (file_explorer, full_path) = match (&outside, &outside_denial) {
+                (Some(_), Some(denial)) => {
+                    failed_files.push((PathBuf::from(&path_str), denial.clone()));
+                    continue;
+                }
+                // Approved: read through an explorer rooted at the file's folder.
+                (Some(full_path), None) => {
+                    let dir = full_path.parent().unwrap_or(full_path).to_path_buf();
+                    outside_explorer = fs_explorer::Explorer::new(dir);
+                    (&outside_explorer as &dyn CodeExplorer, full_path.clone())
+                }
+                (None, _) => (explorer.as_ref(), root.join(&parsed_path.path)),
             };
+            let read_result = read_lines(file_explorer, &full_path, &parsed_path).await;
 
             match read_result {
                 Ok(content) => {
@@ -450,7 +474,7 @@ impl Tool for ReadFilesTool {
                     // The agent saw the file now: a later change to it by
                     // someone else makes its own next change fail.
                     if has_line_range {
-                        if let Ok(whole) = explorer.read_file(&full_path).await {
+                        if let Ok(whole) = file_explorer.read_file(&full_path).await {
                             context.seen_files().saw(&full_path, &whole);
                         }
                     } else {
@@ -470,7 +494,7 @@ impl Tool for ReadFilesTool {
             }
         }
 
-        // Emit resource events for loaded files
+        // Emit resource events for loaded files inside the project
         if let Some(ui) = context.ui() {
             for path in loaded_files.keys() {
                 // Get the base path without any line range information
@@ -480,6 +504,9 @@ impl Tool for ReadFilesTool {
                     } else {
                         path.clone()
                     };
+                if fs_explorer::resolve_outside_root(&root, &base_path).is_some() {
+                    continue;
+                }
                 let _ = ui
                     .send_event(crate::ui::UiEvent::ResourceLoaded {
                         project: input.project.clone(),
@@ -1168,5 +1195,99 @@ mod tests {
         assert!(output.contains("minified") || output.contains("single-line"));
 
         Ok(())
+    }
+
+    use super::super::outside_project::tests::{OutsideReadMediator, outside_setup};
+
+    fn read_input(paths: &[&str]) -> ReadFilesInput {
+        ReadFilesInput {
+            project: "proj".into(),
+            paths: paths.iter().map(|p| p.to_string()).collect(),
+            prefix_line_numbers: false,
+            ignore_size_limit: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn reading_outside_the_project_asks_once_and_reads_when_allowed() {
+        let (dir, fixture) = outside_setup();
+        let mediator = OutsideReadMediator::new(tools_core::PermissionDecision::GrantedOnce);
+        let mut fixture = fixture.with_permission_handler(mediator.clone());
+        let absolute = dir.path().join("outside.txt");
+        let absolute = absolute.to_str().unwrap();
+        let mut input = read_input(&["inside.txt", "../outside.txt:2", absolute]);
+
+        let output = ReadFilesTool
+            .execute(&mut fixture.context(), &mut input)
+            .await
+            .unwrap();
+
+        assert!(output.failed_files.is_empty(), "{:?}", output.failed_files);
+        assert_eq!(
+            output.loaded_files[&PathBuf::from("inside.txt")].content,
+            "inside"
+        );
+        assert_eq!(
+            output.loaded_files[&PathBuf::from("../outside.txt:2")].content,
+            "two"
+        );
+        assert_eq!(
+            output.loaded_files[&PathBuf::from(absolute)].content,
+            "one\ntwo\nthree"
+        );
+        let canonical = dir.path().join("outside.txt").canonicalize().unwrap();
+        assert_eq!(*mediator.asked.lock().unwrap(), vec![vec![canonical]]);
+    }
+
+    #[tokio::test]
+    async fn denied_outside_read_fails_only_the_outside_paths() {
+        let (_dir, fixture) = outside_setup();
+        let mediator = OutsideReadMediator::new(tools_core::PermissionDecision::Denied);
+        let mut fixture = fixture.with_permission_handler(mediator);
+        let mut input = read_input(&["inside.txt", "../outside.txt"]);
+
+        let output = ReadFilesTool
+            .execute(&mut fixture.context(), &mut input)
+            .await
+            .unwrap();
+
+        assert!(
+            output
+                .loaded_files
+                .contains_key(&PathBuf::from("inside.txt"))
+        );
+        assert_eq!(output.failed_files.len(), 1);
+        assert!(output.failed_files[0].1.contains("denied"));
+    }
+
+    #[tokio::test]
+    async fn outside_read_without_a_permission_handler_is_rejected() {
+        let (_dir, mut fixture) = outside_setup();
+        let mut input = read_input(&["../outside.txt"]);
+
+        let output = ReadFilesTool
+            .execute(&mut fixture.context(), &mut input)
+            .await
+            .unwrap();
+
+        assert!(output.loaded_files.is_empty());
+        assert!(output.failed_files[0].1.contains("outside project root"));
+    }
+
+    #[tokio::test]
+    async fn session_grant_for_outside_reads_stops_asking() {
+        let (_dir, fixture) = outside_setup();
+        let mediator = OutsideReadMediator::new(tools_core::PermissionDecision::GrantedSession);
+        let mut fixture = fixture.with_permission_handler(mediator.clone());
+
+        for _ in 0..2 {
+            let mut input = read_input(&["../outside.txt"]);
+            let output = ReadFilesTool
+                .execute(&mut fixture.context(), &mut input)
+                .await
+                .unwrap();
+            assert!(output.failed_files.is_empty(), "{:?}", output.failed_files);
+        }
+        assert_eq!(mediator.asked.lock().unwrap().len(), 1);
     }
 }
