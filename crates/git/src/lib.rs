@@ -23,7 +23,7 @@ pub(crate) mod testutil {
     use std::path::Path;
 
     fn git_config(dir: &Path, key: &str, value: &str) {
-        std::process::Command::new("git")
+        process_env::std_command("git")
             .args(["config", "--local", key, value])
             .current_dir(dir)
             .status()

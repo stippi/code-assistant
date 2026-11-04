@@ -232,8 +232,20 @@ impl PtySession {
             })
             .map_err(|e| anyhow!("Failed to open PTY: {e}"))?;
 
-        let mut cmd = CommandBuilder::new(&config.argv[0]);
+        // The user's login environment, and the program found on its PATH,
+        // as for every other child process (see `process_env`).
+        let env = process_env::environment();
+        let argv0 = &config.argv[0];
+        let program = Some(argv0)
+            .filter(|program| !program.contains(std::path::MAIN_SEPARATOR))
+            .and_then(|program| env.which(program))
+            .map(Into::into)
+            .unwrap_or_else(|| argv0.into());
+        let mut cmd = CommandBuilder::new::<std::ffi::OsString>(program);
         cmd.args(&config.argv[1..]);
+        for (key, value) in env.vars() {
+            cmd.env(key, value);
+        }
         if let Some(dir) = &config.working_dir {
             cmd.cwd(dir);
         }
@@ -338,7 +350,7 @@ impl PtySession {
         exit_tx: watch::Sender<Option<Option<i32>>>,
         exit_rx: watch::Receiver<Option<Option<i32>>>,
     ) -> Result<Self> {
-        let mut cmd = tokio::process::Command::new(&config.argv[0]);
+        let mut cmd = process_env::command(&config.argv[0]);
         cmd.args(&config.argv[1..]);
         if let Some(dir) = &config.working_dir {
             cmd.current_dir(dir);

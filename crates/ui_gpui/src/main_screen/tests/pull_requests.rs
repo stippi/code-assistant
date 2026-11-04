@@ -15,7 +15,7 @@ use std::sync::Arc;
 use tempfile::TempDir;
 
 fn git(dir: &Path, args: &[&str]) {
-    let status = std::process::Command::new("git")
+    let status = process_env::std_command("git")
         .args(args)
         .current_dir(dir)
         .status()

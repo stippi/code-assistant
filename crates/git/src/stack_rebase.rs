@@ -218,10 +218,9 @@ pub async fn rebase_stack(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Command;
 
     fn run(dir: &Path, args: &[&str]) -> String {
-        let output = Command::new("git")
+        let output = process_env::std_command("git")
             .args([
                 "-c",
                 "user.email=t@t",

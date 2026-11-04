@@ -5,6 +5,7 @@ edition = "2024"
 license = "MIT"
 
 [dependencies]
+process_env = { path = "../process_env" }
 anyhow = "1.0"
 async-trait = "0.1"
 base64 = "0.22"

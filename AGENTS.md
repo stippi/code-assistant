@@ -21,6 +21,7 @@ This is a Rust-based AI coding agent harness with multiple operational modes.
 
 ```
 Layer 0 (generic):    llm  command_executor  pty_session  fs_explorer  sandbox  web  git  github  terminal  terminal_output  audio
+                      process_env       — the login environment every child process starts with
 Layer 1 (generic):    tools_core        — tool trait, registry, render, spec, permissions
                       mcp_client        — wraps MCP server tools as registry tools
 Layer 2 (generic):    agent_core        — agent loop, hook traits, dialect trait, AgentUi trait
@@ -193,6 +194,13 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
   open permission requests
 - Sessions settle by hand, after N idle days, or when their branch is
   merged (`SessionService::sweep_lifecycle`); see `docs/session-lifecycle.md`
+
+### Child Processes
+- Start every process with `process_env::command` / `std_command`: it gets
+  the user's login environment (captured once from `$SHELL -l -i`, skipped
+  when a shell started the app), so `uvx`, `gh` or Homebrew tools are found
+  when the app was started from the Dock; `clippy.toml` disallows
+  `Command::new` elsewhere; see `docs/process-environment.md`
 
 ## Development Notes
 

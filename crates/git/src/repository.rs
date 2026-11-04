@@ -188,7 +188,7 @@ mod tests {
             ("upstream", "git@github.com:team/tool.git"),
             ("origin", "https://github.com/me/tool.git"),
         ] {
-            let status = std::process::Command::new("git")
+            let status = process_env::std_command("git")
                 .args(["remote", "add", name, url])
                 .current_dir(dir.path())
                 .status()

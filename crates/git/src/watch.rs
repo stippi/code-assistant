@@ -290,7 +290,7 @@ mod tests {
 
         // A linked worktree keeps its index/HEAD in the main repo's `.git`.
         let wt = dir.path().join("wt");
-        let status = std::process::Command::new("git")
+        let status = process_env::std_command("git")
             .args(["worktree", "add", "-b", "wt", wt.to_str().unwrap()])
             .current_dir(dir.path())
             .status()

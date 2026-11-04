@@ -2,7 +2,6 @@ use anyhow::{Context, Result, bail};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use tokio::process::Command;
 
 /// Wrapper around the system `git` binary.
 ///
@@ -16,13 +15,13 @@ pub struct GitBinary {
 impl GitBinary {
     /// Locate the system git binary.
     pub fn new() -> Result<Self> {
-        let binary_path = which::which("git").context("git binary not found in PATH")?;
+        let binary_path = process_env::which("git").context("git binary not found in PATH")?;
         Ok(Self { binary_path })
     }
 
     /// Build a `Command` that runs git in the given working directory.
-    pub fn command(&self, working_dir: &Path) -> Command {
-        let mut cmd = Command::new(&self.binary_path);
+    pub fn command(&self, working_dir: &Path) -> tokio::process::Command {
+        let mut cmd = process_env::command(&self.binary_path);
         cmd.current_dir(working_dir);
         // Prevent git from blocking on password prompts or reading stdin
         cmd.stdin(Stdio::null())

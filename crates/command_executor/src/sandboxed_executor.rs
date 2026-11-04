@@ -12,7 +12,7 @@ use tracing::warn;
 use crate::{CommandExecutor, CommandOutput, SandboxCommandRequest, StreamingCallback};
 
 #[cfg(target_os = "macos")]
-use {sandbox::SeatbeltInvocation, tokio::process::Command as TokioCommand};
+use sandbox::SeatbeltInvocation;
 
 /// Wraps a command executor with sandbox policy metadata. Actual enforcement will be
 /// introduced per-platform; for now this records intent and keeps the policy accessible.
@@ -260,7 +260,7 @@ impl SandboxedCommandExecutor {
         } = invocation;
 
         // Use tokio's async Command to avoid blocking the runtime.
-        let mut cmd = TokioCommand::new(executable);
+        let mut cmd = process_env::command(executable);
         cmd.args(&args);
         cmd.current_dir(cwd);
         cmd.env("CODE_ASSISTANT_SANDBOX", "seatbelt");

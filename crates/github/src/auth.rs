@@ -74,7 +74,7 @@ async fn gh_auth_token(host: &str) -> Result<String> {
         host: host.to_string(),
         detail: detail.to_string(),
     };
-    let child = tokio::process::Command::new("gh")
+    let child = process_env::command("gh")
         .args(["auth", "token", "--hostname", host])
         // Never let gh print the token into a debug log or prompt.
         .env("GH_DEBUG", "")

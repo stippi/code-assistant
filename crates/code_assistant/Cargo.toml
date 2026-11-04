@@ -38,6 +38,7 @@ terminal-frontend = ["dep:ui_terminal"]
 voice = ["gpui-frontend", "dep:audio"]
 
 [dependencies]
+process_env = { path = "../process_env" }
 code_assistant_core = { path = "../code_assistant_core", default-features = false }
 mcp_server = { path = "../mcp_server", optional = true }
 ui_acp = { path = "../ui_acp", optional = true }

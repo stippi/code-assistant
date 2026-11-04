@@ -467,7 +467,7 @@ mod tests {
     use serde_json::json;
 
     fn git(dir: &std::path::Path, args: &[&str]) {
-        let status = std::process::Command::new("git")
+        let status = process_env::std_command("git")
             .args(args)
             .current_dir(dir)
             .status()
@@ -609,7 +609,7 @@ mod tests {
 
     /// `git` in `dir`, its output.
     fn git_out(dir: &std::path::Path, args: &[&str]) -> String {
-        let output = std::process::Command::new("git")
+        let output = process_env::std_command("git")
             .args([
                 "-c",
                 "user.email=t@t",

@@ -1905,10 +1905,9 @@ fn discover_review_repos(root: &Path) -> Vec<(PathBuf, String)> {
 #[cfg(test)]
 mod review_base_tests {
     use super::{ReviewMode, review_base};
-    use std::process::Command;
 
     fn git(dir: &std::path::Path, args: &[&str]) {
-        let ok = Command::new("git")
+        let ok = process_env::std_command("git")
             .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
             .args(args)
             .current_dir(dir)
@@ -1957,10 +1956,9 @@ mod review_base_tests {
 #[cfg(test)]
 mod discover_tests {
     use super::discover_review_repos;
-    use std::process::Command;
 
     fn git_init(dir: &std::path::Path) {
-        let ok = Command::new("git")
+        let ok = process_env::std_command("git")
             .args(["init", "-q"])
             .current_dir(dir)
             .status()

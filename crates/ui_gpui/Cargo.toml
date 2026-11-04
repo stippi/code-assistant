@@ -9,6 +9,7 @@ license = "MIT"
 browser-panel = ["dep:web"]
 
 [dependencies]
+process_env = { path = "../process_env" }
 code_assistant_core = { path = "../code_assistant_core", default-features = false }
 agent_core = { path = "../agent_core" }
 command_executor = { path = "../command_executor" }
