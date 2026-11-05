@@ -534,8 +534,7 @@ impl Render for SessionListItem {
                     .child(
                         div()
                             .w_full()
-                            .overflow_hidden()
-                            .text_ellipsis()
+                            .truncate()
                             .text_xs()
                             .text_color(title_color)
                             .when(unread, |el| el.font_semibold())
@@ -552,8 +551,7 @@ impl Render for SessionListItem {
                                 .child(
                                     div()
                                         .min_w_0()
-                                        .overflow_hidden()
-                                        .text_ellipsis()
+                                        .truncate()
                                         .text_color(subtitle_color)
                                         .child(SharedString::from(subtitle)),
                                 )

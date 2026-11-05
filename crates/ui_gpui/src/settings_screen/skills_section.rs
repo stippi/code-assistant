@@ -151,6 +151,8 @@ impl SkillsSection {
                             .gap_2()
                             .child(
                                 div()
+                                    .min_w_0()
+                                    .truncate()
                                     .text_sm()
                                     .font_weight(gpui_kit::FontWeight::MEDIUM)
                                     .text_color(cx.theme().foreground)
@@ -158,6 +160,7 @@ impl SkillsSection {
                             )
                             .child(
                                 div()
+                                    .flex_none()
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
                                     .child(SharedString::from(format!(

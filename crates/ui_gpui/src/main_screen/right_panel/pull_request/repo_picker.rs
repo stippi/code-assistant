@@ -161,7 +161,8 @@ impl RepoPicker {
             .hover(|s| s.bg(theme.muted))
             .child(
                 div()
-                    .flex_none()
+                    .min_w_0()
+                    .truncate()
                     .text_color(theme.foreground)
                     .child(repo.name.clone()),
             )

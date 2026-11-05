@@ -728,13 +728,16 @@ impl InputArea {
                     }))
                     .child(
                         div()
+                            .min_w_0()
                             .flex()
                             .items_baseline()
                             .gap_2()
                             .text_sm()
-                            .child(item.label.clone())
+                            .child(div().flex_none().child(item.label.clone()))
                             .child(
                                 div()
+                                    .min_w_0()
+                                    .truncate()
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
                                     .child(item.detail.clone()),

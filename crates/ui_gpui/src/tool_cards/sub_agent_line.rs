@@ -13,9 +13,6 @@ use gpui_kit::{
     StatefulInteractiveElement, Styled, Window, div, px, rems,
 };
 
-/// Longest instruction excerpt the line shows.
-const LABEL_CHARS: usize = 80;
-
 pub struct SubAgentLineRenderer;
 
 fn param<'a>(tool: &'a ToolUseBlock, name: &str) -> Option<&'a str> {
@@ -29,18 +26,11 @@ fn output(tool: &ToolUseBlock) -> Option<SubAgentOutput> {
     tool.output.as_deref().and_then(SubAgentOutput::from_json)
 }
 
-/// The first line of the instructions, cut at [`LABEL_CHARS`].
-fn label(tool: &ToolUseBlock) -> String {
-    let Some(line) =
-        param(tool, "instructions").and_then(|i| i.lines().map(str::trim).find(|l| !l.is_empty()))
-    else {
-        return "Sub-agent".into();
-    };
-    if line.chars().count() <= LABEL_CHARS {
-        return line.to_string();
-    }
-    let cut: String = line.chars().take(LABEL_CHARS).collect();
-    format!("{}…", cut.trim_end())
+/// The first line of the instructions.
+fn label(tool: &ToolUseBlock) -> &str {
+    param(tool, "instructions")
+        .and_then(|i| i.lines().map(str::trim).find(|l| !l.is_empty()))
+        .unwrap_or_default()
 }
 
 impl ToolBlockRenderer for SubAgentLineRenderer {
@@ -60,7 +50,11 @@ impl ToolBlockRenderer for SubAgentLineRenderer {
             _ if tool.status == ToolStatus::Error => "failed",
             _ => "running",
         };
-        format!("Sub-agent · {} {state}", label(tool))
+        // The state comes first: the row cuts a long label at its width.
+        match label(tool) {
+            "" => format!("Sub-agent {state}"),
+            label => format!("Sub-agent {state} · {label}"),
+        }
     }
 
     fn header_tag(&self, tool: &ToolUseBlock) -> Option<String> {
@@ -145,7 +139,7 @@ mod tests {
         );
         assert_eq!(
             SubAgentLineRenderer.describe(&tool),
-            "Sub-agent · Find the parser running"
+            "Sub-agent running · Find the parser"
         );
         assert_eq!(SubAgentLineRenderer.header_tag(&tool), None);
 
@@ -155,7 +149,7 @@ mod tests {
         tool.output = Some(done.to_json());
         assert_eq!(
             SubAgentLineRenderer.describe(&tool),
-            "Sub-agent · Find the parser finished"
+            "Sub-agent finished · Find the parser"
         );
         assert_eq!(
             SubAgentLineRenderer.header_tag(&tool).as_deref(),
@@ -166,16 +160,13 @@ mod tests {
         tool.output = None;
         assert_eq!(
             SubAgentLineRenderer.describe(&tool),
-            "Sub-agent · Find the parser failed"
+            "Sub-agent failed · Find the parser"
         );
     }
 
     #[test]
-    fn long_instructions_are_cut() {
-        let long = "word ".repeat(40);
-        let tool = make_tool("spawn_agent", &[("instructions", long.as_str())]);
-        let line = SubAgentLineRenderer.describe(&tool);
-        assert!(line.ends_with("… running"), "{line}");
-        assert!(line.chars().count() < LABEL_CHARS + 30, "{line}");
+    fn no_instructions_leave_just_the_state() {
+        let tool = make_tool("spawn_agent", &[]);
+        assert_eq!(SubAgentLineRenderer.describe(&tool), "Sub-agent running");
     }
 }

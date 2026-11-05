@@ -938,6 +938,8 @@ impl ReviewView {
             .child(
                 div()
                     .flex_1()
+                    .min_w_0()
+                    .truncate()
                     .text_sm()
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.foreground)
@@ -986,6 +988,7 @@ impl ReviewView {
             .py_1()
             .text_xs()
             .text_color(cx.theme().muted_foreground)
+            .truncate()
             .child(text)
             .into_any_element()
     }
@@ -1106,8 +1109,7 @@ impl ReviewView {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
+                    .truncate()
                     .text_xs()
                     .text_color(fg)
                     .child(file.path.clone()),

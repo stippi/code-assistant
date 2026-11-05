@@ -202,7 +202,8 @@ impl CandidatePicker {
                     .gap_1()
                     .child(
                         div()
-                            .flex_none()
+                            .min_w_0()
+                            .truncate()
                             .text_color(theme.foreground)
                             .child(entry.label.clone()),
                     )

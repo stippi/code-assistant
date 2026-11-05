@@ -340,7 +340,13 @@ impl ChatGptSubscriptionForm {
                     .text_color(cx.theme().muted_foreground)
                     .child(SharedString::from(label.to_string())),
             )
-            .child(div().text_xs().child(SharedString::from(value.to_string())))
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_xs()
+                    .child(SharedString::from(value.to_string())),
+            )
     }
 }
 

@@ -317,28 +317,38 @@ impl Render for SettingsScreen {
                             ),
                     )
                     // Right content area (scrollable)
-                    .child(div().flex_1().h_full().overflow_y_scrollbar().p_6().child(
-                        match self.active_section {
-                            SettingsSection::General => {
-                                self.general_section.clone().into_any_element()
-                            }
-                            SettingsSection::Providers => {
-                                self.providers_section.clone().into_any_element()
-                            }
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .overflow_y_scrollbar()
+                            .p_6()
+                            .child(match self.active_section {
+                                SettingsSection::General => {
+                                    self.general_section.clone().into_any_element()
+                                }
+                                SettingsSection::Providers => {
+                                    self.providers_section.clone().into_any_element()
+                                }
 
-                            SettingsSection::Models => {
-                                self.models_section.clone().into_any_element()
-                            }
-                            SettingsSection::Skills => {
-                                self.skills_section.clone().into_any_element()
-                            }
-                            SettingsSection::Tools => self.tools_section.clone().into_any_element(),
-                            SettingsSection::McpServers => {
-                                self.mcp_section.clone().into_any_element()
-                            }
-                            SettingsSection::Voice => self.voice_section.clone().into_any_element(),
-                        },
-                    )),
+                                SettingsSection::Models => {
+                                    self.models_section.clone().into_any_element()
+                                }
+                                SettingsSection::Skills => {
+                                    self.skills_section.clone().into_any_element()
+                                }
+                                SettingsSection::Tools => {
+                                    self.tools_section.clone().into_any_element()
+                                }
+                                SettingsSection::McpServers => {
+                                    self.mcp_section.clone().into_any_element()
+                                }
+                                SettingsSection::Voice => {
+                                    self.voice_section.clone().into_any_element()
+                                }
+                            }),
+                    ),
             )
     }
 }

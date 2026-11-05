@@ -175,6 +175,7 @@ impl Render for RasterPreview {
         let muted = theme.muted_foreground;
         let notice = move |text: String| {
             div()
+                .min_w_0()
                 .text_sm()
                 .text_color(muted)
                 .child(text)

@@ -607,6 +607,8 @@ impl Render for AiCoreProviderForm {
                             .child(
                                 div()
                                     .flex_1()
+                                    .min_w_0()
+                                    .truncate()
                                     .text_xs()
                                     .text_color(cx.theme().foreground)
                                     .child(SharedString::from(entry_clone.model_id)),
@@ -620,10 +622,10 @@ impl Render for AiCoreProviderForm {
                             .child(
                                 div()
                                     .flex_1()
+                                    .min_w_0()
+                                    .truncate()
                                     .text_xs()
                                     .text_color(cx.theme().foreground)
-                                    .overflow_x_hidden()
-                                    .text_ellipsis()
                                     .child(SharedString::from(entry_clone.deployment_id)),
                             )
                             .child(

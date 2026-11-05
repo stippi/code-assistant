@@ -46,15 +46,14 @@ pub(crate) fn render_diff_chunk(
         return rows;
     }
     let (_, ctx_color) = unchanged_row_colors(theme);
-    let separator = div().w_full().flex().text_color(ctx_color.opacity(0.5));
+    let separator = div().w_full().text_color(ctx_color.opacity(0.5));
     let separator = match header {
+        // Not a flex container: text directly in one doesn't shrink.
         Some(header) => separator
             .px_3()
-            .overflow_hidden()
-            .whitespace_nowrap()
-            .text_ellipsis()
+            .truncate()
             .child(SharedString::from(format!("⋯  {header}"))),
-        None => separator.justify_center().child("⋯"),
+        None => separator.flex().justify_center().child("⋯"),
     };
     div()
         .flex()

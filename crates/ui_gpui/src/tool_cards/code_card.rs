@@ -31,28 +31,18 @@ impl ToolBlockRenderer for CodeCardRenderer {
         match tool.name.as_str() {
             "read_files" => {
                 if let Some(paths) = get_param(tool, "paths") {
-                    let display = if paths.len() > 80 {
-                        format!("{}…", &paths[..77])
-                    } else {
-                        paths.to_string()
-                    };
-                    format!("Read {}", display)
+                    format!("Read {paths}")
                 } else {
                     "Read files".to_string()
                 }
             }
             "search_files" => {
                 if let Some(regex) = get_param(tool, "regex") {
-                    let display = if regex.len() > 60 {
-                        format!("{}…", &regex[..57])
-                    } else {
-                        regex.to_string()
-                    };
                     // Trim surrounding quotes from the display value to avoid
                     // visual duplication with the wrapping quotes we add
                     // (e.g. regex `cursor_"` would otherwise show as
                     // `Search for "cursor_""`)
-                    let trimmed = display.strip_suffix('"').unwrap_or(&display);
+                    let trimmed = regex.strip_suffix('"').unwrap_or(regex);
                     let trimmed = trimmed.strip_prefix('"').unwrap_or(trimmed);
                     format!("Search for \"{}\"", trimmed)
                 } else {

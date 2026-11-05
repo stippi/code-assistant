@@ -319,13 +319,18 @@ mod tests {
         assert_eq!(renderer.describe(&tool), "Read files");
     }
 
+    /// The row cuts them at its width; a slice at a byte count used to panic
+    /// inside a multi-byte character.
     #[test]
-    fn test_describe_long_value_truncated() {
+    fn test_describe_keeps_long_values() {
         let renderer = code_card::CodeCardRenderer;
-        let long_path = "a".repeat(100);
+        let long_path = "ä".repeat(100);
         let tool = make_tool("read_files", &[("paths", &long_path)]);
-        let desc = renderer.describe(&tool);
-        assert!(desc.len() < 100);
-        assert!(desc.ends_with('…'));
+        assert_eq!(renderer.describe(&tool), format!("Read {long_path}"));
+        let tool = make_tool("search_files", &[("regex", &long_path)]);
+        assert_eq!(
+            renderer.describe(&tool),
+            format!("Search for \"{long_path}\"")
+        );
     }
 }

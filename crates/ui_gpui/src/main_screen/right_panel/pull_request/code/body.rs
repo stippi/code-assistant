@@ -380,9 +380,7 @@ impl CodeTab {
                         .px_3()
                         .text_xs()
                         .text_color(muted)
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .whitespace_nowrap()
+                        .truncate()
                         .child(path.to_owned()),
                 );
                 for ix in ixs {
@@ -460,14 +458,7 @@ fn hairline_label(label: SharedString, cx: &App) -> AnyElement {
         .text_xs()
         .text_color(theme.muted_foreground)
         .child(line())
-        .child(
-            div()
-                .min_w_0()
-                .overflow_hidden()
-                .text_ellipsis()
-                .whitespace_nowrap()
-                .child(label),
-        )
+        .child(div().min_w_0().truncate().child(label))
         .child(line())
         .into_any_element()
 }

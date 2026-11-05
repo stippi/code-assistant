@@ -90,7 +90,7 @@ impl SelectItem for ModelItem {
                 .min_w_0()
                 .flex()
                 .items_center()
-                .child(div().min_w_0().text_ellipsis().child(self.name.clone())),
+                .child(div().min_w_0().truncate().child(self.name.clone())),
         );
 
         Some(row.into_any_element())

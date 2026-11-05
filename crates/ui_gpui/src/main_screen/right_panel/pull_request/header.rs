@@ -478,6 +478,8 @@ impl DetailHeader {
             .child(avatar(facts.author.as_ref(), px(18.), cx))
             .child(
                 div()
+                    .min_w_0()
+                    .truncate()
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(cx.theme().foreground)
                     .child(
@@ -569,7 +571,8 @@ impl DetailHeader {
                     .gap_1p5()
                     .child(
                         div()
-                            .flex_none()
+                            .min_w_0()
+                            .truncate()
                             .font_family(cx.theme().mono_font_family.clone())
                             .child(format!("{} ←", facts.base)),
                     )
@@ -623,11 +626,17 @@ impl DetailHeader {
                 .text_color(warning)
                 .child(
                     svg()
+                        .flex_none()
                         .size(px(13.))
                         .path("icons/triangle_alert.svg")
                         .text_color(warning),
                 )
-                .child(format!("{behind} behind {}", detail.base_branch))
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .child(format!("{behind} behind {}", detail.base_branch)),
+                )
                 .child(div().flex_1())
                 .when_some(method, |row, method| {
                     row.child(

@@ -5,6 +5,7 @@
 //! thinking, tool-use, compaction, image).
 
 use super::{BlockData, BlockView, ToolBlockState, ToolUseBlock};
+use crate::shared::text::single_line;
 use crate::shared::{file_icons, frame_profile};
 use code_assistant_core::ui::ToolStatus;
 
@@ -106,7 +107,7 @@ impl BlockView {
         };
         let header_text_color = theme.muted_foreground;
         let icon = file_icons::get().get_tool_icon(&block.name);
-        let label = renderer.describe(block);
+        let label = single_line(&renderer.describe(block));
 
         div()
             .w_full()
@@ -131,6 +132,8 @@ impl BlockView {
                     ))
                     .child(
                         div()
+                            .min_w_0()
+                            .truncate()
                             .text_size(rems(0.75))
                             .text_color(header_text_color)
                             .child(label),
@@ -171,15 +174,13 @@ impl BlockView {
         };
 
         // Description text
-        let description = if block.status == ToolStatus::Error {
-            if let Some(ref msg) = block.status_message {
-                format!("{} — {}", renderer.describe(block), msg)
-            } else {
-                renderer.describe(block)
-            }
-        } else {
-            renderer.describe(block)
-        };
+        let description = single_line(&renderer.describe(block));
+        // Its own element, so a long description can't push it out of view.
+        let error_message = block
+            .status_message
+            .as_deref()
+            .filter(|_| block.status == ToolStatus::Error)
+            .map(|message| format!("— {}", single_line(message)));
 
         // Optional right-aligned pill (e.g. the MCP server name).
         let header_tag = renderer.header_tag(block);
@@ -283,14 +284,22 @@ impl BlockView {
                     // Description text
                     .child(
                         div()
+                            .min_w_0()
+                            .truncate()
                             .text_size(rems(0.8125))
                             .text_color(desc_color)
-                            .overflow_hidden()
-                            .text_overflow(gpui_kit::TextOverflow::Truncate(SharedString::from(
-                                "…",
-                            )))
                             .child(description),
-                    ),
+                    )
+                    .when_some(error_message, |d, message| {
+                        d.child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(rems(0.8125))
+                                .text_color(desc_color)
+                                .child(message),
+                        )
+                    }),
             )
             // Optional pill (e.g. MCP server name), right-aligned before the
             // chevron.
@@ -399,6 +408,8 @@ impl BlockView {
             .child(
                 div()
                     .flex_1()
+                    .min_w_0()
+                    .truncate()
                     .text_size(rems(0.8125))
                     .text_color(color)
                     .child(label),
@@ -665,10 +676,8 @@ impl BlockView {
                                     .text_size(rems(0.8125))
                                     .italic()
                                     .text_color(muted)
-                                    .overflow_hidden()
-                                    .text_overflow(gpui_kit::TextOverflow::Truncate(
-                                        SharedString::from("…"),
-                                    ))
+                                    .min_w_0()
+                                    .truncate()
                                     .child(header_text),
                             ),
                     )
@@ -996,13 +1005,15 @@ impl BlockView {
             .hover(|s| s.text_color(theme.foreground))
             .child(
                 gpui_kit::svg()
+                    .flex_none()
                     .size(px(14.))
                     .path("icons/message_bubbles.svg")
                     .text_color(theme.muted_foreground),
             )
-            .child(label)
+            .child(div().min_w_0().truncate().child(label))
             .child(
                 gpui_kit::svg()
+                    .flex_none()
                     .size(px(10.))
                     .path(if expanded {
                         "icons/chevron_down.svg"
