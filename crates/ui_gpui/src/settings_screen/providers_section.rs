@@ -330,11 +330,13 @@ impl ProvidersSection {
                     .child(
                         div()
                             .flex_1()
+                            .min_w_0()
                             .flex()
                             .flex_col()
                             .gap(px(2.))
                             .child(
                                 div()
+                                    .truncate()
                                     .text_sm()
                                     .font_weight(gpui_kit::FontWeight::MEDIUM)
                                     .text_color(cx.theme().foreground)
@@ -342,6 +344,7 @@ impl ProvidersSection {
                             )
                             .child(
                                 div()
+                                    .truncate()
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
                                     .child(SharedString::from(subtitle)),
@@ -915,6 +918,7 @@ impl ProvidersSection {
                     .child(
                         div()
                             .flex_1()
+                            .min_w_0()
                             .flex()
                             .flex_col()
                             .gap(px(2.))

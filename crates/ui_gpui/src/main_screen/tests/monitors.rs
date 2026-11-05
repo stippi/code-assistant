@@ -118,3 +118,28 @@ fn notifications_show_as_notifications(cx: &mut TestAppContext) {
         ]
     );
 }
+
+#[gpui_kit::test]
+fn a_long_notification_stays_within_the_window(cx: &mut TestAppContext) {
+    let core = TestCore::new(MockLLMProvider::new(Vec::new()).into_factory());
+    let session_id = core.create_session();
+    let job = job_exited_message(12345, &"docker pull postgres ".repeat(40), Some(0));
+    core.store()
+        .update_entry(&session_id, |session| {
+            session.add_message(Message::new_user(job.as_str()));
+            Ok(())
+        })
+        .unwrap();
+
+    let mut test = MainScreenTest::with_core(cx, core);
+    test.gpui.cmd_load_session(session_id, None);
+    test.wait_until("the notification is shown", |test| {
+        test.shows("notification-label")
+    });
+
+    let label = test.cx.debug_bounds("notification-label").unwrap();
+    // The widest a message gets.
+    assert!(label.size.width <= gpui_kit::px(720.), "{label:?}");
+    // One line, not wrapped.
+    assert!(label.size.height < gpui_kit::px(30.), "{label:?}");
+}

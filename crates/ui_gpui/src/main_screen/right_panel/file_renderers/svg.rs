@@ -224,6 +224,7 @@ impl Render for SvgPreview {
         let themed = self.themed_background;
         let notice = |text: String| {
             div()
+                .min_w_0()
                 .text_sm()
                 .text_color(muted)
                 .child(text)

@@ -185,8 +185,7 @@ impl Render for NewProjectDialog {
                         div()
                             .text_xs()
                             .text_color(cx.theme().danger.opacity(0.8))
-                            .overflow_hidden()
-                            .text_ellipsis()
+                            .truncate()
                             .child(SharedString::from(existing_path.clone())),
                     ),
             ),
@@ -236,8 +235,7 @@ impl Render for NewProjectDialog {
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .overflow_hidden()
-                            .text_ellipsis()
+                            .truncate()
                             .child(SharedString::from(path_display)),
                     )
                     // Name input

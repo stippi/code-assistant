@@ -860,10 +860,7 @@ impl FilesView {
                 .pl(indent(*depth) + px(14.))
                 .text_xs()
                 .text_color(theme.muted_foreground)
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_ellipsis()
-                .child(text.clone())
+                .child(div().min_w_0().truncate().child(text.clone()))
                 .into_any_element(),
             TreeRow::Entry {
                 path,
@@ -927,9 +924,7 @@ impl FilesView {
                         div()
                             .flex_1()
                             .min_w_0()
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis()
+                            .truncate()
                             .text_xs()
                             .text_color(fg)
                             .child(name.clone()),
@@ -993,7 +988,8 @@ impl FilesView {
             ))
             .child(
                 div()
-                    .flex_none()
+                    .min_w_0()
+                    .truncate()
                     .text_xs()
                     .text_color(theme.foreground)
                     .child(
@@ -1005,9 +1001,7 @@ impl FilesView {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis()
+                    .truncate()
                     .text_xs()
                     .text_color(theme.muted_foreground)
                     .child(dir.to_owned()),
@@ -1165,9 +1159,7 @@ impl FilesView {
                     div()
                         .flex_1()
                         .min_w_0()
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_ellipsis()
+                        .truncate()
                         .text_xs()
                         .text_color(theme.muted_foreground)
                         .child(path),
@@ -1447,7 +1439,7 @@ impl Render for FilesView {
                 .p_4()
                 .text_sm()
                 .text_color(theme.muted_foreground)
-                .child(error.clone())
+                .child(div().min_w_0().child(error.clone()))
                 .into_any_element();
         }
 

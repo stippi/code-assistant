@@ -90,13 +90,7 @@ impl InlineToolRenderer {
         for param in &tool.parameters {
             let placeholder = format!("{{{}}}", param.name);
             if result.contains(&placeholder) {
-                // Truncate long values for the description line
-                let display_value = if param.value.len() > 80 {
-                    format!("{}…", &param.value[..77])
-                } else {
-                    param.value.clone()
-                };
-                result = result.replace(&placeholder, &display_value);
+                result = result.replace(&placeholder, &param.value);
             }
         }
         result

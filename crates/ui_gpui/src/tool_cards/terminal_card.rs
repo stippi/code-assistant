@@ -10,6 +10,7 @@ use super::{CardRenderContext, ToolBlockRenderer, ToolBlockStyle, animated_card_
 use crate::Gpui;
 use crate::blocks::{BlockView, ToolUseBlock};
 use crate::shared::file_icons;
+use crate::shared::text::{single_line, visible_head};
 use crate::terminal::pool::TerminalPool;
 use code_assistant_core::ui::ToolStatus;
 use gpui_kit::AppContext as _; // brings .new() into scope on Context
@@ -102,8 +103,7 @@ impl ToolBlockRenderer for TerminalCardRenderer {
     fn describe(&self, tool: &ToolUseBlock) -> String {
         // Extract command_line parameter for description
         if let Some(cmd) = tool.parameters.iter().find(|p| p.name == "command_line") {
-            let display = truncate_str(&cmd.value, 60);
-            format!("$ {}", display)
+            format!("$ {}", cmd.value)
         } else {
             "execute command".to_string()
         }
@@ -309,10 +309,12 @@ impl ToolBlockRenderer for TerminalCardRenderer {
                 .overflow_hidden()
                 .child(
                     div()
+                        .min_w_0()
+                        .line_clamp(2)
+                        .text_ellipsis()
                         .text_size(rems(0.75))
                         .text_color(header_text_color)
-                        .overflow_hidden()
-                        .child(truncate_str(&display_command, 200)),
+                        .child(SharedString::from(visible_head(display_command.trim()))),
                 );
 
             // Show project name in parentheses if it differs from the session project
@@ -330,7 +332,7 @@ impl ToolBlockRenderer for TerminalCardRenderer {
             header_left = header_left.child(label_row);
         }
 
-        let mut header_right = div().flex().flex_row().items_center().gap_2();
+        let mut header_right = div().flex_none().flex().flex_row().items_center().gap_2();
 
         if is_running {
             // Running: spinning icon + elapsed time (after 2s)
@@ -571,7 +573,7 @@ impl TerminalCardRenderer {
         let header_label = if !cwd_text.is_empty() {
             cwd_text
         } else {
-            truncate_str(command, 50)
+            single_line(command)
         };
 
         let terminal_icon = file_icons::get().get_tool_icon("execute_command");
@@ -594,6 +596,7 @@ impl TerminalCardRenderer {
                     .items_center()
                     .child(
                         div()
+                            .min_w_0()
                             .flex()
                             .flex_row()
                             .items_center()
@@ -606,6 +609,8 @@ impl TerminalCardRenderer {
                             ))
                             .child(
                                 div()
+                                    .min_w_0()
+                                    .truncate()
                                     .text_size(rems(0.75))
                                     .text_color(header_text_color)
                                     .child(header_label),
@@ -613,6 +618,7 @@ impl TerminalCardRenderer {
                     )
                     .child(
                         div()
+                            .flex_none()
                             .flex()
                             .flex_row()
                             .items_center()
@@ -670,19 +676,22 @@ impl TerminalCardRenderer {
                     div()
                         .flex()
                         .flex_row()
-                        .items_center()
                         .gap_1p5()
                         .child(
                             div()
+                                .flex_none()
                                 .text_size(rems(0.75))
                                 .text_color(theme.muted_foreground.opacity(0.6))
                                 .child("$"),
                         )
                         .child(
                             div()
+                                .min_w_0()
+                                .line_clamp(2)
+                                .text_ellipsis()
                                 .text_size(rems(0.78125))
                                 .text_color(theme.foreground)
-                                .child(truncate_str(command, 80)),
+                                .child(SharedString::from(visible_head(command.trim()))),
                         ),
                 ),
             )
@@ -856,17 +865,6 @@ fn abbreviate_path(path: &str) -> String {
         }
     }
     path.to_string()
-}
-
-/// Truncate a string to at most `max_chars` characters, adding "…" if truncated.
-fn truncate_str(s: &str, max_chars: usize) -> String {
-    let char_count = s.chars().count();
-    if char_count > max_chars {
-        let truncated: String = s.chars().take(max_chars.saturating_sub(1)).collect();
-        format!("{}…", truncated)
-    } else {
-        s.to_string()
-    }
 }
 
 /// Format elapsed seconds into a human-readable string.

@@ -8,6 +8,7 @@
 
 use super::{InputArea, InputAreaEvent};
 use crate::shared::dismiss::dismiss_layer;
+use crate::shared::text::single_line;
 use code_assistant_core::line_comments::LineComment;
 use code_assistant_core::persistence::DraftAttachment;
 use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size, ThemeStyled};
@@ -16,9 +17,6 @@ use gpui_kit::{
     px,
 };
 use std::collections::BTreeSet;
-
-/// Characters of a comment's text shown in the chip.
-const PREVIEW_CHARS: usize = 40;
 
 impl InputArea {
     /// The draft's line comments, in the order they were made.
@@ -96,13 +94,7 @@ impl InputArea {
         match comments {
             [] => String::new(),
             [c] => {
-                let text: String = c.text.chars().take(PREVIEW_CHARS).collect();
-                let ellipsis = if c.text.chars().count() > PREVIEW_CHARS {
-                    "…"
-                } else {
-                    ""
-                };
-                format!("{} · {text}{ellipsis}", c.location_label())
+                format!("{} · {}", c.location_label(), single_line(&c.text))
             }
             _ if comments.iter().any(|c| c.on_message) => {
                 format!("{} comments", comments.len())
@@ -161,9 +153,7 @@ impl InputArea {
                         .child(
                             div()
                                 .min_w_0()
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_ellipsis()
+                                .truncate()
                                 .text_xs()
                                 .text_color(theme.foreground)
                                 .child(label),
@@ -248,9 +238,7 @@ impl InputArea {
                             )
                             .child(
                                 div()
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .text_ellipsis()
+                                    .truncate()
                                     .text_xs()
                                     .font_family("Menlo")
                                     .text_color(theme.muted_foreground)
@@ -346,8 +334,10 @@ mod tests {
             InputArea::comments_label(&[comment("/p/src/lib.rs", "no unwrap here")]),
             "lib.rs:3-5 · no unwrap here"
         );
-        let long = "a".repeat(50);
-        assert!(InputArea::comments_label(&[comment("/p/a.rs", &long)]).ends_with("a…"));
+        assert_eq!(
+            InputArea::comments_label(&[comment("/p/src/lib.rs", "first\nsecond")]),
+            "lib.rs:3-5 · first second"
+        );
         assert_eq!(
             InputArea::comments_label(&[comment("/p/a.rs", "x"), comment("/p/a.rs", "y")]),
             "2 comments in a.rs"

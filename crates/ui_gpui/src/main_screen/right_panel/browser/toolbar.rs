@@ -3,6 +3,7 @@
 
 use super::BrowserPanel;
 use crate::Gpui;
+use crate::shared::text::single_line;
 use code_assistant_core::session::browsers::BrowserKey;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -49,7 +50,7 @@ impl BrowserPanel {
                     let label = if t.title.is_empty() { &t.url } else { &t.title };
                     chip(
                         SharedString::from(format!("tab-{}", t.id)),
-                        truncate(label, 28),
+                        single_line(label),
                         Some(t.id.as_str()) == watched_tab,
                         cx,
                     )
@@ -84,9 +85,7 @@ impl BrowserPanel {
                 .bg(theme.muted)
                 .text_xs()
                 .text_color(theme.foreground)
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_ellipsis()
+                .truncate()
                 .when(in_control, |el| el.cursor_text())
                 .on_click(cx.listener(|this, _, window, cx| this.edit_address(window, cx)))
                 .child(tab.map(|t| t.url.clone()).unwrap_or_default())
@@ -246,6 +245,8 @@ fn chip(
     let theme = cx.theme();
     div()
         .id(id)
+        .max_w(px(220.))
+        .truncate()
         .px_2()
         .py_0p5()
         .rounded(px(4.))
@@ -267,14 +268,6 @@ fn browser_label(key: &BrowserKey) -> String {
         None => key.profile.clone(),
         Some(_) => format!("sub-agent · {}", key.profile),
     }
-}
-
-fn truncate(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        return text.to_string();
-    }
-    let cut: String = text.chars().take(max.saturating_sub(1)).collect();
-    format!("{cut}…")
 }
 
 /// What the user typed as an address, with `https://` when it has no scheme.

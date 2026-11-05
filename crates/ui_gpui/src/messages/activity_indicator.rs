@@ -122,12 +122,21 @@ pub fn render_activity_indicator(
         .gap_2()
         .child(
             div()
+                .flex_none()
                 .text_size(rems(0.875))
                 .text_color(color)
                 .child(braille_char.to_string()),
         )
         .when_some(label, |d, label| {
-            d.child(div().text_size(rems(0.8125)).text_color(color).child(label))
+            d.child(
+                div()
+                    .min_w_0()
+                    .line_clamp(2)
+                    .text_ellipsis()
+                    .text_size(rems(0.8125))
+                    .text_color(color)
+                    .child(label),
+            )
         })
         .into_any_element()
 }
@@ -140,6 +149,7 @@ pub fn render_armed_wakeups(
     view: &MessagesView,
     cx: &mut Context<MessagesView>,
 ) -> gpui_kit::AnyElement {
+    use crate::shared::text::single_line;
     use crate::tool_cards::wakeup_renderer::countdown;
 
     let color = cx.theme().muted_foreground;
@@ -155,6 +165,7 @@ pub fn render_armed_wakeups(
             .px_3()
             .child(
                 div()
+                    .flex_none()
                     .w(gpui_kit::px(14.))
                     .flex()
                     .justify_center()
@@ -162,7 +173,14 @@ pub fn render_armed_wakeups(
                     .text_color(color)
                     .child(BRAILLE_FRAMES[frame]),
             )
-            .child(div().text_size(rems(0.8125)).text_color(color).child(text))
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(rems(0.8125))
+                    .text_color(color)
+                    .child(single_line(&text)),
+            )
     };
 
     let mut lines = Vec::new();
@@ -180,6 +198,7 @@ pub fn render_armed_wakeups(
         let monitor_id = monitor.id;
         let stop = div()
             .id(("stop-monitor", monitor_id as usize))
+            .flex_none()
             .text_size(rems(0.75))
             .text_color(color)
             .cursor_pointer()

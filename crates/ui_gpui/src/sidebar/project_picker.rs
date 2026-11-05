@@ -246,8 +246,7 @@ impl ProjectPicker {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
+                    .truncate()
                     .text_sm()
                     .text_color(cx.theme().foreground)
                     .child(SharedString::from(title)),

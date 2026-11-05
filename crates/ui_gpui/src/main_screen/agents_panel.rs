@@ -182,9 +182,7 @@ fn sub_agent_row(
             div()
                 .flex_1()
                 .min_w_0()
-                .overflow_hidden()
-                .text_ellipsis()
-                .whitespace_nowrap()
+                .truncate()
                 .text_size(rems(0.8125))
                 .text_color(foreground)
                 .child(agent.title.clone()),
@@ -208,9 +206,7 @@ fn sub_agent_row(
             div()
                 .flex_none()
                 .w(px(160.))
-                .overflow_hidden()
-                .text_ellipsis()
-                .whitespace_nowrap()
+                .truncate()
                 .text_size(rems(0.75))
                 .text_color(muted)
                 .map(|column| {

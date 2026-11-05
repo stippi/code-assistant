@@ -533,6 +533,7 @@ impl GeneralSection {
             )
             .child(
                 div()
+                    .min_w_0()
                     .text_xs()
                     .font_family("monospace")
                     .text_color(cx.theme().foreground)

@@ -131,9 +131,10 @@ impl ToolBlockRenderer for DiffCardRenderer {
         };
         let label = div()
             .id(SharedString::from(format!("tool-path-{}", tool.id)))
+            .min_w_0()
+            .truncate()
             .text_size(rems(0.75))
             .text_color(header_text_color)
-            .overflow_hidden()
             .child(header_label);
         // A single, still existing file opens in the Files view.
         let single_path = get_param(tool, "path").filter(|_| tool.name != "delete_files");

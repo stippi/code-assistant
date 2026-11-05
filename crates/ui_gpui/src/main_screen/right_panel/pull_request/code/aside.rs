@@ -150,9 +150,7 @@ impl CodeTab {
             div()
                 .flex_1()
                 .min_w_0()
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_ellipsis()
+                .truncate()
                 .text_color(color)
                 .child(SharedString::from(name.to_owned()))
         };

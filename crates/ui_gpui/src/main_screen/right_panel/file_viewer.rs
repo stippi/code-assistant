@@ -765,7 +765,7 @@ impl FileViewer {
                 .bg(theme.warning.opacity(0.12))
                 .text_xs()
                 .text_color(theme.foreground)
-                .child(div().flex_1().child(text))
+                .child(div().flex_1().min_w_0().child(text))
                 .when(actions, |d| {
                     d.child(
                         Button::new("file-reload-disk")

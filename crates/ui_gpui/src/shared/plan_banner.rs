@@ -1,5 +1,6 @@
 use super::collapse_animation::CollapseAnimator;
 use super::file_icons;
+use super::text::single_line;
 use code_assistant_core::types::{PlanItemStatus, PlanState};
 use gpui_kit::prelude::*;
 
@@ -131,7 +132,7 @@ impl Render for PlanBanner {
 
         let header = if show_inline_active {
             if let Some(active) = in_progress_item {
-                let truncated = truncate_text(&normalize_single_line(&active.content), 60);
+                let content = single_line(&active.content);
                 div()
                     .flex()
                     .items_center()
@@ -169,13 +170,13 @@ impl Render for PlanBanner {
                             )
                             .child(
                                 div()
+                                    .debug_selector(|| "plan-active-item".into())
                                     .flex_1()
                                     .min_w_0()
-                                    .overflow_hidden()
-                                    .text_ellipsis()
+                                    .truncate()
                                     .text_size(rems(0.6875))
                                     .text_color(cx.theme().info)
-                                    .child(SharedString::from(truncated)),
+                                    .child(SharedString::from(content)),
                             ),
                     )
                     .child(
@@ -390,7 +391,7 @@ fn render_plan_items(plan: &PlanState, cx: &mut Context<PlanBanner>) -> gpui_kit
                         .text_size(rems(0.75))
                         .line_height(rems(1.125))
                         .text_color(text_color)
-                        .child(SharedString::from(normalize_single_line(&entry.content))),
+                        .child(SharedString::from(single_line(&entry.content))),
                 )
         }))
 }
@@ -398,28 +399,6 @@ fn render_plan_items(plan: &PlanState, cx: &mut Context<PlanBanner>) -> gpui_kit
 // ---------------------------------------------------------------------------
 // Text helpers
 // ---------------------------------------------------------------------------
-
-fn normalize_single_line(content: &str) -> String {
-    content
-        .lines()
-        .map(|line| line.trim())
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn truncate_text(text: &str, max_len: usize) -> String {
-    if text.chars().count() <= max_len {
-        text.to_string()
-    } else {
-        let mut truncated = text
-            .chars()
-            .take(max_len.saturating_sub(1))
-            .collect::<String>();
-        truncated.push('…');
-        truncated
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -553,16 +532,19 @@ mod tests {
             .unwrap();
     }
 
-    #[test]
-    fn test_normalize_single_line() {
-        assert_eq!(normalize_single_line("  hello  \n  world  "), "hello world");
-        assert_eq!(normalize_single_line("single"), "single");
-        assert_eq!(normalize_single_line("  \n  \n  "), "");
-    }
+    #[gpui_kit::test]
+    fn a_long_active_item_is_cut_at_the_available_width(cx: &mut TestAppContext) {
+        cx.update(init_test_globals);
+        let (banner, cx) = cx.add_window_view(|_, cx| PlanBanner::new(cx));
+        let content = "a long plan item ".repeat(40);
+        let plan = make_plan(vec![(content.as_str(), PlanItemStatus::InProgress)]);
+        banner.update(cx, |banner, cx| banner.set_plan(Some(plan), true, cx));
+        cx.run_until_parked();
 
-    #[test]
-    fn test_truncate_text() {
-        assert_eq!(truncate_text("short", 10), "short");
-        assert_eq!(truncate_text("a long text", 6), "a lon…");
+        let item = cx.debug_bounds("plan-active-item").unwrap();
+        let window = cx.update(|window, _| window.viewport_size());
+        assert!(item.right() <= window.width, "{item:?} in {window:?}");
+        // One line, not wrapped.
+        assert!(item.size.height < gpui_kit::px(30.), "{item:?}");
     }
 }

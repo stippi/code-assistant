@@ -13,5 +13,6 @@ pub mod review_cache;
 pub mod review_draft_store;
 pub mod segmented_switch;
 pub mod settings;
+pub mod text;
 pub mod theme;
 pub mod ui_state;

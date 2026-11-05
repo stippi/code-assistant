@@ -419,9 +419,7 @@ fn scope_menu(
                 div()
                     .flex_1()
                     .min_w_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .whitespace_nowrap()
+                    .truncate()
                     .child(commit.message_headline.clone()),
             )
             .child(

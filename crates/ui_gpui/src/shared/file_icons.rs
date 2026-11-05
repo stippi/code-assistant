@@ -347,6 +347,7 @@ pub fn render_icon_container(
     let size_px = px(size);
 
     div()
+        .flex_none()
         .w(size_px)
         .h(size_px)
         .flex()

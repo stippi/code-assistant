@@ -83,9 +83,7 @@ impl CodeTab {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .whitespace_nowrap()
+                    .truncate()
                     .text_color(theme.foreground)
                     .child(path),
             )

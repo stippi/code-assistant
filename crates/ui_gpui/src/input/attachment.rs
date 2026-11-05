@@ -103,7 +103,7 @@ impl AttachmentView {
                     div()
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
-                        .text_ellipsis()
+                        .truncate()
                         .w_full()
                         .text_center()
                         .child(filename.clone()),

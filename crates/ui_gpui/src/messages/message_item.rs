@@ -259,6 +259,7 @@ fn render_notification(
     cx: &Context<MessagesView>,
 ) -> gpui_kit::AnyElement {
     use super::super::shared::file_icons;
+    use super::super::shared::text::single_line;
     let theme = cx.theme();
     div()
         .px_3()
@@ -280,9 +281,12 @@ fn render_notification(
                 ))
                 .child(
                     div()
+                        .debug_selector(|| "notification-label".into())
+                        .min_w_0()
+                        .truncate()
                         .text_size(rems(0.8125))
                         .text_color(theme.muted_foreground)
-                        .child(notification.label.clone()),
+                        .child(single_line(&notification.label)),
                 ),
         )
         .when(!notification.body.is_empty(), |container| {

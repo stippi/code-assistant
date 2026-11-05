@@ -280,7 +280,7 @@ impl SummaryTab {
                     ),
             )
             .when(!text.trim().is_empty(), |card| {
-                card.child(div().text_sm().line_clamp(6).child(text))
+                card.child(div().text_sm().line_clamp(6).text_ellipsis().child(text))
             })
             .into_any_element()
     }
