@@ -121,6 +121,7 @@ fn parse(output: &[u8]) -> Option<Vec<(OsString, OsString)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tests::one_spawning_test_at_a_time;
     use std::os::unix::fs::PermissionsExt;
     use std::time::Instant;
 
@@ -160,6 +161,7 @@ mod tests {
 
     #[test]
     fn a_shell_that_prints_while_starting_still_gives_its_environment() {
+        let _spawning = one_spawning_test_at_a_time();
         let dir = tempfile::tempdir().unwrap();
         let shell = fake_shell(
             dir.path(),
@@ -173,6 +175,7 @@ mod tests {
 
     #[test]
     fn a_background_process_holding_the_output_does_not_delay_the_capture() {
+        let _spawning = one_spawning_test_at_a_time();
         let dir = tempfile::tempdir().unwrap();
         let shell = fake_shell(dir.path(), "sleep 30 &");
         let started = Instant::now();
@@ -183,6 +186,7 @@ mod tests {
 
     #[test]
     fn a_shell_that_hangs_gives_up_after_the_timeout() {
+        let _spawning = one_spawning_test_at_a_time();
         let dir = tempfile::tempdir().unwrap();
         let shell = fake_shell(dir.path(), "sleep 30");
         let started = Instant::now();
@@ -193,6 +197,7 @@ mod tests {
 
     #[test]
     fn a_missing_shell_is_an_error() {
+        let _spawning = one_spawning_test_at_a_time();
         let error = capture_with(Path::new("/does/not/exist"), TIMEOUT).unwrap_err();
         assert!(error.contains("could not start"), "{error}");
     }

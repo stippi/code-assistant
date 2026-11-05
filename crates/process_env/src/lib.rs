@@ -159,6 +159,17 @@ fn should_capture() -> bool {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+    use std::sync::{Mutex, MutexGuard, PoisonError};
+
+    /// Held by every test that starts a process.
+    ///
+    /// A process forked by one test briefly inherits the file descriptors of
+    /// all others. If one of them is still writing the script it is about to
+    /// run, Linux refuses to execute that script with `ETXTBSY`.
+    pub(crate) fn one_spawning_test_at_a_time() -> MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        LOCK.lock().unwrap_or_else(PoisonError::into_inner)
+    }
 
     fn executable(dir: &std::path::Path, name: &str, script: &str) -> PathBuf {
         let path = dir.join(name);
@@ -175,6 +186,7 @@ mod tests {
 
     #[test]
     fn a_program_is_found_on_the_environments_path() {
+        let _spawning = one_spawning_test_at_a_time();
         let dir = tempfile::tempdir().unwrap();
         let tool = executable(dir.path(), "only-here", "echo found");
         let env = Environment::from_vars([("PATH".into(), path_with(dir.path()))]);
@@ -186,7 +198,12 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "nothing else runs on this test's single-threaded runtime"
+    )]
     async fn variables_set_on_the_command_win_over_the_environments() {
+        let _spawning = one_spawning_test_at_a_time();
         let env = Environment::from_vars([
             ("CA_TEST_LOGIN".into(), "login".into()),
             ("CA_TEST_BOTH".into(), "login".into()),
