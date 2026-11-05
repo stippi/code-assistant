@@ -219,6 +219,9 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
 - GPUI frontend based on gpui-kit (gpui via `gpui_kit::*`, gpui-component via `gpui_kit::component`) with custom components
 - GPUI API reference (contexts, entities, tasks, elements, actions, events):
   `docs/gpui-reference.md`
+- Text is cut at the available width, never at a character count: `.truncate()`
+  or `.line_clamp(n).text_ellipsis()`, with `min_w_0()` on flex items around it
+  and `shared::text::single_line` for text that may hold line breaks
 - The right panel shows the agent's browser live (CDP screencast, feature
   `browser-panel`, default): `docs/browser-panel-plan.md`. GPUI must not run
   inside a tokio `block_on` (tokio's cooperation budget would never renew on
