@@ -5,6 +5,10 @@
 //!
 //! The corresponding runtime accessors live in `src/version.rs`.
 
+// Runs at build time, in the build's environment; `process_env` is for the
+// app's child processes.
+#![allow(clippy::disallowed_methods)]
+
 use std::process::Command;
 
 fn main() {

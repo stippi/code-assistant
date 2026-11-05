@@ -172,7 +172,7 @@ fn check_bundle(_running: &Path, _new: &Path) -> anyhow::Result<()> {
 
 #[cfg(target_os = "macos")]
 fn signing_team(path: &Path) -> Option<String> {
-    let output = std::process::Command::new("codesign")
+    let output = process_env::std_command("codesign")
         .args(["-dv", "--verbose=2"])
         .arg(path)
         .output()
@@ -193,7 +193,7 @@ fn team_identifier(codesign_output: &str) -> Option<String> {
 
 #[cfg(target_os = "macos")]
 fn run(program: &str, args: &[&std::ffi::OsStr]) -> anyhow::Result<()> {
-    let output = std::process::Command::new(program)
+    let output = process_env::std_command(program)
         .args(args)
         .output()
         .with_context(|| format!("running {program}"))?;

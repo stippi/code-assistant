@@ -5,6 +5,7 @@ edition = "2024"
 license = "MIT"
 
 [dependencies]
+process_env = { path = "../process_env" }
 anyhow = "1.0.95"
 portable-pty = "0.9"
 rand = "0.9"

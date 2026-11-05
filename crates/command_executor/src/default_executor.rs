@@ -2,7 +2,6 @@ use crate::{CommandExecutor, CommandOutput, SandboxCommandRequest, StreamingCall
 use anyhow::Result;
 use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
 
 pub struct DefaultCommandExecutor;
 
@@ -34,12 +33,12 @@ impl CommandExecutor for DefaultCommandExecutor {
         #[cfg(target_family = "unix")]
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
         #[cfg(target_family = "unix")]
-        let mut cmd = Command::new(shell);
+        let mut cmd = process_env::command(shell);
         #[cfg(target_family = "unix")]
         cmd.args(["-l", "-c", &format!("{command_line} 2>&1")]);
 
         #[cfg(target_family = "windows")]
-        let mut cmd = Command::new("cmd");
+        let mut cmd = process_env::command("cmd");
         #[cfg(target_family = "windows")]
         cmd.args(["/C", &format!("{} 2>&1", command_line)]);
 
@@ -86,12 +85,12 @@ impl CommandExecutor for DefaultCommandExecutor {
         #[cfg(target_family = "unix")]
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
         #[cfg(target_family = "unix")]
-        let mut cmd = Command::new(shell);
+        let mut cmd = process_env::command(shell);
         #[cfg(target_family = "unix")]
         cmd.args(["-l", "-c", command_line]);
 
         #[cfg(target_family = "windows")]
-        let mut cmd = Command::new("cmd");
+        let mut cmd = process_env::command("cmd");
         #[cfg(target_family = "windows")]
         cmd.args(["/C", command_line]);
 

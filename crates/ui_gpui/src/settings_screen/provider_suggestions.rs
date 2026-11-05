@@ -9,7 +9,6 @@
 use code_assistant_core::session::default_model::DefaultModelConfig;
 use llm::provider_config::ModelConfig;
 use serde_json::{Map, Value};
-use std::process::Command;
 
 /// A suggested provider + model configuration that can be applied with minimal user input.
 #[derive(Clone, Debug)]
@@ -99,7 +98,7 @@ impl UserEnvironment {
 
     /// Get the global git user.email config value.
     fn get_git_global_email() -> Option<String> {
-        let output = Command::new("git")
+        let output = process_env::std_command("git")
             .args(["config", "--global", "user.email"])
             .output()
             .ok()?;
@@ -114,7 +113,7 @@ impl UserEnvironment {
 
     /// Get the system username (whoami).
     fn get_system_username() -> Option<String> {
-        let output = Command::new("whoami").output().ok()?;
+        let output = process_env::std_command("whoami").output().ok()?;
 
         if !output.status.success() {
             return None;

@@ -190,7 +190,7 @@ impl McpServerConnection {
         args: &[String],
         env: &HashMap<String, String>,
     ) -> Result<Self> {
-        let mut process = tokio::process::Command::new(command);
+        let mut process = process_env::command(command);
         process.args(args).envs(env);
         let (transport, stderr) =
             rmcp::transport::child_process::TokioChildProcess::builder(process)

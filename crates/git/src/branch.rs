@@ -220,7 +220,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         init_repo_with_commit(dir.path());
         let git = |args: &[&str]| {
-            let status = std::process::Command::new("git")
+            let status = process_env::std_command("git")
                 .args(args)
                 .current_dir(dir.path())
                 .status()

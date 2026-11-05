@@ -1,0 +1,6 @@
+# Child processes start through `process_env`, which gives them the user's
+# login environment (an app started from the Dock has a minimal PATH).
+disallowed-methods = [
+    { path = "std::process::Command::new", reason = "use process_env::std_command, which gives the process the user's login environment" },
+    { path = "tokio::process::Command::new", reason = "use process_env::command, which gives the process the user's login environment" },
+]

@@ -1715,7 +1715,7 @@ async fn persistent_profile_reaps_an_orphan_and_refuses_a_second_opener() {
 
     // Launch through a shell that exits at once, so the browser is orphaned.
     let exe = default_executable(DetectionOptions::default()).unwrap();
-    let status = std::process::Command::new("sh")
+    let status = process_env::std_command("sh")
         .arg("-c")
         .arg(
             "\"$0\" --headless --no-first-run --remote-debugging-port=0 \

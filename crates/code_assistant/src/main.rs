@@ -28,6 +28,10 @@ fn block_on<T>(future: impl std::future::Future<Output = Result<T>>) -> Result<T
 // there (a browser view's frames, say) stayed pending forever. The other
 // modes run on a runtime of their own.
 fn main() -> Result<()> {
+    // Child processes (MCP servers, gh, git, …) get the user's login
+    // environment; capture it while the app starts.
+    process_env::preload();
+
     let args = Args::parse();
 
     // Apply config-dir override before anything loads config files

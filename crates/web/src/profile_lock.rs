@@ -184,7 +184,7 @@ fn is_orphan(ppid: u32, owner: Option<u32>) -> bool {
 
 #[cfg(unix)]
 async fn process_info(pid: u32) -> Option<ProcessInfo> {
-    let out = tokio::process::Command::new("ps")
+    let out = process_env::command("ps")
         .args(["-o", "ppid=,stat=,command=", "-p", &pid.to_string()])
         .output()
         .await

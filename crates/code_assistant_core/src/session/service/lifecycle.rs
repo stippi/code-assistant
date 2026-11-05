@@ -362,7 +362,7 @@ mod tests {
     }
 
     fn git(dir: &std::path::Path, args: &[&str]) {
-        let status = std::process::Command::new("git")
+        let status = process_env::std_command("git")
             .args(args)
             .current_dir(dir)
             .status()

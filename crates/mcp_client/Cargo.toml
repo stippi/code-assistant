@@ -5,6 +5,7 @@ edition = "2024"
 license = "MIT"
 
 [dependencies]
+process_env = { path = "../process_env" }
 tools_core = { path = "../tools_core" }
 rmcp = { version = "3.3", default-features = false, features = [
     "auth",
