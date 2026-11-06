@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::ProjectManager;
 use crate::mocks::{MockLLMProvider, MockProjectManager, MockUI, PendingLLMProvider};
 use crate::session::service::LlmClientFactory;
 use std::time::Duration;
@@ -40,7 +41,7 @@ async fn parked_child(
         let runner = runner.clone();
         async move {
             runner
-                .run("child", "inspect".into(), SubAgentMode::ReadOnly, false)
+                .run("child", "inspect".into(), SubAgentOptions::default())
                 .await
         }
     });
@@ -68,7 +69,7 @@ async fn assert_ends_cancelled(mut task: tokio::task::JoinHandle<Result<SubAgent
 async fn sub_agent_failure_unregisters_and_publishes_terminal_output() {
     let (runner, ui) = runner(failing_provider());
     let result = runner
-        .run("child", "inspect".into(), SubAgentMode::ReadOnly, false)
+        .run("child", "inspect".into(), SubAgentOptions::default())
         .await;
     assert!(result.is_err());
     assert!(
@@ -94,7 +95,7 @@ async fn sub_agent_construction_failure_unregisters() {
     let (runner, _) = runner(Arc::new(|_| anyhow::bail!("constructor failed")));
     assert!(
         runner
-            .run("child", "inspect".into(), SubAgentMode::ReadOnly, false)
+            .run("child", "inspect".into(), SubAgentOptions::default())
             .await
             .is_err()
     );
@@ -168,8 +169,8 @@ async fn sub_agent_tool_retains_structured_failure_output() {
     let mut input = SpawnAgentInput {
         instructions: "inspect".into(),
         require_file_references: false,
-        mode: "read_only".into(),
         background: false,
+        worktree: false,
     };
     let output = SpawnAgentTool
         .execute(&mut context, &mut input)
@@ -218,7 +219,7 @@ impl tools_core::Tool for Probe {
             description: "test".into(),
             parameters_schema: serde_json::json!({"type":"object"}),
             annotations: None,
-            capabilities: tools_core::ToolSpec::capabilities(&[ToolScope::SubAgentReadOnly.tag()]),
+            capabilities: tools_core::ToolSpec::capabilities(&[ToolScope::SubAgentDefault.tag()]),
             multiline_params: &[],
             hidden: false,
             title_template: None,
@@ -261,7 +262,7 @@ async fn sub_agent_keeps_completed_child_evidence_when_later_request_fails() {
     Arc::get_mut(&mut runner).unwrap().tool_registry = Arc::new(registry);
 
     let error = runner
-        .run("child", "inspect".into(), SubAgentMode::ReadOnly, false)
+        .run("child", "inspect".into(), SubAgentOptions::default())
         .await
         .unwrap_err();
     let failure = error.downcast_ref::<SubAgentFailure>().unwrap();
@@ -283,7 +284,7 @@ async fn sub_agent_keeps_completed_child_evidence_when_later_request_fails() {
 async fn sub_agent_factory_panic_is_a_terminal_failure() {
     let (runner, ui) = runner(Arc::new(|_| panic!("factory panicked")));
     let error = runner
-        .run("child", "inspect".into(), SubAgentMode::ReadOnly, false)
+        .run("child", "inspect".into(), SubAgentOptions::default())
         .await
         .unwrap_err();
     assert!(error.downcast_ref::<SubAgentFailure>().is_some());
@@ -422,8 +423,7 @@ async fn background_sub_agent_delivers_its_answer_later() {
         .start_background(
             "tool-1",
             "Find the parser".into(),
-            SubAgentMode::ReadOnly,
-            false,
+            SubAgentOptions::default(),
         )
         .await
         .unwrap();
@@ -475,7 +475,7 @@ async fn background_sub_agent_outlives_the_parent_run() {
     let entered = provider.entered.clone();
     let bg = background_runner(provider.into_factory());
     bg.runner
-        .start_background("tool-1", "inspect".into(), SubAgentMode::ReadOnly, false)
+        .start_background("tool-1", "inspect".into(), SubAgentOptions::default())
         .await
         .unwrap();
     tokio::time::timeout(Duration::from_secs(2), entered.notified())
@@ -506,7 +506,7 @@ async fn background_sub_agents_end_with_the_session() {
     let bg = background_runner(provider.into_factory());
     for tool_id in ["tool-1", "tool-2"] {
         bg.runner
-            .start_background(tool_id, "inspect".into(), SubAgentMode::ReadOnly, false)
+            .start_background(tool_id, "inspect".into(), SubAgentOptions::default())
             .await
             .unwrap();
         tokio::time::timeout(Duration::from_secs(2), entered.notified())
@@ -531,7 +531,7 @@ async fn background_sub_agents_end_with_the_session() {
 async fn background_failure_is_delivered_as_failed() {
     let bg = background_runner(failing_provider());
     bg.runner
-        .start_background("tool-1", "inspect".into(), SubAgentMode::ReadOnly, false)
+        .start_background("tool-1", "inspect".into(), SubAgentOptions::default())
         .await
         .unwrap();
     let (_, finished) = bg.sink.next().await;
@@ -543,23 +543,11 @@ async fn background_failure_is_delivered_as_failed() {
 }
 
 #[tokio::test]
-async fn writing_sub_agents_cannot_run_in_the_background() {
-    let bg = background_runner(answering_provider("done"));
-    let error = bg
-        .runner
-        .start_background("tool-1", "edit".into(), SubAgentMode::Default, false)
-        .await
-        .unwrap_err();
-    assert!(error.to_string().contains("read-only"));
-    assert!(bg.running.list().is_empty());
-}
-
-#[tokio::test]
 async fn background_needs_a_session_to_report_to() {
     let (runner, _) = runner(answering_provider("done"));
     assert!(
         runner
-            .start_background("tool-1", "inspect".into(), SubAgentMode::ReadOnly, false)
+            .start_background("tool-1", "inspect".into(), SubAgentOptions::default())
             .await
             .is_err()
     );
@@ -570,7 +558,7 @@ async fn foreground_sub_agents_are_listed_while_they_run() {
     let bg = background_runner(answering_provider("done"));
     let result = bg
         .runner
-        .run("tool-1", "inspect".into(), SubAgentMode::ReadOnly, false)
+        .run("tool-1", "inspect".into(), SubAgentOptions::default())
         .await
         .unwrap();
     assert_eq!(result.answer, "done");
@@ -631,4 +619,158 @@ fn delivered_messages_parse_back() {
     assert!(parse_sub_agent_message("[sub-agent #x] finished: no").is_none());
     assert!(parse_sub_agent_message("[sub-agent #1] other: no").is_none());
     assert!(parse_sub_agent_message("hello").is_none());
+}
+
+/// A git repository with one commit, inside a temp dir that also holds the
+/// `.worktrees` folder sub-agent worktrees are created in.
+fn git_project() -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    for args in [
+        &["init", "-q"][..],
+        &["config", "user.email", "t@t"],
+        &["config", "user.name", "t"],
+        &["config", "commit.gpgsign", "false"],
+        &["commit", "-q", "--allow-empty", "-m", "init"],
+    ] {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    }
+    (dir, repo)
+}
+
+/// Run a sub-agent in `repo` and report whether it worked in a worktree.
+async fn ran_in_worktree(repo: &std::path::Path, options: SubAgentOptions) -> bool {
+    let worktrees = repo.parent().unwrap().join(".worktrees");
+    let seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let factory: LlmClientFactory = Arc::new({
+        let seen = seen.clone();
+        move |_| {
+            // The client is built once the workspace is set up.
+            seen.store(
+                std::fs::read_dir(&worktrees).is_ok_and(|mut d| d.next().is_some()),
+                std::sync::atomic::Ordering::SeqCst,
+            );
+            Ok(Box::new(MockLLMProvider::new(vec![Ok(
+                crate::mocks::create_test_response_text("done"),
+            )])))
+        }
+    });
+    let config = SessionConfig {
+        init_path: Some(repo.to_path_buf()),
+        ..SessionConfig::default()
+    };
+    let runner = DefaultSubAgentRunner::new(
+        SessionModelConfig::new("test-sub-agent".into()),
+        config,
+        Arc::default(),
+        Arc::default(),
+        Arc::new(MockUI::default()),
+        None,
+        ToolPermissions::default(),
+        crate::tools::test_registry(),
+        None,
+        None,
+    )
+    .with_llm_client_factory(factory)
+    .with_project_manager_factory(Arc::new(|| Box::new(MockProjectManager::new())));
+    let result = runner
+        .run("tool-1", "inspect".into(), options)
+        .await
+        .unwrap();
+    assert_eq!(result.answer, "done");
+    seen.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[tokio::test]
+async fn sub_agents_share_the_tree_unless_a_worktree_is_asked_for() {
+    let (_dir, repo) = git_project();
+    assert!(!ran_in_worktree(&repo, SubAgentOptions::default()).await);
+
+    let isolated = SubAgentOptions {
+        worktree: true,
+        ..SubAgentOptions::default()
+    };
+    assert!(ran_in_worktree(&repo, isolated).await);
+}
+
+/// A project manager the test can still look into after the sub-agent ran.
+#[derive(Clone, Default)]
+struct SharedProjects(Arc<MockProjectManager>);
+
+impl ProjectManager for SharedProjects {
+    fn add_temporary_project(&self, path: std::path::PathBuf) -> Result<String> {
+        self.0.add_temporary_project(path)
+    }
+
+    fn get_projects(&self) -> Result<std::collections::HashMap<String, crate::types::Project>> {
+        self.0.get_projects()
+    }
+
+    fn get_project(&self, name: &str) -> Result<Option<crate::types::Project>> {
+        self.0.get_project(name)
+    }
+
+    fn get_explorer_for_project(&self, name: &str) -> Result<Box<dyn fs_explorer::CodeExplorer>> {
+        self.0.get_explorer_for_project(name)
+    }
+}
+
+/// Run a sub-agent of a session in `parent` and return the directory its
+/// project (the one its system prompt names) points at.
+async fn project_of(parent: &std::path::Path, options: SubAgentOptions) -> std::path::PathBuf {
+    let projects = SharedProjects::default();
+    let config = SessionConfig {
+        init_path: Some(parent.to_path_buf()),
+        ..SessionConfig::default()
+    };
+    let runner = DefaultSubAgentRunner::new(
+        SessionModelConfig::new("test-sub-agent".into()),
+        config,
+        Arc::default(),
+        Arc::default(),
+        Arc::new(MockUI::default()),
+        None,
+        ToolPermissions::default(),
+        crate::tools::test_registry(),
+        None,
+        None,
+    )
+    .with_llm_client_factory(answering_provider("done"))
+    .with_project_manager_factory(Arc::new({
+        let projects = projects.clone();
+        move || Box::new(projects.clone())
+    }));
+    runner
+        .run("tool-1", "change something".into(), options)
+        .await
+        .unwrap();
+    // The mock manager names every temporary project alike, so a later
+    // registration of the parent's tree would have replaced the sub-agent's.
+    projects
+        .0
+        .get_project("temp_project")
+        .unwrap()
+        .expect("the sub-agent registered its project")
+        .path
+}
+
+#[tokio::test]
+async fn sub_agent_works_in_its_worktree_not_the_parents_tree() {
+    let (dir, repo) = git_project();
+    let options = SubAgentOptions {
+        worktree: true,
+        ..SubAgentOptions::default()
+    };
+    let project = project_of(&repo, options).await;
+    assert!(
+        project.starts_with(dir.path().canonicalize().unwrap().join(".worktrees")),
+        "{} is not in the worktrees folder",
+        project.display()
+    );
 }

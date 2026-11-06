@@ -73,7 +73,27 @@
   - Falls back to raw output if JSON parsing fails
   - Located in `build_content()` method, triggered when tool_name is "spawn_agent"
 
-### Completed (phase 7: background runs, transcripts)
+### Completed (phase 7: one kind of sub-agent, background runs, transcripts)
+- [x] **One kind of sub-agent**: the `read_only` / `default` mode split is gone (`SubAgentMode`,
+  `ToolScope::SubAgentReadOnly`). Every sub-agent gets the sub-agent scopes, which include the
+  editing tools and the session's MCP tools. An old `mode` field in stored input is ignored.
+  The design notes below still describe the earlier split.
+- [x] **Parallel writing**: every `spawn_agent` call of a turn runs concurrently
+  (`SpawnAgentParallelPolicy`). By default sub-agents share the parent's tree, and
+  `fs_explorer`'s per-path locks and atomic writes keep edits from being lost. With
+  `worktree: true` (`SubAgentOptions`), a sub-agent in a git project works in a workspace of its
+  own instead: a git worktree on a branch of its own, filled with a copy-on-write copy of
+  everything in the parent's tree (uncommitted work, build outputs, installed dependencies,
+  local configuration; `agent/sub_agent/clone_tree.rs`), so it builds and tests without a setup
+  step. `.git` is not copied: the worktree shares the parent's repository, and worktrees nested
+  in the project are left out. Where the file system cannot clone files (anything but APFS,
+  btrfs or XFS), the worktree is a checkout of a snapshot of the parent's tree, without ignored
+  files. Its changes (content and executable bit) are merged back all-or-nothing when it
+  finishes (`agent/sub_agent/workspace.rs`, `git::isolation`). On a conflict nothing is applied;
+  the changes stay on a branch and the parent is told how to resolve it. Files ignored by git
+  are not merged back. The main agent chooses: a workspace is meant for sub-agents that change
+  files alongside others, not for research. Which tools write cannot be told in
+  general (MCP tools), so this is a choice per call, not derived from the tools.
 - [x] **Background sub-agents**: `background: true` returns right away; the answer arrives
   later as a user message `[sub-agent #N] finished: …` (or `failed` / `cancelled`), which starts
   a turn when the session is idle and is queued otherwise (`SubAgentSink`,
@@ -96,6 +116,7 @@
   while it runs.
 
 ### Pending
+- [ ] **Steering input**: send messages into a running sub-agent from its transcript
 - [ ] **Permission attribution**: Show permission requests as originating from sub-agent context (inline or popover)
 
 ### Notes
