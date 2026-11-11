@@ -634,7 +634,7 @@ fn git_project() -> (tempfile::TempDir, std::path::PathBuf) {
         &["config", "commit.gpgsign", "false"],
         &["commit", "-q", "--allow-empty", "-m", "init"],
     ] {
-        let status = std::process::Command::new("git")
+        let status = process_env::std_command("git")
             .args(args)
             .current_dir(&repo)
             .status()

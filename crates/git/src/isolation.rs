@@ -433,7 +433,7 @@ mod tests {
     use crate::testutil::init_repo_with_commit;
 
     fn git_cmd(dir: &Path, args: &[&str]) -> String {
-        let output = std::process::Command::new("git")
+        let output = process_env::std_command("git")
             .args(args)
             .current_dir(dir)
             .output()

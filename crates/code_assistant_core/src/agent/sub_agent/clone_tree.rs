@@ -71,7 +71,7 @@ fn clone_one(source: &Path, target: &Path) -> io::Result<()> {
 /// Clone a file, a symbolic link or a whole directory tree.
 #[cfg(target_os = "linux")]
 fn clone_one(source: &Path, target: &Path) -> io::Result<()> {
-    let output = std::process::Command::new("cp")
+    let output = process_env::std_command("cp")
         .args([
             "-R",
             "--reflink=always",

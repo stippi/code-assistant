@@ -295,7 +295,7 @@ mod tests {
     use super::*;
 
     fn git(dir: &Path, args: &[&str]) -> String {
-        let output = std::process::Command::new("git")
+        let output = process_env::std_command("git")
             .args(args)
             .current_dir(dir)
             .output()
