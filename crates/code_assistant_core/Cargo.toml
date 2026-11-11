@@ -18,6 +18,7 @@ app_update = { path = "../app_update" }
 command_executor = { path = "../command_executor" }
 fs_explorer = { path = "../fs_explorer" }
 git = { path = "../git" }
+process_env = { path = "../process_env" }
 github = { path = "../github" }
 llm = { path = "../llm" }
 mcp_client = { path = "../mcp_client" }
@@ -97,7 +98,6 @@ libc = "0.2"
 chrono = "0.4"
 
 [dev-dependencies]
-process_env = { path = "../process_env" }
 axum = "0.7"
 # The release archive the self-update tests serve
 zip = { version = "8.6", default-features = false, features = ["deflate"] }
