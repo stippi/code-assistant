@@ -355,7 +355,6 @@ impl Tool for ReadFilesTool {
                 capabilities::SCOPE_MCP,
                 capabilities::SCOPE_AGENT,
                 capabilities::SCOPE_AGENT_DIFF,
-                capabilities::SCOPE_SUBAGENT_READ_ONLY,
                 capabilities::SCOPE_SUBAGENT_DEFAULT,
                 capabilities::SCOPE_SUBAGENT_DEFAULT_DIFF,
             ]),
@@ -447,6 +446,15 @@ impl Tool for ReadFilesTool {
                             ),
                         ));
                         continue;
+                    }
+                    // The agent saw the file now: a later change to it by
+                    // someone else makes its own next change fail.
+                    if has_line_range {
+                        if let Ok(whole) = explorer.read_file(&full_path).await {
+                            context.seen_files().saw(&full_path, &whole);
+                        }
+                    } else {
+                        context.seen_files().saw(&full_path, &content);
                     }
                     loaded_files.insert(
                         PathBuf::from(&path_str),

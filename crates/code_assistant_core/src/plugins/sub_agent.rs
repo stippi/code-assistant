@@ -1,5 +1,6 @@
-//! Dispatch policy for the `spawn_agent` tool: multiple read-only sub-agents
-//! of the same turn run concurrently.
+//! Dispatch policy for the `spawn_agent` tool: all sub-agents of a turn run
+//! concurrently. Where each one works (the parent's tree or a worktree of its
+//! own) is the main agent's choice per call (`SubAgentWorkspace`).
 
 use crate::tools::ToolRequest;
 use agent_core::hooks::ToolDispatchPolicy;
@@ -8,12 +9,7 @@ pub struct SpawnAgentParallelPolicy;
 
 impl SpawnAgentParallelPolicy {
     fn can_run_in_parallel(request: &ToolRequest) -> bool {
-        if request.name != "spawn_agent" {
-            return false;
-        }
-        // Check if mode is read_only (default if not specified)
-        let mode = request.input["mode"].as_str().unwrap_or("read_only");
-        mode == "read_only"
+        request.name == "spawn_agent"
     }
 }
 
@@ -32,10 +28,10 @@ impl ToolDispatchPolicy for SpawnAgentParallelPolicy {
 mod tests {
     use super::*;
 
-    fn spawn_agent_request(id: &str, mode: Option<&str>) -> ToolRequest {
+    fn spawn_agent_request(id: &str, workspace: Option<&str>) -> ToolRequest {
         let mut input = serde_json::json!({ "instructions": "test" });
-        if let Some(mode) = mode {
-            input["mode"] = serde_json::json!(mode);
+        if let Some(workspace) = workspace {
+            input["workspace"] = serde_json::json!(workspace);
         }
         ToolRequest {
             id: id.to_string(),
@@ -47,14 +43,14 @@ mod tests {
     }
 
     #[test]
-    fn read_only_spawn_agents_run_in_parallel() {
+    fn spawn_agents_run_in_parallel_wherever_they_work() {
         let requests = vec![
-            spawn_agent_request("1", Some("read_only")),
-            spawn_agent_request("2", None), // mode defaults to read_only
-            spawn_agent_request("3", Some("default")),
+            spawn_agent_request("1", None),
+            spawn_agent_request("2", Some("copy")),
+            spawn_agent_request("3", Some("checkout")),
         ];
         let indices = SpawnAgentParallelPolicy.parallel_indices(&requests);
-        assert_eq!(indices, vec![0, 1]);
+        assert_eq!(indices, vec![0, 1, 2]);
     }
 
     #[test]

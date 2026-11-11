@@ -175,8 +175,16 @@ impl Tool for DeleteFilesTool {
             // unreadable files simply render without a diff)
             let content = explorer.read_file(&full_path).await.ok();
 
-            // Try to delete the file
-            match explorer.delete_file(&full_path).await {
+            // Delete the file, unless it changed since this agent last saw it
+            match context
+                .seen_files()
+                .change(
+                    explorer.as_ref(),
+                    &full_path,
+                    explorer.delete_file(&full_path),
+                )
+                .await
+            {
                 Ok(_) => {
                     deleted.push(path.clone());
                     if let Some(content) = content {

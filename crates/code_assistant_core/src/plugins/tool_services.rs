@@ -26,6 +26,7 @@ pub struct CodeAssistantToolServices {
     pub browser_sessions: Option<Arc<web::BrowserSessionManager>>,
     pub session_source: Option<Arc<dyn crate::session_query::SessionSource>>,
     pub mcp_resources: Option<Arc<mcp_client::McpResourceServers>>,
+    pub seen_files: Arc<crate::tools::seen_files::SeenFiles>,
 }
 
 impl ToolServicesProvider for CodeAssistantToolServices {
@@ -43,6 +44,7 @@ impl ToolServicesProvider for CodeAssistantToolServices {
             browser_sessions: self.browser_sessions.clone(),
             session_source: self.session_source.clone(),
             mcp_resources: self.mcp_resources.clone(),
+            seen_files: self.seen_files.clone(),
         })
     }
 
@@ -66,6 +68,7 @@ impl ToolServicesProvider for CodeAssistantToolServices {
             browser_sessions: self.browser_sessions.clone(),
             session_source: self.session_source.clone(),
             mcp_resources: self.mcp_resources.clone(),
+            seen_files: self.seen_files.clone(),
         })
     }
 }

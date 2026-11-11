@@ -231,22 +231,29 @@ impl Tool for ReplaceInFileTool {
             Vec::new()
         };
 
-        // If format-on-save applies, use format-aware path
-        let result = if let Some(command_line) = project_config.format_command_for(&path) {
-            explorer
-                .apply_replacements_with_formatting(
-                    &full_path,
-                    &replacements,
-                    &command_line,
-                    context.command_executor,
-                )
-                .await
-        } else {
-            match explorer.apply_replacements(&full_path, &replacements).await {
-                Ok(content) => Ok((content, None)),
-                Err(e) => Err(e),
+        // If format-on-save applies, use format-aware path; nothing happens if
+        // the file changed since this agent last saw it.
+        let apply = async {
+            if let Some(command_line) = project_config.format_command_for(&path) {
+                explorer
+                    .apply_replacements_with_formatting(
+                        &full_path,
+                        &replacements,
+                        &command_line,
+                        context.command_executor,
+                    )
+                    .await
+            } else {
+                match explorer.apply_replacements(&full_path, &replacements).await {
+                    Ok(content) => Ok((content, None)),
+                    Err(e) => Err(e),
+                }
             }
         };
+        let result = context
+            .seen_files()
+            .change(explorer.as_ref(), &full_path, apply)
+            .await;
 
         match result {
             Ok((_new_content, updated_replacements)) => {

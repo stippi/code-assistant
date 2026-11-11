@@ -201,29 +201,37 @@ impl Tool for WriteFileTool {
             None
         };
 
-        // Write the file
-        match explorer
-            .write_file(&full_path, &input.content, input.append)
+        // Write the file and, if format-on-save applies, format it: both as
+        // one change, so the formatted content counts as seen.
+        let format_command = project_config
+            .as_ref()
+            .and_then(|config| config.format_command_for(&path));
+        let write = async {
+            explorer
+                .write_file(&full_path, &input.content, input.append)
+                .await?;
+            if let Some(command_line) = &format_command {
+                let mut format_request = SandboxCommandRequest::default();
+                format_request.writable_roots.push(project_root.clone());
+                let _ = context
+                    .command_executor
+                    .execute(command_line, Some(&project_root), Some(&format_request))
+                    .await;
+            }
+            anyhow::Ok(())
+        };
+        match context
+            .seen_files()
+            .change(explorer.as_ref(), &full_path, write)
             .await
         {
-            Ok(_) => {
-                // If format-on-save applies, run the formatter
-                if let Some(command_line) = project_config
-                    .as_ref()
-                    .and_then(|config| config.format_command_for(&path))
+            Ok(()) => {
+                // Regardless of formatter success, re-read the file content so
+                // the LLM sees the formatted content
+                if format_command.is_some()
+                    && let Ok(updated) = explorer.read_file(&full_path).await
                 {
-                    let mut format_request = SandboxCommandRequest::default();
-                    format_request.writable_roots.push(project_root.clone());
-                    let _ = context
-                        .command_executor
-                        .execute(&command_line, Some(&project_root), Some(&format_request))
-                        .await;
-
-                    // Regardless of formatter success, try to re-read the file content
-                    if let Ok(updated) = explorer.read_file(&full_path).await {
-                        // Update the input content to the formatted content so the LLM sees it
-                        input.content = updated;
-                    }
+                    input.content = updated;
                 }
 
                 // Emit resource event
@@ -258,6 +266,40 @@ mod tests {
     use super::*;
     use crate::mocks::ToolTestFixture;
     use std::path::PathBuf;
+
+    #[tokio::test]
+    async fn writing_over_a_file_changed_since_it_was_read_fails() -> Result<()> {
+        use crate::tools::impls::read_files::{ReadFilesInput, ReadFilesTool};
+        let mut fixture =
+            ToolTestFixture::with_files(vec![("notes.md".into(), "one\ntwo\n".into())]);
+        let mut context = fixture.context();
+        // Reading a part of the file counts as having seen all of it.
+        let mut read = ReadFilesInput {
+            project: "test-project".into(),
+            paths: vec!["notes.md:1-1".into()],
+            prefix_line_numbers: false,
+            ignore_size_limit: false,
+        };
+        ReadFilesTool.execute(&mut context, &mut read).await?;
+        let explorer = context
+            .project_manager()
+            .get_explorer_for_project("test-project")?;
+        let file = explorer.root_dir().join("notes.md");
+        explorer.write_file(&file, "one\nTWO\n", false).await?;
+        let mut input = WriteFileInput {
+            project: "test-project".into(),
+            path: "notes.md".into(),
+            content: "replaced\n".into(),
+            append: false,
+        };
+
+        let output = WriteFileTool.execute(&mut context, &mut input).await?;
+
+        let error = output.error.expect("the write is refused");
+        assert!(error.contains("changed since you last read it"), "{error}");
+        assert_eq!(explorer.read_file(&file).await?, "one\nTWO\n");
+        Ok(())
+    }
 
     #[tokio::test]
     async fn test_write_file_output_rendering() {

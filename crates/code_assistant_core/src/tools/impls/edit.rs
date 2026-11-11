@@ -201,22 +201,29 @@ impl Tool for EditTool {
             Vec::new()
         };
 
-        // Apply with or without formatting, based on project configuration
-        let format_result = if let Some(format_command) = project_config.format_command_for(&path) {
-            explorer
-                .apply_replacements_with_formatting(
-                    &full_path,
-                    &replacements,
-                    &format_command,
-                    context.command_executor,
-                )
-                .await
-        } else {
-            match explorer.apply_replacements(&full_path, &replacements).await {
-                Ok(content) => Ok((content, None)),
-                Err(e) => Err(e),
+        // Apply with or without formatting, based on project configuration,
+        // unless the file changed since this agent last saw it.
+        let apply = async {
+            if let Some(format_command) = project_config.format_command_for(&path) {
+                explorer
+                    .apply_replacements_with_formatting(
+                        &full_path,
+                        &replacements,
+                        &format_command,
+                        context.command_executor,
+                    )
+                    .await
+            } else {
+                match explorer.apply_replacements(&full_path, &replacements).await {
+                    Ok(content) => Ok((content, None)),
+                    Err(e) => Err(e),
+                }
             }
         };
+        let format_result = context
+            .seen_files()
+            .change(explorer.as_ref(), &full_path, apply)
+            .await;
 
         match format_result {
             Ok((_new_content, updated_replacements)) => {
@@ -316,6 +323,49 @@ mod tests {
         assert!(rendered_multiple.contains("Found 3 occurrences"));
         assert!(rendered_multiple.contains("Try enlarging old_text"));
         assert!(rendered_multiple.contains("make it unique"));
+    }
+
+    #[tokio::test]
+    async fn an_edit_fails_when_the_file_changed_since_it_was_read() -> Result<()> {
+        use crate::tools::impls::read_files::{ReadFilesInput, ReadFilesTool};
+        let mut fixture = ToolTestFixture::with_files(vec![("test.rs".into(), "a\nb\n".into())]);
+        let mut context = fixture.context();
+        let mut read = ReadFilesInput {
+            project: "test-project".into(),
+            paths: vec!["test.rs".into()],
+            prefix_line_numbers: false,
+            ignore_size_limit: false,
+        };
+        ReadFilesTool.execute(&mut context, &mut read).await?;
+        // Another agent changes the file meanwhile.
+        let explorer = context
+            .project_manager()
+            .get_explorer_for_project("test-project")?;
+        let file = explorer.root_dir().join("test.rs");
+        explorer.write_file(&file, "a\nB\n", false).await?;
+        let mut input = EditInput {
+            project: "test-project".into(),
+            path: "test.rs".into(),
+            old_text: "a\n".into(),
+            new_text: "A\n".into(),
+            replace_all: false,
+        };
+
+        let output = EditTool.execute(&mut context, &mut input).await?;
+
+        let error = output.error.expect("the edit is refused");
+        assert!(
+            format!("{error:?}").contains("changed since you last read it"),
+            "{error:?}"
+        );
+        assert_eq!(explorer.read_file(&file).await?, "a\nB\n");
+        // Having read it again, the agent may change it.
+        ReadFilesTool.execute(&mut context, &mut read).await?;
+        let output = EditTool.execute(&mut context, &mut input).await?;
+        assert!(output.error.is_none());
+        // (The mock explorer drops the final newline when it replaces.)
+        assert_eq!(explorer.read_file(&file).await?.trim_end(), "A\nB");
+        Ok(())
     }
 
     #[tokio::test]

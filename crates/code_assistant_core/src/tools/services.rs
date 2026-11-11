@@ -11,6 +11,7 @@ use crate::config::ProjectManager;
 use crate::session::monitor::SessionMonitors;
 use crate::session::wakeup::SessionWakeups;
 use crate::tools::core::ToolContext;
+use crate::tools::seen_files::SeenFiles;
 use crate::tools::terminal_interrupts::TerminalInterrupts;
 use crate::types::PlanState;
 use crate::ui::UserInterface;
@@ -59,6 +60,9 @@ pub struct ToolServices {
     /// `:mcp:<server>` scope: the agent's registry's servers, minus those the
     /// session switched off. `None` where MCP resources are not offered.
     pub mcp_resources: Option<Arc<mcp_client::McpResourceServers>>,
+    /// The file contents this agent has seen; changes to files that changed
+    /// since go through [`SeenFiles::change`] and fail.
+    pub seen_files: Arc<SeenFiles>,
 }
 
 impl ToolServices {
@@ -75,6 +79,7 @@ impl ToolServices {
             browser_sessions: None,
             session_source: None,
             mcp_resources: None,
+            seen_files: Arc::default(),
         }
     }
 }
@@ -92,6 +97,7 @@ pub trait ToolServicesAccess {
     fn pty_sessions(&self) -> Option<&PtySessionManager>;
     fn browser_sessions(&self) -> Option<&web::BrowserSessionManager>;
     fn mcp_resources(&self) -> Option<&mcp_client::McpResourceServers>;
+    fn seen_files(&self) -> Arc<SeenFiles>;
 }
 
 impl ToolServicesAccess for ToolContext<'_> {
@@ -132,5 +138,9 @@ impl ToolServicesAccess for ToolContext<'_> {
     fn mcp_resources(&self) -> Option<&mcp_client::McpResourceServers> {
         self.extension::<ToolServices>()
             .and_then(|services| services.mcp_resources.as_deref())
+    }
+
+    fn seen_files(&self) -> Arc<SeenFiles> {
+        self.services().seen_files.clone()
     }
 }

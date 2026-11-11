@@ -73,7 +73,46 @@
   - Falls back to raw output if JSON parsing fails
   - Located in `build_content()` method, triggered when tool_name is "spawn_agent"
 
-### Completed (phase 7: background runs, transcripts)
+### Completed (phase 7: one kind of sub-agent, background runs, transcripts)
+- [x] **One kind of sub-agent**: the `read_only` / `default` mode split is gone (`SubAgentMode`,
+  `ToolScope::SubAgentReadOnly`). Every sub-agent gets the sub-agent scopes, which include the
+  editing tools and the session's MCP tools. An old `mode` field in stored input is ignored.
+- [x] **Parallel writing**: every `spawn_agent` call of a turn runs concurrently
+  (`SpawnAgentParallelPolicy`). The main agent chooses where each one works with `workspace`
+  (`SubAgentWorkspace`); which tools write cannot be told in general (MCP tools), so it is a
+  choice per call, not derived from the tools.
+  - `shared` (default): in the parent's tree. Every agent remembers the version of each file it
+    last read or wrote (`tools::seen_files::SeenFiles`; the main agent's lives on the session
+    instance and survives across runs, each sub-agent has its own). A change through the file
+    tools (`edit`, `replace_in_file`, `write_file`, `delete_files`) to a file that differs from
+    that version fails with a message to read it again, so no agent writes over changes it never
+    saw, whether another agent, a command or the user made them. Files an agent never saw it may
+    change. Check, change, format-on-save and read-back happen under the path's lock
+    (`fs_explorer::locks`), as one step; writes replace files atomically. Commands are not
+    guarded.
+  - `copy`: in a git project, a worktree on a branch of its own, started from a snapshot of the
+    parent's tree (uncommitted and untracked work included, `git::isolation`) and filled with a
+    copy-on-write clone of everything in it, build outputs, installed dependencies and local
+    configuration included (`agent/sub_agent/clone_tree.rs`), so it builds and tests without a
+    setup step and without waiting for the parent's builds. `.git` is not copied: the worktree
+    shares the parent's repository, so its branch is visible there. Worktrees nested in the
+    project are left out. Where the file system cannot clone files (anything but APFS, btrfs or
+    XFS), the worktree is a checkout of the snapshot.
+  - `checkout`: the same worktree, but always a checkout of the snapshot, without ignored files.
+  - Nothing flows back into the parent's tree by itself (`agent/sub_agent/workspace.rs`). When
+    the sub-agent ends (finished, failed or cancelled), what it changed is committed to its
+    branch and the worktree is removed; the result names the branch, the changed files and the
+    commands to review the changes, apply them (`git diff --binary <base> <branch> | git apply`)
+    and delete the branch. Without changes the branch goes too. Changes to ignored files go
+    with the worktree.
+  - Removing a worktree moves its files into `.worktrees/<repo>/.trash` first and deletes them
+    in the background: deleting a copy of this repository with its `target/` (about 200,000
+    files) takes half a minute, cloning it about three seconds.
+  - Each worktree is locked (`git worktree lock`) with the id of the process running it and
+    its base commit. Creating a workspace removes those of processes that are gone, keeping
+    their changes on their branches, and deletes trash such processes left.
+  - Asked for a worktree outside git, a sub-agent works in the parent's tree and the result
+    says so.
 - [x] **Background sub-agents**: `background: true` returns right away; the answer arrives
   later as a user message `[sub-agent #N] finished: …` (or `failed` / `cancelled`), which starts
   a turn when the session is idle and is queued otherwise (`SubAgentSink`,
@@ -96,6 +135,7 @@
   while it runs.
 
 ### Pending
+- [ ] **Steering input**: send messages into a running sub-agent from its transcript
 - [ ] **Permission attribution**: Show permission requests as originating from sub-agent context (inline or popover)
 
 ### Notes
@@ -125,7 +165,8 @@ This output is **UI-only** and should not be appended to the main agent’s mess
 
 ### Parallel sub-agents
 - If the main agent requests multiple `spawn_agent` tool calls in a single response, they should run **truly concurrently**.
-- Recommended safety default: only allow concurrent sub-agents in **read-only** mode.
+- Since phase 7 every sub-agent may write; the main agent decides per call whether it works in
+  the shared tree or in a worktree of its own (`workspace`).
 
 ### Cancellation
 - Users can cancel a specific running sub-agent.
@@ -146,9 +187,9 @@ Keep parameters intentionally small:
 - `instructions: string` (required)
 - `require_file_references: bool` (optional, default `false`)
   - If true, the implementation appends a static instruction suffix telling the sub-agent to include exact file references with line ranges.
-- `mode: "read_only" | "default"` (optional, default TBD)
-  - `read_only` maps to a restricted tool scope.
-  - `default` may allow broader tools (future/optional).
+- `background: bool` (optional, default `false`): return right away, the answer arrives later.
+- `workspace: "shared" | "copy" | "checkout"` (optional, default `shared`): see phase 7.
+- The original `mode: "read_only" | "default"` is gone (phase 7).
 
 ### Tool result returned to main agent
 - For the main agent, the tool result content is the **final answer string**.
@@ -226,7 +267,7 @@ Implement a small factory interface used by the sub-agent runner:
 Use existing model configuration and construction:
 - `crates/llm/src/factory.rs` provides `create_llm_client_from_model(...)`.
 
-### 3) Tool scopes for sub-agent read-only mode
+### 3) Tool scopes for sub-agent read-only mode (replaced in phase 7)
 
 Add a new tool scope:
 - `ToolScope::SubAgentReadOnly`
@@ -269,7 +310,7 @@ Update `Agent::manage_tool_execution()` (`crates/code_assistant/src/agent/runner
 
 - When tool requests include multiple `spawn_agent` calls, execute them concurrently.
 - Keep deterministic ordering for the tool result blocks appended to the message history (match original tool request ordering).
-- Recommended v1 safety: only run concurrently when `mode=read_only`.
+- v1 ran only read-only sub-agents concurrently; since phase 7 all of them run concurrently.
 
 ### 7) Cancellation
 

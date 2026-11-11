@@ -1525,6 +1525,11 @@ impl SessionManager {
                 .map(|instance| instance.terminal_interrupts.clone()),
             session_source: Some(self.session_source()),
             hooks_factory: self.hooks_factory.clone(),
+            seen_files: self
+                .active_sessions
+                .get(session_id)
+                .map(|instance| instance.seen_files.clone())
+                .unwrap_or_default(),
         };
 
         let mut agent = Agent::new(components, session_config.clone());

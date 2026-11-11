@@ -338,6 +338,11 @@ pub struct SessionInstance {
     /// terminates all remaining sessions.
     pub pty_sessions: Arc<pty_session::PtySessionManager>,
 
+    /// The file contents the session's main agent has seen, so a change to
+    /// a file someone else changed since fails. Survives across agent runs;
+    /// starts empty when the session is loaded.
+    pub seen_files: Arc<crate::tools::seen_files::SeenFiles>,
+
     /// Live browser sessions started by this session's agents (`browser_*`
     /// tools), sub-agents' included. Survives across agent runs so an
     /// authenticated browser can be reused; dropping the instance kills any
@@ -423,6 +428,7 @@ impl SessionInstance {
             running_sub_agents,
             background_cancellation: tools_core::RunCancellation::default(),
             pty_sessions: Arc::new(pty_session::PtySessionManager::default()),
+            seen_files: Arc::default(),
             browsers: Arc::default(),
             terminal_interrupts: Arc::new(crate::tools::TerminalInterrupts::default()),
             agent_lock: None,

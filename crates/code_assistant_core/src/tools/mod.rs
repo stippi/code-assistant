@@ -37,6 +37,7 @@ pub mod terminal_interrupts;
 
 // code-assistant's tool selection vocabulary (ToolScope, scope:* tags)
 pub mod scope;
+pub mod seen_files;
 
 #[cfg(test)]
 mod tests;
