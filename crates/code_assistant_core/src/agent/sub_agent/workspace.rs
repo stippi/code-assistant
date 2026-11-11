@@ -148,11 +148,19 @@ impl ChildWorkspace {
     }
 
     async fn remove(&self, keep_branch: bool) {
+        // Deleting a copy with all its build outputs takes a while (half a
+        // minute for 200,000 files); the result should not wait for it.
+        let trash = move_into_trash(&self.worktree, &trash_dir(&self.repo_root))
+            .inspect_err(|e| tracing::warn!("Failed to move a sub-agent worktree aside: {e:#}"))
+            .ok();
         let _ = unlock(&self.git, &self.repo_root, &self.worktree).await;
         if let Err(e) =
             worktree::remove_worktree(&self.git, &self.repo_root, &self.worktree, true).await
         {
             tracing::warn!("Failed to remove sub-agent worktree: {e:#}");
+        }
+        if let Some(trash) = trash {
+            delete_in_background(trash);
         }
         if !keep_branch {
             let _ = self
@@ -305,9 +313,53 @@ async fn nested_worktrees(git: &GitBinary, repo_root: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Where the files of removed worktrees wait to be deleted: next to the
+/// repository's worktrees.
+fn trash_dir(repo_root: &Path) -> PathBuf {
+    worktree::suggest_worktree_path(repo_root, "trash").with_file_name(".trash")
+}
+
+/// Move everything in `worktree` but its `.git` into a new folder in `trash`
+/// (on the same file system, so nothing is copied). Returns that folder.
+fn move_into_trash(worktree: &Path, trash: &Path) -> Result<PathBuf> {
+    let name = worktree
+        .file_name()
+        .context("A worktree path has a name")?
+        .to_string_lossy();
+    let target = trash.join(format!("{name}-pid{}", std::process::id()));
+    std::fs::create_dir_all(&target)
+        .with_context(|| format!("Failed to create {}", target.display()))?;
+    for entry in std::fs::read_dir(worktree)? {
+        let entry = entry?;
+        if entry.file_name() != ".git" {
+            std::fs::rename(entry.path(), target.join(entry.file_name()))?;
+        }
+    }
+    Ok(target)
+}
+
+fn delete_in_background(path: PathBuf) {
+    std::thread::spawn(move || {
+        if let Err(e) = std::fs::remove_dir_all(&path) {
+            tracing::warn!("Failed to delete {}: {e}", path.display());
+        }
+    });
+}
+
 /// Remove the sub-agent worktrees of processes that are gone, keeping what
-/// they changed on their branches.
+/// they changed on their branches, and delete the trash they left.
 async fn remove_orphans(git: &GitBinary, repo_root: &Path) {
+    if let Ok(entries) = std::fs::read_dir(trash_dir(repo_root)) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let pid = name
+                .rsplit_once("-pid")
+                .and_then(|(_, pid)| pid.parse::<u32>().ok());
+            if pid.is_some_and(|pid| !process_alive(pid)) {
+                delete_in_background(entry.path());
+            }
+        }
+    }
     for listed in list_worktrees(git, repo_root).await {
         let (Some(branch), Some(reason)) = (&listed.branch, &listed.locked) else {
             continue;
@@ -633,6 +685,59 @@ mod tests {
         assert!(alive.root().exists());
         alive.close().await.unwrap();
         third.close().await.unwrap();
+    }
+
+    #[test]
+    fn moving_into_the_trash_leaves_only_git_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let worktree = dir.path().join("wt");
+        std::fs::create_dir_all(worktree.join("target/debug")).unwrap();
+        std::fs::write(worktree.join(".git"), "gitdir: x").unwrap();
+        std::fs::write(worktree.join("target/debug/app"), "binary").unwrap();
+        std::fs::write(worktree.join("a.txt"), "a").unwrap();
+        let trash = dir.path().join(".trash");
+
+        let moved = move_into_trash(&worktree, &trash).unwrap();
+
+        let left: Vec<_> = std::fs::read_dir(&worktree)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(left, vec![".git"]);
+        assert!(moved.starts_with(&trash));
+        assert_eq!(
+            std::fs::read_to_string(moved.join("target/debug/app")).unwrap(),
+            "binary"
+        );
+    }
+
+    #[tokio::test]
+    async fn trash_of_a_process_that_is_gone_is_deleted() {
+        let dir = repo();
+        let repo = dir.path().join("repo");
+        let mut finished = process_env::std_command("true").spawn().unwrap();
+        let dead_pid = finished.id();
+        finished.wait().unwrap();
+        let leftover =
+            trash_dir(&repo.canonicalize().unwrap()).join(format!("old-worktree-pid{dead_pid}"));
+        std::fs::create_dir_all(leftover.join("target")).unwrap();
+        std::fs::write(leftover.join("target/out"), "x").unwrap();
+        let running = trash_dir(&repo.canonicalize().unwrap())
+            .join(format!("busy-worktree-pid{}", std::process::id()));
+        std::fs::create_dir_all(&running).unwrap();
+
+        let ws = ChildWorkspace::create(&repo, "tool_10", Fill::Checkout)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while leftover.exists() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(!leftover.exists());
+        assert!(running.exists());
+        ws.close().await.unwrap();
     }
 
     #[test]

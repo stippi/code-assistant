@@ -98,9 +98,12 @@
     commands to review the changes, apply them (`git diff --binary <base> <branch> | git apply`)
     and delete the branch. Without changes the branch goes too. Changes to ignored files go
     with the worktree.
+  - Removing a worktree moves its files into `.worktrees/<repo>/.trash` first and deletes them
+    in the background: deleting a copy of this repository with its `target/` (about 200,000
+    files) takes half a minute, cloning it about three seconds.
   - Each worktree is locked (`git worktree lock`) with the id of the process running it and
     its base commit. Creating a workspace removes those of processes that are gone, keeping
-    their changes on their branches.
+    their changes on their branches, and deletes trash such processes left.
   - Asked for a worktree outside git, a sub-agent works in the parent's tree and the result
     says so.
 - [x] **Background sub-agents**: `background: true` returns right away; the answer arrives
