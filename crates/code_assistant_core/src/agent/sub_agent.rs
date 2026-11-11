@@ -315,9 +315,23 @@ pub trait SubAgentTranscripts: Send + Sync {
 pub struct SubAgentOptions {
     /// Insist on file references with line ranges in the answer.
     pub require_file_references: bool,
-    /// In a git project, work in a worktree of its own and merge the changes
-    /// back when done. Otherwise the sub-agent shares the parent's tree.
-    pub worktree: bool,
+    pub workspace: SubAgentWorkspace,
+}
+
+/// Where a sub-agent works, chosen by the main agent per `spawn_agent` call.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubAgentWorkspace {
+    /// In the parent's working tree; its edits land there right away.
+    #[default]
+    Shared,
+    /// In a git project, in a worktree of its own filled with a copy of
+    /// everything in the parent's tree, ignored files (build outputs,
+    /// dependencies) included. Its changes stay on the worktree's branch.
+    Copy,
+    /// Like `Copy`, but the worktree holds only what git tracks (uncommitted
+    /// and untracked work included), no ignored files.
+    Checkout,
 }
 
 /// Runs sub-agents with isolated history and streams a compact progress view into the parent tool UI.

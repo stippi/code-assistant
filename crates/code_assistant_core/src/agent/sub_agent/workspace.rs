@@ -1,23 +1,41 @@
-//! Isolated workspaces for sub-agents.
+//! Worktrees for sub-agents.
 //!
-//! A sub-agent in a git project can run in a workspace of its own: a git
-//! worktree on a branch of its own, filled with a copy-on-write copy of
-//! everything in the parent's tree, uncommitted work, build outputs and
-//! installed dependencies included ([`super::clone_tree`]), so it builds and
-//! tests right away. Where the file system cannot clone files, the worktree
-//! is a checkout of a snapshot of the parent's tree instead, without ignored
-//! files. Its edits, formatter runs, builds and git commands stay there, so
-//! several agents can write at once. When it finishes, its changes are merged
-//! into the parent's working tree all-or-nothing; on a conflict nothing is
-//! applied and the changes stay on a branch for the parent to resolve.
+//! A sub-agent in a git project can work in a worktree of its own, on a
+//! branch of its own, started from a snapshot of the parent's tree
+//! (uncommitted and untracked work included). With [`Fill::Copy`] the
+//! worktree holds a copy-on-write clone of everything in the parent's tree,
+//! ignored files included ([`super::clone_tree`]), so build outputs and
+//! installed dependencies come along; where the file system cannot clone
+//! files, and with [`Fill::Checkout`], it is a checkout of the snapshot.
+//!
+//! Nothing flows back into the parent's tree by itself. When the sub-agent
+//! ends, what it changed is committed to its branch, the worktree goes away
+//! and the parent is told how to review and apply the changes
+//! ([`KeptChanges`]).
+//!
+//! Every worktree is locked (`git worktree lock`) with the id of the process
+//! that runs it. The next workspace created in the repository removes those
+//! of processes that are gone, keeping their changes on their branches.
 
 use super::clone_tree::clone_tree;
 use anyhow::{Context, Result};
-use git::isolation::{
-    MergeConflict, changed_paths, merge_into_working_tree, snapshot_working_tree,
-};
+use git::isolation::{changed_paths, snapshot_working_tree};
 use git::{GitBinary, GitRepository, worktree};
 use std::path::{Path, PathBuf};
+
+/// Branches of sub-agent worktrees start with this.
+const BRANCH_PREFIX: &str = "code-assistant/sub-agent/";
+/// Lock reasons of sub-agent worktrees start with this.
+const LOCK_PREFIX: &str = "code-assistant sub-agent";
+
+/// What a sub-agent's worktree is filled with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Fill {
+    /// Everything in the parent's tree, ignored files included.
+    Copy,
+    /// What git tracks in the parent's tree, without ignored files.
+    Checkout,
+}
 
 pub(crate) struct ChildWorkspace {
     git: GitBinary,
@@ -25,30 +43,27 @@ pub(crate) struct ChildWorkspace {
     repo_root: PathBuf,
     worktree: PathBuf,
     branch: String,
-    /// The snapshot of the parent's tree the worktree started from.
+    /// The commit the worktree's files started from.
     base: String,
     /// The project directory relative to the repository root.
     project_subdir: PathBuf,
 }
 
-/// How a finished sub-agent's changes came back.
+/// What a sub-agent changed, kept on a branch of the parent's repository.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum MergeOutcome {
-    NoChanges,
-    Merged {
-        files: Vec<String>,
-    },
-    Conflicted {
-        conflicts: Vec<MergeConflict>,
-        branch: String,
-        base: String,
-    },
+pub(crate) struct KeptChanges {
+    pub repo_root: PathBuf,
+    pub branch: String,
+    /// The commit the changes are measured against.
+    pub base: String,
+    /// Changed paths, relative to the repository root.
+    pub files: Vec<String>,
 }
 
 impl ChildWorkspace {
     /// Create a worktree for the sub-agent of `tool_id`. `None` when the
     /// project is not inside a git repository.
-    pub async fn create(project: &Path, tool_id: &str) -> Result<Option<Self>> {
+    pub async fn create(project: &Path, tool_id: &str, fill: Fill) -> Result<Option<Self>> {
         if !GitRepository::is_repo(project) {
             return Ok(None);
         }
@@ -60,8 +75,9 @@ impl ChildWorkspace {
             .map(Path::to_path_buf)
             .unwrap_or_default();
         let git = GitBinary::new()?;
+        remove_orphans(&git, &repo_root).await;
 
-        let base =
+        let snapshot =
             snapshot_working_tree(&git, &repo_root, "code-assistant: sub-agent base").await?;
         let id: String = tool_id
             .chars()
@@ -73,9 +89,10 @@ impl ChildWorkspace {
                 }
             })
             .collect();
-        let branch = format!("code-assistant/sub-agent/{id}-{}", &base[..8]);
+        let branch = format!("{BRANCH_PREFIX}{id}-{}", &snapshot[..8]);
         let path = worktree::suggest_worktree_path(&repo_root, &branch);
-        let (worktree, base) = fill_worktree(&git, &repo_root, &path, &branch, base).await?;
+        let (worktree, base) =
+            fill_worktree(&git, &repo_root, &path, &branch, snapshot, fill).await?;
         Ok(Some(Self {
             git,
             repo_root,
@@ -96,75 +113,42 @@ impl ChildWorkspace {
         self.worktree.join(&self.project_subdir)
     }
 
-    /// Commit what the sub-agent left in the worktree and return the commit
-    /// and the paths it changed.
-    async fn collect(&self) -> Result<(String, Vec<String>)> {
+    /// End the workspace: commit what the sub-agent left in it to its branch
+    /// and remove the worktree. `None` when it changed nothing; the branch
+    /// goes away then too. On an error the worktree stays where it is.
+    pub async fn close(self) -> Result<Option<KeptChanges>> {
         let changes = snapshot_working_tree(
             &self.git,
             &self.worktree,
             "code-assistant: sub-agent changes",
         )
         .await?;
-        let paths = changed_paths(&self.git, &self.repo_root, &self.base, &changes).await?;
-        Ok((changes, paths))
-    }
-
-    /// Merge the sub-agent's changes into the parent's working tree.
-    pub async fn finish(self) -> Result<MergeOutcome> {
-        let (changes, paths) = self.collect().await?;
-        if paths.is_empty() {
+        let files = changed_paths(&self.git, &self.repo_root, &self.base, &changes).await?;
+        if files.is_empty() {
             self.remove(false).await;
-            return Ok(MergeOutcome::NoChanges);
+            return Ok(None);
         }
-        let result = {
-            // The parent and other sub-agents' merges write these files too.
-            let _locks =
-                fs_explorer::locks::lock_paths(paths.iter().map(|p| self.repo_root.join(p))).await;
-            merge_into_working_tree(&self.git, &self.repo_root, &self.base, &changes).await?
-        };
-        if result.conflicts.is_empty() {
-            self.remove(false).await;
-            return Ok(MergeOutcome::Merged {
-                files: result.applied,
-            });
-        }
-        self.keep_branch_at(&changes).await?;
-        let (branch, base) = (self.branch.clone(), self.base.clone());
-        self.remove(true).await;
-        Ok(MergeOutcome::Conflicted {
-            conflicts: result.conflicts,
-            branch,
-            base,
-        })
-    }
-
-    /// Drop the worktree of a cancelled or failed sub-agent without applying
-    /// anything. Returns the branch its partial changes are kept on, if it
-    /// made any.
-    pub async fn abandon(self) -> Option<String> {
-        let kept = match self.collect().await {
-            Ok((changes, paths)) if !paths.is_empty() => self
-                .keep_branch_at(&changes)
-                .await
-                .ok()
-                .map(|()| self.branch.clone()),
-            _ => None,
-        };
-        self.remove(kept.is_some()).await;
-        kept
-    }
-
-    async fn keep_branch_at(&self, commit: &str) -> Result<()> {
         self.git
             .run(
                 &self.repo_root,
-                &["update-ref", &format!("refs/heads/{}", self.branch), commit],
+                &[
+                    "update-ref",
+                    &format!("refs/heads/{}", self.branch),
+                    &changes,
+                ],
             )
             .await?;
-        Ok(())
+        self.remove(true).await;
+        Ok(Some(KeptChanges {
+            repo_root: self.repo_root,
+            branch: self.branch,
+            base: self.base,
+            files,
+        }))
     }
 
     async fn remove(&self, keep_branch: bool) {
+        let _ = unlock(&self.git, &self.repo_root, &self.worktree).await;
         if let Err(e) =
             worktree::remove_worktree(&self.git, &self.repo_root, &self.worktree, true).await
         {
@@ -179,39 +163,51 @@ impl ChildWorkspace {
     }
 }
 
-/// Create the worktree at `path` on `branch` and fill it: with a clone of
-/// `repo_root` where the file system can, else with a checkout of `base`, the
-/// snapshot of `repo_root`. Returns the worktree and the commit its files
+impl KeptChanges {
+    /// How the parent reviews and applies the changes, and cleans up.
+    pub fn instructions(&self) -> String {
+        let root = self.repo_root.display();
+        let (base, branch) = (&self.base, &self.branch);
+        format!(
+            "Its changes are on branch `{branch}`: {files}.\n\
+             - Review them: `git -C {root} diff {base} {branch}`\n\
+             - Apply them to your working tree: `git -C {root} diff --binary {base} {branch} | git -C {root} apply` \
+             (all or nothing; if it fails because you changed these files meanwhile, apply the changes by hand)\n\
+             - Then delete the branch: `git -C {root} branch -D {branch}`",
+            files = self.files.join(", "),
+        )
+    }
+}
+
+/// Create the worktree at `path` on `branch`, starting from `snapshot` (of
+/// `repo_root`), and fill it. Returns the worktree and the commit its files
 /// start from.
 async fn fill_worktree(
     git: &GitBinary,
     repo_root: &Path,
     path: &Path,
     branch: &str,
-    base: String,
+    snapshot: String,
+    fill: Fill,
 ) -> Result<(PathBuf, String)> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("Failed to create {}", parent.display()))?;
     }
     let path_str = path.to_str().context("Worktree path must be valid UTF-8")?;
-    git.run(
-        repo_root,
-        &[
-            "--no-optional-locks",
-            "worktree",
-            "add",
-            "--no-checkout",
-            "-b",
-            branch,
-            "--",
-            path_str,
-            &base,
-        ],
-    )
-    .await
-    .context("Failed to create a worktree for the sub-agent")?;
+    let mut args = vec!["--no-optional-locks", "worktree", "add"];
+    if fill == Fill::Copy {
+        args.push("--no-checkout");
+    }
+    args.extend(["-b", branch, "--", path_str, &snapshot]);
+    git.run(repo_root, &args)
+        .await
+        .context("Failed to create a worktree for the sub-agent")?;
     let worktree = path.canonicalize()?;
+    lock(git, repo_root, &worktree, Some(&snapshot)).await?;
+    if fill == Fill::Checkout {
+        return Ok((worktree, snapshot));
+    }
 
     // Other worktrees inside the parent's tree are not part of it.
     let skip = nested_worktrees(git, repo_root).await;
@@ -219,29 +215,163 @@ async fn fill_worktree(
         tracing::info!("No copy of the project for the sub-agent ({e}); checking it out instead");
         clear_except_git(&worktree)?;
         git.run(&worktree, &["reset", "-q", "--hard"]).await?;
-        return Ok((worktree, base));
+        return Ok((worktree, snapshot));
     }
     // The parent's tree may have changed since its snapshot: start from what
-    // was copied, so only the sub-agent's own changes are merged back.
+    // was copied, so only the sub-agent's own changes count as its changes.
     let start = snapshot_working_tree(git, &worktree, "code-assistant: sub-agent base").await?;
     git.run(&worktree, &["update-ref", "HEAD", &start]).await?;
     git.run(&worktree, &["read-tree", &start]).await?;
+    unlock(git, repo_root, &worktree).await?;
+    lock(git, repo_root, &worktree, Some(&start)).await?;
     Ok((worktree, start))
+}
+
+/// Lock `worktree` for this process, noting the commit its files start from.
+async fn lock(
+    git: &GitBinary,
+    repo_root: &Path,
+    worktree: &Path,
+    base: Option<&str>,
+) -> Result<()> {
+    let mut reason = format!("{LOCK_PREFIX} pid={}", std::process::id());
+    if let Some(base) = base {
+        reason.push_str(&format!(" base={base}"));
+    }
+    let path = worktree.to_string_lossy();
+    git.run(
+        repo_root,
+        &["worktree", "lock", "--reason", &reason, "--", &path],
+    )
+    .await?;
+    Ok(())
+}
+
+async fn unlock(git: &GitBinary, repo_root: &Path, worktree: &Path) -> Result<()> {
+    let path = worktree.to_string_lossy();
+    git.run(repo_root, &["worktree", "unlock", "--", &path])
+        .await?;
+    Ok(())
+}
+
+/// A worktree as `git worktree list --porcelain` describes it.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ListedWorktree {
+    path: PathBuf,
+    /// Short branch name, `None` when detached.
+    branch: Option<String>,
+    /// The lock reason (empty without one), `None` when not locked.
+    locked: Option<String>,
+}
+
+async fn list_worktrees(git: &GitBinary, repo_root: &Path) -> Vec<ListedWorktree> {
+    match git
+        .run(repo_root, &["worktree", "list", "--porcelain"])
+        .await
+    {
+        Ok(list) => parse_worktree_list(&list),
+        Err(_) => Vec::new(),
+    }
+}
+
+fn parse_worktree_list(porcelain: &str) -> Vec<ListedWorktree> {
+    let mut worktrees: Vec<ListedWorktree> = Vec::new();
+    for line in porcelain.lines() {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            worktrees.push(ListedWorktree {
+                path: PathBuf::from(path),
+                ..ListedWorktree::default()
+            });
+        } else if let Some(current) = worktrees.last_mut() {
+            if let Some(branch) = line.strip_prefix("branch ") {
+                current.branch = Some(branch.trim_start_matches("refs/heads/").to_string());
+            } else if line == "locked" {
+                current.locked = Some(String::new());
+            } else if let Some(reason) = line.strip_prefix("locked ") {
+                current.locked = Some(reason.to_string());
+            }
+        }
+    }
+    worktrees
 }
 
 /// The worktrees of the repository at `repo_root` that lie inside it.
 async fn nested_worktrees(git: &GitBinary, repo_root: &Path) -> Vec<PathBuf> {
-    let Ok(list) = git
-        .run(repo_root, &["worktree", "list", "--porcelain"])
+    list_worktrees(git, repo_root)
         .await
-    else {
-        return Vec::new();
-    };
-    list.lines()
-        .filter_map(|line| line.strip_prefix("worktree "))
-        .filter_map(|path| Path::new(path).canonicalize().ok())
+        .into_iter()
+        .filter_map(|w| w.path.canonicalize().ok())
         .filter(|path| path != repo_root && path.starts_with(repo_root))
         .collect()
+}
+
+/// Remove the sub-agent worktrees of processes that are gone, keeping what
+/// they changed on their branches.
+async fn remove_orphans(git: &GitBinary, repo_root: &Path) {
+    for listed in list_worktrees(git, repo_root).await {
+        let (Some(branch), Some(reason)) = (&listed.branch, &listed.locked) else {
+            continue;
+        };
+        let Some(fields) = reason.strip_prefix(LOCK_PREFIX) else {
+            continue;
+        };
+        if !branch.starts_with(BRANCH_PREFIX) {
+            continue;
+        }
+        let field = |name: &str| {
+            fields
+                .split_whitespace()
+                .find_map(|f| f.strip_prefix(name)?.strip_prefix('='))
+                .map(str::to_string)
+        };
+        let Some(pid) = field("pid").and_then(|pid| pid.parse::<u32>().ok()) else {
+            continue;
+        };
+        if process_alive(pid) {
+            continue;
+        }
+        let orphan = ChildWorkspace {
+            git: git.clone(),
+            repo_root: repo_root.to_path_buf(),
+            worktree: listed.path.clone(),
+            branch: branch.clone(),
+            base: field("base").unwrap_or_default(),
+            project_subdir: PathBuf::new(),
+        };
+        if orphan.base.is_empty() {
+            // It never got filled: nothing to keep.
+            orphan.remove(false).await;
+            continue;
+        }
+        match orphan.close().await {
+            Ok(Some(kept)) => tracing::info!(
+                "Removed the worktree of a sub-agent whose process is gone; its changes are on branch {}",
+                kept.branch
+            ),
+            Ok(None) => {}
+            Err(e) => tracing::warn!(
+                "Failed to clean up the sub-agent worktree {}: {e:#}",
+                listed.path.display()
+            ),
+        }
+    }
+}
+
+#[cfg(unix)]
+fn process_alive(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    // SAFETY: signal 0 sends nothing; it only checks that the process exists.
+    let found = unsafe { libc::kill(pid, 0) } == 0;
+    // EPERM: it exists, but belongs to someone else.
+    found || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(not(unix))]
+fn process_alive(_pid: u32) -> bool {
+    // Without a way to tell, never take another process's worktree.
+    true
 }
 
 /// Remove everything in `dir` but its `.git`: a partial copy.
@@ -259,35 +389,6 @@ fn clear_except_git(dir: &Path) -> Result<()> {
         }
     }
     Ok(())
-}
-
-impl MergeOutcome {
-    /// What the parent agent is told, appended to the sub-agent's answer.
-    pub fn report(&self) -> Option<String> {
-        match self {
-            MergeOutcome::NoChanges => None,
-            MergeOutcome::Merged { files } => Some(format!(
-                "The sub-agent worked in an isolated git worktree. Its changes were merged into your working tree: {}.",
-                files.join(", ")
-            )),
-            MergeOutcome::Conflicted {
-                conflicts,
-                branch,
-                base,
-            } => {
-                let list: Vec<String> = conflicts
-                    .iter()
-                    .map(|c| format!("- {} ({})", c.path, c.reason))
-                    .collect();
-                Some(format!(
-                    "The sub-agent worked in an isolated git worktree, but its changes conflict with edits made in your working tree meanwhile, so none of them were applied.\n\
-                     Conflicts:\n{}\n\
-                     Its complete changes are on branch `{branch}`. Resolve this yourself: review them with `git diff {base} {branch}`, apply them to your working tree by hand, then delete the branch with `git branch -D {branch}`.",
-                    list.join("\n")
-                ))
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -322,14 +423,32 @@ mod tests {
         git(repo, &["branch", "--list", "code-assistant/*"])
     }
 
+    fn sh(dir: &Path, script: &str) {
+        let output = process_env::std_command("sh")
+            .args(["-c", script])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{script}: {output:?}");
+    }
+
+    /// The commands in `instructions` between backticks after `label`.
+    fn command_after(instructions: &str, label: &str) -> String {
+        let line = instructions
+            .lines()
+            .find(|line| line.contains(label))
+            .unwrap();
+        line.split('`').nth(1).unwrap().to_string()
+    }
+
     #[tokio::test]
-    async fn changes_merge_back_and_the_worktree_goes_away() {
+    async fn changes_stay_on_a_branch_and_the_worktree_goes_away() {
         let dir = repo();
         let repo = dir.path().join("repo");
         // Uncommitted parent work is part of the child's starting point.
         std::fs::write(repo.join("sub/draft.txt"), "draft\n").unwrap();
 
-        let ws = ChildWorkspace::create(&repo.join("sub"), "tool_1")
+        let ws = ChildWorkspace::create(&repo.join("sub"), "tool_1", Fill::Checkout)
             .await
             .unwrap()
             .unwrap();
@@ -342,105 +461,97 @@ mod tests {
         std::fs::write(project.join("a.txt"), "ONE\ntwo\nthree\n").unwrap();
         let worktree = ws.root().to_path_buf();
 
-        let outcome = ws.finish().await.unwrap();
+        let kept = ws.close().await.unwrap().expect("changes are kept");
 
+        assert_eq!(kept.files, vec!["sub/a.txt"]);
+        assert!(!worktree.exists());
+        // Nothing reached the parent's tree.
         assert_eq!(
-            outcome,
-            MergeOutcome::Merged {
-                files: vec!["sub/a.txt".to_string()]
-            }
+            std::fs::read_to_string(repo.join("sub/a.txt")).unwrap(),
+            "one\ntwo\nthree\n"
         );
+        assert_eq!(
+            git(&repo, &["show", &format!("{}:sub/a.txt", kept.branch)]),
+            "ONE\ntwo\nthree"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_reported_commands_apply_the_changes_and_remove_the_branch() {
+        let dir = repo();
+        let repo = dir.path().join("repo");
+        std::fs::write(repo.join("sub/draft.txt"), "draft\n").unwrap();
+        let ws = ChildWorkspace::create(&repo, "tool_2", Fill::Checkout)
+            .await
+            .unwrap()
+            .unwrap();
+        std::fs::write(ws.project_dir().join("sub/a.txt"), "ONE\ntwo\nthree\n").unwrap();
+        std::fs::write(ws.project_dir().join("sub/new.txt"), "new\n").unwrap();
+        let kept = ws.close().await.unwrap().unwrap();
+        // The parent went on working meanwhile.
+        std::fs::write(repo.join("sub/draft.txt"), "draft, edited\n").unwrap();
+
+        let instructions = kept.instructions();
+        sh(dir.path(), &command_after(&instructions, "Apply"));
+        sh(
+            dir.path(),
+            &command_after(&instructions, "delete the branch"),
+        );
+
         assert_eq!(
             std::fs::read_to_string(repo.join("sub/a.txt")).unwrap(),
             "ONE\ntwo\nthree\n"
         );
+        assert_eq!(
+            std::fs::read_to_string(repo.join("sub/new.txt")).unwrap(),
+            "new\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.join("sub/draft.txt")).unwrap(),
+            "draft, edited\n"
+        );
+        assert_eq!(git(&repo, &["diff", "--cached", "--name-only"]), "");
+        assert_eq!(branches(&repo), "");
+    }
+
+    #[tokio::test]
+    async fn no_changes_leave_no_branch() {
+        let dir = repo();
+        let repo = dir.path().join("repo");
+        let ws = ChildWorkspace::create(&repo, "tool_3", Fill::Checkout)
+            .await
+            .unwrap()
+            .unwrap();
+        let worktree = ws.root().to_path_buf();
+
+        assert_eq!(ws.close().await.unwrap(), None);
         assert!(!worktree.exists());
         assert_eq!(branches(&repo), "");
     }
 
     #[tokio::test]
-    async fn two_children_editing_one_file_both_land() {
+    async fn a_checkout_leaves_ignored_files_out() {
         let dir = repo();
         let repo = dir.path().join("repo");
-        let first = ChildWorkspace::create(&repo, "tool_a")
+        std::fs::write(repo.join(".gitignore"), "build/\n").unwrap();
+        std::fs::create_dir_all(repo.join("build")).unwrap();
+        std::fs::write(repo.join("build/out.bin"), "built").unwrap();
+
+        let ws = ChildWorkspace::create(&repo, "tool_4", Fill::Checkout)
             .await
             .unwrap()
             .unwrap();
-        let second = ChildWorkspace::create(&repo, "tool_b")
-            .await
-            .unwrap()
-            .unwrap();
-        std::fs::write(first.project_dir().join("sub/a.txt"), "ONE\ntwo\nthree\n").unwrap();
-        std::fs::write(second.project_dir().join("sub/a.txt"), "one\ntwo\nTHREE\n").unwrap();
 
-        let (a, b) = tokio::join!(first.finish(), second.finish());
-
-        assert!(matches!(a.unwrap(), MergeOutcome::Merged { .. }));
-        assert!(matches!(b.unwrap(), MergeOutcome::Merged { .. }));
-        assert_eq!(
-            std::fs::read_to_string(repo.join("sub/a.txt")).unwrap(),
-            "ONE\ntwo\nTHREE\n"
-        );
+        assert!(ws.project_dir().join(".gitignore").exists());
+        assert!(!ws.project_dir().join("build").exists());
+        ws.close().await.unwrap();
     }
 
-    #[tokio::test]
-    async fn a_conflict_keeps_the_branch_and_applies_nothing() {
-        let dir = repo();
-        let repo = dir.path().join("repo");
-        let ws = ChildWorkspace::create(&repo, "tool_c")
-            .await
-            .unwrap()
-            .unwrap();
-        std::fs::write(ws.project_dir().join("sub/a.txt"), "uno\ntwo\nthree\n").unwrap();
-        std::fs::write(repo.join("sub/a.txt"), "eins\ntwo\nthree\n").unwrap();
-
-        let outcome = ws.finish().await.unwrap();
-
-        let MergeOutcome::Conflicted { branch, base, .. } = &outcome else {
-            panic!("expected a conflict, got {outcome:?}");
-        };
-        assert_eq!(
-            std::fs::read_to_string(repo.join("sub/a.txt")).unwrap(),
-            "eins\ntwo\nthree\n"
-        );
-        assert_eq!(
-            git(&repo, &["show", &format!("{branch}:sub/a.txt")]),
-            "uno\ntwo\nthree"
-        );
-        let report = outcome.report().unwrap();
-        assert!(report.contains(&format!("git diff {base} {branch}")));
-    }
-
-    #[tokio::test]
-    async fn abandoning_keeps_partial_changes_on_a_branch_only_if_there_are_any() {
-        let dir = repo();
-        let repo = dir.path().join("repo");
-
-        let untouched = ChildWorkspace::create(&repo, "tool_d")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(untouched.abandon().await, None);
-        assert_eq!(branches(&repo), "");
-
-        let partial = ChildWorkspace::create(&repo, "tool_e")
-            .await
-            .unwrap()
-            .unwrap();
-        std::fs::write(partial.project_dir().join("sub/a.txt"), "half\n").unwrap();
-        let kept = partial.abandon().await.unwrap();
-        assert_eq!(
-            std::fs::read_to_string(repo.join("sub/a.txt")).unwrap(),
-            "one\ntwo\nthree\n"
-        );
-        assert!(branches(&repo).contains(&kept));
-    }
-
-    /// Clones need a file system that supports them; elsewhere the
-    /// workspace is a checkout without ignored files.
+    /// Clones need a file system that supports them; elsewhere a copy falls
+    /// back to a checkout.
     #[cfg(target_vendor = "apple")]
     #[tokio::test]
-    async fn the_workspace_holds_ignored_files_too_and_starts_clean() {
+    async fn a_copy_holds_ignored_files_too_and_starts_clean() {
         let dir = repo();
         let repo = dir.path().join("repo");
         std::fs::write(repo.join(".gitignore"), "build/\n").unwrap();
@@ -452,7 +563,7 @@ mod tests {
         // A worktree of the repository inside it is not copied.
         git(&repo, &["worktree", "add", "-q", "nested", "-b", "other"]);
 
-        let ws = ChildWorkspace::create(&repo, "tool_g")
+        let ws = ChildWorkspace::create(&repo, "tool_5", Fill::Copy)
             .await
             .unwrap()
             .unwrap();
@@ -466,21 +577,90 @@ mod tests {
 
         std::fs::write(copy.join("build/out.bin"), "rebuilt").unwrap();
         std::fs::write(copy.join("sub/a.txt"), "ONE\ntwo\nthree\n").unwrap();
-        let outcome = ws.finish().await.unwrap();
+        let kept = ws.close().await.unwrap().unwrap();
 
-        assert_eq!(
-            outcome,
-            MergeOutcome::Merged {
-                files: vec!["sub/a.txt".to_string()]
-            }
-        );
+        // Ignored files are not part of the changes.
+        assert_eq!(kept.files, vec!["sub/a.txt"]);
         assert_eq!(
             std::fs::read_to_string(repo.join("build/out.bin")).unwrap(),
             "built"
         );
+    }
+
+    #[tokio::test]
+    async fn worktrees_of_a_process_that_is_gone_are_removed_and_their_changes_kept() {
+        let dir = repo();
+        let repo = dir.path().join("repo");
+        let orphan = ChildWorkspace::create(&repo, "tool_6", Fill::Checkout)
+            .await
+            .unwrap()
+            .unwrap();
+        std::fs::write(orphan.project_dir().join("sub/a.txt"), "half\n").unwrap();
+        let (orphan_root, orphan_branch) = (orphan.root().to_path_buf(), orphan.branch.clone());
+        // Its process died: hand the lock to a pid that no longer runs.
+        let mut finished = process_env::std_command("true").spawn().unwrap();
+        let dead_pid = finished.id();
+        finished.wait().unwrap();
+        unlock(&orphan.git, &repo, &orphan_root).await.unwrap();
+        git(
+            &repo,
+            &[
+                "worktree",
+                "lock",
+                "--reason",
+                &format!("{LOCK_PREFIX} pid={dead_pid} base={}", orphan.base),
+                orphan_root.to_str().unwrap(),
+            ],
+        );
+        drop(orphan);
+
+        // The next workspace in the repository cleans up the orphan ...
+        let alive = ChildWorkspace::create(&repo, "tool_7", Fill::Checkout)
+            .await
+            .unwrap()
+            .unwrap();
+        // ... but not the worktrees of running processes.
+        let third = ChildWorkspace::create(&repo, "tool_8", Fill::Checkout)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(!orphan_root.exists());
         assert_eq!(
-            std::fs::read_to_string(repo.join("sub/draft.txt")).unwrap(),
-            "draft\n"
+            git(&repo, &["show", &format!("{orphan_branch}:sub/a.txt")]),
+            "half"
+        );
+        assert!(alive.root().exists());
+        alive.close().await.unwrap();
+        third.close().await.unwrap();
+    }
+
+    #[test]
+    fn worktree_list_is_parsed_with_branches_and_lock_reasons() {
+        let listed = parse_worktree_list(
+            "worktree /repo\nHEAD abc\nbranch refs/heads/main\n\n\
+             worktree /wt/a\nHEAD def\nbranch refs/heads/code-assistant/sub-agent/x\nlocked code-assistant sub-agent pid=1\n\n\
+             worktree /wt/b\nHEAD 123\ndetached\nlocked\n",
+        );
+        assert_eq!(
+            listed,
+            vec![
+                ListedWorktree {
+                    path: "/repo".into(),
+                    branch: Some("main".into()),
+                    locked: None,
+                },
+                ListedWorktree {
+                    path: "/wt/a".into(),
+                    branch: Some("code-assistant/sub-agent/x".into()),
+                    locked: Some("code-assistant sub-agent pid=1".into()),
+                },
+                ListedWorktree {
+                    path: "/wt/b".into(),
+                    branch: None,
+                    locked: Some(String::new()),
+                },
+            ]
         );
     }
 
@@ -488,7 +668,7 @@ mod tests {
     async fn no_workspace_outside_git() {
         let dir = tempfile::tempdir().unwrap();
         assert!(
-            ChildWorkspace::create(dir.path(), "tool_f")
+            ChildWorkspace::create(dir.path(), "tool_9", Fill::Copy)
                 .await
                 .unwrap()
                 .is_none()

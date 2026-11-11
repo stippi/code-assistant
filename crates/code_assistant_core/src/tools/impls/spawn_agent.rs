@@ -1,3 +1,4 @@
+use crate::agent::sub_agent::{SubAgentOptions, SubAgentWorkspace};
 use crate::tools::ToolServicesAccess;
 use crate::tools::core::{
     Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec, capabilities,
@@ -17,10 +18,13 @@ pub struct SpawnAgentInput {
     /// If true, return right away; the result arrives as a message later.
     #[serde(default, skip_serializing_if = "is_false")]
     pub background: bool,
-    /// If true, work in a copy of the project on a branch of its own and
-    /// merge back when done.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub worktree: bool,
+    /// Where the sub-agent works.
+    #[serde(default, skip_serializing_if = "is_shared")]
+    pub workspace: SubAgentWorkspace,
+}
+
+fn is_shared(workspace: &SubAgentWorkspace) -> bool {
+    *workspace == SubAgentWorkspace::Shared
 }
 
 fn is_false(b: &bool) -> bool {
@@ -130,17 +134,21 @@ impl Tool for SpawnAgentTool {
             "Never use a sub-agent to just read files you already know you have to read and return their content verbatim, as this is both wasteful and expensive for the user. ",
             "Instead read those files directly yourself. The most effective way of using sub-agents is when you are unsure which files to explore.\n\n",
             "The sub-agent has the same tools as you: it can read, search, edit files and run commands. ",
-            "Multiple sub-agents spawned in one response run in parallel. ",
-            "By default a sub-agent works in your working tree: its edits land there right away, ",
-            "and edits to the same file by several agents are serialized, so none is lost.\n\n",
-            "Set `worktree: true` when a sub-agent will change files while you or other sub-agents change files too, ",
-            "typically for background or parallel work. In a git project it then works in a copy of your project ",
-            "on a branch of its own, with your uncommitted work, build outputs and installed dependencies, ",
-            "so it can build and test right away. When it finishes, its changes are merged into your working tree ",
-            "and the result says which files changed. Files ignored by git, such as build outputs, are not merged back. ",
-            "If its changes conflict with edits made meanwhile, nothing is applied and the result names a branch holding them: ",
-            "you then resolve the conflict yourself. Give parallel sub-agents separate parts of the code to keep conflicts rare. ",
-            "Research and other read-only work doesn't need a worktree.\n\n",
+            "Multiple sub-agents spawned in one response run in parallel.\n\n",
+            "`workspace` decides where a sub-agent works:\n",
+            "- `shared` (default): in your working tree. Its edits land there right away. Concurrent edits ",
+            "of one file through the edit tools are serialized, so none is lost, but commands are not guarded: ",
+            "a formatter run over the project or a git command that resets files affects everyone in the tree. ",
+            "Fine for research and for writers you give separate parts of the code.\n",
+            "- `copy`: in a git project, in a worktree on a branch of its own, holding a copy of your working tree ",
+            "with your uncommitted work, build outputs and installed dependencies, so it can build and test right away ",
+            "without waiting for or disturbing your builds.\n",
+            "- `checkout`: like `copy`, but without files ignored by git. Use it when the copied build outputs ",
+            "or dependencies would get in the way, for example because they contain absolute paths to your tree.\n",
+            "With `copy` or `checkout`, nothing is applied to your working tree: the result names the branch holding ",
+            "the sub-agent's changes and the commands to review and apply them. Changes to ignored files stay in the worktree ",
+            "and are gone with it. Outside a git project there is no worktree: the sub-agent then works in your tree ",
+            "and the result says so.\n\n",
             "Set `background: true` to not wait for a sub-agent: the tool returns right away and the ",
             "sub-agent's answer arrives later as a message starting with `[sub-agent #<id>]`. ",
             "Meanwhile continue with other work, or end your turn if there is nothing else to do: ",
@@ -167,10 +175,11 @@ impl Tool for SpawnAgentTool {
                         "default": false,
                         "description": "If true, don't wait for the sub-agent: its answer arrives later as a message."
                     },
-                    "worktree": {
-                        "type": "boolean",
-                        "default": false,
-                        "description": "If true, the sub-agent works in a copy of the project on a branch of its own, and its changes are merged back when it finishes. Use it when it will change files while others do too."
+                    "workspace": {
+                        "type": "string",
+                        "enum": ["shared", "copy", "checkout"],
+                        "default": "shared",
+                        "description": "Where the sub-agent works: `shared` in your working tree, `copy` in a worktree of its own holding a copy of your tree including ignored files, `checkout` in a worktree without ignored files."
                     }
                 },
                 "required": ["instructions"]
@@ -213,9 +222,9 @@ impl Tool for SpawnAgentTool {
             );
         }
 
-        let options = crate::agent::sub_agent::SubAgentOptions {
+        let options = SubAgentOptions {
             require_file_references: input.require_file_references,
-            worktree: input.worktree,
+            workspace: input.workspace,
         };
         if input.background {
             let started = sub_agent_runner

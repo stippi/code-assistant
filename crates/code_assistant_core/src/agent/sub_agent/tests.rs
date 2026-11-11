@@ -170,7 +170,7 @@ async fn sub_agent_tool_retains_structured_failure_output() {
         instructions: "inspect".into(),
         require_file_references: false,
         background: false,
-        worktree: false,
+        workspace: SubAgentWorkspace::Shared,
     };
     let output = SpawnAgentTool
         .execute(&mut context, &mut input)
@@ -693,7 +693,7 @@ async fn sub_agents_share_the_tree_unless_a_worktree_is_asked_for() {
     assert!(!ran_in_worktree(&repo, SubAgentOptions::default()).await);
 
     let isolated = SubAgentOptions {
-        worktree: true,
+        workspace: SubAgentWorkspace::Checkout,
         ..SubAgentOptions::default()
     };
     assert!(ran_in_worktree(&repo, isolated).await);
@@ -764,7 +764,7 @@ async fn project_of(parent: &std::path::Path, options: SubAgentOptions) -> std::
 async fn sub_agent_works_in_its_worktree_not_the_parents_tree() {
     let (dir, repo) = git_project();
     let options = SubAgentOptions {
-        worktree: true,
+        workspace: SubAgentWorkspace::Copy,
         ..SubAgentOptions::default()
     };
     let project = project_of(&repo, options).await;
