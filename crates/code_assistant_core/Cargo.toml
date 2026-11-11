@@ -103,7 +103,7 @@ zip = { version = "8.6", default-features = false, features = ["deflate"] }
 # The scripted GitHub transport pull request tests read through
 github = { path = "../github", features = ["test-utils"] }
 # An in-process MCP server for the `:mcp:<server>` scope tests
-rmcp = { version = "3.3", default-features = false, features = [
+rmcp = { version = "3.9", default-features = false, features = [
     "base64",
     "client",
     "server",

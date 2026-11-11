@@ -21,7 +21,7 @@
 
 use crate::auth::{AuthorizationRequired, OAuthAuthorizer, Reauthorizer, SharedCredentialStore};
 use crate::config::{McpServerConfig, McpTransport};
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use rmcp::ServiceExt;
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, JsonObject, ReadResourceRequestParams,
@@ -30,7 +30,7 @@ use rmcp::model::{
 use rmcp::service::{RoleClient, RunningService, ServiceError};
 use rmcp::transport::IntoTransport;
 use rmcp::transport::auth::{
-    AuthClient, AuthorizationManager, AuthorizationMetadata, AuthorizationRequest,
+    AuthClient, AuthError, AuthorizationManager, AuthorizationMetadata, AuthorizationRequest,
     AuthorizationSession, CredentialStore, OAuthClientConfig,
 };
 use rmcp::transport::streamable_http_client::{
@@ -543,7 +543,6 @@ fn is_transport(error: &ServiceError) -> bool {
 /// The server rejected the request for missing or expired authorization
 /// (`401`/`403` with a challenge, or no token could be obtained).
 fn rejected_for_authorization(error: &ServiceError) -> bool {
-    use rmcp::transport::auth::AuthError;
     use rmcp::transport::streamable_http_client::{AuthRequiredError, InsufficientScopeError};
 
     let mut source: Option<&(dyn std::error::Error + 'static)> = Some(error);
@@ -605,7 +604,7 @@ fn http_transport_config(
 
 /// An OAuth manager for `url` holding the login stored in `store` — the one
 /// that authorizes requests and refreshes the token — or `None` when the
-/// store holds no tokens.
+/// store holds no tokens, or tokens that cannot be used.
 pub(crate) async fn stored_login_manager(
     name: &str,
     url: &str,
@@ -619,10 +618,21 @@ pub(crate) async fn stored_login_manager(
         .with_client(oauth_http_client()?)
         .map_err(|error| anyhow!("configuring OAuth client for MCP server '{name}': {error}"))?;
 
-    let has_credentials = manager
-        .initialize_from_store()
-        .await
-        .map_err(|error| anyhow!("loading stored credentials for '{name}': {error}"))?;
+    let has_credentials = match manager.initialize_from_store().await {
+        Ok(has_credentials) => has_credentials,
+        // The store itself failed: a new login would not help.
+        Err(error @ AuthError::CredentialStoreError(_)) => {
+            bail!("loading stored credentials for '{name}': {error}")
+        }
+        // Loading a stored token asks the authorization server for its
+        // metadata first (since rmcp 3.9). If that fails, the login cannot
+        // be used, which is like having none: the unauthenticated attempt
+        // then reports that a login is needed.
+        Err(error) => {
+            tracing::warn!("MCP server '{name}': the stored login cannot be used: {error}");
+            return Ok(None);
+        }
+    };
     Ok(has_credentials.then_some(manager))
 }
 
