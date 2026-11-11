@@ -64,6 +64,45 @@ pub struct AgentComponents {
     /// Embedders install a factory to customize e.g. the system
     /// prompt while reusing the rest of the runtime.
     pub hooks_factory: Option<agent_core::hooks::HookRegistryFactory>,
+
+    /// The file contents this agent has seen. The main agent's is shared
+    /// with its session instance so it survives across agent runs; every
+    /// sub-agent has its own.
+    pub seen_files: Arc<crate::tools::seen_files::SeenFiles>,
+}
+
+impl AgentComponents {
+    /// The parts every agent needs. Everything else starts empty: no
+    /// permission prompts, no sub-agents and no session-bound services; set
+    /// those on the result where a session provides them.
+    pub fn new(
+        llm_provider: Box<dyn LLMProvider>,
+        project_manager: Arc<dyn ProjectManager>,
+        command_executor: Arc<dyn CommandExecutor>,
+        ui: Arc<dyn UserInterface>,
+        state_persistence: Box<dyn AgentStatePersistence>,
+        tool_registry: Arc<crate::tools::core::ToolRegistry>,
+    ) -> Self {
+        Self {
+            llm_provider,
+            project_manager,
+            command_executor,
+            ui,
+            state_persistence,
+            permission_handler: None,
+            permissions: ToolPermissions::default(),
+            tool_registry,
+            sub_agent_runner: None,
+            wakeups: None,
+            monitors: None,
+            pty_sessions: None,
+            terminal_interrupts: None,
+            browser_sessions: None,
+            session_source: None,
+            hooks_factory: None,
+            seen_files: Arc::default(),
+        }
+    }
 }
 
 pub struct Agent {
@@ -97,6 +136,7 @@ impl Agent {
             browser_sessions,
             session_source,
             hooks_factory,
+            seen_files,
         } = components;
 
         let app_state = AgentAppState::new(session_config.clone());
@@ -133,6 +173,7 @@ impl Agent {
                 &tool_registry,
                 &disabled_mcp_servers,
             ),
+            seen_files,
         });
 
         let runtime = AgentRuntime::new(AgentRuntimeComponents {

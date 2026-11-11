@@ -81,8 +81,15 @@
   (`SpawnAgentParallelPolicy`). The main agent chooses where each one works with `workspace`
   (`SubAgentWorkspace`); which tools write cannot be told in general (MCP tools), so it is a
   choice per call, not derived from the tools.
-  - `shared` (default): in the parent's tree. `fs_explorer`'s per-path locks and atomic writes
-    keep concurrent edits of one file from being lost; commands are not guarded.
+  - `shared` (default): in the parent's tree. Every agent remembers the version of each file it
+    last read or wrote (`tools::seen_files::SeenFiles`; the main agent's lives on the session
+    instance and survives across runs, each sub-agent has its own). A change through the file
+    tools (`edit`, `replace_in_file`, `write_file`, `delete_files`) to a file that differs from
+    that version fails with a message to read it again, so no agent writes over changes it never
+    saw, whether another agent, a command or the user made them. Files an agent never saw it may
+    change. Check, change, format-on-save and read-back happen under the path's lock
+    (`fs_explorer::locks`), as one step; writes replace files atomically. Commands are not
+    guarded.
   - `copy`: in a git project, a worktree on a branch of its own, started from a snapshot of the
     parent's tree (uncommitted and untracked work included, `git::isolation`) and filled with a
     copy-on-write clone of everything in it, build outputs, installed dependencies and local

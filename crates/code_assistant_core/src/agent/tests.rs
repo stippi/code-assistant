@@ -47,24 +47,14 @@ async fn test_unknown_tool_error_handling() -> Result<()> {
     ]);
     let mock_llm_ref = mock_llm.clone();
 
-    let components = AgentComponents {
-        llm_provider: Box::new(mock_llm),
-        project_manager: Arc::new(MockProjectManager::new()),
-        command_executor: Arc::new(create_command_executor_mock()),
-        ui: Arc::new(MockUI::default()),
-        state_persistence: Box::new(NoOpStatePersistence),
-        permission_handler: None,
-        permissions: Default::default(),
-        tool_registry: crate::tools::test_registry(),
-        sub_agent_runner: None,
-        wakeups: None,
-        monitors: None,
-        pty_sessions: None,
-        browser_sessions: None,
-        terminal_interrupts: None,
-        session_source: None,
-        hooks_factory: None,
-    };
+    let components = AgentComponents::new(
+        Box::new(mock_llm),
+        Arc::new(MockProjectManager::new()),
+        Arc::new(create_command_executor_mock()),
+        Arc::new(MockUI::default()),
+        Box::new(NoOpStatePersistence),
+        crate::tools::test_registry(),
+    );
 
     let session_config = SessionConfig {
         init_path: Some(PathBuf::from("./test_path")),
@@ -179,24 +169,14 @@ async fn test_invalid_xml_tool_error_handling() -> Result<()> {
     ]);
     let mock_llm_ref = mock_llm.clone();
 
-    let components = AgentComponents {
-        llm_provider: Box::new(mock_llm),
-        project_manager: Arc::new(MockProjectManager::new()),
-        command_executor: Arc::new(create_command_executor_mock()),
-        ui: Arc::new(MockUI::default()),
-        state_persistence: Box::new(NoOpStatePersistence),
-        permission_handler: None,
-        permissions: Default::default(),
-        tool_registry: crate::tools::test_registry(),
-        sub_agent_runner: None,
-        wakeups: None,
-        monitors: None,
-        pty_sessions: None,
-        browser_sessions: None,
-        terminal_interrupts: None,
-        session_source: None,
-        hooks_factory: None,
-    };
+    let components = AgentComponents::new(
+        Box::new(mock_llm),
+        Arc::new(MockProjectManager::new()),
+        Arc::new(create_command_executor_mock()),
+        Arc::new(MockUI::default()),
+        Box::new(NoOpStatePersistence),
+        crate::tools::test_registry(),
+    );
 
     let session_config = SessionConfig {
         init_path: Some(PathBuf::from("./test_path")),
@@ -315,24 +295,14 @@ async fn test_parse_error_handling() -> Result<()> {
     ]);
     let mock_llm_ref = mock_llm.clone();
 
-    let components = AgentComponents {
-        llm_provider: Box::new(mock_llm),
-        project_manager: Arc::new(MockProjectManager::new()),
-        command_executor: Arc::new(create_command_executor_mock()),
-        ui: Arc::new(MockUI::default()),
-        state_persistence: Box::new(NoOpStatePersistence),
-        permission_handler: None,
-        permissions: Default::default(),
-        tool_registry: crate::tools::test_registry(),
-        sub_agent_runner: None,
-        wakeups: None,
-        monitors: None,
-        pty_sessions: None,
-        browser_sessions: None,
-        terminal_interrupts: None,
-        session_source: None,
-        hooks_factory: None,
-    };
+    let components = AgentComponents::new(
+        Box::new(mock_llm),
+        Arc::new(MockProjectManager::new()),
+        Arc::new(create_command_executor_mock()),
+        Arc::new(MockUI::default()),
+        Box::new(NoOpStatePersistence),
+        crate::tools::test_registry(),
+    );
 
     let session_config = SessionConfig {
         init_path: Some(PathBuf::from("./test_path")),
@@ -464,24 +434,14 @@ async fn test_write_file_outside_root_error_masks_paths() -> Result<()> {
         Box::new(Explorer::new(project_root.clone())),
     );
 
-    let components = AgentComponents {
-        llm_provider: Box::new(mock_llm),
-        project_manager: Arc::new(project_manager),
-        command_executor: Arc::new(create_command_executor_mock()),
-        ui: Arc::new(MockUI::default()),
-        state_persistence: Box::new(NoOpStatePersistence),
-        permission_handler: None,
-        permissions: Default::default(),
-        tool_registry: crate::tools::test_registry(),
-        sub_agent_runner: None,
-        wakeups: None,
-        monitors: None,
-        pty_sessions: None,
-        browser_sessions: None,
-        terminal_interrupts: None,
-        session_source: None,
-        hooks_factory: None,
-    };
+    let components = AgentComponents::new(
+        Box::new(mock_llm),
+        Arc::new(project_manager),
+        Arc::new(create_command_executor_mock()),
+        Arc::new(MockUI::default()),
+        Box::new(NoOpStatePersistence),
+        crate::tools::test_registry(),
+    );
 
     let session_config = SessionConfig {
         init_path: Some(project_root.clone()),
@@ -574,24 +534,14 @@ async fn test_context_compaction_inserts_summary() -> Result<()> {
 
     let ui = Arc::new(MockUI::default());
 
-    let components = AgentComponents {
-        llm_provider: Box::new(mock_llm),
-        project_manager: Arc::new(MockProjectManager::new()),
-        command_executor: Arc::new(create_command_executor_mock()),
-        ui: ui.clone(),
-        state_persistence: Box::new(NoOpStatePersistence),
-        permission_handler: None,
-        permissions: Default::default(),
-        tool_registry: crate::tools::test_registry(),
-        sub_agent_runner: None,
-        wakeups: None,
-        monitors: None,
-        pty_sessions: None,
-        browser_sessions: None,
-        terminal_interrupts: None,
-        session_source: None,
-        hooks_factory: None,
-    };
+    let components = AgentComponents::new(
+        Box::new(mock_llm),
+        Arc::new(MockProjectManager::new()),
+        Arc::new(create_command_executor_mock()),
+        ui.clone(),
+        Box::new(NoOpStatePersistence),
+        crate::tools::test_registry(),
+    );
 
     let session_config = SessionConfig {
         init_path: Some(PathBuf::from("./test_path")),
@@ -737,24 +687,14 @@ async fn test_compaction_reminds_about_active_skills() -> Result<()> {
     );
 
     let ui = Arc::new(MockUI::default());
-    let components = AgentComponents {
-        llm_provider: Box::new(mock_llm),
-        project_manager: Arc::new(project_manager),
-        command_executor: Arc::new(create_command_executor_mock()),
-        ui: ui.clone(),
-        state_persistence: Box::new(NoOpStatePersistence),
-        permission_handler: None,
-        permissions: Default::default(),
-        tool_registry: crate::tools::test_registry(),
-        sub_agent_runner: None,
-        wakeups: None,
-        monitors: None,
-        pty_sessions: None,
-        browser_sessions: None,
-        terminal_interrupts: None,
-        session_source: None,
-        hooks_factory: None,
-    };
+    let components = AgentComponents::new(
+        Box::new(mock_llm),
+        Arc::new(project_manager),
+        Arc::new(create_command_executor_mock()),
+        ui.clone(),
+        Box::new(NoOpStatePersistence),
+        crate::tools::test_registry(),
+    );
 
     let session_config = SessionConfig {
         init_path: Some(dir.path().to_path_buf()),
@@ -832,24 +772,14 @@ async fn test_compaction_prompt_not_persisted_in_history() -> Result<()> {
     let mock_llm = MockLLMProvider::new(vec![Ok(idle_response), Ok(summary_response)]);
     let ui = Arc::new(MockUI::default());
 
-    let components = AgentComponents {
-        llm_provider: Box::new(mock_llm),
-        project_manager: Arc::new(MockProjectManager::new()),
-        command_executor: Arc::new(create_command_executor_mock()),
-        ui: ui.clone(),
-        state_persistence: Box::new(NoOpStatePersistence),
-        permission_handler: None,
-        permissions: Default::default(),
-        tool_registry: crate::tools::test_registry(),
-        sub_agent_runner: None,
-        wakeups: None,
-        monitors: None,
-        pty_sessions: None,
-        browser_sessions: None,
-        terminal_interrupts: None,
-        session_source: None,
-        hooks_factory: None,
-    };
+    let components = AgentComponents::new(
+        Box::new(mock_llm),
+        Arc::new(MockProjectManager::new()),
+        Arc::new(create_command_executor_mock()),
+        ui.clone(),
+        Box::new(NoOpStatePersistence),
+        crate::tools::test_registry(),
+    );
 
     let session_config = SessionConfig {
         init_path: Some(PathBuf::from("./test_path")),
@@ -969,24 +899,14 @@ async fn test_context_compaction_uses_only_messages_after_previous_summary() -> 
 
     let ui = Arc::new(MockUI::default());
 
-    let components = AgentComponents {
-        llm_provider: Box::new(mock_llm),
-        project_manager: Arc::new(MockProjectManager::new()),
-        command_executor: Arc::new(create_command_executor_mock()),
-        ui: ui.clone(),
-        state_persistence: Box::new(NoOpStatePersistence),
-        permission_handler: None,
-        permissions: Default::default(),
-        tool_registry: crate::tools::test_registry(),
-        sub_agent_runner: None,
-        wakeups: None,
-        monitors: None,
-        pty_sessions: None,
-        browser_sessions: None,
-        terminal_interrupts: None,
-        session_source: None,
-        hooks_factory: None,
-    };
+    let components = AgentComponents::new(
+        Box::new(mock_llm),
+        Arc::new(MockProjectManager::new()),
+        Arc::new(create_command_executor_mock()),
+        ui.clone(),
+        Box::new(NoOpStatePersistence),
+        crate::tools::test_registry(),
+    );
 
     let session_config = SessionConfig {
         init_path: Some(PathBuf::from("./test_path")),
@@ -1183,24 +1103,14 @@ fn test_inject_naming_reminder_skips_tool_result_messages() -> Result<()> {
     let ui = Arc::new(MockUI::default());
     let state_persistence = Box::new(NoOpStatePersistence);
 
-    let components = AgentComponents {
+    let components = AgentComponents::new(
         llm_provider,
         project_manager,
         command_executor,
         ui,
         state_persistence,
-        permission_handler: None,
-        permissions: Default::default(),
-        tool_registry: crate::tools::test_registry(),
-        sub_agent_runner: None,
-        wakeups: None,
-        monitors: None,
-        pty_sessions: None,
-        browser_sessions: None,
-        terminal_interrupts: None,
-        session_source: None,
-        hooks_factory: None,
-    };
+        crate::tools::test_registry(),
+    );
 
     let session_config = SessionConfig {
         init_path: None,
@@ -1558,24 +1468,14 @@ fn test_update_tool_call_in_text_fallback_mode() -> Result<()> {
 #[tokio::test]
 async fn test_load_keeps_native_dangling_tool_request_and_repairs_the_prompt() -> Result<()> {
     let mock_llm = MockLLMProvider::new(vec![]);
-    let components = AgentComponents {
-        llm_provider: Box::new(mock_llm),
-        project_manager: Arc::new(MockProjectManager::new()),
-        command_executor: Arc::new(create_command_executor_mock()),
-        ui: Arc::new(MockUI::default()),
-        state_persistence: Box::new(NoOpStatePersistence),
-        permission_handler: None,
-        permissions: Default::default(),
-        tool_registry: crate::tools::test_registry(),
-        sub_agent_runner: None,
-        wakeups: None,
-        monitors: None,
-        pty_sessions: None,
-        browser_sessions: None,
-        terminal_interrupts: None,
-        session_source: None,
-        hooks_factory: None,
-    };
+    let components = AgentComponents::new(
+        Box::new(mock_llm),
+        Arc::new(MockProjectManager::new()),
+        Arc::new(create_command_executor_mock()),
+        Arc::new(MockUI::default()),
+        Box::new(NoOpStatePersistence),
+        crate::tools::test_registry(),
+    );
 
     let session_config = SessionConfig {
         tool_syntax: ToolSyntax::Native,
@@ -1623,24 +1523,14 @@ async fn test_load_keeps_native_dangling_tool_request_and_repairs_the_prompt() -
 async fn test_load_keeps_native_dangling_tool_request_before_a_followup_user_message() -> Result<()>
 {
     let mock_llm = MockLLMProvider::new(vec![]);
-    let components = AgentComponents {
-        llm_provider: Box::new(mock_llm),
-        project_manager: Arc::new(MockProjectManager::new()),
-        command_executor: Arc::new(create_command_executor_mock()),
-        ui: Arc::new(MockUI::default()),
-        state_persistence: Box::new(NoOpStatePersistence),
-        permission_handler: None,
-        permissions: Default::default(),
-        tool_registry: crate::tools::test_registry(),
-        sub_agent_runner: None,
-        wakeups: None,
-        monitors: None,
-        pty_sessions: None,
-        browser_sessions: None,
-        terminal_interrupts: None,
-        session_source: None,
-        hooks_factory: None,
-    };
+    let components = AgentComponents::new(
+        Box::new(mock_llm),
+        Arc::new(MockProjectManager::new()),
+        Arc::new(create_command_executor_mock()),
+        Arc::new(MockUI::default()),
+        Box::new(NoOpStatePersistence),
+        crate::tools::test_registry(),
+    );
 
     let session_config = SessionConfig {
         tool_syntax: ToolSyntax::Native,
@@ -1699,24 +1589,14 @@ async fn test_load_keeps_native_dangling_tool_request_before_a_followup_user_mes
 #[tokio::test]
 async fn test_load_keeps_xml_dangling_tool_request_and_repairs_the_prompt() -> Result<()> {
     let mock_llm = MockLLMProvider::new(vec![]);
-    let components = AgentComponents {
-        llm_provider: Box::new(mock_llm),
-        project_manager: Arc::new(MockProjectManager::new()),
-        command_executor: Arc::new(create_command_executor_mock()),
-        ui: Arc::new(MockUI::default()),
-        state_persistence: Box::new(NoOpStatePersistence),
-        permission_handler: None,
-        permissions: Default::default(),
-        tool_registry: crate::tools::test_registry(),
-        sub_agent_runner: None,
-        wakeups: None,
-        monitors: None,
-        pty_sessions: None,
-        browser_sessions: None,
-        terminal_interrupts: None,
-        session_source: None,
-        hooks_factory: None,
-    };
+    let components = AgentComponents::new(
+        Box::new(mock_llm),
+        Arc::new(MockProjectManager::new()),
+        Arc::new(create_command_executor_mock()),
+        Arc::new(MockUI::default()),
+        Box::new(NoOpStatePersistence),
+        crate::tools::test_registry(),
+    );
 
     let session_config = SessionConfig {
         tool_syntax: ToolSyntax::Xml,
@@ -1761,24 +1641,14 @@ async fn test_load_keeps_xml_dangling_tool_request_and_repairs_the_prompt() -> R
 #[tokio::test]
 async fn test_load_keeps_assistant_messages_without_tool_requests() -> Result<()> {
     let mock_llm = MockLLMProvider::new(vec![]);
-    let components = AgentComponents {
-        llm_provider: Box::new(mock_llm),
-        project_manager: Arc::new(MockProjectManager::new()),
-        command_executor: Arc::new(create_command_executor_mock()),
-        ui: Arc::new(MockUI::default()),
-        state_persistence: Box::new(NoOpStatePersistence),
-        permission_handler: None,
-        permissions: Default::default(),
-        tool_registry: crate::tools::test_registry(),
-        sub_agent_runner: None,
-        wakeups: None,
-        monitors: None,
-        pty_sessions: None,
-        browser_sessions: None,
-        terminal_interrupts: None,
-        session_source: None,
-        hooks_factory: None,
-    };
+    let components = AgentComponents::new(
+        Box::new(mock_llm),
+        Arc::new(MockProjectManager::new()),
+        Arc::new(create_command_executor_mock()),
+        Arc::new(MockUI::default()),
+        Box::new(NoOpStatePersistence),
+        crate::tools::test_registry(),
+    );
 
     let session_config = SessionConfig {
         tool_syntax: ToolSyntax::Native,
@@ -1821,24 +1691,14 @@ async fn test_render_tool_results_generates_not_run_results_for_missing_executio
     // rather than claiming cancellation or silently repeating side effects.
 
     let mock_llm = MockLLMProvider::new(vec![]);
-    let components = AgentComponents {
-        llm_provider: Box::new(mock_llm),
-        project_manager: Arc::new(MockProjectManager::new()),
-        command_executor: Arc::new(create_command_executor_mock()),
-        ui: Arc::new(MockUI::default()),
-        state_persistence: Box::new(NoOpStatePersistence),
-        permission_handler: None,
-        permissions: Default::default(),
-        tool_registry: crate::tools::test_registry(),
-        sub_agent_runner: None,
-        wakeups: None,
-        monitors: None,
-        pty_sessions: None,
-        browser_sessions: None,
-        terminal_interrupts: None,
-        session_source: None,
-        hooks_factory: None,
-    };
+    let components = AgentComponents::new(
+        Box::new(mock_llm),
+        Arc::new(MockProjectManager::new()),
+        Arc::new(create_command_executor_mock()),
+        Arc::new(MockUI::default()),
+        Box::new(NoOpStatePersistence),
+        crate::tools::test_registry(),
+    );
 
     let session_config = SessionConfig {
         tool_syntax: ToolSyntax::Native,
@@ -1933,24 +1793,14 @@ async fn test_render_tool_results_preserves_existing_tool_results() -> Result<()
     // synthetic unknown results for them.
 
     let mock_llm = MockLLMProvider::new(vec![]);
-    let components = AgentComponents {
-        llm_provider: Box::new(mock_llm),
-        project_manager: Arc::new(MockProjectManager::new()),
-        command_executor: Arc::new(create_command_executor_mock()),
-        ui: Arc::new(MockUI::default()),
-        state_persistence: Box::new(NoOpStatePersistence),
-        permission_handler: None,
-        permissions: Default::default(),
-        tool_registry: crate::tools::test_registry(),
-        sub_agent_runner: None,
-        wakeups: None,
-        monitors: None,
-        pty_sessions: None,
-        browser_sessions: None,
-        terminal_interrupts: None,
-        session_source: None,
-        hooks_factory: None,
-    };
+    let components = AgentComponents::new(
+        Box::new(mock_llm),
+        Arc::new(MockProjectManager::new()),
+        Arc::new(create_command_executor_mock()),
+        Arc::new(MockUI::default()),
+        Box::new(NoOpStatePersistence),
+        crate::tools::test_registry(),
+    );
 
     let session_config = SessionConfig {
         tool_syntax: ToolSyntax::Native,
@@ -2025,24 +1875,14 @@ async fn test_render_tool_results_handles_multiple_missing_tools() -> Result<()>
     // This test verifies that multiple unknown tool calls are all handled correctly.
 
     let mock_llm = MockLLMProvider::new(vec![]);
-    let components = AgentComponents {
-        llm_provider: Box::new(mock_llm),
-        project_manager: Arc::new(MockProjectManager::new()),
-        command_executor: Arc::new(create_command_executor_mock()),
-        ui: Arc::new(MockUI::default()),
-        state_persistence: Box::new(NoOpStatePersistence),
-        permission_handler: None,
-        permissions: Default::default(),
-        tool_registry: crate::tools::test_registry(),
-        sub_agent_runner: None,
-        wakeups: None,
-        monitors: None,
-        pty_sessions: None,
-        browser_sessions: None,
-        terminal_interrupts: None,
-        session_source: None,
-        hooks_factory: None,
-    };
+    let components = AgentComponents::new(
+        Box::new(mock_llm),
+        Arc::new(MockProjectManager::new()),
+        Arc::new(create_command_executor_mock()),
+        Arc::new(MockUI::default()),
+        Box::new(NoOpStatePersistence),
+        crate::tools::test_registry(),
+    );
 
     let session_config = SessionConfig {
         tool_syntax: ToolSyntax::Native,
@@ -2188,24 +2028,14 @@ async fn test_prompt_too_long_replaces_large_tool_results() -> Result<()> {
     let mock_llm_ref = mock_llm.clone();
     let ui = Arc::new(MockUI::default());
 
-    let components = AgentComponents {
-        llm_provider: Box::new(mock_llm),
-        project_manager: Arc::new(project_manager),
-        command_executor: Arc::new(create_command_executor_mock()),
-        ui: ui.clone(),
-        state_persistence: Box::new(NoOpStatePersistence),
-        permission_handler: None,
-        permissions: Default::default(),
-        tool_registry: crate::tools::test_registry(),
-        sub_agent_runner: None,
-        wakeups: None,
-        monitors: None,
-        pty_sessions: None,
-        browser_sessions: None,
-        terminal_interrupts: None,
-        session_source: None,
-        hooks_factory: None,
-    };
+    let components = AgentComponents::new(
+        Box::new(mock_llm),
+        Arc::new(project_manager),
+        Arc::new(create_command_executor_mock()),
+        ui.clone(),
+        Box::new(NoOpStatePersistence),
+        crate::tools::test_registry(),
+    );
 
     let session_config = SessionConfig {
         init_path: Some(PathBuf::from("./test_path")),
@@ -2325,24 +2155,14 @@ async fn test_prompt_too_long_fallback_drops_exchange_and_compacts() -> Result<(
     let mock_llm_ref = mock_llm.clone();
     let ui = Arc::new(MockUI::default());
 
-    let components = AgentComponents {
-        llm_provider: Box::new(mock_llm),
-        project_manager: Arc::new(mock_project_manager),
-        command_executor: Arc::new(create_command_executor_mock()),
-        ui: ui.clone(),
-        state_persistence: Box::new(NoOpStatePersistence),
-        permission_handler: None,
-        permissions: Default::default(),
-        tool_registry: crate::tools::test_registry(),
-        sub_agent_runner: None,
-        wakeups: None,
-        monitors: None,
-        pty_sessions: None,
-        browser_sessions: None,
-        terminal_interrupts: None,
-        session_source: None,
-        hooks_factory: None,
-    };
+    let components = AgentComponents::new(
+        Box::new(mock_llm),
+        Arc::new(mock_project_manager),
+        Arc::new(create_command_executor_mock()),
+        ui.clone(),
+        Box::new(NoOpStatePersistence),
+        crate::tools::test_registry(),
+    );
 
     let session_config = SessionConfig {
         init_path: Some(PathBuf::from("./test_path")),
@@ -2490,22 +2310,16 @@ async fn test_write_tier_denied_tool_reports_error_to_llm() -> Result<()> {
     ));
 
     let components = AgentComponents {
-        llm_provider: Box::new(mock_llm),
-        project_manager: Arc::new(MockProjectManager::new()),
-        command_executor: Arc::new(create_command_executor_mock()),
-        ui: Arc::new(MockUI::default()),
-        state_persistence: Box::new(NoOpStatePersistence),
         permission_handler: Some(mediator.clone()),
         permissions: tools_core::ToolPermissions::new(tools_core::PermissionTier::WriteTools),
-        tool_registry: crate::tools::test_registry(),
-        sub_agent_runner: None,
-        wakeups: None,
-        monitors: None,
-        pty_sessions: None,
-        browser_sessions: None,
-        terminal_interrupts: None,
-        session_source: None,
-        hooks_factory: None,
+        ..AgentComponents::new(
+            Box::new(mock_llm),
+            Arc::new(MockProjectManager::new()),
+            Arc::new(create_command_executor_mock()),
+            Arc::new(MockUI::default()),
+            Box::new(NoOpStatePersistence),
+            crate::tools::test_registry(),
+        )
     };
 
     let mut agent = Agent::new(components, permission_test_session_config());
@@ -2557,22 +2371,16 @@ async fn test_write_tier_does_not_ask_for_read_only_tools() -> Result<()> {
     ));
 
     let components = AgentComponents {
-        llm_provider: Box::new(mock_llm),
-        project_manager: Arc::new(MockProjectManager::new()),
-        command_executor: Arc::new(create_command_executor_mock()),
-        ui: Arc::new(MockUI::default()),
-        state_persistence: Box::new(NoOpStatePersistence),
         permission_handler: Some(mediator.clone()),
         permissions: tools_core::ToolPermissions::new(tools_core::PermissionTier::WriteTools),
-        tool_registry: crate::tools::test_registry(),
-        sub_agent_runner: None,
-        wakeups: None,
-        monitors: None,
-        pty_sessions: None,
-        browser_sessions: None,
-        terminal_interrupts: None,
-        session_source: None,
-        hooks_factory: None,
+        ..AgentComponents::new(
+            Box::new(mock_llm),
+            Arc::new(MockProjectManager::new()),
+            Arc::new(create_command_executor_mock()),
+            Arc::new(MockUI::default()),
+            Box::new(NoOpStatePersistence),
+            crate::tools::test_registry(),
+        )
     };
 
     let mut agent = Agent::new(components, permission_test_session_config());
@@ -2613,22 +2421,16 @@ async fn test_granted_session_asks_only_once_per_tool() -> Result<()> {
     ));
 
     let components = AgentComponents {
-        llm_provider: Box::new(mock_llm),
-        project_manager: Arc::new(MockProjectManager::new()),
-        command_executor: Arc::new(create_command_executor_mock()),
-        ui: Arc::new(MockUI::default()),
-        state_persistence: Box::new(NoOpStatePersistence),
         permission_handler: Some(mediator.clone()),
         permissions: tools_core::ToolPermissions::new(tools_core::PermissionTier::AllTools),
-        tool_registry: crate::tools::test_registry(),
-        sub_agent_runner: None,
-        wakeups: None,
-        monitors: None,
-        pty_sessions: None,
-        browser_sessions: None,
-        terminal_interrupts: None,
-        session_source: None,
-        hooks_factory: None,
+        ..AgentComponents::new(
+            Box::new(mock_llm),
+            Arc::new(MockProjectManager::new()),
+            Arc::new(create_command_executor_mock()),
+            Arc::new(MockUI::default()),
+            Box::new(NoOpStatePersistence),
+            crate::tools::test_registry(),
+        )
     };
 
     let mut agent = Agent::new(components, permission_test_session_config());
@@ -2673,22 +2475,16 @@ async fn run_auto_mode_command(verdict: &str, escalate: bool) -> Result<(Vec<LLM
     ));
 
     let components = AgentComponents {
-        llm_provider: Box::new(mock_llm),
-        project_manager: Arc::new(MockProjectManager::new()),
-        command_executor: Arc::new(create_command_executor_mock()),
-        ui: Arc::new(MockUI::default()),
-        state_persistence: Box::new(NoOpStatePersistence),
         permission_handler: Some(mediator.clone()),
         permissions,
-        tool_registry: crate::tools::test_registry(),
-        sub_agent_runner: None,
-        wakeups: None,
-        monitors: None,
-        pty_sessions: None,
-        browser_sessions: None,
-        terminal_interrupts: None,
-        session_source: None,
-        hooks_factory: None,
+        ..AgentComponents::new(
+            Box::new(mock_llm),
+            Arc::new(MockProjectManager::new()),
+            Arc::new(create_command_executor_mock()),
+            Arc::new(MockUI::default()),
+            Box::new(NoOpStatePersistence),
+            crate::tools::test_registry(),
+        )
     };
 
     let mut agent = Agent::new(components, permission_test_session_config());
@@ -2742,24 +2538,14 @@ fn compaction_test_agent(
 ) -> (Agent, MockLLMProvider) {
     let mock_llm = MockLLMProvider::new(responses);
     let mock_llm_ref = mock_llm.clone();
-    let components = AgentComponents {
-        llm_provider: Box::new(mock_llm),
-        project_manager: Arc::new(MockProjectManager::new()),
-        command_executor: Arc::new(create_command_executor_mock()),
-        ui: Arc::new(MockUI::default()),
-        state_persistence: Box::new(NoOpStatePersistence),
-        permission_handler: None,
-        permissions: Default::default(),
-        tool_registry: crate::tools::test_registry(),
-        sub_agent_runner: None,
-        wakeups: None,
-        monitors: None,
-        pty_sessions: None,
-        browser_sessions: None,
-        terminal_interrupts: None,
-        session_source: None,
-        hooks_factory: None,
-    };
+    let components = AgentComponents::new(
+        Box::new(mock_llm),
+        Arc::new(MockProjectManager::new()),
+        Arc::new(create_command_executor_mock()),
+        Arc::new(MockUI::default()),
+        Box::new(NoOpStatePersistence),
+        crate::tools::test_registry(),
+    );
     let session_config = SessionConfig {
         init_path: Some(PathBuf::from("./test_path")),
         initial_project: String::new(),
@@ -2961,24 +2747,14 @@ async fn a_disabled_builtin_tool_group_is_not_offered() -> Result<()> {
     let mock_llm = MockLLMProvider::new(vec![Ok(create_test_response_text("Done."))]);
     let mock_llm_ref = mock_llm.clone();
 
-    let components = AgentComponents {
-        llm_provider: Box::new(mock_llm),
-        project_manager: Arc::new(MockProjectManager::new()),
-        command_executor: Arc::new(create_command_executor_mock()),
-        ui: Arc::new(MockUI::default()),
-        state_persistence: Box::new(NoOpStatePersistence),
-        permission_handler: None,
-        permissions: Default::default(),
-        tool_registry: crate::tools::test_registry(),
-        sub_agent_runner: None,
-        wakeups: None,
-        monitors: None,
-        pty_sessions: None,
-        browser_sessions: None,
-        terminal_interrupts: None,
-        session_source: None,
-        hooks_factory: None,
-    };
+    let components = AgentComponents::new(
+        Box::new(mock_llm),
+        Arc::new(MockProjectManager::new()),
+        Arc::new(create_command_executor_mock()),
+        Arc::new(MockUI::default()),
+        Box::new(NoOpStatePersistence),
+        crate::tools::test_registry(),
+    );
 
     let session_config = SessionConfig {
         init_path: Some(PathBuf::from("./test_path")),

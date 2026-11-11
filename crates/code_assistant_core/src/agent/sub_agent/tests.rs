@@ -146,17 +146,9 @@ async fn sub_agent_tool_retains_structured_failure_output() {
 
     let (runner, ui) = runner(failing_provider());
     let mut services = crate::tools::ToolServices {
-        project_manager: Arc::new(MockProjectManager::new()),
-        plan: None,
         ui: Some(ui),
         sub_agent_runner: Some(runner),
-        wakeups: None,
-        monitors: None,
-        pty_sessions: None,
-        terminal_interrupts: None,
-        browser_sessions: None,
-        session_source: None,
-        mcp_resources: None,
+        ..crate::tools::ToolServices::new(Arc::new(MockProjectManager::new()))
     };
     let executor = command_executor::DefaultCommandExecutor;
     let mut context = tools_core::ToolContext {

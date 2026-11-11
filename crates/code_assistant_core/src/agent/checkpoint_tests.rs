@@ -117,24 +117,14 @@ async fn formatted_roundtrip(syntax: ToolSyntax) -> Result<()> {
     stored.next_node_id = initial.next_node_id;
     let captured = Capture::new(stored);
 
-    let components = AgentComponents {
-        llm_provider: Box::new(mock_llm),
-        project_manager: Arc::new(MockProjectManager::new()),
-        command_executor: Arc::new(create_command_executor_mock()),
-        ui: Arc::new(MockUI::default()),
-        state_persistence: Box::new(captured.clone()),
-        permission_handler: None,
-        permissions: Default::default(),
-        tool_registry: registry.clone(),
-        sub_agent_runner: None,
-        wakeups: None,
-        monitors: None,
-        pty_sessions: None,
-        browser_sessions: None,
-        terminal_interrupts: None,
-        session_source: None,
-        hooks_factory: None,
-    };
+    let components = AgentComponents::new(
+        Box::new(mock_llm),
+        Arc::new(MockProjectManager::new()),
+        Arc::new(create_command_executor_mock()),
+        Arc::new(MockUI::default()),
+        Box::new(captured.clone()),
+        registry.clone(),
+    );
     let mut agent = Agent::new(components, config.clone());
     agent.load_from_session_state(initial).await?;
     agent.run_single_iteration().await?;

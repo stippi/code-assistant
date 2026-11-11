@@ -1,10 +1,11 @@
 //! Process-wide write locks keyed by file path.
 //!
 //! Several agents (a parent and its sub-agents) can work in the same project
-//! tree at once, each through its own [`crate::Explorer`]. A read-modify-write
-//! of one file must not interleave with another, or the later write silently
-//! drops the earlier one. Every writer takes the lock of the path it changes
-//! for the whole read, apply, format and read-back sequence.
+//! tree at once, each through its own explorer. A writer holds the lock of
+//! the path it changes for its whole sequence: check what is there, read,
+//! apply, format and read back. The explorer itself does not lock: callers
+//! that need more than one write in a row to be atomic take the lock around
+//! all of it.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -23,7 +24,9 @@ pub struct PathLock {
     _guards: Vec<OwnedMutexGuard<()>>,
 }
 
-fn key(path: &Path) -> PathBuf {
+/// One key per file however it is spelled: through a symlink, relative, or
+/// (for a file that does not exist yet) below a symlinked directory.
+pub fn path_key(path: &Path) -> PathBuf {
     // Both spellings of a path (through a symlink, or relative) must map to
     // one lock; a path that does not exist yet keys on its parent's real path.
     if let Ok(canonical) = path.canonicalize() {
@@ -58,7 +61,7 @@ pub async fn lock_path(path: &Path) -> PathLock {
 /// Wait for exclusive write access to all `paths` at once. Locks are taken
 /// in a fixed order, so two callers with overlapping sets cannot deadlock.
 pub async fn lock_paths<P: AsRef<Path>>(paths: impl IntoIterator<Item = P>) -> PathLock {
-    let mut keys: Vec<PathBuf> = paths.into_iter().map(|p| key(p.as_ref())).collect();
+    let mut keys: Vec<PathBuf> = paths.into_iter().map(|p| path_key(p.as_ref())).collect();
     keys.sort();
     keys.dedup();
     let mut guards = Vec::with_capacity(keys.len());

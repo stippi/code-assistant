@@ -608,6 +608,10 @@ impl DefaultSubAgentRunner {
             // work in sub-agents (parent shares its store).
             session_source: self.session_source.clone(),
             hooks_factory: self.hooks_factory.clone(),
+            // What the parent read says nothing about what the sub-agent has
+            // seen: a file the parent changes meanwhile must make the
+            // sub-agent's next change to it fail, and the other way round.
+            seen_files: Arc::default(),
         };
 
         let mut agent = Agent::new(components, session_config);
