@@ -87,6 +87,8 @@ pub fn generate_system_message(
 /// The `{{environment}}` section: where commands run. It must not change
 /// during a session (prompt-cache prefix), so it holds nothing like a date.
 fn render_environment(os: &str, arch: &str, shell: &command_executor::Shell) -> String {
+    use command_executor::ShellKind;
+
     let os_name = match os {
         "macos" => "macOS",
         "windows" => "Windows",
@@ -104,13 +106,27 @@ fn render_environment(os: &str, arch: &str, shell: &command_executor::Shell) -> 
          - Operating system: {os_name} ({arch})\n\
          - Shell: `execute_command` runs each command as `{invocation}`.\n"
     );
-    if os == "windows" {
-        section.push_str(
+    // Advice only where the model's POSIX habits do not fit as they are.
+    let advice = match shell.kind {
+        ShellKind::Posix if os == "windows" => Some(
+            "- This is bash on Windows (Git Bash): POSIX syntax and the common Unix tools work. \
+             Write Windows paths with forward slashes (`C:/path` or `/c/path`); Windows programs \
+             are called as usual.",
+        ),
+        ShellKind::Posix => None,
+        ShellKind::PowerShell => Some(
+            "- Commands therefore run in PowerShell, not in bash: use PowerShell syntax \
+             (`;` to chain commands, `$env:NAME` for environment variables) and cmdlets such as \
+             `Get-ChildItem`, `Select-String` or `Remove-Item`. Windows PowerShell 5 has no `&&`.",
+        ),
+        ShellKind::Cmd => Some(
             "- Commands therefore run in cmd.exe, not in bash or PowerShell: use cmd.exe syntax \
              (`&&` to chain, `%VAR%`, double quotes) and Windows commands. Unix tools such as \
-             `ls`, `grep`, `cat` or `rm` may be missing; call `powershell -NoProfile -Command \"...\"` \
-             when you need more than cmd.exe offers.\n",
-        );
+             `ls`, `grep`, `cat` or `rm` may be missing.",
+        ),
+    };
+    if let Some(advice) = advice {
+        section.push_str(advice);
     }
     // The placeholder sits on its own line; the template supplies spacing.
     section.truncate(section.trim_end().len());
@@ -351,26 +367,63 @@ mod tests {
         }
     }
 
+    fn test_shell(
+        program: &str,
+        args: &'static [&'static str],
+        kind: command_executor::ShellKind,
+    ) -> command_executor::Shell {
+        command_executor::Shell {
+            program: program.into(),
+            args,
+            kind,
+        }
+    }
+
     #[test]
     fn environment_names_the_unix_shell_invocation() {
-        let shell = command_executor::Shell {
-            program: "/bin/zsh".into(),
-            args: &["-l", "-c"],
-        };
+        use command_executor::ShellKind;
+        let shell = test_shell("/bin/zsh", &["-l", "-c"], ShellKind::Posix);
         let section = render_environment("macos", "aarch64", &shell);
         assert!(section.contains("macOS (aarch64)"), "{section}");
         assert!(section.contains("`/bin/zsh -l -c <command>`"), "{section}");
-        assert!(!section.contains("cmd.exe"), "{section}");
+        // No extra advice where the model's habits fit.
+        assert_eq!(section.lines().count(), 4, "{section}");
+    }
+
+    #[test]
+    fn environment_names_git_bash_on_windows() {
+        use command_executor::ShellKind;
+        let shell = test_shell(
+            r"C:\Program Files\Git\bin\bash.exe",
+            &["-c"],
+            ShellKind::Posix,
+        );
+        let section = render_environment("windows", "x86_64", &shell);
+        assert!(section.contains("Windows (x86_64)"), "{section}");
+        assert!(section.contains(r"`C:\Program Files\Git\bin\bash.exe -c <command>`"));
+        assert!(section.contains("Git Bash"), "{section}");
+        assert!(section.contains("`C:/"), "{section}");
+    }
+
+    #[test]
+    fn environment_explains_powershell() {
+        use command_executor::ShellKind;
+        let shell = test_shell(
+            "pwsh.exe",
+            &["-NoProfile", "-NonInteractive", "-Command"],
+            ShellKind::PowerShell,
+        );
+        let section = render_environment("windows", "x86_64", &shell);
+        assert!(section.contains("PowerShell syntax"), "{section}");
+        assert!(section.contains("$env:"), "{section}");
+        assert!(!section.contains("cmd.exe syntax"), "{section}");
     }
 
     #[test]
     fn environment_warns_about_cmd_on_windows() {
-        let shell = command_executor::Shell {
-            program: "cmd".into(),
-            args: &["/C"],
-        };
+        use command_executor::ShellKind;
+        let shell = test_shell("cmd", &["/C"], ShellKind::Cmd);
         let section = render_environment("windows", "x86_64", &shell);
-        assert!(section.contains("Windows (x86_64)"), "{section}");
         assert!(section.contains("`cmd /C <command>`"), "{section}");
         assert!(section.contains("cmd.exe syntax"), "{section}");
     }

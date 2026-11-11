@@ -4,9 +4,11 @@ use std::path::{Path, PathBuf};
 mod default_executor;
 mod pty_executor;
 mod sandboxed_executor;
+mod shell;
 pub use default_executor::DefaultCommandExecutor;
 pub use pty_executor::PtyCommandExecutor;
 pub use sandboxed_executor::SandboxedCommandExecutor;
+pub use shell::{Shell, ShellKind, shell};
 
 #[derive(Clone)]
 pub struct CommandOutput {
@@ -73,41 +75,6 @@ pub trait StreamingCallback: Send + Sync {
     fn should_continue(&self) -> bool {
         true
     }
-}
-
-/// The shell every command line runs through: the program and the
-/// arguments that precede the command line. The system prompt tells the
-/// model about it, so this is the one place that decides it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Shell {
-    pub program: String,
-    pub args: &'static [&'static str],
-}
-
-impl Shell {
-    /// The full argv running `command_line`.
-    pub fn argv(&self, command_line: &str) -> Vec<String> {
-        let mut argv = Vec::with_capacity(self.args.len() + 2);
-        argv.push(self.program.clone());
-        argv.extend(self.args.iter().map(|arg| arg.to_string()));
-        argv.push(command_line.to_string());
-        argv
-    }
-}
-
-/// The user's login shell (`$SHELL`, else bash) on unix, `cmd` on Windows.
-pub fn shell() -> Shell {
-    #[cfg(target_family = "unix")]
-    let shell = Shell {
-        program: std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string()),
-        args: &["-l", "-c"],
-    };
-    #[cfg(target_family = "windows")]
-    let shell = Shell {
-        program: "cmd".to_string(),
-        args: &["/C"],
-    };
-    shell
 }
 
 /// A prepared spawn for a long-lived interactive (PTY) session: the argv to
