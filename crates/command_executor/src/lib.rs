@@ -4,9 +4,11 @@ use std::path::{Path, PathBuf};
 mod default_executor;
 mod pty_executor;
 mod sandboxed_executor;
+mod shell;
 pub use default_executor::DefaultCommandExecutor;
 pub use pty_executor::PtyCommandExecutor;
 pub use sandboxed_executor::SandboxedCommandExecutor;
+pub use shell::{Shell, ShellKind, shell};
 
 #[derive(Clone)]
 pub struct CommandOutput {
@@ -87,19 +89,7 @@ pub struct PtySpawnSpec {
 impl PtySpawnSpec {
     /// Plain, unsandboxed "run through the user's shell" spawn.
     pub fn shell(command_line: &str) -> Self {
-        #[cfg(target_family = "unix")]
-        let argv = vec![
-            std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string()),
-            "-l".to_string(),
-            "-c".to_string(),
-            command_line.to_string(),
-        ];
-        #[cfg(target_family = "windows")]
-        let argv = vec![
-            "cmd".to_string(),
-            "/C".to_string(),
-            command_line.to_string(),
-        ];
+        let argv = shell().argv(command_line);
         Self {
             argv,
             env: Vec::new(),

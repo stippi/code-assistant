@@ -29,18 +29,10 @@ impl CommandExecutor for DefaultCommandExecutor {
             }
         }
 
-        // Create shell command using login shell or fallback
-        #[cfg(target_family = "unix")]
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-        #[cfg(target_family = "unix")]
-        let mut cmd = process_env::command(shell);
-        #[cfg(target_family = "unix")]
-        cmd.args(["-l", "-c", &format!("{command_line} 2>&1")]);
-
-        #[cfg(target_family = "windows")]
-        let mut cmd = process_env::command("cmd");
-        #[cfg(target_family = "windows")]
-        cmd.args(["/C", &format!("{} 2>&1", command_line)]);
+        let shell = crate::shell();
+        let mut cmd = process_env::command(&shell.program);
+        cmd.args(shell.args);
+        cmd.arg(format!("{command_line} 2>&1"));
 
         if let Some(dir) = working_dir {
             cmd.current_dir(dir);
@@ -81,18 +73,10 @@ impl CommandExecutor for DefaultCommandExecutor {
             }
         }
 
-        // Create shell command using login shell or fallback
-        #[cfg(target_family = "unix")]
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-        #[cfg(target_family = "unix")]
-        let mut cmd = process_env::command(shell);
-        #[cfg(target_family = "unix")]
-        cmd.args(["-l", "-c", command_line]);
-
-        #[cfg(target_family = "windows")]
-        let mut cmd = process_env::command("cmd");
-        #[cfg(target_family = "windows")]
-        cmd.args(["/C", command_line]);
+        let shell = crate::shell();
+        let mut cmd = process_env::command(&shell.program);
+        cmd.args(shell.args);
+        cmd.arg(command_line);
 
         if let Some(dir) = working_dir {
             cmd.current_dir(dir);

@@ -26,6 +26,8 @@ When using the planning tool:
   - Never use emojis.
   - Never create documentation files.
 
+{{environment}}
+
 ====
 
 {{syntax}}

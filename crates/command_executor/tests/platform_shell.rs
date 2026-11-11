@@ -12,6 +12,7 @@
 
 use command_executor::{
     CommandExecutor, CommandOutput, DefaultCommandExecutor, PtyCommandExecutor, PtySpawnSpec,
+    ShellKind, shell,
 };
 use pty_session::{PtySession, PtySessionStatus, PtySpawnConfig};
 use std::future::Future;
@@ -90,4 +91,37 @@ async fn session_runs_a_command_on_the_pty() {
     .await;
     assert!(output.contains("session-check"), "output: {output:?}");
     assert_eq!(status, Some(0));
+}
+
+/// The system prompt tells the model which syntax to write; arithmetic in
+/// each shell's own syntax shows that the claim matches the shell that runs.
+#[tokio::test(flavor = "multi_thread")]
+async fn shell_speaks_the_syntax_the_prompt_announces() {
+    let shell = shell();
+    // No double quotes: they would need escaping in the Windows argv.
+    let (command_line, expected) = match shell.kind {
+        ShellKind::Posix => ("echo sum-$((40+2))", "sum-42"),
+        ShellKind::PowerShell => ("Write-Output ('sum-' + (40+2))", "sum-42"),
+        // On the command line (not in a batch file) `set /a` prints the result.
+        ShellKind::Cmd => ("set /a 40+2", "42"),
+    };
+    let output = run_on_pty(command_line).await;
+    assert!(
+        output.output.contains(expected),
+        "{shell:?} ran {command_line:?}: {:?}",
+        output.output
+    );
+}
+
+/// GitHub's Windows runners ship Git for Windows, so detection must find its
+/// bash there, not fall back to PowerShell or cmd.exe.
+#[cfg(target_family = "windows")]
+#[test]
+fn windows_ci_runs_commands_in_git_bash() {
+    if std::env::var_os("GITHUB_ACTIONS").is_none() {
+        return;
+    }
+    let shell = shell();
+    assert_eq!(shell.kind, ShellKind::Posix, "{shell:?}");
+    assert!(shell.program.ends_with("bash.exe"), "{shell:?}");
 }
