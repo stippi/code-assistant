@@ -253,7 +253,7 @@ mod tests {
         use rmcp::model::{
             ErrorData, ListResourcesResult, PaginatedRequestParams, ReadResourceRequestParams,
             ReadResourceResponse, ReadResourceResult, Resource, ResourceContents,
-            ServerCapabilities, ServerInfo,
+            ServerCapabilities, ServerConfig,
         };
         use rmcp::service::{RequestContext, RoleServer};
         use rmcp::{ServerHandler, ServiceExt};
@@ -265,8 +265,8 @@ mod tests {
         struct Docs;
 
         impl ServerHandler for Docs {
-            fn get_info(&self) -> ServerInfo {
-                ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_resources().build())
             }
 
             async fn list_resources(
