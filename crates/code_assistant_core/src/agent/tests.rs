@@ -2561,6 +2561,7 @@ fn compaction_test_agent(
         SessionModelConfig::new_for_tests("test-model".to_string()),
     );
     agent.set_test_context_limit(100);
+    agent.set_test_image_limit(0);
     (agent, mock_llm_ref)
 }
 
@@ -2644,6 +2645,98 @@ async fn test_pending_user_message_lands_after_the_compaction_handoff() -> Resul
     let opening = message_text(&follow_up[0]);
     assert!(opening.starts_with("<handoff>"), "{opening}");
     assert!(opening.contains("Follow-up question"), "{opening}");
+    Ok(())
+}
+
+fn image_block() -> ContentBlock {
+    ContentBlock::Image {
+        media_type: "image/png".to_string(),
+        data: "AAAA".to_string(),
+        start_time: None,
+        end_time: None,
+    }
+}
+
+fn user_message_with_images(text: &str, images: usize) -> Message {
+    Message::new_user_content(
+        std::iter::once(ContentBlock::new_text(text))
+            .chain((0..images).map(|_| image_block()))
+            .collect(),
+    )
+}
+
+fn request_images(request: &LLMRequest) -> usize {
+    request
+        .messages
+        .iter()
+        .map(|message| match &message.content {
+            MessageContent::Structured(blocks) => blocks
+                .iter()
+                .filter(|block| matches!(block, ContentBlock::Image { .. }))
+                .count(),
+            MessageContent::Text(_) => 0,
+        })
+        .sum()
+}
+
+#[tokio::test]
+async fn test_image_limit_rejection_compacts_within_the_named_limit() -> Result<()> {
+    let (mut agent, mock_llm) = compaction_test_agent(vec![
+        Ok(idle_response()),
+        Ok(text_response("handoff text")),
+        Err(anyhow::anyhow!(
+            "Invalid request: Exceeded maximum number of images (2) allowed in the request."
+        )),
+    ]);
+    agent.append_message(user_message_with_images("Compare these", 3))?;
+
+    agent.run_single_iteration().await?;
+
+    let requests = mock_llm.get_requests();
+    assert_eq!(requests.len(), 3, "rejected request, handoff, retry");
+    assert_eq!(request_images(&requests[0]), 3);
+    assert_eq!(
+        request_images(&requests[1]),
+        2,
+        "the handoff request stays within the limit the error named"
+    );
+    assert_eq!(request_images(&requests[2]), 0);
+    assert!(message_text(&requests[2].messages[0]).starts_with("<handoff>"));
+    assert!(
+        agent
+            .message_history_for_tests()
+            .iter()
+            .any(|message| message.is_compaction_summary)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_compacts_before_a_queued_image_reaches_the_image_limit() -> Result<()> {
+    let (mut agent, mock_llm) =
+        compaction_test_agent(vec![Ok(idle_response()), Ok(text_response("handoff text"))]);
+    agent.set_test_image_limit(10);
+    agent.append_message(user_message_with_images("Screenshots so far", 8))?;
+    agent.append_message(Message::new_assistant("Looked at them").with_request_id(1))?;
+    agent.set_pending_message_ref(Arc::new(std::sync::Mutex::new(Some(vec![
+        ContentBlock::new_text("One more"),
+        image_block(),
+    ]))));
+
+    agent.run_single_iteration().await?;
+
+    let requests = mock_llm.get_requests();
+    assert_eq!(requests.len(), 2, "no request was rejected");
+    assert_eq!(
+        request_images(&requests[0]),
+        8,
+        "the handoff covers the history before the queued message"
+    );
+    assert_eq!(
+        request_images(&requests[1]),
+        1,
+        "the queued image follows the handoff"
+    );
     Ok(())
 }
 

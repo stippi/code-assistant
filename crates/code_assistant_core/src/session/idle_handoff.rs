@@ -27,12 +27,17 @@ pub struct HandoffConfig {
     /// Prepare a handoff once the last request's input (input, cache write
     /// and cache read tokens) reaches this many tokens; 0 disables it.
     pub idle_threshold_tokens: u64,
+    /// Compact before a request carries this many images; providers reject
+    /// requests with more (Azure OpenAI: 10 or 50 depending on the model,
+    /// Anthropic: 100). 0 sets no limit.
+    pub max_images_per_request: usize,
 }
 
 impl Default for HandoffConfig {
     fn default() -> Self {
         Self {
             idle_threshold_tokens: 150_000,
+            max_images_per_request: 50,
         }
     }
 }
@@ -56,6 +61,11 @@ impl HandoffConfig {
             warn!("Failed to parse {}: {e}; using defaults", path.display());
             Self::default()
         })
+    }
+
+    /// The image limit, if one is set.
+    pub fn image_limit(&self) -> Option<usize> {
+        (self.max_images_per_request > 0).then_some(self.max_images_per_request)
     }
 
     /// Persist the config to the resolved config directory.

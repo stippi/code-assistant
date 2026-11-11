@@ -103,10 +103,16 @@ pub trait ToolServicesProvider: Send + Sync {
 }
 
 /// Conversation measurements a [`CompactionPolicy`] bases its decision on.
+#[derive(Debug, Clone, Default)]
 pub struct ContextSnapshot {
     /// Tokens used by the last assistant turn relative to the model's context
     /// window, when known.
     pub usage_ratio: Option<f32>,
+    /// Images the next request would carry (prompt plus queued messages).
+    /// Only counted when [`CompactionPolicy::image_limit`] sets a limit.
+    pub prompt_images: usize,
+    /// How many images one request may carry, if limited.
+    pub image_limit: Option<usize>,
 }
 
 /// Decides when the conversation is compacted and with which prompt.
@@ -116,6 +122,13 @@ pub trait CompactionPolicy: Send + Sync {
     fn context_limit(&self, extensions: &(dyn Any + Send)) -> Result<Option<u32>>;
     fn should_compact(&self, snapshot: &ContextSnapshot) -> bool;
     fn compaction_prompt(&self) -> &str;
+
+    /// How many images one request may carry, if limited. The loop then
+    /// counts the prompt's images for the [`ContextSnapshot`] and keeps the
+    /// handoff request within the limit.
+    fn image_limit(&self, _extensions: &(dyn Any + Send)) -> Option<usize> {
+        None
+    }
 
     /// Optional text appended to the freshly generated compaction summary
     /// message. Lets the application carry application-specific state across
@@ -131,6 +144,9 @@ pub trait CompactionPolicy: Send + Sync {
 pub enum RecoveryAction {
     /// Shrink the conversation (oversized prompt) and retry.
     ReduceContext,
+    /// The request carried more images than the provider accepts (`limit`,
+    /// when the error names it); compact and retry.
+    TooManyImages { limit: Option<usize> },
     /// Transient streaming failure; retry the request after a delay.
     RetryStream {
         delay: Duration,

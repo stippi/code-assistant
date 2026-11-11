@@ -23,6 +23,10 @@ pub struct GeneralSection {
     /// gets a prepared handoff; stored in `handoff.json`.
     handoff_threshold_input: Entity<InputState>,
     _handoff_threshold_subscription: Subscription,
+    /// Compaction starts before a request carries this many images; stored
+    /// in `handoff.json`.
+    image_limit_input: Entity<InputState>,
+    _image_limit_subscription: Subscription,
     /// Days of inactivity after which a session settles; stored in
     /// `lifecycle.json` together with the merge rule.
     settle_days_input: Entity<InputState>,
@@ -45,17 +49,24 @@ impl GeneralSection {
             window,
             Self::on_default_model_selected,
         );
-        let threshold = HandoffConfig::load().idle_threshold_tokens;
+        let handoff = HandoffConfig::load();
         let handoff_threshold_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("150000")
-                .default_value(threshold.to_string())
+                .default_value(handoff.idle_threshold_tokens.to_string())
         });
         let subscription = cx.subscribe_in(
             &handoff_threshold_input,
             window,
             Self::on_handoff_threshold_input,
         );
+        let image_limit_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("50")
+                .default_value(handoff.max_images_per_request.to_string())
+        });
+        let image_limit_subscription =
+            cx.subscribe_in(&image_limit_input, window, Self::on_image_limit_input);
         let lifecycle = LifecycleConfig::load();
         let settle_days_input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -89,6 +100,8 @@ impl GeneralSection {
             _default_model_subscription: default_model_subscription,
             handoff_threshold_input,
             _handoff_threshold_subscription: subscription,
+            image_limit_input,
+            _image_limit_subscription: image_limit_subscription,
             settle_days_input,
             _settle_days_subscription: settle_days_subscription,
             settle_on_merge: lifecycle.auto_settle_on_merge,
@@ -240,9 +253,29 @@ impl GeneralSection {
         let Ok(idle_threshold_tokens) = input.read(cx).value().trim().parse::<u64>() else {
             return;
         };
-        let config = HandoffConfig {
-            idle_threshold_tokens,
+        Self::save_handoff_config(|config| config.idle_threshold_tokens = idle_threshold_tokens);
+    }
+
+    /// Save the image limit whenever the input holds a valid number.
+    fn on_image_limit_input(
+        &mut self,
+        input: &Entity<InputState>,
+        event: &InputEvent,
+        _window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !matches!(event, InputEvent::Change) {
+            return;
+        }
+        let Ok(max_images_per_request) = input.read(cx).value().trim().parse::<usize>() else {
+            return;
         };
+        Self::save_handoff_config(|config| config.max_images_per_request = max_images_per_request);
+    }
+
+    fn save_handoff_config(change: impl FnOnce(&mut HandoffConfig)) {
+        let mut config = HandoffConfig::load();
+        change(&mut config);
         if let Err(e) = config.save() {
             warn!("Failed to save the handoff settings: {e:#}");
         }
@@ -446,6 +479,45 @@ impl Render for GeneralSection {
                                  input tokens stays idle for four minutes, the agent prepares \
                                  a /new prompt for a follow-up session while the prompt cache \
                                  is still warm. 0 turns this off.",
+                            ),
+                    ),
+            )
+            // Image limit
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(gpui_kit::FontWeight::MEDIUM)
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Images per request"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(div().w(px(80.)).child(Input::new(&self.image_limit_input)))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().foreground)
+                                    .child("images"),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(
+                                "Some providers reject requests carrying more images than \
+                                 this, counted over the whole conversation (Azure OpenAI: 10 or \
+                                 50 depending on the model). The \
+                                 conversation is compacted before it gets there. 0 sets no \
+                                 limit.",
                             ),
                     ),
             )

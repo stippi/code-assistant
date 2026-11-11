@@ -30,6 +30,9 @@ pub struct AgentAppState {
     pub model_config: Option<SessionModelConfig>,
     /// Override for the model's context window (primarily used in tests).
     pub context_limit_override: Option<u32>,
+    /// Override for the configured image limit per request, 0 for none
+    /// (used in tests).
+    pub image_limit_override: Option<usize>,
     /// File trees per project (used in the system prompt).
     pub file_trees: HashMap<String, String>,
     /// Available project names (used in the system prompt).
@@ -53,6 +56,7 @@ impl AgentAppState {
             session_config,
             model_config: None,
             context_limit_override: None,
+            image_limit_override: None,
             file_trees: HashMap::new(),
             available_projects: Vec::new(),
         }

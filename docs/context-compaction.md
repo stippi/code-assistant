@@ -15,6 +15,20 @@ described in `docs/handoff.md`.
   output) reaches 80% of the model's context window (catalog, provider
   listing or the `context_token_limit` override; see the configuration
   guide). An unknown limit disables compaction for the run.
+- It also compacts once the next request would carry 90% of the image
+  limit (prompt plus queued messages). Some providers reject requests with
+  more images than that, wherever they sit in the history (Azure OpenAI:
+  10 or 50 depending on the model; Anthropic: 100).
+  The limit is one setting for all models, `max_images_per_request` in
+  `handoff.json` (*Settings → General*, default 50, 0 for none); images are
+  only counted while one is set.
+- A request rejected for its images anyway
+  (`Exceeded maximum number of images (50) …`, `… maximum allowed: 10`) is
+  classified by `DefaultRecovery` as `RecoveryAction::TooManyImages` and
+  compacts. The handoff request keeps the oldest images up to the limit
+  (the smaller of the setting and the number the error names; none when it
+  names none) and leaves the newest out, so its prefix still hits the
+  prompt cache. A second rejection in a row fails the turn.
 - The check runs at the top of every loop iteration in
   `AgentRuntime::run_until_complete` (`crates/agent_core/src/runtime.rs`),
   **before** a pending user message is appended. A request that arrives
