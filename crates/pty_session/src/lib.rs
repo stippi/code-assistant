@@ -19,6 +19,7 @@
 //! a sandboxed invocation (e.g. seatbelt) is just a different argv.
 
 mod buffer;
+mod cursor_query;
 mod manager;
 mod session;
 

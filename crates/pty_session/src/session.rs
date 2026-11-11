@@ -14,6 +14,7 @@
 //!   returns an error advising to re-run with `tty: true`.
 
 use crate::buffer::{BufferedBytes, HeadTailBuffer};
+use crate::cursor_query::{self, CursorQueryScanner};
 use anyhow::{Context as _, Result, anyhow};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use std::io::{Read as _, Write as _};
@@ -278,16 +279,26 @@ impl PtySession {
             .take_writer()
             .map_err(|e| anyhow!("Failed to take PTY writer: {e}"))?;
 
+        // Writer: drains the stdin channel into the PTY master.
+        let (writer_tx, mut writer_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+
         // Reader: blocking loop on a plain thread, appending into the buffer.
+        // It also plays terminal for cursor position queries, which no one
+        // else answers (on Windows, ConPTY asks before the child even runs).
         let reader_buffer = buffer.clone();
         let reader_notify = output_notify.clone();
         let reader_sink = config.output_sink.clone();
+        let answer_tx = writer_tx.clone();
         std::thread::spawn(move || {
             let mut chunk = [0u8; 8192];
+            let mut cursor_queries = CursorQueryScanner::default();
             loop {
                 match reader.read(&mut chunk) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
+                        for _ in 0..cursor_queries.scan(&chunk[..n]) {
+                            let _ = answer_tx.send(cursor_query::ANSWER.to_vec());
+                        }
                         if let Ok(mut buffer) = reader_buffer.lock() {
                             buffer.append(&chunk[..n]);
                         }
@@ -300,8 +311,6 @@ impl PtySession {
             }
         });
 
-        // Writer: drains the stdin channel into the PTY master.
-        let (writer_tx, mut writer_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
         std::thread::spawn(move || {
             while let Some(bytes) = writer_rx.blocking_recv() {
                 if writer
@@ -615,6 +624,21 @@ mod tests {
         let session = PtySession::spawn(shell("echo hello-pty", true)).unwrap();
         let out = session.collect_output(Duration::from_secs(10)).await;
         assert!(out.output.contains("hello-pty"), "output: {}", out.output);
+        assert_eq!(out.status, PtySessionStatus::Exited(Some(0)));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cursor_position_query_is_answered() {
+        // Like ConPTY on Windows at startup: ask where the cursor is and
+        // wait for the reply. No terminal emulator is attached to answer.
+        let session = PtySession::spawn(shell(
+            "printf '\\033[6n'; IFS= read -rs -d R reply; echo answered",
+            true,
+        ))
+        .unwrap();
+        let out = session.collect_output(Duration::from_secs(10)).await;
+        session.terminate();
+        assert!(out.output.contains("answered"), "output: {:?}", out.output);
         assert_eq!(out.status, PtySessionStatus::Exited(Some(0)));
     }
 
