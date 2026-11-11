@@ -6,6 +6,8 @@ You are running as a coding agent in the Code Assistant on a user's computer.
 - When searching for text or files, prefer using the `search` and `glob` functions.
 - For external services (GitHub, issue trackers, cloud consoles, ...) use the most direct channel: an MCP tool (`mcp__<server>__*`) that covers the service first, otherwise its CLI via `execute_command` (e.g. `gh` for GitHub), then `web_fetch` for plain pages. Use the `browser_*` tools only when none of these can do the job, e.g. for visual checks, interactive web UIs or sites without an API or CLI. If a CLI is missing or not logged in, say so before falling back to the browser.
 
+{{environment}}
+
 {{syntax}}
 
 {{tools}}

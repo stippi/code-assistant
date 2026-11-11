@@ -75,6 +75,41 @@ pub trait StreamingCallback: Send + Sync {
     }
 }
 
+/// The shell every command line runs through: the program and the
+/// arguments that precede the command line. The system prompt tells the
+/// model about it, so this is the one place that decides it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Shell {
+    pub program: String,
+    pub args: &'static [&'static str],
+}
+
+impl Shell {
+    /// The full argv running `command_line`.
+    pub fn argv(&self, command_line: &str) -> Vec<String> {
+        let mut argv = Vec::with_capacity(self.args.len() + 2);
+        argv.push(self.program.clone());
+        argv.extend(self.args.iter().map(|arg| arg.to_string()));
+        argv.push(command_line.to_string());
+        argv
+    }
+}
+
+/// The user's login shell (`$SHELL`, else bash) on unix, `cmd` on Windows.
+pub fn shell() -> Shell {
+    #[cfg(target_family = "unix")]
+    let shell = Shell {
+        program: std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string()),
+        args: &["-l", "-c"],
+    };
+    #[cfg(target_family = "windows")]
+    let shell = Shell {
+        program: "cmd".to_string(),
+        args: &["/C"],
+    };
+    shell
+}
+
 /// A prepared spawn for a long-lived interactive (PTY) session: the argv to
 /// run, extra environment, and an opaque guard the spawned session must keep
 /// alive (e.g. the temp file holding a sandbox profile the argv references).
@@ -87,19 +122,7 @@ pub struct PtySpawnSpec {
 impl PtySpawnSpec {
     /// Plain, unsandboxed "run through the user's shell" spawn.
     pub fn shell(command_line: &str) -> Self {
-        #[cfg(target_family = "unix")]
-        let argv = vec![
-            std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string()),
-            "-l".to_string(),
-            "-c".to_string(),
-            command_line.to_string(),
-        ];
-        #[cfg(target_family = "windows")]
-        let argv = vec![
-            "cmd".to_string(),
-            "/C".to_string(),
-            command_line.to_string(),
-        ];
+        let argv = shell().argv(command_line);
         Self {
             argv,
             env: Vec::new(),

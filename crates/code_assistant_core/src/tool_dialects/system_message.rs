@@ -54,7 +54,7 @@ pub fn generate_system_message(
     model_hint: Option<&str>,
     registry: &crate::tools::core::ToolRegistry,
 ) -> String {
-    let mut base = load_base_prompt(model_hint);
+    let mut base = load_base_prompt(model_hint).replace("{{environment}}", &environment_section());
 
     if dialect.uses_native_tools() {
         // For native mode, replace the entire placeholder section with an empty line
@@ -82,6 +82,47 @@ pub fn generate_system_message(
 
         base
     }
+}
+
+/// The `{{environment}}` section: where commands run. It must not change
+/// during a session (prompt-cache prefix), so it holds nothing like a date.
+fn render_environment(os: &str, arch: &str, shell: &command_executor::Shell) -> String {
+    let os_name = match os {
+        "macos" => "macOS",
+        "windows" => "Windows",
+        "linux" => "Linux",
+        other => other,
+    };
+    let invocation = [shell.program.as_str()]
+        .into_iter()
+        .chain(shell.args.iter().copied())
+        .chain(["<command>"])
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut section = format!(
+        "# Environment\n\n\
+         - Operating system: {os_name} ({arch})\n\
+         - Shell: `execute_command` runs each command as `{invocation}`.\n"
+    );
+    if os == "windows" {
+        section.push_str(
+            "- Commands therefore run in cmd.exe, not in bash or PowerShell: use cmd.exe syntax \
+             (`&&` to chain, `%VAR%`, double quotes) and Windows commands. Unix tools such as \
+             `ls`, `grep`, `cat` or `rm` may be missing; call `powershell -NoProfile -Command \"...\"` \
+             when you need more than cmd.exe offers.\n",
+        );
+    }
+    // The placeholder sits on its own line; the template supplies spacing.
+    section.truncate(section.trim_end().len());
+    section
+}
+
+fn environment_section() -> String {
+    render_environment(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        &command_executor::shell(),
+    )
 }
 
 fn load_base_prompt(model_hint: Option<&str>) -> String {
@@ -271,6 +312,67 @@ mod tests {
             caret_msg.contains("triple-caret fenced blocks"),
             "Caret message should explain caret syntax"
         );
+    }
+
+    #[test]
+    fn every_prompt_has_an_environment_placeholder() {
+        let prompts: Vec<_> = EmbeddedSystemPrompts::iter()
+            .filter(|name| name.ends_with(".md"))
+            .collect();
+        assert!(!prompts.is_empty());
+        for name in prompts {
+            let prompt = read_prompt_file(&name).unwrap();
+            assert!(
+                prompt.contains("{{environment}}"),
+                "{name} lacks the {{{{environment}}}} placeholder"
+            );
+        }
+    }
+
+    #[test]
+    fn system_message_describes_the_environment() {
+        use crate::types::ToolSyntax;
+
+        for syntax in [ToolSyntax::Native, ToolSyntax::Xml, ToolSyntax::Caret] {
+            for hint in [None, Some("claude-sonnet"), Some("gpt-5-codex")] {
+                let message = generate_system_message(
+                    &*crate::tool_dialects::dialect_for(syntax),
+                    ToolScope::Agent,
+                    hint,
+                    &crate::tools::test_registry(),
+                );
+                assert!(!message.contains("{{environment}}"), "{syntax:?} {hint:?}");
+                assert!(message.contains("# Environment"), "{syntax:?} {hint:?}");
+                assert!(
+                    message.contains(&command_executor::shell().program),
+                    "{syntax:?} {hint:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn environment_names_the_unix_shell_invocation() {
+        let shell = command_executor::Shell {
+            program: "/bin/zsh".into(),
+            args: &["-l", "-c"],
+        };
+        let section = render_environment("macos", "aarch64", &shell);
+        assert!(section.contains("macOS (aarch64)"), "{section}");
+        assert!(section.contains("`/bin/zsh -l -c <command>`"), "{section}");
+        assert!(!section.contains("cmd.exe"), "{section}");
+    }
+
+    #[test]
+    fn environment_warns_about_cmd_on_windows() {
+        let shell = command_executor::Shell {
+            program: "cmd".into(),
+            args: &["/C"],
+        };
+        let section = render_environment("windows", "x86_64", &shell);
+        assert!(section.contains("Windows (x86_64)"), "{section}");
+        assert!(section.contains("`cmd /C <command>`"), "{section}");
+        assert!(section.contains("cmd.exe syntax"), "{section}");
     }
 
     #[test]

@@ -282,16 +282,14 @@ impl SandboxedCommandExecutor {
 
 #[cfg(target_os = "macos")]
 fn shell_command(command_line: &str, redirect_stderr: bool) -> (String, Vec<String>) {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-    let mut args = Vec::new();
-    args.push("-l".to_string());
-    args.push("-c".to_string());
+    let shell = crate::shell();
+    let mut args: Vec<String> = shell.args.iter().map(|arg| arg.to_string()).collect();
     if redirect_stderr {
         args.push(format!("{command_line} 2>&1"));
     } else {
         args.push(command_line.to_string());
     }
-    (shell, args)
+    (shell.program, args)
 }
 
 #[cfg(target_os = "macos")]
