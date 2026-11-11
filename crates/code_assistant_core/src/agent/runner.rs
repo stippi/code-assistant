@@ -517,6 +517,13 @@ impl Agent {
         self.app_state_mut().context_limit_override = Some(limit);
     }
 
+    /// Images per request, 0 for no limit; tests leave the configuration
+    /// alone with it.
+    #[cfg(test)]
+    pub fn set_test_image_limit(&mut self, limit: usize) {
+        self.app_state_mut().image_limit_override = Some(limit);
+    }
+
     #[cfg(test)]
     pub fn message_history_for_tests(&self) -> Vec<Message> {
         self.runtime.message_history()

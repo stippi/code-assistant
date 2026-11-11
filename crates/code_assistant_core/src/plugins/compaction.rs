@@ -2,10 +2,16 @@
 //! fixed threshold.
 
 use crate::plugins::AgentAppState;
+use crate::session::idle_handoff::HandoffConfig;
 use agent_core::hooks::{CompactionPolicy, ContextSnapshot};
 use anyhow::Result;
 use std::any::Any;
 use tracing::{debug, warn};
+
+/// Compaction starts at this share of the image limit, before a tool adding
+/// screenshots pushes the next request over it. The handoff request then
+/// still carries every image.
+const IMAGE_LIMIT_THRESHOLD: f32 = 0.9;
 
 pub struct TokenRatioCompaction {
     threshold: f32,
@@ -56,6 +62,16 @@ impl CompactionPolicy for TokenRatioCompaction {
     }
 
     fn should_compact(&self, snapshot: &ContextSnapshot) -> bool {
+        if let Some(limit) = snapshot.image_limit
+            && snapshot.prompt_images > 0
+            && snapshot.prompt_images as f32 >= limit as f32 * IMAGE_LIMIT_THRESHOLD
+        {
+            debug!(
+                "{} images in the prompt, model accepts {limit} — triggering compaction",
+                snapshot.prompt_images
+            );
+            return true;
+        }
         if let Some(ratio) = snapshot.usage_ratio
             && ratio >= self.threshold
         {
@@ -71,6 +87,13 @@ impl CompactionPolicy for TokenRatioCompaction {
 
     fn compaction_prompt(&self) -> &str {
         self.prompt
+    }
+
+    fn image_limit(&self, extensions: &(dyn Any + Send)) -> Option<usize> {
+        match AgentAppState::of_ref(extensions).image_limit_override {
+            Some(limit) => (limit > 0).then_some(limit),
+            None => HandoffConfig::load().image_limit(),
+        }
     }
 
     fn post_compaction_summary_addendum(&self, extensions: &(dyn Any + Send)) -> Option<String> {
@@ -124,12 +147,27 @@ mod tests {
     #[test]
     fn compacts_at_threshold() {
         let policy = TokenRatioCompaction::new(0.8);
-        assert!(!policy.should_compact(&ContextSnapshot { usage_ratio: None }));
+        assert!(!policy.should_compact(&ContextSnapshot::default()));
         assert!(!policy.should_compact(&ContextSnapshot {
-            usage_ratio: Some(0.79)
+            usage_ratio: Some(0.79),
+            ..Default::default()
         }));
         assert!(policy.should_compact(&ContextSnapshot {
-            usage_ratio: Some(0.8)
+            usage_ratio: Some(0.8),
+            ..Default::default()
         }));
+    }
+
+    #[test]
+    fn compacts_before_the_image_limit() {
+        let policy = TokenRatioCompaction::new(0.8);
+        let snapshot = |prompt_images, image_limit| ContextSnapshot {
+            usage_ratio: Some(0.1),
+            prompt_images,
+            image_limit,
+        };
+        assert!(!policy.should_compact(&snapshot(44, Some(50))));
+        assert!(policy.should_compact(&snapshot(45, Some(50))));
+        assert!(!policy.should_compact(&snapshot(500, None)));
     }
 }

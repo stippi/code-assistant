@@ -2,6 +2,7 @@
 //! [`crate::hooks`]; application state travels type-erased in `extensions`.
 
 mod handoff;
+mod images;
 #[cfg(test)]
 mod tests;
 mod tool_execution;
@@ -105,6 +106,9 @@ pub struct AgentRuntime {
     conversation: Conversation,
     /// Run-local LLM projection. Never included in a checkpoint.
     prompt_projection: PromptProjection,
+    /// Set while compacting after a request was rejected for its number of
+    /// images: the limit the error named, 0 when it named none.
+    rejected_image_limit: Option<usize>,
 
     /// Every tool call of the conversation with its outcome.
     journal: ToolJournal,
@@ -178,6 +182,7 @@ impl AgentRuntime {
             cancellation: tools_core::RunCancellation::default(),
             conversation: Conversation::default(),
             prompt_projection: PromptProjection::default(),
+            rejected_image_limit: None,
             journal: ToolJournal::default(),
             cached_system_prompts: HashMap::new(),
             next_request_id: 1, // Start from 1
@@ -295,6 +300,19 @@ impl AgentRuntime {
             .collect()
     }
 
+    /// Images in the queued notifications and user message (without
+    /// clearing them).
+    fn pending_message_images(&self) -> usize {
+        [&self.pending_notifications_ref, &self.pending_message_ref]
+            .into_iter()
+            .flatten()
+            .filter_map(|pending_ref| {
+                let pending = pending_ref.lock().ok()?;
+                Some(images::count_in_blocks(pending.as_deref()?))
+            })
+            .sum()
+    }
+
     /// Check if there is a pending message or notification (without clearing it)
     fn has_pending_message(&self) -> bool {
         [&self.pending_notifications_ref, &self.pending_message_ref]
@@ -374,6 +392,9 @@ impl AgentRuntime {
 
     async fn run_until_complete(&mut self) -> Result<()> {
         let mut streaming_retry_count: u32 = 0;
+        // Compactions after an image-limit rejection since the last
+        // successful request; a second one in a row would not help.
+        let mut image_recoveries: u32 = 0;
 
         loop {
             self.cancellation.check()?;
@@ -412,8 +433,9 @@ impl AgentRuntime {
                 .await
             {
                 Ok(result) => {
-                    // Successful response — reset the retry counter
+                    // Successful response — reset the retry counters
                     streaming_retry_count = 0;
+                    image_recoveries = 0;
                     result
                 }
                 // `continue` restarts the loop, which re-renders the messages and
@@ -423,6 +445,14 @@ impl AgentRuntime {
                 Err(e) => match self.hooks.recovery.classify(&e, streaming_retry_count) {
                     RecoveryAction::ReduceContext => {
                         self.recover_from_oversized_prompt().await?;
+                        continue;
+                    }
+                    RecoveryAction::TooManyImages { .. } if image_recoveries > 0 => {
+                        return Err(e);
+                    }
+                    RecoveryAction::TooManyImages { limit } => {
+                        image_recoveries += 1;
+                        self.recover_from_image_limit(limit).await?;
                         continue;
                     }
                     RecoveryAction::RetryStream {
@@ -890,6 +920,19 @@ impl AgentRuntime {
     /// tool calls instead of text is asked once more.
     pub async fn generate_handoff(&mut self, prompt: Option<&str>) -> Result<String> {
         let mut messages = self.render_tool_results_in_messages();
+        // The handoff must fit the image limit the compaction is for. The
+        // newest images go first, so the request still hits the cache.
+        let configured = self.hooks.compaction.image_limit(self.extensions.as_ref());
+        let image_cap = match (configured, self.rejected_image_limit) {
+            (Some(configured), Some(rejected)) => Some(configured.min(rejected)),
+            (configured, rejected) => configured.or(rejected),
+        };
+        if let Some(cap) = image_cap {
+            let dropped = images::keep_first(&mut messages, cap);
+            if dropped > 0 {
+                debug!("Left {dropped} images out of the handoff request");
+            }
+        }
         if let Some(prompt) = prompt {
             messages.push(Message::new_user(prompt));
         }
@@ -1044,10 +1087,42 @@ impl AgentRuntime {
     }
 
     fn should_trigger_compaction(&mut self) -> Result<bool> {
+        let image_limit = self.hooks.compaction.image_limit(self.extensions.as_ref());
+        // Counting renders every tool result, so only with a limit set.
+        // Queued messages count: they join the next request after this
+        // check.
+        let prompt_images = if image_limit.is_some() {
+            images::count(&self.render_tool_results_in_messages()) + self.pending_message_images()
+        } else {
+            0
+        };
         let snapshot = ContextSnapshot {
             usage_ratio: self.context_usage_ratio()?,
+            prompt_images,
+            image_limit,
         };
         Ok(self.hooks.compaction.should_compact(&snapshot))
+    }
+
+    /// The provider rejected the request for its number of images: compact,
+    /// which leaves the images behind. The handoff request stays within the
+    /// limit the error named, or goes without images when it named none.
+    async fn recover_from_image_limit(&mut self, limit: Option<usize>) -> Result<()> {
+        warn!(
+            "Request exceeded the model's image limit ({}); compacting",
+            limit.map_or("not named".to_string(), |limit| limit.to_string())
+        );
+        self.rejected_image_limit = Some(limit.unwrap_or(0));
+        let _ = self
+            .send_ui(AgentUiEvent::ShowTransientStatus {
+                message:
+                    "Too many images for the model \u{2014} compacting the conversation\u{2026}"
+                        .to_string(),
+            })
+            .await;
+        let result = self.perform_compaction().await;
+        self.rejected_image_limit = None;
+        result
     }
 
     /// Shrinks only the request projection after an oversized-prompt rejection.

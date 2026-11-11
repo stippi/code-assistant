@@ -14,6 +14,9 @@ pub struct DefaultRecovery;
 
 impl RecoveryPolicy for DefaultRecovery {
     fn classify(&self, error: &anyhow::Error, completed_retries: u32) -> RecoveryAction {
+        if let Some(limit) = image_limit_error(error) {
+            return RecoveryAction::TooManyImages { limit };
+        }
         if is_prompt_too_long_error(error) {
             return RecoveryAction::ReduceContext;
         }
@@ -26,6 +29,25 @@ impl RecoveryPolicy for DefaultRecovery {
         }
         RecoveryAction::Fail
     }
+}
+
+/// Whether the provider rejected the request for its number of images, and
+/// the limit when the error names it:
+/// - OpenAI: "Exceeded maximum number of images (50) allowed in the
+///   request."
+/// - Azure OpenAI: "Too many images in request: 20, maximum allowed: 10"
+fn image_limit_error(error: &anyhow::Error) -> Option<Option<usize>> {
+    let msg = error.to_string().to_lowercase();
+    if !(msg.contains("number of images") || msg.contains("too many images")) {
+        return None;
+    }
+    let number_after = |marker: &str| {
+        let rest = &msg[msg.find(marker)? + marker.len()..];
+        let rest = rest.trim_start_matches(|c: char| !c.is_ascii_digit());
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        digits.parse::<usize>().ok().filter(|limit| *limit > 0)
+    };
+    Some(number_after("maximum allowed").or_else(|| number_after("maximum number of images")))
 }
 
 /// Check if an error from the LLM provider indicates the prompt exceeded the
@@ -115,6 +137,24 @@ mod tests {
         assert!(matches!(
             DefaultRecovery.classify(&err, MAX_STREAMING_RETRIES),
             RecoveryAction::Fail
+        ));
+    }
+
+    #[test]
+    fn image_limit_errors_compact_with_the_named_limit() {
+        let classify = |message: &str| DefaultRecovery.classify(&anyhow::anyhow!("{message}"), 0);
+        let openai = r#"Invalid request: {"error":{"message":"Exceeded maximum number of images (50) allowed in the request.","param":"input","type":"invalid_request_error"}}"#;
+        assert!(matches!(
+            classify(openai),
+            RecoveryAction::TooManyImages { limit: Some(50) }
+        ));
+        assert!(matches!(
+            classify("Too many images in request: 20, maximum allowed: 10"),
+            RecoveryAction::TooManyImages { limit: Some(10) }
+        ));
+        assert!(matches!(
+            classify("request too large: too many images"),
+            RecoveryAction::TooManyImages { limit: None }
         ));
     }
 
