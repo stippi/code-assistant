@@ -91,6 +91,11 @@ pub const DEFAULT_VIEWPORT: (u32, u32) = (1280, 800);
 /// is killed.
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long a starting browser may take to announce its DevTools endpoint.
+/// chromiumoxide's 20 s are too short for a cold first start on a busy
+/// machine (a fresh CI runner starting several browsers at once missed it).
+const LAUNCH_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// A launched browser plus the resources that must outlive it: the temp-dir
 /// guard for an ephemeral profile, the claim on its profile and process, and
 /// the background CDP handler task that drives the connection (aborted on
@@ -115,7 +120,9 @@ impl LaunchedBrowser {
             BrowserProfile::Ephemeral => ProfileClaim::default(),
         };
 
-        let mut builder = BrowserConfig::builder().user_data_dir(&data_dir);
+        let mut builder = BrowserConfig::builder()
+            .user_data_dir(&data_dir)
+            .launch_timeout(LAUNCH_TIMEOUT);
         if config.headful {
             // A window a human uses: let the page fill it instead of emulating
             // a fixed viewport inside it.
