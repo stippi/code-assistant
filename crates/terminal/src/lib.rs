@@ -20,7 +20,7 @@ use std::collections::VecDeque;
 use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::{Event as AlacTermEvent, EventListener, Notify, WindowSize};
 use alacritty_terminal::event_loop::{EventLoop, Msg, Notifier};
@@ -274,6 +274,8 @@ pub struct Terminal {
     command: Option<String>,
     /// Exit status of the child process, set when it exits.
     exit_status: Option<Option<i32>>,
+    /// When the child process exited.
+    exited_at: Option<Instant>,
     /// Background task for the event loop subscription.
     _event_loop_task: Option<Task<()>>,
 }
@@ -334,6 +336,21 @@ impl Terminal {
         self.exit_status.is_some()
     }
 
+    /// How long the child process ran: until it exited, or until now while
+    /// it is still running.
+    pub fn run_time(&self) -> Duration {
+        self.exited_at
+            .unwrap_or_else(Instant::now)
+            .saturating_duration_since(self.started_at)
+    }
+
+    fn record_exit(&mut self, code: Option<i32>, cx: &mut Context<Self>) {
+        self.exit_status = Some(code);
+        self.exited_at = Some(Instant::now());
+        cx.emit(Event::ChildExit(code));
+        cx.notify();
+    }
+
     /// Mark the child process as exited. Terminals backed by a real PTY
     /// learn this from `AlacTermEvent::ChildExit`; the display-only
     /// terminals used for backend-streamed tool output have no event loop,
@@ -343,9 +360,7 @@ impl Terminal {
         if self.exit_status.is_some() {
             return;
         }
-        self.exit_status = Some(code);
-        cx.emit(Event::ChildExit(code));
-        cx.notify();
+        self.record_exit(code, cx);
     }
 
     /// Get the full terminal text content as a string.
@@ -561,15 +576,11 @@ impl Terminal {
                 cx.emit(Event::Bell);
             }
             AlacTermEvent::ChildExit(raw_status) => {
-                self.exit_status = Some(Some(raw_status));
-                cx.emit(Event::ChildExit(Some(raw_status)));
-                cx.notify();
+                self.record_exit(Some(raw_status), cx);
             }
             AlacTermEvent::Exit => {
                 if self.exit_status.is_none() {
-                    self.exit_status = Some(None);
-                    cx.emit(Event::ChildExit(None));
-                    cx.notify();
+                    self.record_exit(None, cx);
                 }
             }
             AlacTermEvent::ClipboardStore(_, _data) => {
@@ -749,6 +760,7 @@ impl TerminalBuilder {
             started_at: Instant::now(),
             command: shell_text,
             exit_status: None,
+            exited_at: None,
             _event_loop_task: None,
         };
 
@@ -785,6 +797,7 @@ impl TerminalBuilder {
             started_at: Instant::now(),
             command: None,
             exit_status: None,
+            exited_at: None,
             _event_loop_task: None,
         };
 
