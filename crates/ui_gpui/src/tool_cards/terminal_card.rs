@@ -199,7 +199,7 @@ impl ToolBlockRenderer for TerminalCardRenderer {
         }
 
         // Terminal state (only meaningful for live terminals)
-        let (is_live, is_running, exit_status, display_command, started_at) =
+        let (is_live, is_running, exit_status, display_command, run_time) =
             if let Some(ref terminal) = live_terminal {
                 let t = terminal.read(cx);
                 let cmd = if !command_line_param.is_empty() {
@@ -207,20 +207,20 @@ impl ToolBlockRenderer for TerminalCardRenderer {
                 } else {
                     t.command().unwrap_or("command").to_string()
                 };
-                (true, !t.has_exited(), t.exit_status(), cmd, t.started_at())
+                (
+                    true,
+                    !t.has_exited(),
+                    t.exit_status(),
+                    cmd,
+                    Some(t.run_time()),
+                )
             } else {
                 let cmd = if !command_line_param.is_empty() {
                     command_line_param.clone()
                 } else {
                     "command".to_string()
                 };
-                (
-                    false,
-                    false,
-                    None,
-                    cmd,
-                    std::time::Instant::now(), // not used when !is_live
-                )
+                (false, false, None, cmd, None)
             };
 
         // Prepare the TerminalView for the live path
@@ -254,22 +254,7 @@ impl ToolBlockRenderer for TerminalCardRenderer {
         // ---- Header ----
 
         // Elapsed time (while running: shown after 2s; when done: always shown).
-        // Once the tool has finished (Success/Error), use the stable duration_seconds
-        // from ContentBlock timestamps — this works for both restored sessions and
-        // live terminals that have completed (prevents the timer from counting up forever).
-        let elapsed_secs = if tool_finished {
-            tool.duration_seconds.map(|d| d as u64).or_else(|| {
-                if is_live {
-                    Some(started_at.elapsed().as_secs())
-                } else {
-                    None
-                }
-            })
-        } else if is_live {
-            Some(started_at.elapsed().as_secs())
-        } else {
-            None
-        };
+        let elapsed_secs = elapsed_secs(run_time, tool.duration_seconds);
 
         // Chevron (right-aligned, matching inline tool style)
         let chevron_icon = if is_collapsed {
@@ -842,6 +827,16 @@ fn render_plain_output(
     container
 }
 
+/// Seconds shown in the card header. A live terminal knows how long its
+/// process ran (frozen at exit), which outlasts the tool call when the
+/// command went to the background; without one (restored session, evicted
+/// terminal) the tool call's duration is all there is.
+fn elapsed_secs(run_time: Option<Duration>, tool_duration_seconds: Option<f64>) -> Option<u64> {
+    run_time
+        .map(|d| d.as_secs())
+        .or(tool_duration_seconds.map(|d| d as u64))
+}
+
 /// Whether the card represents a failed command.
 fn is_card_error(
     is_running: bool,
@@ -929,4 +924,24 @@ fn rgba(r: u8, g: u8, b: u8) -> gpui_kit::Hsla {
 
 fn is_dark_theme(theme: &gpui_kit::component::theme::Theme) -> bool {
     theme.background.l < 0.5
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn background_process_counts_past_the_tool_call() {
+        // The tool call returned after 5 s, the process still runs at 12 s.
+        assert_eq!(
+            elapsed_secs(Some(Duration::from_secs(12)), Some(5.0)),
+            Some(12)
+        );
+    }
+
+    #[test]
+    fn without_live_terminal_the_tool_duration_is_shown() {
+        assert_eq!(elapsed_secs(None, Some(7.4)), Some(7));
+        assert_eq!(elapsed_secs(None, None), None);
+    }
 }
