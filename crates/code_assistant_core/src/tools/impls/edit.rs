@@ -114,7 +114,7 @@ impl Tool for EditTool {
                     "path": {
                         "examples": ["File path here"],
                         "type": "string",
-                        "description": "Path to the file to modify (relative to project root)"
+                        "description": "Path to the file to modify (relative to project root). A path outside the project (absolute, or leading out with `..`) is written only after the user approves it."
                     },
                     "old_text": {
                         "type": "string",
@@ -171,21 +171,22 @@ impl Tool for EditTool {
             .get_project(&input.project)?
             .ok_or_else(|| anyhow!("Project not found: {}", input.project))?;
 
-        // Check for absolute path
+        // A path outside the project is edited only once the user approves.
         let path = PathBuf::from(&input.path);
-        if path.is_absolute() {
-            return Ok(EditOutput {
-                project: input.project.clone(),
-                path,
-                error: Some(FileUpdaterError::Other(
-                    "Absolute paths are not allowed".to_string(),
-                )),
-                match_start_lines: Vec::new(),
-            });
-        }
-
-        // Join with root_dir to get full path
-        let full_path = explorer.root_dir().join(&path);
+        let target =
+            match super::outside_project::write_target(context, "edit", explorer, &path).await {
+                Ok(target) => target,
+                Err(error) => {
+                    return Ok(EditOutput {
+                        project: input.project.clone(),
+                        path,
+                        error: Some(FileUpdaterError::Other(error)),
+                        match_start_lines: Vec::new(),
+                    });
+                }
+            };
+        let explorer = target.explorer;
+        let full_path = target.full_path;
 
         // Create a FileReplacement from the input
         let replacements = [FileReplacement {
@@ -204,7 +205,10 @@ impl Tool for EditTool {
         // Apply with or without formatting, based on project configuration,
         // unless the file changed since this agent last saw it.
         let apply = async {
-            if let Some(format_command) = project_config.format_command_for(&path) {
+            if let Some(format_command) = project_config
+                .format_command_for(&path)
+                .filter(|_| !target.outside)
+            {
                 explorer
                     .apply_replacements_with_formatting(
                         &full_path,
@@ -236,8 +240,8 @@ impl Tool for EditTool {
                     input.replace_all = updated_replacement.replace_all;
                 }
 
-                // Emit resource event
-                if let Some(ui) = context.ui() {
+                // Emit resource event (files outside the project are no resource of it)
+                if let Some(ui) = context.ui().filter(|_| !target.outside) {
                     let _ = ui
                         .send_event(crate::ui::UiEvent::ResourceWritten {
                             project: input.project.clone(),

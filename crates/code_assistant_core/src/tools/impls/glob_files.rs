@@ -84,7 +84,7 @@ impl Tool for GlobFilesTool {
                     },
                     "pattern": {
                         "type": "string",
-                        "description": "Glob pattern to match files against. Examples: '*.rs', '**/*.json', 'src/**/*.ts'"
+                        "description": "Glob pattern to match files against. Examples: '*.rs', '**/*.json', 'src/**/*.ts'. A pattern whose leading folders lie outside the project (absolute, or '../') matches there only after the user approves it."
                     }
                 },
                 "required": ["project", "pattern"]
@@ -126,8 +126,27 @@ impl Tool for GlobFilesTool {
         // Get the root directory of the project
         let root_dir = explorer.root_dir();
 
+        // A pattern whose leading directories leave the project (absolute, or
+        // `..`) matches below that folder, once the user approves it.
+        let (base, pattern) = split_literal_base(&input.pattern);
+        let (walk_root, pattern) =
+            match fs_explorer::resolve_outside_root(&root_dir, std::path::Path::new(&base)) {
+                Some(outside) => {
+                    super::outside_project::approve(
+                        context,
+                        "glob_files",
+                        tools_core::FileAccess::Read,
+                        std::slice::from_ref(&outside),
+                    )
+                    .await
+                    .map_err(|denial| anyhow!(denial))?;
+                    (outside, pattern)
+                }
+                None => (root_dir.clone(), input.pattern.clone()),
+            };
+
         // Find files matching the glob pattern
-        let files = find_files_matching_pattern(&root_dir, &input.pattern)?;
+        let files = find_files_matching_pattern(&walk_root, &pattern)?;
 
         // Convert absolute paths to relative paths for cleaner output
         let mut relative_files = Vec::new();
@@ -145,6 +164,25 @@ impl Tool for GlobFilesTool {
             files: relative_files,
         })
     }
+}
+
+/// Split a glob pattern into its leading directories without wildcards and
+/// the rest, e.g. `../other/src/**/*.rs` into `../other/src` and `**/*.rs`.
+/// The last component always stays in the pattern.
+fn split_literal_base(pattern: &str) -> (String, String) {
+    let components: Vec<&str> = pattern.split('/').collect();
+    let literal = components
+        .iter()
+        .take(components.len().saturating_sub(1))
+        .take_while(|c| !c.contains(['*', '?', '[', '{']))
+        .count();
+    let base = components[..literal].join("/");
+    let base = if base.is_empty() && pattern.starts_with('/') {
+        "/".to_string()
+    } else {
+        base
+    };
+    (base, components[literal..].join("/"))
 }
 
 // Helper function to find all files (text and binary) matching a glob pattern
