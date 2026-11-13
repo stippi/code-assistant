@@ -19,7 +19,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Rust
-        uses: ./.github/actions/setup-rust
+        uses: $/.github/actions/setup-rust
         with:
           components: rustfmt,clippy
           cache-key: workspace-linux
@@ -53,7 +53,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Rust
-        uses: ./.github/actions/setup-rust
+        uses: $/.github/actions/setup-rust
         with:
           cache-key: ui-gpui-${{ matrix.name }}
 
@@ -157,7 +157,7 @@ jobs:
         # produces the right version without mutating the repository.
 
       - name: Setup Rust
-        uses: ./.github/actions/setup-rust
+        uses: $/.github/actions/setup-rust
         with:
           target: ${{ matrix.target }}
           cache-key: build-${{ matrix.name }}
@@ -178,14 +178,11 @@ jobs:
           grep -m1 "^version = " crates/code_assistant/Cargo.toml
 
       - name: Build
-        uses: actions-rs/cargo@844f36862e911db73fe0815f00a4a2602c279505 # v1.0.3
+        run: cargo build --locked --release --target ${{ matrix.target }}
         env:
           # Compiled in by code_assistant_core's build.rs: only builds that
           # carry a feed update themselves (docs/self-update.md).
           CODE_ASSISTANT_UPDATE_FEED: https://github.com/${{ github.repository }}/releases/latest/download/update-manifest.json
-        with:
-          command: build
-          args: --locked --release --target ${{ matrix.target }}
 
       - name: Package Binary
         shell: bash
