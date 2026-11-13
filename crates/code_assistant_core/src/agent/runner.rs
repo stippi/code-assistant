@@ -292,6 +292,21 @@ impl Agent {
         self.runtime.generate_handoff(prompt).await
     }
 
+    /// Take over the conversation as stored, after it changed outside the
+    /// loop (a `/handoff` message taken back).
+    pub fn restore_conversation(
+        &mut self,
+        message_nodes: std::collections::BTreeMap<
+            crate::persistence::NodeId,
+            crate::persistence::MessageNode,
+        >,
+        active_path: crate::persistence::ConversationPath,
+        next_node_id: crate::persistence::NodeId,
+    ) {
+        self.runtime
+            .restore_conversation(message_nodes, active_path, next_node_id, Vec::new());
+    }
+
     /// Open a fresh context whose first user message is `prompt` followed by
     /// `attachments`.
     pub fn append_new_context(

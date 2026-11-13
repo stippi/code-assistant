@@ -965,14 +965,19 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_message_answered_after_a_handoff_to_a_new_session_keeps_it() {
+    async fn a_message_queued_before_a_handoff_to_a_new_session_is_answered_without_it() {
         // Queued while the target question was open, the message is answered
-        // here after the prompt; the history stays as it is.
+        // here, on the history as it was before the handoff.
         let tmp = tempfile::tempdir().unwrap();
-        let llm = answering(&["Next: write the tests", "here too", "on it"]);
-        let (service, _) = test_service_with_llm(tmp.path(), llm.into_factory());
+        let llm = answering(&["built", "Next: write the tests", "answer", "answer"]);
+        let (service, _) = test_service_with_llm(tmp.path(), llm.clone().into_factory());
         let id = service.create_session(None, None).await.unwrap();
         let mut subscription = service.subscribe();
+        service
+            .send_user_message(id.clone(), "Build X".into(), vec![], None)
+            .await
+            .unwrap();
+        idle(&mut subscription, &id).await;
 
         service
             .send_user_message(id.clone(), "/handoff".into(), vec![], None)
@@ -994,10 +999,23 @@ mod tests {
         idle(&mut subscription, &id).await;
 
         let here = path(tmp.path(), &id);
-        assert_eq!(here.len(), 4, "{here:?}");
-        assert_eq!(texts(&here[0])[0], "/handoff");
-        assert_eq!(texts(&here[1]), ["Next: write the tests"]);
+        assert_eq!(here.len(), 4, "{:?}", all_texts(&here));
+        assert_eq!(texts(&here[0]), ["Build X"]);
+        assert_eq!(texts(&here[1]), ["built"]);
         assert_eq!(texts(&here[2]), ["Also this"]);
+        let request = llm
+            .get_requests()
+            .into_iter()
+            .rev()
+            .find(|request| request.session_id == id)
+            .unwrap();
+        let sent: Vec<String> = request
+            .messages
+            .iter()
+            .flat_map(texts)
+            .filter(|text| !text.starts_with("<system-reminder>"))
+            .collect();
+        assert_eq!(sent, ["Build X", "built", "Also this"]);
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -301,11 +301,9 @@ pub(crate) struct NewContextRun {
 impl NewContextRun {
     /// Drive the run: get the prompt and the target concurrently, then open
     /// the new context here and continue from it (or from a message queued
-    /// meanwhile), or hand the prompt over for a new session. A generated
-    /// prompt is also recorded here as the answer to the `/handoff`
-    /// message, which keeps the history well-formed should a queued message
-    /// be answered after it; once the run is over, both are taken back
-    /// (`SessionManager::retract_handed_over_handoff`).
+    /// meanwhile), or hand the prompt over for a new session. Nothing of
+    /// a handoff to a new session stays here: the caller takes the
+    /// `/handoff` message back.
     pub(crate) async fn run(
         self,
         agent: &mut Agent,
@@ -328,9 +326,6 @@ impl NewContextRun {
                 Ok(NewContextOutcome::Opened)
             }
             NewContextTarget::NewSession => {
-                if generated {
-                    agent.append_message(llm::Message::new_assistant(prompt.clone()))?;
-                }
                 // The service went away: nobody is left to create the session.
                 let _ = self.new_session.send(prompt);
                 Ok(NewContextOutcome::HandedOver { generated })
@@ -347,7 +342,7 @@ pub(crate) enum NewContextOutcome {
     /// The new context opened here and waits for the user's first message.
     Opened,
     /// The prompt went to a new session; `generated` when `/handoff` wrote
-    /// it, so this session holds the `/handoff` message and its answer.
+    /// it, so this session still holds the `/handoff` message.
     HandedOver { generated: bool },
 }
 
