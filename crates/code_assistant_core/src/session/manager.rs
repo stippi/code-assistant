@@ -309,22 +309,72 @@ impl SessionManager {
     /// stopped or failed before the new context opened; an edit it replaced
     /// becomes the active branch again. Returns whether it was removed.
     pub(crate) fn retract_unanswered_handoff(&mut self, session_id: &str) -> Result<bool> {
+        self.retract_trailing_handoff(session_id, false)
+    }
+
+    /// After `/handoff` continued in a new session: remove the `/handoff`
+    /// message and the prompt recorded as its answer, so this session goes on
+    /// as if the handoff had not happened, a fork of the new one. Only while
+    /// the session is idle and nothing followed the answer (a message queued
+    /// meanwhile and answered here keeps both). Returns the transcript to
+    /// show when something was removed.
+    pub(crate) fn retract_handed_over_handoff(
+        &mut self,
+        session_id: &str,
+    ) -> Result<Option<UiEvent>> {
+        self.ensure_session_loaded(session_id)?;
+        let idle = self
+            .active_sessions
+            .get(session_id)
+            .is_some_and(|instance| {
+                instance.get_activity_state()
+                    == crate::session::instance::SessionActivityState::Idle
+            });
+        if !idle || !self.retract_trailing_handoff(session_id, true)? {
+            return Ok(None);
+        }
+        let instance = &self.active_sessions[session_id];
+        let messages = instance.convert_messages_to_ui_data(instance.session.config.tool_syntax)?;
+        let tool_results = self.tool_results_ui_data(session_id)?;
+        Ok(Some(UiEvent::SetMessages {
+            messages,
+            session_id: Some(session_id.to_string()),
+            tool_results,
+        }))
+    }
+
+    /// Remove the `/handoff` message at the end of the active path, with the
+    /// assistant message after it when `answered`, unless anything follows.
+    /// An edit the `/handoff` message replaced becomes the active branch
+    /// again. Returns whether something was removed.
+    fn retract_trailing_handoff(&mut self, session_id: &str, answered: bool) -> Result<bool> {
         let mut retracted = false;
         let session = self.persistence.update_entry(session_id, |session| {
-            let Some(&last) = session.active_path.last() else {
+            let path = &session.active_path;
+            let trailing = if answered { 2 } else { 1 };
+            if path.len() < trailing {
                 return Ok(());
-            };
-            let node = &session.message_nodes[&last];
+            }
+            let removed = path[path.len() - trailing..].to_vec();
+            let request = &session.message_nodes[&removed[0]];
+            let last = *removed.last().unwrap();
             let has_children = session
                 .message_nodes
                 .values()
                 .any(|child| child.parent_id == Some(last));
-            if !crate::session::new_context::is_handoff_request(&node.message) || has_children {
+            let answer_ok = !answered
+                || session.message_nodes[&last].message.role == llm::MessageRole::Assistant;
+            if !crate::session::new_context::is_handoff_request(&request.message)
+                || !answer_ok
+                || has_children
+            {
                 return Ok(());
             }
-            let parent = node.parent_id;
-            session.message_nodes.remove(&last);
-            session.active_path.pop();
+            let parent = request.parent_id;
+            for id in &removed {
+                session.message_nodes.remove(id);
+                session.active_path.pop();
+            }
             let sibling = session
                 .get_children_sorted(parent)
                 .last()
@@ -1567,6 +1617,9 @@ impl SessionManager {
 
             debug!("Starting agent for session {}", session_id_clone);
 
+            // `/handoff` continued in a new session: once this run is over,
+            // the session goes on as if it had not happened.
+            let mut fork_handoff = false;
             let mut outcome = guarded_run(&session_id_clone, async {
                 cancellation.check()?;
                 agent.load_from_session_state(session_state).await?;
@@ -1589,7 +1642,12 @@ impl SessionManager {
                             &events_clone,
                             &pending_target,
                         );
-                        run.run(&mut agent, target, &pending_message_for_task).await
+                        let outcome = run
+                            .run(&mut agent, target, &pending_message_for_task)
+                            .await?;
+                        use crate::session::new_context::NewContextOutcome;
+                        fork_handoff = outcome == NewContextOutcome::HandedOver { generated: true };
+                        Ok(outcome == NewContextOutcome::Answered)
                     }
                     RunTask::PrepareHandoff => {
                         use crate::session::new_context::{Prepared, prepare_handoff};
@@ -1668,6 +1726,19 @@ impl SessionManager {
                 })
                 .await;
             };
+            if fork_handoff && result.is_ok() {
+                let retracted = manager_for_outcome
+                    .lock()
+                    .await
+                    .retract_handed_over_handoff(&session_id_clone);
+                match retracted {
+                    Ok(Some(transcript)) => events_clone.publish_ui(&session_id_clone, transcript),
+                    Ok(None) => {}
+                    Err(error) => {
+                        warn!("Failed to take back the handoff in {session_id_clone}: {error:#}")
+                    }
+                }
+            }
             // Log the completion with detailed error information if failed
             match &result {
                 Ok(()) => {

@@ -355,6 +355,10 @@ mod tests {
         }
     }
 
+    fn all_texts(messages: &[llm::Message]) -> Vec<Vec<String>> {
+        messages.iter().map(texts).collect()
+    }
+
     fn first_text(request: &llm::LLMRequest) -> String {
         texts(&request.messages[0]).join("\n")
     }
@@ -834,12 +838,20 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn handoff_to_a_new_session_answers_here_and_opens_there() {
+    async fn handoff_to_a_new_session_leaves_this_one_as_it_was() {
+        // A fork: the new session opens with the prompt, this one goes on
+        // without the `/handoff` message, its hidden request or the prompt.
         let tmp = tempfile::tempdir().unwrap();
-        let llm = answering(&["Next: write the tests", "on it"]);
+        let llm = answering(&["built", "Next: write the tests", "on it", "more"]);
         let (service, _) = test_service_with_llm(tmp.path(), llm.clone().into_factory());
         let id = service.create_session(None, None).await.unwrap();
         let mut subscription = service.subscribe();
+        service
+            .send_user_message(id.clone(), "Build X".into(), vec![], None)
+            .await
+            .unwrap();
+        idle(&mut subscription, &id).await;
+        let before = path(tmp.path(), &id);
 
         service
             .send_user_message(id.clone(), "/compact".into(), vec![], None)
@@ -852,21 +864,140 @@ mod tests {
             NewContextTarget::NewSession,
         )
         .await;
-        let to = next(&mut subscription, &id, |event| match event {
-            UiEvent::SessionHandedOff { to } => Some(to),
+        // The switch to the new session and this session's transcript
+        // without the handoff, in either order.
+        enum Seen {
+            HandedOff(String),
+            Shown(usize),
+        }
+        let (mut to, mut shown) = (None, None);
+        while to.is_none() || shown.is_none() {
+            let seen = next(&mut subscription, &id, |event| match event {
+                UiEvent::SessionHandedOff { to } => Some(Seen::HandedOff(to)),
+                UiEvent::SetMessages { messages, .. } => Some(Seen::Shown(messages.len())),
+                _ => None,
+            })
+            .await;
+            match seen {
+                Seen::HandedOff(new) => to = Some(new),
+                Seen::Shown(count) => shown = Some(count),
+            }
+        }
+        let to = to.unwrap();
+        idle(&mut subscription, &to).await;
+
+        assert_eq!(shown, Some(before.len()));
+        assert_eq!(all_texts(&path(tmp.path(), &id)), all_texts(&before));
+        let there = path(tmp.path(), &to);
+        assert_eq!(texts(&there[0]), ["Next: write the tests"]);
+
+        // The next turn here sees the history as it was before the handoff.
+        service
+            .send_user_message(id.clone(), "Go on".into(), vec![], None)
+            .await
+            .unwrap();
+        idle(&mut subscription, &id).await;
+        let request = llm
+            .get_requests()
+            .into_iter()
+            .rev()
+            .find(|request| request.session_id == id)
+            .unwrap();
+        let sent: Vec<String> = request
+            .messages
+            .iter()
+            .flat_map(texts)
+            .filter(|text| !text.starts_with("<system-reminder>"))
+            .collect();
+        assert_eq!(sent, ["Build X", "built", "Go on"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_handoff_edit_to_a_new_session_returns_to_the_edited_branch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let llm = answering(&["built", "answered", "Next: write the tests", "on it"]);
+        let (service, _) = test_service_with_llm(tmp.path(), llm.into_factory());
+        let id = service.create_session(None, None).await.unwrap();
+        let mut subscription = service.subscribe();
+        for message in ["Build X", "Test it"] {
+            service
+                .send_user_message(id.clone(), message.into(), vec![], None)
+                .await
+                .unwrap();
+            idle(&mut subscription, &id).await;
+        }
+        let before = path(tmp.path(), &id);
+        let edited =
+            crate::persistence::FileSessionPersistence::new_with_root_dir(tmp.path().to_path_buf())
+                .load_chat_session(&id)
+                .unwrap()
+                .unwrap()
+                .active_path[2];
+        let edit = service
+            .start_message_edit(id.clone(), edited)
+            .await
+            .unwrap();
+
+        service
+            .send_user_message(
+                id.clone(),
+                "/handoff".into(),
+                vec![],
+                Some(edit.edit.node_id),
+            )
+            .await
+            .unwrap();
+        answer_target(
+            &service,
+            &mut subscription,
+            &id,
+            NewContextTarget::NewSession,
+        )
+        .await;
+        next(&mut subscription, &id, |event| match event {
+            UiEvent::SetMessages { .. } => Some(()),
             _ => None,
         })
         .await;
-        idle(&mut subscription, &to).await;
+        idle(&mut subscription, &id).await;
+
+        assert_eq!(all_texts(&path(tmp.path(), &id)), all_texts(&before));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_message_answered_after_a_handoff_to_a_new_session_keeps_it() {
+        // Queued while the target question was open, the message is answered
+        // here after the prompt; the history stays as it is.
+        let tmp = tempfile::tempdir().unwrap();
+        let llm = answering(&["Next: write the tests", "here too", "on it"]);
+        let (service, _) = test_service_with_llm(tmp.path(), llm.into_factory());
+        let id = service.create_session(None, None).await.unwrap();
+        let mut subscription = service.subscribe();
+
+        service
+            .send_user_message(id.clone(), "/handoff".into(), vec![], None)
+            .await
+            .unwrap();
+        let request_id = next(&mut subscription, &id, |event| match event {
+            UiEvent::RequestNewContextTarget { request } => Some(request.request_id),
+            _ => None,
+        })
+        .await;
+        service
+            .queue_user_message(id.clone(), "Also this".into(), vec![])
+            .await
+            .unwrap();
+        service
+            .respond_new_context_target(id.clone(), request_id, NewContextTarget::NewSession)
+            .await
+            .unwrap();
+        idle(&mut subscription, &id).await;
 
         let here = path(tmp.path(), &id);
-        assert_eq!(here.len(), 2);
-        assert_eq!(texts(&here[0])[0], "/compact");
-        assert_eq!(here[1].role, llm::MessageRole::Assistant);
+        assert_eq!(here.len(), 4, "{here:?}");
+        assert_eq!(texts(&here[0])[0], "/handoff");
         assert_eq!(texts(&here[1]), ["Next: write the tests"]);
-        let there = path(tmp.path(), &to);
-        assert_eq!(texts(&there[0]), ["Next: write the tests"]);
-        assert_eq!(texts(&there[1]), ["on it"]);
+        assert_eq!(texts(&here[2]), ["Also this"]);
     }
 
     #[tokio::test(flavor = "multi_thread")]

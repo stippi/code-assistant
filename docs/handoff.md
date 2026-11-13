@@ -77,12 +77,17 @@ with the generation, so the user does not wait twice.
    The target question runs meanwhile.
 3. **Same session**: as `/new <generated prompt>` — boundary node, divider,
    the agent continues from the new context within the same run.
-4. **New session**: the generated prompt is stored in the old session as the
-   assistant's answer to the `/handoff` message (its history stays
-   well-formed and shows what was handed over); then as `/new <generated
-   prompt>` in a new session. The run hands the prompt back over a oneshot;
-   a task holding the service creates the session once the run is done
-   (`session/service/new_context.rs`).
+4. **New session**: as `/new <generated prompt>` in a new session. The old
+   session forks off unchanged: once its run is over, the `/handoff`
+   message (with its hidden request) is removed again, so neither the
+   transcript nor the next request shows the handoff, and an edit it
+   replaced becomes the active branch again
+   (`SessionManager::retract_handed_over_handoff`). During the run the
+   prompt is stored as the assistant's answer to the `/handoff` message,
+   which keeps the history well-formed for a message queued meanwhile; when
+   such a message was answered there, both stay. The run hands the prompt
+   back over a oneshot; a task holding the service creates the session
+   once the run is done (`session/service/new_context.rs`).
 5. **Stopped or failed** before the new context opened: the `/handoff`
    message is removed from the history again (an edit it replaced becomes
    the active branch again) and frontends get the transcript without it.
@@ -162,4 +167,5 @@ session never prepare twice.
   prepared for a background session is not kept for later. A retracted
   `/handoff` message stays visible in its scrollback.
 - A message queued while the target question is open and then answered
-  with *New session* stays pending in the old session.
+  with *New session* is answered in the old session, which then keeps the
+  `/handoff` message and the prompt.

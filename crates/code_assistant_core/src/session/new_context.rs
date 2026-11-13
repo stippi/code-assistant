@@ -303,13 +303,15 @@ impl NewContextRun {
     /// the new context here and continue from it (or from a message queued
     /// meanwhile), or hand the prompt over for a new session. A generated
     /// prompt is also recorded here as the answer to the `/handoff`
-    /// message. Returns whether the agent answered in this session.
+    /// message, which keeps the history well-formed should a queued message
+    /// be answered after it; once the run is over, both are taken back
+    /// (`SessionManager::retract_handed_over_handoff`).
     pub(crate) async fn run(
         self,
         agent: &mut Agent,
         target: impl Future<Output = Result<NewContextTarget>>,
         pending: &Mutex<Option<Vec<llm::ContentBlock>>>,
-    ) -> Result<bool> {
+    ) -> Result<NewContextOutcome> {
         let generated = self.prompt.is_none();
         let (prompt, target) = match self.prompt {
             Some(prompt) => (prompt, target.await?),
@@ -321,8 +323,9 @@ impl NewContextRun {
                 agent.append_new_context(prompt, self.attachments)?;
                 if opens_with_prompt || pending.lock().unwrap().is_some() {
                     agent.run_single_iteration().await?;
-                    return Ok(true);
+                    return Ok(NewContextOutcome::Answered);
                 }
+                Ok(NewContextOutcome::Opened)
             }
             NewContextTarget::NewSession => {
                 if generated {
@@ -330,10 +333,22 @@ impl NewContextRun {
                 }
                 // The service went away: nobody is left to create the session.
                 let _ = self.new_session.send(prompt);
+                Ok(NewContextOutcome::HandedOver { generated })
             }
         }
-        Ok(false)
     }
+}
+
+/// How a [`NewContextRun`] ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NewContextOutcome {
+    /// The new context opened here and the agent answered in it.
+    Answered,
+    /// The new context opened here and waits for the user's first message.
+    Opened,
+    /// The prompt went to a new session; `generated` when `/handoff` wrote
+    /// it, so this session holds the `/handoff` message and its answer.
+    HandedOver { generated: bool },
 }
 
 #[cfg(test)]
