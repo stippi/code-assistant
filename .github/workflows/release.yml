@@ -9,7 +9,10 @@ on:
         type: string
 
 env:
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
   CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: short
 
 jobs:
   test-linux:
