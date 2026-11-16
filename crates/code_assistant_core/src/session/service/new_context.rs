@@ -134,16 +134,8 @@ impl SessionService {
             if !manager.retract_unanswered_handoff(&session_id)? {
                 return Ok(());
             }
-            if let Some(instance) = manager.get_session(&session_id) {
-                let transcript = transcript_data(&manager, instance)?;
-                ctx.notify_session(
-                    &session_id,
-                    UiEvent::SetMessages {
-                        messages: transcript.messages,
-                        session_id: Some(session_id.clone()),
-                        tool_results: transcript.tool_results,
-                    },
-                );
+            if manager.get_session(&session_id).is_some() {
+                ctx.notify_session(&session_id, manager.transcript_event(&session_id)?);
             }
             Ok(())
         })
