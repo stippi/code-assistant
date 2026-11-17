@@ -1165,14 +1165,11 @@ impl AgentRuntime {
         &self,
         error: &anyhow::Error,
         attempt: u32,
-        max_attempts: Option<u32>,
+        max_attempts: u32,
         delay: std::time::Duration,
     ) {
         warn!(
-            "LLM request failed (retry {}), retrying in {:?}: {:#}",
-            llm::retry::attempt_label(attempt, max_attempts),
-            delay,
-            error
+            "LLM request failed (retry {attempt}/{max_attempts}), retrying in {delay:?}: {error:#}"
         );
 
         // get_next_assistant_message already sent StreamingStopped for the

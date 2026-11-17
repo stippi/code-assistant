@@ -767,7 +767,7 @@ fn a_message_queued_after_compaction_joins_the_handoff() {
     assert_eq!(texts[1], "Also this");
 }
 
-/// Retries every failed request at once, as often as asked.
+/// Retries every failed request at once.
 struct RetryAlways;
 
 impl RecoveryPolicy for RetryAlways {
@@ -775,7 +775,7 @@ impl RecoveryPolicy for RetryAlways {
         RecoveryAction::RetryStream {
             delay: std::time::Duration::ZERO,
             attempt: completed_retries + 1,
-            max_attempts: None,
+            max_attempts: u32::MAX,
         }
     }
 }

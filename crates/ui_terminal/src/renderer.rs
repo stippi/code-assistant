@@ -31,7 +31,7 @@ pub enum SpinnerState {
     Retrying {
         start_time: Instant,
         attempt: u32,
-        max_attempts: Option<u32>,
+        max_attempts: u32,
     },
 }
 
@@ -66,10 +66,7 @@ impl SpinnerState {
                 attempt,
                 max_attempts,
                 ..
-            } => Some(format!(
-                "Retrying ({})",
-                llm::retry::attempt_label(*attempt, *max_attempts)
-            )),
+            } => Some(format!("Retrying ({attempt}/{max_attempts})")),
         }
     }
 }
@@ -608,7 +605,7 @@ impl TerminalRenderer {
     }
 
     /// Show that the LLM request is sent again
-    pub fn show_retry_spinner(&mut self, attempt: u32, max_attempts: Option<u32>) {
+    pub fn show_retry_spinner(&mut self, attempt: u32, max_attempts: u32) {
         self.spinner_state = SpinnerState::Retrying {
             start_time: Instant::now(),
             attempt,

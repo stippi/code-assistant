@@ -14,9 +14,6 @@ const FILE_NAME: &str = "retry.json";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RetryPolicy {
-    /// Send a failed request again until it succeeds or the user stops the
-    /// run; `max_retries` is ignored then.
-    pub retry_forever: bool,
     /// Retries of one request before the run fails.
     pub max_retries: u32,
     /// Upper bound for the wait before a retry, also when the provider asks
@@ -27,7 +24,6 @@ pub struct RetryPolicy {
 impl Default for RetryPolicy {
     fn default() -> Self {
         Self {
-            retry_forever: false,
             max_retries: 5,
             max_delay_secs: 300,
         }
@@ -69,16 +65,11 @@ impl RetryPolicy {
 
     /// Whether another retry may follow `completed` ones.
     pub fn allows_retry(&self, completed: u32) -> bool {
-        self.retry_forever || completed < self.max_retries
-    }
-
-    /// The number of retries, `None` when there is no limit.
-    pub fn max_attempts(&self) -> Option<u32> {
-        (!self.retry_forever).then_some(self.max_retries)
+        completed < self.max_retries
     }
 
     /// `delay` cut to the configured maximum. A maximum below one second
-    /// counts as one, so retrying forever never turns into a busy loop.
+    /// counts as one, so retries never follow each other back to back.
     pub fn cap(&self, delay: Duration) -> Duration {
         delay.min(Duration::from_secs(self.max_delay_secs.max(1)))
     }
@@ -99,14 +90,6 @@ pub struct RetriesExhausted {
     pub retries: u32,
 }
 
-/// "3/5" for the third of five retries, "3" without a limit.
-pub fn attempt_label(attempt: u32, max_attempts: Option<u32>) -> String {
-    match max_attempts {
-        Some(max) => format!("{attempt}/{max}"),
-        None => attempt.to_string(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,26 +97,12 @@ mod tests {
     #[test]
     fn a_limited_policy_stops_after_max_retries() {
         let policy = RetryPolicy {
-            retry_forever: false,
             max_retries: 2,
             max_delay_secs: 60,
         };
         assert!(policy.allows_retry(0));
         assert!(policy.allows_retry(1));
         assert!(!policy.allows_retry(2));
-        assert_eq!(policy.max_attempts(), Some(2));
-    }
-
-    #[test]
-    fn retrying_forever_never_stops() {
-        let policy = RetryPolicy {
-            retry_forever: true,
-            max_retries: 0,
-            max_delay_secs: 60,
-        };
-        assert!(policy.allows_retry(0));
-        assert!(policy.allows_retry(u32::MAX));
-        assert_eq!(policy.max_attempts(), None);
     }
 
     #[test]
@@ -179,13 +148,12 @@ mod tests {
         let path = dir.path().join(FILE_NAME);
         assert_eq!(RetryPolicy::load_from(&path), RetryPolicy::default());
 
-        std::fs::write(&path, r#"{"retry_forever": true}"#).unwrap();
+        std::fs::write(&path, r#"{"max_retries": 9}"#).unwrap();
         let loaded = RetryPolicy::load_from(&path);
-        assert!(loaded.retry_forever);
+        assert_eq!(loaded.max_retries, 9);
         assert_eq!(loaded.max_delay_secs, RetryPolicy::default().max_delay_secs);
 
         let policy = RetryPolicy {
-            retry_forever: false,
             max_retries: 7,
             max_delay_secs: 42,
         };

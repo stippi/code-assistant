@@ -104,10 +104,7 @@ pub fn render_activity_indicator(
             max_attempts,
         } => (
             cx.theme().warning,
-            Some(format!(
-                "{reason} — retrying ({})…",
-                llm::retry::attempt_label(attempt, max_attempts)
-            )),
+            Some(format!("{reason} — retrying ({attempt}/{max_attempts})…")),
         ),
         SessionActivityState::Thinking => (cx.theme().primary, Some("Thinking…".to_string())),
         SessionActivityState::WaitingForResponse => (cx.theme().primary, None),

@@ -40,7 +40,6 @@ pub struct GeneralSection {
     auto_mode_rules_input: Entity<TextareaState>,
     _auto_mode_rules_subscription: Subscription,
     /// How failed LLM requests are sent again; stored in `retry.json`.
-    retry_forever: bool,
     max_retries_input: Entity<InputState>,
     _max_retries_subscription: Subscription,
     max_retry_delay_input: Entity<InputState>,
@@ -134,7 +133,6 @@ impl GeneralSection {
             _auto_mode_model_subscription: auto_mode_model_subscription,
             auto_mode_rules_input,
             _auto_mode_rules_subscription: auto_mode_rules_subscription,
-            retry_forever: retry.retry_forever,
             max_retries_input,
             _max_retries_subscription: max_retries_subscription,
             max_retry_delay_input,
@@ -301,12 +299,6 @@ impl GeneralSection {
             return;
         };
         Self::save_handoff_config(|config| config.max_images_per_request = max_images_per_request);
-    }
-
-    fn set_retry_forever(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        self.retry_forever = enabled;
-        Self::save_retry_policy(|policy| policy.retry_forever = enabled);
-        cx.notify();
     }
 
     /// Save the number of retries whenever the input holds a valid number.
@@ -578,42 +570,14 @@ impl Render for GeneralSection {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(
-                                Switch::new("retry-forever")
-                                    .checked(self.retry_forever)
-                                    .with_size(Size::Small)
-                                    .on_click({
-                                        let view = cx.entity();
-                                        move |enabled, _window, app| {
-                                            let enabled = *enabled;
-                                            view.update(app, |this, cx| {
-                                                this.set_retry_forever(enabled, cx);
-                                            });
-                                        }
-                                    }),
-                            )
+                            .child(div().w(px(80.)).child(Input::new(&self.max_retries_input)))
                             .child(
                                 div()
                                     .text_sm()
                                     .text_color(cx.theme().foreground)
-                                    .child("Retry until the request succeeds"),
+                                    .child("retries at most"),
                             ),
                     )
-                    .when(!self.retry_forever, |el| {
-                        el.child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .child(div().w(px(80.)).child(Input::new(&self.max_retries_input)))
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(cx.theme().foreground)
-                                        .child("retries at most"),
-                                ),
-                        )
-                    })
                     .child(
                         div()
                             .flex()

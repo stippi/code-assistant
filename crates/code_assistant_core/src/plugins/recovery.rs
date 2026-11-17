@@ -39,7 +39,7 @@ impl RecoveryPolicy for DefaultRecovery {
             return RecoveryAction::RetryStream {
                 delay: self.policy.backoff(RETRY_BASE_DELAY, completed_retries),
                 attempt: completed_retries + 1,
-                max_attempts: self.policy.max_attempts(),
+                max_attempts: self.policy.max_retries,
             };
         }
         RecoveryAction::Fail
@@ -117,7 +117,6 @@ mod tests {
 
     fn two_retries() -> DefaultRecovery {
         DefaultRecovery::new(RetryPolicy {
-            retry_forever: false,
             max_retries: 2,
             max_delay_secs: 300,
         })
@@ -143,7 +142,7 @@ mod tests {
             } => {
                 assert_eq!(delay, Duration::from_secs(2));
                 assert_eq!(attempt, 1);
-                assert_eq!(max_attempts, Some(2));
+                assert_eq!(max_attempts, 2);
             }
             _ => panic!("expected RetryStream"),
         }
@@ -200,24 +199,15 @@ mod tests {
     }
 
     #[test]
-    fn retrying_forever_keeps_retrying_with_capped_delay() {
+    fn the_retry_delay_is_capped() {
         let recovery = DefaultRecovery::new(RetryPolicy {
-            retry_forever: true,
-            max_retries: 0,
+            max_retries: 200,
             max_delay_secs: 30,
         });
-        match recovery.classify(&EmptyResponse.into(), 100) {
-            RecoveryAction::RetryStream {
-                delay,
-                attempt,
-                max_attempts,
-            } => {
-                assert_eq!(delay, Duration::from_secs(30));
-                assert_eq!(attempt, 101);
-                assert_eq!(max_attempts, None);
-            }
-            _ => panic!("expected RetryStream"),
-        }
+        assert!(matches!(
+            recovery.classify(&EmptyResponse.into(), 100),
+            RecoveryAction::RetryStream { delay, attempt: 101, .. } if delay == Duration::from_secs(30)
+        ));
     }
 
     #[test]

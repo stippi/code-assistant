@@ -36,7 +36,7 @@ pub enum SessionActivityState {
     Retrying {
         reason: String,
         attempt: u32,
-        max_attempts: Option<u32>,
+        max_attempts: u32,
     },
     /// Agent terminated with an error
     Errored { message: String },
@@ -162,7 +162,7 @@ impl SessionActivity {
         &self,
         reason: &str,
         attempt: u32,
-        max_attempts: Option<u32>,
+        max_attempts: u32,
     ) -> Option<SessionActivityState> {
         self.try_transition(SessionActivityState::Retrying {
             reason: reason.to_string(),
@@ -1394,7 +1394,7 @@ impl UserInterface for SessionEventPublisher {
         self.publish_activity_change(self.activity.on_rate_limit_cleared());
     }
 
-    fn notify_retrying(&self, reason: &str, attempt: u32, max_attempts: Option<u32>) {
+    fn notify_retrying(&self, reason: &str, attempt: u32, max_attempts: u32) {
         self.publish_activity_change(self.activity.on_retrying(reason, attempt, max_attempts));
     }
 
@@ -1588,12 +1588,12 @@ mod tests {
         let retrying = SessionActivityState::Retrying {
             reason: "no response".into(),
             attempt: 1,
-            max_attempts: Some(3),
+            max_attempts: 3,
         };
 
         let activity = activity_with(SessionActivityState::WaitingForResponse);
         assert_eq!(
-            activity.on_retrying("no response", 1, Some(3)),
+            activity.on_retrying("no response", 1, 3),
             Some(retrying.clone())
         );
         assert_eq!(
@@ -1609,7 +1609,7 @@ mod tests {
 
         // A retry notice after completion doesn't revive the session.
         let activity = activity_with(SessionActivityState::Idle);
-        assert_eq!(activity.on_retrying("no response", 1, Some(3)), None);
+        assert_eq!(activity.on_retrying("no response", 1, 3), None);
     }
 
     fn test_publisher(activity: SessionActivity, session_id: &str) -> SessionEventPublisher {

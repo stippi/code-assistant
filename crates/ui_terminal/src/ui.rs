@@ -837,11 +837,8 @@ impl UserInterface for TerminalUI {
         });
     }
 
-    fn notify_retrying(&self, reason: &str, attempt: u32, max_attempts: Option<u32>) {
-        debug!(
-            "Retrying LLM request ({}): {reason}",
-            llm::retry::attempt_label(attempt, max_attempts)
-        );
+    fn notify_retrying(&self, reason: &str, attempt: u32, max_attempts: u32) {
+        debug!("Retrying LLM request ({attempt}/{max_attempts}): {reason}");
 
         let rt = tokio::runtime::Handle::current();
         let renderer = self.renderer.clone();

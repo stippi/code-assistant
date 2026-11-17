@@ -279,7 +279,7 @@ async fn announce_retry(
         let chunk = StreamingChunk::Retrying {
             reason: error.to_string(),
             attempt: attempts + 1,
-            max_attempts: policy.max_attempts(),
+            max_attempts: policy.max_retries,
         };
         if callback(&chunk).is_err() {
             return false;
@@ -336,7 +336,6 @@ mod tests {
     /// Three retries without waiting.
     fn three_retries() -> RetryPolicy {
         RetryPolicy {
-            retry_forever: false,
             max_retries: 3,
             max_delay_secs: 0,
         }
@@ -361,21 +360,6 @@ mod tests {
         let error = error.context("LLM request failed");
         assert!(
             handle_retryable_error::<NoRateLimits>(clone(&error), 1, &policy, None)
-                .await
-                .is_ok()
-        );
-    }
-
-    #[tokio::test]
-    async fn retrying_forever_has_no_limit() {
-        let error: anyhow::Error = ApiError::RateLimit("slow down".into()).into();
-        let policy = RetryPolicy {
-            retry_forever: true,
-            max_retries: 0,
-            max_delay_secs: 0,
-        };
-        assert!(
-            handle_retryable_error::<NoRateLimits>(clone(&error), 1000, &policy, None)
                 .await
                 .is_ok()
         );
@@ -411,7 +395,7 @@ mod tests {
         );
         assert_eq!(
             *seen.lock().unwrap(),
-            vec![("Network error: connection reset".to_string(), 1, Some(3))]
+            vec![("Network error: connection reset".to_string(), 1, 3)]
         );
 
         // A stop request (callback error) ends the retry loop.

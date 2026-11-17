@@ -95,8 +95,7 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
 
 ### Retrying Failed Requests
 - One policy (`llm::RetryPolicy`, `<config_dir>/retry.json`, *Settings →
-  General*): retry forever or at most N times, and the longest wait between
-  retries
+  General*): at most N retries, and the longest wait between retries
 - LLM clients retry rate limits and transient server/network errors; the
   agent loop (`plugins::DefaultRecovery`) retries broken streams and empty
   answers (`agent_core::types::EmptyResponse`), which used to end a turn

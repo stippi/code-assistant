@@ -90,8 +90,7 @@ pub enum StreamingChunk {
         reason: String,
         /// The retry about to happen, starting at 1
         attempt: u32,
-        /// `None` when retries go on until the request succeeds
-        max_attempts: Option<u32>,
+        max_attempts: u32,
     },
     /// Indicates that streaming from the LLM has completed
     StreamingComplete,
