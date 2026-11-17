@@ -50,6 +50,68 @@ pub(crate) fn http_client() -> Client {
     })
 }
 
+/// A connected WebSocket, as tokio-tungstenite hands it out.
+pub(crate) type WebSocket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// Open a WebSocket connection (Responses API, realtime sessions).
+///
+/// Left to itself, tokio-tungstenite builds its rustls config from the
+/// process-wide default crypto provider. rustls cannot pick one when both
+/// aws-lc-rs and ring are compiled in, as in the app (reqwest brings
+/// aws-lc-rs, GPUI's reqwest fork ring), and panics instead. For `wss://`
+/// URLs the config is therefore built here, naming aws-lc-rs, the provider
+/// reqwest uses for HTTPS requests.
+///
+/// The roots are the ones tokio-tungstenite would load: the OS-native ones
+/// with `tls-native-roots`, the embedded Mozilla ones with `tls-webpki-roots`.
+/// Without either feature there is no TLS, and `wss://` URLs fail to connect.
+pub(crate) async fn connect_websocket(
+    request: tokio_tungstenite::tungstenite::handshake::client::Request,
+) -> Result<(
+    WebSocket,
+    tokio_tungstenite::tungstenite::handshake::client::Response,
+)> {
+    #[cfg(any(feature = "tls-native-roots", feature = "tls-webpki-roots"))]
+    {
+        let tls = if request.uri().scheme_str() == Some("wss") {
+            Some(websocket_tls()?)
+        } else {
+            None
+        };
+        Ok(tokio_tungstenite::connect_async_tls_with_config(request, None, false, tls).await?)
+    }
+    #[cfg(not(any(feature = "tls-native-roots", feature = "tls-webpki-roots")))]
+    Ok(tokio_tungstenite::connect_async_with_config(request, None, false).await?)
+}
+
+#[cfg(any(feature = "tls-native-roots", feature = "tls-webpki-roots"))]
+fn websocket_tls() -> Result<tokio_tungstenite::Connector> {
+    use std::sync::Arc;
+
+    let mut roots = rustls::RootCertStore::empty();
+    #[cfg(feature = "tls-native-roots")]
+    {
+        let native = rustls_native_certs::load_native_certs();
+        for error in &native.errors {
+            warn!("Could not load a native root certificate: {error}");
+        }
+        roots.add_parsable_certificates(native.certs);
+    }
+    #[cfg(feature = "tls-webpki-roots")]
+    roots.add_parsable_certificates(webpki_root_certs::TLS_SERVER_ROOT_CERTS.iter().cloned());
+    if roots.is_empty() {
+        anyhow::bail!("No root CA certificates found for TLS connections");
+    }
+
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    Ok(tokio_tungstenite::Connector::Rustls(Arc::new(config)))
+}
+
 /// Send a request, mapping transport failures to `ApiError::NetworkError` so
 /// the retry logic picks them up. For streaming requests the wait for the
 /// response headers is bounded by [`RESPONSE_START_TIMEOUT`]; non-streaming

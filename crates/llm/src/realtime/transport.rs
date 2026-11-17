@@ -1,16 +1,14 @@
 //! The WebSocket transport of a realtime session.
 
 use super::{ClientEvent, Incoming, RealtimeConnection, RealtimeConnector, ServerEvent};
+use crate::utils::connect_websocket;
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
-use tokio_tungstenite::{
-    connect_async_with_config,
-    tungstenite::{
-        client::IntoClientRequest,
-        http::{HeaderName, HeaderValue},
-        protocol::Message as WsMessage,
-    },
+use tokio_tungstenite::tungstenite::{
+    client::IntoClientRequest,
+    http::{HeaderName, HeaderValue},
+    protocol::Message as WsMessage,
 };
 use tracing::{debug, info, warn};
 
@@ -81,7 +79,7 @@ impl RealtimeConnector for WsConnector {
             );
         }
         info!("Connecting realtime session to {}", self.endpoint.url);
-        let (stream, _response) = connect_async_with_config(request, None, false)
+        let (stream, _response) = connect_websocket(request)
             .await
             .with_context(|| format!("Realtime connection to {} failed", self.endpoint.url))?;
         let (mut sink, mut source) = stream.split();
@@ -155,5 +153,27 @@ mod tests {
         );
         assert_eq!(endpoint.headers[0].1, "Bearer k");
         assert!(!format!("{endpoint:?}").contains("Bearer"));
+    }
+
+    /// rustls cannot pick a process-wide crypto provider when both aws-lc-rs
+    /// and ring are compiled in (the app has both). A `wss://` connect must
+    /// still fail with an error, not a panic, when the peer drops it.
+    #[tokio::test]
+    async fn secure_connect_does_not_depend_on_a_default_crypto_provider() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                drop(socket);
+            }
+        });
+        let connector = WsConnector::new(RealtimeEndpoint {
+            url: format!("wss://127.0.0.1:{port}/realtime"),
+            headers: Vec::new(),
+        });
+        let result = tokio::spawn(async move { connector.connect().await.map(|_| ()) })
+            .await
+            .expect("connecting must not panic");
+        assert!(result.is_err());
     }
 }
