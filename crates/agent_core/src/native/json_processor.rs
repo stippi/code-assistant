@@ -1073,11 +1073,7 @@ impl JsonStreamProcessor {
             }
         }
 
-        if text.contains('<') && !text.contains('>') {
-            return true;
-        }
-
-        false
+        text.contains('<') && !text.contains('>')
     }
 
     /// Extract fragments from text without sending to UI (used for session loading)
