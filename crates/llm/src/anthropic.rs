@@ -537,6 +537,8 @@ pub struct AnthropicClient {
     client: Client,
     base_url: String,
     model: String,
+    /// How often and how patiently failed requests are sent again.
+    retry_policy: crate::RetryPolicy,
     recorder: Option<APIRecorder>,
     playback: Option<PlaybackState>,
 
@@ -559,6 +561,7 @@ impl AnthropicClient {
             client: utils::http_client(),
             base_url,
             model,
+            retry_policy: crate::RetryPolicy::default(),
             recorder: None,
             playback: None,
             auth_provider: Box::new(ApiKeyAuth::new(api_key)),
@@ -579,6 +582,7 @@ impl AnthropicClient {
             client: utils::http_client(),
             base_url,
             model,
+            retry_policy: crate::RetryPolicy::default(),
             recorder: Some(APIRecorder::new(recording_path)),
             playback: None,
             auth_provider: Box::new(ApiKeyAuth::new(api_key)),
@@ -600,6 +604,7 @@ impl AnthropicClient {
             client: utils::http_client(),
             base_url,
             model,
+            retry_policy: crate::RetryPolicy::default(),
             recorder: None,
             playback: None,
             auth_provider,
@@ -636,13 +641,13 @@ impl AnthropicClient {
         &mut self,
         request: &serde_json::Value,
         streaming_callback: Option<&StreamingCallback>,
-        max_retries: u32,
     ) -> Result<LLMResponse> {
         // If playback is enabled, skip HTTP and use recorded data
         if self.playback.is_some() {
             return self.playback_request(request, streaming_callback).await;
         }
 
+        let policy = self.retry_policy;
         let mut attempts = 0;
 
         loop {
@@ -656,7 +661,7 @@ impl AnthropicClient {
                     if utils::handle_retryable_error::<AnthropicRateLimitInfo>(
                         &e,
                         attempts,
-                        max_retries,
+                        &policy,
                         streaming_callback,
                     )
                     .await
@@ -1231,6 +1236,10 @@ impl AnthropicClient {
 
 #[async_trait]
 impl LLMProvider for AnthropicClient {
+    fn set_retry_policy(&mut self, policy: crate::RetryPolicy) {
+        self.retry_policy = policy;
+    }
+
     async fn send_message(
         &mut self,
         request: LLMRequest,
@@ -1314,7 +1323,7 @@ impl LLMProvider for AnthropicClient {
 
         let request_start = std::time::SystemTime::now();
         let mut response = self
-            .send_with_retry(&anthropic_request, streaming_callback, 3)
+            .send_with_retry(&anthropic_request, streaming_callback)
             .await?;
         let response_end = std::time::SystemTime::now();
 

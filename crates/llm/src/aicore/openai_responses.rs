@@ -144,4 +144,8 @@ impl LLMProvider for AiCoreOpenAIResponsesClient {
             .send_message(request, streaming_callback)
             .await
     }
+
+    fn set_retry_policy(&mut self, policy: crate::RetryPolicy) {
+        self.responses_client.set_retry_policy(policy);
+    }
 }

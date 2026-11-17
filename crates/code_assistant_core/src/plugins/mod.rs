@@ -36,7 +36,7 @@ pub fn default_hooks() -> HookRegistry {
         observers: vec![],
         dispatch: Box::new(SpawnAgentParallelPolicy),
         compaction: Box::new(TokenRatioCompaction::new(0.8)),
-        recovery: Box::new(DefaultRecovery),
+        recovery: Box::new(DefaultRecovery::new(llm::RetryPolicy::load())),
         system_prompt: Box::new(CodeAssistantSystemPrompt::new()),
     }
 }

@@ -12,6 +12,7 @@ use gpui_kit::component::{ActiveTheme, Icon, Sizable, Size};
 use gpui_kit::{
     App, Context, Entity, FocusHandle, Focusable, SharedString, Subscription, div, prelude::*, px,
 };
+use llm::RetryPolicy;
 use tracing::warn;
 
 pub struct GeneralSection {
@@ -38,6 +39,12 @@ pub struct GeneralSection {
     _auto_mode_model_subscription: Subscription,
     auto_mode_rules_input: Entity<TextareaState>,
     _auto_mode_rules_subscription: Subscription,
+    /// How failed LLM requests are sent again; stored in `retry.json`.
+    retry_forever: bool,
+    max_retries_input: Entity<InputState>,
+    _max_retries_subscription: Subscription,
+    max_retry_delay_input: Entity<InputState>,
+    _max_retry_delay_subscription: Subscription,
 }
 
 impl GeneralSection {
@@ -94,6 +101,24 @@ impl GeneralSection {
             window,
             Self::on_auto_mode_rules_input,
         );
+        let retry = RetryPolicy::load();
+        let max_retries_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(RetryPolicy::default().max_retries.to_string())
+                .default_value(retry.max_retries.to_string())
+        });
+        let max_retries_subscription =
+            cx.subscribe_in(&max_retries_input, window, Self::on_max_retries_input);
+        let max_retry_delay_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(RetryPolicy::default().max_delay_secs.to_string())
+                .default_value(retry.max_delay_secs.to_string())
+        });
+        let max_retry_delay_subscription = cx.subscribe_in(
+            &max_retry_delay_input,
+            window,
+            Self::on_max_retry_delay_input,
+        );
         let mut this = Self {
             focus_handle: cx.focus_handle(),
             default_model_select,
@@ -109,6 +134,11 @@ impl GeneralSection {
             _auto_mode_model_subscription: auto_mode_model_subscription,
             auto_mode_rules_input,
             _auto_mode_rules_subscription: auto_mode_rules_subscription,
+            retry_forever: retry.retry_forever,
+            max_retries_input,
+            _max_retries_subscription: max_retries_subscription,
+            max_retry_delay_input,
+            _max_retry_delay_subscription: max_retry_delay_subscription,
         };
         this.reload(window, cx);
         this
@@ -271,6 +301,54 @@ impl GeneralSection {
             return;
         };
         Self::save_handoff_config(|config| config.max_images_per_request = max_images_per_request);
+    }
+
+    fn set_retry_forever(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        self.retry_forever = enabled;
+        Self::save_retry_policy(|policy| policy.retry_forever = enabled);
+        cx.notify();
+    }
+
+    /// Save the number of retries whenever the input holds a valid number.
+    fn on_max_retries_input(
+        &mut self,
+        input: &Entity<InputState>,
+        event: &InputEvent,
+        _window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !matches!(event, InputEvent::Change) {
+            return;
+        }
+        let Ok(max_retries) = input.read(cx).value().trim().parse::<u32>() else {
+            return;
+        };
+        Self::save_retry_policy(|policy| policy.max_retries = max_retries);
+    }
+
+    /// Save the longest wait whenever the input holds a valid number.
+    fn on_max_retry_delay_input(
+        &mut self,
+        input: &Entity<InputState>,
+        event: &InputEvent,
+        _window: &mut gpui_kit::Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !matches!(event, InputEvent::Change) {
+            return;
+        }
+        let Ok(max_delay_secs) = input.read(cx).value().trim().parse::<u64>() else {
+            return;
+        };
+        Self::save_retry_policy(|policy| policy.max_delay_secs = max_delay_secs);
+    }
+
+    fn save_retry_policy(change: impl FnOnce(&mut RetryPolicy)) {
+        let mut policy = RetryPolicy::load();
+        change(&mut policy);
+        if let Err(e) = policy.save() {
+            warn!("Failed to save the retry settings: {e:#}");
+        }
     }
 
     fn save_handoff_config(change: impl FnOnce(&mut HandoffConfig)) {
@@ -479,6 +557,90 @@ impl Render for GeneralSection {
                                  input tokens stays idle for four minutes, the agent prepares \
                                  a /new prompt for a follow-up session while the prompt cache \
                                  is still warm. 0 turns this off.",
+                            ),
+                    ),
+            )
+            // Failed requests
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(gpui_kit::FontWeight::MEDIUM)
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Failed requests"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                Switch::new("retry-forever")
+                                    .checked(self.retry_forever)
+                                    .with_size(Size::Small)
+                                    .on_click({
+                                        let view = cx.entity();
+                                        move |enabled, _window, app| {
+                                            let enabled = *enabled;
+                                            view.update(app, |this, cx| {
+                                                this.set_retry_forever(enabled, cx);
+                                            });
+                                        }
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().foreground)
+                                    .child("Retry until the request succeeds"),
+                            ),
+                    )
+                    .when(!self.retry_forever, |el| {
+                        el.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(div().w(px(80.)).child(Input::new(&self.max_retries_input)))
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(cx.theme().foreground)
+                                        .child("retries at most"),
+                                ),
+                        )
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .w(px(80.))
+                                    .child(Input::new(&self.max_retry_delay_input)),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().foreground)
+                                    .child("seconds between retries at most"),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(
+                                "Applies to rate limits, overloaded or unreachable servers, \
+                                 broken streams and empty answers. The wait doubles with each \
+                                 retry up to this maximum, also when the provider asks for a \
+                                 longer one. Stopping the session ends the waiting. Takes \
+                                 effect with the next request a session starts.",
                             ),
                     ),
             )

@@ -6,6 +6,7 @@ use crate::auth::TokenManager;
 use crate::capabilities::{Effort, ModelCapabilities};
 use crate::config_merge::merge_patch;
 use crate::provider_config::{ConfigurationSystem, LlmApiClientKind, ModelConfig, ProviderConfig};
+use crate::retry::RetryPolicy;
 use crate::{
     AnthropicClient, CerebrasClient, GroqClient, LLMProvider, MinimaxClient, MistralAiClient,
     MoonshotClient, OllamaClient, OpenAIClient, OpenAIResponsesClient, OpenAIResponsesWsClient,
@@ -315,7 +316,7 @@ pub async fn create_llm_client_from_configs(
         ..model_config.clone()
     };
 
-    match provider_type {
+    let mut client = match provider_type {
         LLMProviderType::AiCore => {
             create_ai_core_client(model_config, provider_config, record_path.clone()).await
         }
@@ -350,7 +351,9 @@ pub async fn create_llm_client_from_configs(
         LLMProviderType::OpenRouter => {
             create_openrouter_client(model_config, provider_config).await
         }
-    }
+    }?;
+    client.set_retry_policy(RetryPolicy::load());
+    Ok(client)
 }
 
 /// The patch merged into every request for this model: the fields its

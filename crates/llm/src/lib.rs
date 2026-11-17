@@ -37,6 +37,7 @@ pub mod prompt_caching;
 pub mod provider_config;
 pub mod realtime;
 pub mod recording;
+pub mod retry;
 pub mod streaming;
 pub mod types;
 pub mod vertex;
@@ -57,6 +58,7 @@ pub use openai::OpenAIClient;
 pub use openai_responses::OpenAIResponsesClient;
 pub use openai_responses_ws::OpenAIResponsesWsClient;
 pub use openrouter::OpenRouterClient;
+pub use retry::RetryPolicy;
 pub use types::*;
 pub use vertex::{VertexClient, sanitize_google_schema};
 pub use zai::ZaiClient;
@@ -88,7 +90,8 @@ pub enum StreamingChunk {
         reason: String,
         /// The retry about to happen, starting at 1
         attempt: u32,
-        max_attempts: u32,
+        /// `None` when retries go on until the request succeeds
+        max_attempts: Option<u32>,
     },
     /// Indicates that streaming from the LLM has completed
     StreamingComplete,
@@ -114,4 +117,9 @@ pub trait LLMProvider: Send + Sync {
         request: LLMRequest,
         streaming_callback: Option<&StreamingCallback>,
     ) -> Result<LLMResponse>;
+
+    /// How often and how patiently failed requests are sent again. Clients
+    /// that never retry (Ollama runs locally; the WebSocket client only
+    /// reconnects) ignore it, the agent loop still retries under it.
+    fn set_retry_policy(&mut self, _policy: RetryPolicy) {}
 }

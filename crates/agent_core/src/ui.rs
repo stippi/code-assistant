@@ -227,7 +227,7 @@ pub trait AgentUi: Send + Sync {
 
     /// The LLM request failed before anything was streamed and is sent
     /// again (`attempt` of `max_attempts`). Cleared by the next response.
-    fn notify_retrying(&self, _reason: &str, _attempt: u32, _max_attempts: u32) {}
+    fn notify_retrying(&self, _reason: &str, _attempt: u32, _max_attempts: Option<u32>) {}
 }
 
 /// Predicate deciding whether a tool's invocation is hidden from the UI.

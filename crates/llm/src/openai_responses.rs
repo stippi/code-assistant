@@ -593,6 +593,8 @@ pub struct OpenAIResponsesClient {
     client: Client,
     base_url: String,
     model: String,
+    /// How often and how patiently failed requests are sent again.
+    retry_policy: crate::RetryPolicy,
     auth_provider: Box<dyn AuthProvider>,
     request_customizer: Box<dyn RequestCustomizer>,
     recorder: Option<APIRecorder>,
@@ -614,6 +616,7 @@ impl OpenAIResponsesClient {
             client: utils::http_client(),
             base_url,
             model,
+            retry_policy: crate::RetryPolicy::default(),
             auth_provider: Box::new(ApiKeyAuth::new(api_key)),
             request_customizer: Box::new(DefaultRequestCustomizer),
             recorder: None,
@@ -633,6 +636,7 @@ impl OpenAIResponsesClient {
             client: utils::http_client(),
             base_url,
             model,
+            retry_policy: crate::RetryPolicy::default(),
             auth_provider,
             request_customizer,
             recorder: None,
@@ -819,13 +823,13 @@ impl OpenAIResponsesClient {
         &mut self,
         request: &ResponsesRequest,
         streaming_callback: Option<&StreamingCallback>,
-        max_retries: u32,
     ) -> Result<LLMResponse> {
         // If playback is enabled, skip HTTP and use recorded data
         if self.playback.is_some() {
             return self.playback_request(request, streaming_callback).await;
         }
 
+        let policy = self.retry_policy;
         let mut attempts = 0;
 
         loop {
@@ -838,7 +842,7 @@ impl OpenAIResponsesClient {
                     if utils::handle_retryable_error::<ResponsesRateLimitInfo>(
                         &e,
                         attempts,
-                        max_retries,
+                        &policy,
                         streaming_callback,
                     )
                     .await
@@ -1422,6 +1426,10 @@ impl<'a> StreamProcessor<'a> {
 
 #[async_trait]
 impl LLMProvider for OpenAIResponsesClient {
+    fn set_retry_policy(&mut self, policy: crate::RetryPolicy) {
+        self.retry_policy = policy;
+    }
+
     async fn send_message(
         &mut self,
         request: LLMRequest,
@@ -1476,7 +1484,7 @@ impl LLMProvider for OpenAIResponsesClient {
 
         let request_start = std::time::SystemTime::now();
         let mut response = self
-            .send_with_retry(&responses_request, streaming_callback, 3)
+            .send_with_retry(&responses_request, streaming_callback)
             .await?;
         let response_end = std::time::SystemTime::now();
 

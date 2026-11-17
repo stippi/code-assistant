@@ -35,4 +35,8 @@ impl LLMProvider for OpenRouterClient {
         // Delegate to inner OpenAI client since the APIs are compatible
         self.inner.send_message(request, streaming_callback).await
     }
+
+    fn set_retry_policy(&mut self, policy: crate::RetryPolicy) {
+        self.inner.set_retry_policy(policy);
+    }
 }

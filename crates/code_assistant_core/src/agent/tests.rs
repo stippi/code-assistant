@@ -524,7 +524,7 @@ async fn test_context_compaction_inserts_summary() -> Result<()> {
     };
 
     let idle_response = LLMResponse {
-        content: Vec::new(),
+        content: vec![ContentBlock::new_text("Done")],
         usage: Usage::zero(),
         rate_limit_info: None,
     };
@@ -667,7 +667,7 @@ async fn test_compaction_reminds_about_active_skills() -> Result<()> {
         rate_limit_info: None,
     };
     let idle_response = LLMResponse {
-        content: Vec::new(),
+        content: vec![ContentBlock::new_text("Done")],
         usage: Usage::zero(),
         rate_limit_info: None,
     };
@@ -764,7 +764,7 @@ async fn test_compaction_prompt_not_persisted_in_history() -> Result<()> {
     };
 
     let idle_response = LLMResponse {
-        content: Vec::new(),
+        content: vec![ContentBlock::new_text("Done")],
         usage: Usage::zero(),
         rate_limit_info: None,
     };
@@ -889,7 +889,7 @@ async fn test_context_compaction_uses_only_messages_after_previous_summary() -> 
     };
 
     let idle_response = LLMResponse {
-        content: Vec::new(),
+        content: vec![ContentBlock::new_text("Done")],
         usage: Usage::zero(),
         rate_limit_info: None,
     };
@@ -2575,7 +2575,7 @@ fn text_response(text: &str) -> LLMResponse {
 
 fn idle_response() -> LLMResponse {
     LLMResponse {
-        content: Vec::new(),
+        content: vec![ContentBlock::new_text("Done")],
         usage: Usage::zero(),
         rate_limit_info: None,
     }

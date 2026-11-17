@@ -1,16 +1,25 @@
 //! Recovery policy: classifies failed LLM requests by provider error text.
 
 use agent_core::hooks::{RecoveryAction, RecoveryPolicy};
+use agent_core::types::EmptyResponse;
+use llm::RetryPolicy;
 use std::time::Duration;
 
-/// Maximum number of retries for transient streaming errors (e.g. HTTP chunk
-/// errors, connection resets).
-const MAX_STREAMING_RETRIES: u32 = 2;
+/// Wait before the first retry of a broken stream or an empty answer
+/// (doubles on each further one, up to the policy's maximum).
+const RETRY_BASE_DELAY: Duration = Duration::from_secs(2);
 
-/// Base delay between streaming retries (doubles on each attempt).
-const STREAMING_RETRY_BASE_DELAY: Duration = Duration::from_secs(2);
+/// Recovers from oversized prompts by compacting, and sends a request again
+/// after a broken stream or an empty answer, as often as `policy` allows.
+pub struct DefaultRecovery {
+    policy: RetryPolicy,
+}
 
-pub struct DefaultRecovery;
+impl DefaultRecovery {
+    pub fn new(policy: RetryPolicy) -> Self {
+        Self { policy }
+    }
+}
 
 impl RecoveryPolicy for DefaultRecovery {
     fn classify(&self, error: &anyhow::Error, completed_retries: u32) -> RecoveryAction {
@@ -20,11 +29,12 @@ impl RecoveryPolicy for DefaultRecovery {
         if is_prompt_too_long_error(error) {
             return RecoveryAction::ReduceContext;
         }
-        if is_retryable_streaming_error(error) && completed_retries < MAX_STREAMING_RETRIES {
+        let retryable = error.is::<EmptyResponse>() || is_retryable_streaming_error(error);
+        if retryable && self.policy.allows_retry(completed_retries) {
             return RecoveryAction::RetryStream {
-                delay: STREAMING_RETRY_BASE_DELAY * 2u32.saturating_pow(completed_retries),
+                delay: self.policy.backoff(RETRY_BASE_DELAY, completed_retries),
                 attempt: completed_retries + 1,
-                max_attempts: MAX_STREAMING_RETRIES,
+                max_attempts: self.policy.max_attempts(),
             };
         }
         RecoveryAction::Fail
@@ -87,6 +97,8 @@ fn is_retryable_streaming_error(error: &anyhow::Error) -> bool {
         // Timeout errors (read timeouts, not connect timeouts)
         || msg.contains("operation timed out")
         || msg.contains("timed out reading")
+        // No data for a while (`llm::streaming`)
+        || msg.contains("stream stalled")
         // Server errors that are transient
         || msg.contains("502 bad gateway")
         || msg.contains("503 service")
@@ -98,11 +110,19 @@ fn is_retryable_streaming_error(error: &anyhow::Error) -> bool {
 mod tests {
     use super::*;
 
+    fn two_retries() -> DefaultRecovery {
+        DefaultRecovery::new(RetryPolicy {
+            retry_forever: false,
+            max_retries: 2,
+            max_delay_secs: 300,
+        })
+    }
+
     #[test]
     fn oversized_prompt_reduces_context() {
         let err = anyhow::anyhow!("Invalid request: prompt is too long: 500000 tokens");
         assert!(matches!(
-            DefaultRecovery.classify(&err, 0),
+            two_retries().classify(&err, 0),
             RecoveryAction::ReduceContext
         ));
     }
@@ -110,7 +130,7 @@ mod tests {
     #[test]
     fn transient_stream_error_retries_with_backoff() {
         let err = anyhow::anyhow!("error reading a body from connection: connection reset");
-        match DefaultRecovery.classify(&err, 0) {
+        match two_retries().classify(&err, 0) {
             RecoveryAction::RetryStream {
                 delay,
                 attempt,
@@ -118,11 +138,11 @@ mod tests {
             } => {
                 assert_eq!(delay, Duration::from_secs(2));
                 assert_eq!(attempt, 1);
-                assert_eq!(max_attempts, MAX_STREAMING_RETRIES);
+                assert_eq!(max_attempts, Some(2));
             }
             _ => panic!("expected RetryStream"),
         }
-        match DefaultRecovery.classify(&err, 1) {
+        match two_retries().classify(&err, 1) {
             RecoveryAction::RetryStream { delay, attempt, .. } => {
                 assert_eq!(delay, Duration::from_secs(4));
                 assert_eq!(attempt, 2);
@@ -135,14 +155,14 @@ mod tests {
     fn retries_are_bounded() {
         let err = anyhow::anyhow!("connection reset");
         assert!(matches!(
-            DefaultRecovery.classify(&err, MAX_STREAMING_RETRIES),
+            two_retries().classify(&err, 2),
             RecoveryAction::Fail
         ));
     }
 
     #[test]
     fn image_limit_errors_compact_with_the_named_limit() {
-        let classify = |message: &str| DefaultRecovery.classify(&anyhow::anyhow!("{message}"), 0);
+        let classify = |message: &str| two_retries().classify(&anyhow::anyhow!("{message}"), 0);
         let openai = r#"Invalid request: {"error":{"message":"Exceeded maximum number of images (50) allowed in the request.","param":"input","type":"invalid_request_error"}}"#;
         assert!(matches!(
             classify(openai),
@@ -159,10 +179,47 @@ mod tests {
     }
 
     #[test]
+    fn empty_answers_and_stalled_streams_are_retried() {
+        for err in [
+            anyhow::Error::from(EmptyResponse),
+            anyhow::anyhow!("LLM stream stalled: no data received for 300s"),
+        ] {
+            assert!(
+                matches!(
+                    two_retries().classify(&err, 0),
+                    RecoveryAction::RetryStream { attempt: 1, .. }
+                ),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn retrying_forever_keeps_retrying_with_capped_delay() {
+        let recovery = DefaultRecovery::new(RetryPolicy {
+            retry_forever: true,
+            max_retries: 0,
+            max_delay_secs: 30,
+        });
+        match recovery.classify(&EmptyResponse.into(), 100) {
+            RecoveryAction::RetryStream {
+                delay,
+                attempt,
+                max_attempts,
+            } => {
+                assert_eq!(delay, Duration::from_secs(30));
+                assert_eq!(attempt, 101);
+                assert_eq!(max_attempts, None);
+            }
+            _ => panic!("expected RetryStream"),
+        }
+    }
+
+    #[test]
     fn unknown_errors_fail() {
         let err = anyhow::anyhow!("invalid api key");
         assert!(matches!(
-            DefaultRecovery.classify(&err, 0),
+            two_retries().classify(&err, 0),
             RecoveryAction::Fail
         ));
     }

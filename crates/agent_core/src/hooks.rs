@@ -151,7 +151,7 @@ pub enum RecoveryAction {
     RetryStream {
         delay: Duration,
         attempt: u32,
-        max_attempts: u32,
+        max_attempts: Option<u32>,
     },
     /// Not recoverable; propagate the error.
     Fail,
