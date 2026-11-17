@@ -86,6 +86,13 @@ impl ToolResult for ParseError {
     }
 }
 
+/// The model answered with nothing: no text, no reasoning, no tool call.
+/// Ending the turn there would leave the request unanswered and the session
+/// waiting for a resume, so the agent loop treats it as a failed request.
+#[derive(Debug, thiserror::Error)]
+#[error("The model returned an empty response")]
+pub struct EmptyResponse;
+
 /// Placeholder result used when a tool's output was too large and caused a
 /// "prompt too long" error from the LLM provider.  The original tool execution
 /// is replaced with this so the LLM gets actionable feedback on the next turn.

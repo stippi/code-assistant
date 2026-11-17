@@ -35,6 +35,15 @@ ignore = [
     { id = "RUSTSEC-2026-0368", reason = "zip extract() follows symlinks out of the target dir; not reachable, see RUSTSEC-2026-0367" },
     { id = "RUSTSEC-2026-0369", reason = "zip extract() applies permissions through symlinks; not reachable, see RUSTSEC-2026-0367" },
     { id = "RUSTSEC-2026-0429", reason = "zip extract() aborts on a symlink entry with a large declared size; not reachable, see RUSTSEC-2026-0367" },
+    { id = "RUSTSEC-2026-0546", reason = "zip extract() writes through chained symlinks; not reachable, see RUSTSEC-2026-0367" },
+    { id = "RUSTSEC-2026-0548", reason = "ZipStreamReader trusts local-header names; nothing reads archives as a stream" },
+    { id = "RUSTSEC-2026-0545", reason = "zip AES entries skip the HMAC on short data; nothing decrypts entries (app_update reads without a password)" },
+    { id = "RUSTSEC-2026-0547", reason = "zip legacy Shrink/Reduce/Implode decoders over-allocate; the legacy-zip feature is not built" },
+    # chrono has no maintainer any more and no release to move to. Our crates
+    # use it for timestamps; gpui, rmcp, oauth2, schemars and the office
+    # converters pull it in as well, so leaving it means more than our own
+    # code. Drop this once the workspace has moved to jiff (or time).
+    { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained; no replacement release, used across the dependency graph" },
     # zip 8.x also pins zstd 0.13; the fixes are in zstd 0.14 / zstd-safe 8.2.
     # zip builds zstd without default features (no `legacy`, no `seekable`)
     # and makes a fresh context per stream. Drop with the zip entries above.

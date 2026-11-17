@@ -801,6 +801,8 @@ fn merge_vertex_partial_value(target: &mut serde_json::Value, value: serde_json:
 pub struct VertexClient {
     client: Client,
     model: String,
+    /// How often and how patiently failed requests are sent again.
+    retry_policy: crate::RetryPolicy,
     base_url: String,
     recorder: Option<APIRecorder>,
     custom_config: Option<serde_json::Value>,
@@ -818,6 +820,7 @@ impl VertexClient {
         Self {
             client: utils::http_client(),
             model,
+            retry_policy: crate::RetryPolicy::default(),
             base_url,
             recorder: None,
             custom_config: None,
@@ -836,6 +839,7 @@ impl VertexClient {
         Self {
             client: utils::http_client(),
             model,
+            retry_policy: crate::RetryPolicy::default(),
             base_url,
             recorder: Some(APIRecorder::new(recording_path)),
             custom_config: None,
@@ -854,6 +858,7 @@ impl VertexClient {
         Self {
             client: utils::http_client(),
             model,
+            retry_policy: crate::RetryPolicy::default(),
             base_url,
             recorder: None,
             custom_config: None,
@@ -1011,8 +1016,8 @@ impl VertexClient {
         request: &VertexRequest,
         request_id: u64,
         streaming_callback: Option<&StreamingCallback>,
-        max_retries: u32,
     ) -> Result<LLMResponse> {
+        let policy = self.retry_policy;
         let mut attempts = 0;
 
         loop {
@@ -1027,18 +1032,14 @@ impl VertexClient {
                     return Ok(response);
                 }
                 Err(e) => {
-                    if utils::handle_retryable_error::<VertexRateLimitInfo>(
-                        &e,
+                    utils::handle_retryable_error::<VertexRateLimitInfo>(
+                        e,
                         attempts,
-                        max_retries,
+                        &policy,
                         streaming_callback,
                     )
-                    .await
-                    {
-                        attempts += 1;
-                        continue;
-                    }
-                    return Err(e);
+                    .await?;
+                    attempts += 1;
                 }
             }
         }
@@ -1435,6 +1436,10 @@ impl VertexClient {
 
 #[async_trait]
 impl LLMProvider for VertexClient {
+    fn set_retry_policy(&mut self, policy: crate::RetryPolicy) {
+        self.retry_policy = policy;
+    }
+
     async fn send_message(
         &mut self,
         request: LLMRequest,
@@ -1508,7 +1513,7 @@ impl LLMProvider for VertexClient {
 
         let request_start = std::time::SystemTime::now();
         let mut response = self
-            .send_with_retry(&vertex_request, request_id, streaming_callback, 3)
+            .send_with_retry(&vertex_request, request_id, streaming_callback)
             .await?;
         let response_end = std::time::SystemTime::now();
 

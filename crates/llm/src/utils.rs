@@ -1,4 +1,7 @@
-use crate::{ApiError, ApiErrorContext, RateLimitHandler, StreamingCallback, StreamingChunk};
+use crate::{
+    ApiError, ApiErrorContext, RateLimitHandler, RetryPolicy, StreamingCallback, StreamingChunk,
+    retry::RetriesExhausted,
+};
 use anyhow::Result;
 use reqwest::{Client, RequestBuilder, Response, StatusCode};
 use std::time::Duration;
@@ -188,102 +191,102 @@ pub async fn check_response_error<T: RateLimitHandler + std::fmt::Debug + Send +
     .into())
 }
 
-/// Handle retryable errors and rate limiting for LLM providers.
-/// Returns true if the error is retryable and we should continue the retry loop.
-/// Returns false if we should exit the retry loop.
+/// Handle retryable errors and rate limiting for LLM providers: waits and
+/// returns `Ok` when the request should be sent again, else the error to
+/// give up with — marked [`RetriesExhausted`] when it was retryable but the
+/// policy allows no further retry, so the agent loop does not retry it on
+/// top.
 ///
-/// If a streaming_callback is provided, rate limit notifications will be sent to the UI.
+/// `attempts` counts the retries already made; `policy` bounds their number
+/// and the wait before each. If a streaming_callback is provided, rate limit
+/// notifications will be sent to the UI.
 pub async fn handle_retryable_error<
     T: RateLimitHandler + std::fmt::Debug + Send + Sync + 'static,
 >(
-    error: &anyhow::Error,
+    error: anyhow::Error,
     attempts: u32,
-    max_retries: u32,
+    policy: &RetryPolicy,
     streaming_callback: Option<&StreamingCallback>,
-) -> bool {
-    let (api_error, rate_limits) = if let Some(ctx) = error.downcast_ref::<ApiErrorContext<T>>() {
-        (&ctx.error, ctx.rate_limits.as_ref())
-    } else if let Some(api_error) = error.downcast_ref::<ApiError>() {
+) -> anyhow::Result<()> {
+    if retry_after_wait::<T>(&error, attempts, policy, streaming_callback).await {
+        return Ok(());
+    }
+    if is_retryable::<T>(&error) {
+        return Err(error.context(RetriesExhausted { retries: attempts }));
+    }
+    Err(error)
+}
+
+/// The provider error behind `error`, with its rate limit context.
+fn api_error<T: RateLimitHandler + std::fmt::Debug + Send + Sync + 'static>(
+    error: &anyhow::Error,
+) -> Option<(&ApiError, Option<&T>)> {
+    if let Some(ctx) = error.downcast_ref::<ApiErrorContext<T>>() {
+        Some((&ctx.error, ctx.rate_limits.as_ref()))
+    } else {
         // Raised before a response arrived (connect failure, timeout while
         // waiting for headers), so there is no rate limit context.
-        (api_error, None)
-    } else {
+        error.downcast_ref::<ApiError>().map(|e| (e, None))
+    }
+}
+
+fn is_retryable<T: RateLimitHandler + std::fmt::Debug + Send + Sync + 'static>(
+    error: &anyhow::Error,
+) -> bool {
+    match api_error::<T>(error) {
+        Some((ApiError::Authentication(msg), _)) => is_transient_auth_error(msg),
+        Some((
+            ApiError::RateLimit(_)
+            | ApiError::ServiceError(_)
+            | ApiError::NetworkError(_)
+            | ApiError::Overloaded(_),
+            _,
+        )) => true,
+        _ => false,
+    }
+}
+
+/// Wait before the next retry when `error` is retryable and the policy
+/// allows one; false when not, or when the user cancelled while waiting.
+async fn retry_after_wait<T: RateLimitHandler + std::fmt::Debug + Send + Sync + 'static>(
+    error: &anyhow::Error,
+    attempts: u32,
+    policy: &RetryPolicy,
+    streaming_callback: Option<&StreamingCallback>,
+) -> bool {
+    let Some((api_error, rate_limits)) = api_error::<T>(error) else {
         return false;
     };
-    match api_error {
-        ApiError::RateLimit(_) => {
-            if let Some(rate_limits) = rate_limits {
-                if attempts < max_retries {
-                    // Get base delay from rate limit headers
-                    let mut delay = rate_limits.get_retry_delay();
-
-                    // Apply exponential backoff based on retry attempts
-                    // Double the delay for each retry attempt after the first
-                    if attempts > 0 {
-                        let multiplier = 2u32.pow(attempts);
-                        delay *= multiplier;
-                    }
-                    let delay_secs = delay.as_secs();
-                    warn!(
-                        "Rate limit hit (attempt {}/{}), waiting {} seconds before retry",
-                        attempts, max_retries, delay_secs
-                    );
-
-                    return wait_rate_limit(delay, streaming_callback).await;
-                }
-            } else {
-                // Fallback if no rate limit info available
-                if attempts < max_retries {
-                    // Implement exponential backoff with a more appropriate base delay
-                    // Start with 60 seconds for the first retry, then double for each subsequent attempt
-                    let base_delay_secs = 60u64;
-                    let delay = Duration::from_secs(base_delay_secs * 2u64.pow(attempts));
-                    warn!(
-                        "Rate limit hit but no timing info available (attempt {}/{}), using exponential backoff: {} seconds",
-                        attempts,
-                        max_retries,
-                        delay.as_secs()
-                    );
-                    return wait_rate_limit(delay, streaming_callback).await;
-                }
-            }
-        }
-        ApiError::Authentication(msg) if is_transient_auth_error(msg) => {
-            if attempts < max_retries {
-                let delay = Duration::from_secs(2u64.pow(attempts.saturating_sub(1)));
-                warn!(
-                    "Transient auth error: {} (attempt {}/{}), retrying in {} seconds",
-                    error,
-                    attempts,
-                    max_retries,
-                    delay.as_secs()
-                );
-                return announce_retry(api_error, attempts, max_retries, delay, streaming_callback)
-                    .await;
-            }
-        }
-        ApiError::ServiceError(_) | ApiError::NetworkError(_) | ApiError::Overloaded(_) => {
-            if attempts < max_retries {
-                let delay = Duration::from_secs(2u64.pow(attempts.saturating_sub(1)));
-                warn!(
-                    "Error: {} (attempt {}/{}), retrying in {} seconds",
-                    error,
-                    attempts,
-                    max_retries,
-                    delay.as_secs()
-                );
-                return announce_retry(api_error, attempts, max_retries, delay, streaming_callback)
-                    .await;
-            }
-        }
-        _ => {
-            warn!(
-                "Unhandled error (attempt {}/{}): {:?}",
-                attempts, max_retries, error
-            );
-        }
+    if !is_retryable::<T>(error) {
+        warn!("Unhandled error (attempt {attempts}): {error:?}");
+        return false;
     }
-    false
+    if !policy.allows_retry(attempts) {
+        warn!("Giving up after {attempts} retries: {error}");
+        return false;
+    }
+    if let ApiError::RateLimit(_) = api_error {
+        // The provider's own wait (headers), else a minute; doubled for
+        // each further retry.
+        let base = rate_limits
+            .map(|rate_limits| rate_limits.get_retry_delay())
+            .unwrap_or(Duration::from_secs(60));
+        let delay = policy.backoff(base, attempts);
+        warn!(
+            "Rate limit hit (retry {}), waiting {} seconds",
+            attempts + 1,
+            delay.as_secs()
+        );
+        return wait_rate_limit(delay, streaming_callback).await;
+    }
+    let delay = policy.backoff(Duration::from_secs(1), attempts.saturating_sub(1));
+    warn!(
+        "Error: {} (retry {}), retrying in {} seconds",
+        error,
+        attempts + 1,
+        delay.as_secs()
+    );
+    announce_retry(api_error, attempts, policy, delay, streaming_callback).await
 }
 
 /// Wait out a rate limit, showing a countdown when there is a callback.
@@ -330,7 +333,7 @@ async fn wait_rate_limit(delay: Duration, streaming_callback: Option<&StreamingC
 async fn announce_retry(
     error: &ApiError,
     attempts: u32,
-    max_retries: u32,
+    policy: &RetryPolicy,
     delay: Duration,
     streaming_callback: Option<&StreamingCallback>,
 ) -> bool {
@@ -338,7 +341,7 @@ async fn announce_retry(
         let chunk = StreamingChunk::Retrying {
             reason: error.to_string(),
             attempt: attempts + 1,
-            max_attempts: max_retries,
+            max_attempts: policy.max_retries,
         };
         if callback(&chunk).is_err() {
             return false;
@@ -365,15 +368,63 @@ mod tests {
         fn log_status(&self) {}
     }
 
+    /// A copy of a test error, which carries one `ApiError` or plain text.
+    fn clone(error: &anyhow::Error) -> anyhow::Error {
+        match error.downcast_ref::<ApiError>() {
+            Some(ApiError::NetworkError(m)) => ApiError::NetworkError(m.clone()).into(),
+            Some(ApiError::RateLimit(m)) => ApiError::RateLimit(m.clone()).into(),
+            Some(ApiError::InvalidRequest(m)) => ApiError::InvalidRequest(m.clone()).into(),
+            _ => anyhow::anyhow!("{error:#}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn giving_up_on_a_retryable_error_marks_it_exhausted() {
+        let policy = three_retries();
+        let error: anyhow::Error = ApiError::NetworkError("connection reset".into()).into();
+        let given_up = handle_retryable_error::<NoRateLimits>(error, 3, &policy, None)
+            .await
+            .unwrap_err();
+        assert!(given_up.is::<RetriesExhausted>(), "{given_up:#}");
+        assert!(given_up.is::<ApiError>(), "the cause stays reachable");
+
+        let error: anyhow::Error = ApiError::InvalidRequest("bad".into()).into();
+        let given_up = handle_retryable_error::<NoRateLimits>(error, 0, &policy, None)
+            .await
+            .unwrap_err();
+        assert!(!given_up.is::<RetriesExhausted>(), "never retryable");
+    }
+
+    /// Three retries without waiting.
+    fn three_retries() -> RetryPolicy {
+        RetryPolicy {
+            max_retries: 3,
+            max_delay_secs: 0,
+        }
+    }
+
     #[tokio::test]
     async fn bare_network_errors_are_retried() {
         let error: anyhow::Error = ApiError::NetworkError("connection reset".into()).into();
-        assert!(handle_retryable_error::<NoRateLimits>(&error, 0, 3, None).await);
-        assert!(!handle_retryable_error::<NoRateLimits>(&error, 3, 3, None).await);
+        let policy = three_retries();
+        assert!(
+            handle_retryable_error::<NoRateLimits>(clone(&error), 0, &policy, None)
+                .await
+                .is_ok()
+        );
+        assert!(
+            handle_retryable_error::<NoRateLimits>(clone(&error), 3, &policy, None)
+                .await
+                .is_err()
+        );
 
         // Context added on the way up must not hide the error.
         let error = error.context("LLM request failed");
-        assert!(handle_retryable_error::<NoRateLimits>(&error, 1, 3, None).await);
+        assert!(
+            handle_retryable_error::<NoRateLimits>(clone(&error), 1, &policy, None)
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]
@@ -398,7 +449,12 @@ mod tests {
             }
         });
         let error: anyhow::Error = ApiError::NetworkError("connection reset".into()).into();
-        assert!(handle_retryable_error::<NoRateLimits>(&error, 0, 3, Some(&callback)).await);
+        let policy = three_retries();
+        assert!(
+            handle_retryable_error::<NoRateLimits>(clone(&error), 0, &policy, Some(&callback))
+                .await
+                .is_ok()
+        );
         assert_eq!(
             *seen.lock().unwrap(),
             vec![("Network error: connection reset".to_string(), 1, 3)]
@@ -407,16 +463,29 @@ mod tests {
         // A stop request (callback error) ends the retry loop.
         let cancelled: StreamingCallback =
             Box::new(|_: &StreamingChunk| Err(anyhow::anyhow!("stopped")));
-        assert!(!handle_retryable_error::<NoRateLimits>(&error, 0, 3, Some(&cancelled)).await);
+        assert!(
+            handle_retryable_error::<NoRateLimits>(clone(&error), 0, &policy, Some(&cancelled))
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
     async fn other_errors_are_not_retried() {
         let error = anyhow::anyhow!("LLM stream stalled: no data received for 300s");
-        assert!(!handle_retryable_error::<NoRateLimits>(&error, 0, 3, None).await);
+        let policy = three_retries();
+        assert!(
+            handle_retryable_error::<NoRateLimits>(clone(&error), 0, &policy, None)
+                .await
+                .is_err()
+        );
 
         let error: anyhow::Error = ApiError::InvalidRequest("bad".into()).into();
-        assert!(!handle_retryable_error::<NoRateLimits>(&error, 0, 3, None).await);
+        assert!(
+            handle_retryable_error::<NoRateLimits>(clone(&error), 0, &policy, None)
+                .await
+                .is_err()
+        );
     }
 
     #[test]

@@ -428,10 +428,16 @@ impl AgentRuntime {
             let reserved_node_id = self.reserve_node_id();
 
             // 1. Get LLM response (without adding to history yet)
-            let (llm_response, request_id) = match self
+            let response = self
                 .get_next_assistant_message(messages, reserved_node_id)
                 .await
-            {
+                .and_then(|(response, request_id)| {
+                    if response.content.is_empty() {
+                        return Err(crate::types::EmptyResponse.into());
+                    }
+                    Ok((response, request_id))
+                });
+            let (llm_response, request_id) = match response {
                 Ok(result) => {
                     // Successful response — reset the retry counters
                     streaming_retry_count = 0;
@@ -476,14 +482,12 @@ impl AgentRuntime {
 
             self.cancellation.check()?;
             // 2. Add original LLM response to message history using the pre-allocated node_id
-            if !llm_response.content.is_empty() {
-                self.append_message_with_node_id(
-                    Message::new_assistant_content(llm_response.content.clone())
-                        .with_request_id(request_id)
-                        .with_usage(llm_response.usage.clone()),
-                    reserved_node_id,
-                )?;
-            }
+            self.append_message_with_node_id(
+                Message::new_assistant_content(llm_response.content.clone())
+                    .with_request_id(request_id)
+                    .with_usage(llm_response.usage.clone()),
+                reserved_node_id,
+            )?;
 
             // 3. Extract tool requests from LLM response and get truncated response
             let (tool_requests, flow, truncated_response) = self
@@ -1155,8 +1159,8 @@ impl AgentRuntime {
         Ok(())
     }
 
-    /// Informs the user that a transient streaming failure is being retried and
-    /// tells the UI to discard all partial content from the failed request.
+    /// Tells the user that a failed request is sent again, and the UI to
+    /// discard all partial content from it.
     async fn prepare_streaming_retry(
         &self,
         error: &anyhow::Error,
@@ -1165,27 +1169,19 @@ impl AgentRuntime {
         delay: std::time::Duration,
     ) {
         warn!(
-            "Transient streaming error (attempt {}/{}), retrying in {:?}: {}",
-            attempt, max_attempts, delay, error
+            "LLM request failed (retry {attempt}/{max_attempts}), retrying in {delay:?}: {error:#}"
         );
 
-        // get_next_assistant_message already sent StreamingStopped{error: ...} for
-        // the failed request, so the UI knows streaming ended. Now we tell it to
+        // get_next_assistant_message already sent StreamingStopped for the
+        // failed request, so the UI knows streaming ended. Now we tell it to
         // also remove whatever was already rendered.
         let _ = self
             .send_ui(AgentUiEvent::RollbackStreaming {
                 request_id: self.next_request_id - 1,
             })
             .await;
-
-        let _ = self
-            .send_ui(AgentUiEvent::ShowTransientStatus {
-                message: format!(
-                    "Stream interrupted — retrying ({}/{})\u{2026}",
-                    attempt, max_attempts
-                ),
-            })
-            .await;
+        self.ui
+            .notify_retrying(&error.to_string(), attempt, max_attempts);
     }
 
     /// Project the largest results from the most recent turn as small error

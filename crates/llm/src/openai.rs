@@ -305,6 +305,8 @@ pub struct OpenAIClient {
     client: Client,
     base_url: String,
     model: String,
+    /// How often and how patiently failed requests are sent again.
+    retry_policy: crate::RetryPolicy,
     model_temperatures: HashMap<String, f32>,
     model_top_ps: HashMap<String, f32>,
     // Customization points
@@ -326,6 +328,7 @@ impl OpenAIClient {
             client: utils::http_client(),
             base_url,
             model,
+            retry_policy: crate::RetryPolicy::default(),
             model_temperatures,
             model_top_ps,
             auth_provider: Box::new(ApiKeyAuth::new(api_key)),
@@ -347,6 +350,7 @@ impl OpenAIClient {
             client: utils::http_client(),
             base_url,
             model,
+            retry_policy: crate::RetryPolicy::default(),
             model_temperatures,
             model_top_ps,
             auth_provider,
@@ -627,8 +631,8 @@ impl OpenAIClient {
         &self,
         request: &OpenAIRequest,
         streaming_callback: Option<&StreamingCallback>,
-        max_retries: u32,
     ) -> Result<LLMResponse> {
+        let policy = self.retry_policy;
         let mut attempts = 0;
 
         loop {
@@ -644,18 +648,14 @@ impl OpenAIClient {
                     return Ok(response);
                 }
                 Err(e) => {
-                    if utils::handle_retryable_error::<OpenAIRateLimitInfo>(
-                        &e,
+                    utils::handle_retryable_error::<OpenAIRateLimitInfo>(
+                        e,
                         attempts,
-                        max_retries,
+                        &policy,
                         streaming_callback,
                     )
-                    .await
-                    {
-                        attempts += 1;
-                        continue;
-                    }
-                    return Err(e);
+                    .await?;
+                    attempts += 1;
                 }
             }
         }
@@ -1128,6 +1128,10 @@ impl OpenAIClient {
 
 #[async_trait]
 impl LLMProvider for OpenAIClient {
+    fn set_retry_policy(&mut self, policy: crate::RetryPolicy) {
+        self.retry_policy = policy;
+    }
+
     async fn send_message(
         &mut self,
         request: LLMRequest,
@@ -1182,7 +1186,7 @@ impl LLMProvider for OpenAIClient {
 
         let request_start = std::time::SystemTime::now();
         let mut response = self
-            .send_with_retry(&openai_request, streaming_callback, 3)
+            .send_with_retry(&openai_request, streaming_callback)
             .await?;
         let response_end = std::time::SystemTime::now();
 

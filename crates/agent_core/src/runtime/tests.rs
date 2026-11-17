@@ -766,3 +766,41 @@ fn a_message_queued_after_compaction_joins_the_handoff() {
     assert!(texts[0].starts_with("<handoff>"), "{texts:?}");
     assert_eq!(texts[1], "Also this");
 }
+
+/// Retries every failed request at once.
+struct RetryAlways;
+
+impl RecoveryPolicy for RetryAlways {
+    fn classify(&self, _: &anyhow::Error, completed_retries: u32) -> RecoveryAction {
+        RecoveryAction::RetryStream {
+            delay: std::time::Duration::ZERO,
+            attempt: completed_retries + 1,
+            max_attempts: u32::MAX,
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_empty_answer_is_a_failure_not_the_end_of_the_turn() {
+    let (mut runtime, llm) = runtime_answering(vec![vec![]]);
+    runtime.append_message(Message::new_user("Hi")).unwrap();
+
+    let error = runtime.run_single_iteration().await.unwrap_err();
+
+    assert!(error.is::<crate::types::EmptyResponse>(), "{error:#}");
+    assert_eq!(llm.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn an_empty_answer_is_retried_under_the_recovery_policy() {
+    let (mut runtime, llm) = runtime_answering(vec![vec![], vec![ContentBlock::new_text("Hello")]]);
+    runtime.hooks.recovery = Box::new(RetryAlways);
+    runtime.append_message(Message::new_user("Hi")).unwrap();
+
+    runtime.run_single_iteration().await.unwrap();
+
+    assert_eq!(llm.requests().len(), 2);
+    let messages: Vec<_> = runtime.conversation.active_messages().collect();
+    assert_eq!(messages.len(), 2, "the empty answer is not recorded");
+    assert_eq!(messages[1].role, MessageRole::Assistant);
+}
