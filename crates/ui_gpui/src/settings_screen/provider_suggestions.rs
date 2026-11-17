@@ -53,8 +53,27 @@ pub struct ProviderTemplate {
     pub provider_type: &'static str,
     /// Static config fields (base_url, etc.). Does NOT include user-provided fields.
     pub static_config: Map<String, Value>,
-    /// IDs of the provider's models to offer in the picker right away.
-    pub models: Vec<&'static str>,
+    /// The provider's models to offer in the picker right away.
+    pub models: Vec<ModelTemplate>,
+}
+
+/// A model a suggestion offers, with the request config it needs through
+/// this provider (on top of what the capability catalog knows).
+#[derive(Clone, Debug)]
+pub struct ModelTemplate {
+    pub id: &'static str,
+    /// The model's `config` (a JSON Merge Patch for its requests).
+    pub config: Value,
+}
+
+/// Models that need no config of their own.
+fn models(ids: &[&'static str]) -> Vec<ModelTemplate> {
+    ids.iter()
+        .map(|&id| ModelTemplate {
+            id,
+            config: Value::Null,
+        })
+        .collect()
 }
 
 /// A config object from `(key, value)` pairs.
@@ -200,13 +219,13 @@ fn hai_proxy_suggestion() -> ProviderSuggestion {
                 "hai-proxy",
                 "anthropic",
                 base_url("http://localhost:6655/anthropic/v1"),
-                vec!["anthropic--claude-4.8-opus", "anthropic--claude-4.6-sonnet"],
+                models(&["anthropic--claude-4.8-opus", "anthropic--claude-4.6-sonnet"]),
             ),
             provider(
                 "hai-proxy-openai",
                 "openai-responses",
                 base_url("http://localhost:6655/openai/v1"),
-                vec!["gpt-6.1-sol"],
+                models(&["gpt-6.1-sol"]),
             ),
             provider(
                 "hai-proxy-vertex",
@@ -218,7 +237,13 @@ fn hai_proxy_suggestion() -> ProviderSuggestion {
                     ),
                     ("bearer_auth", Value::Bool(true)),
                 ]),
-                vec!["gemini-3.8-flash"],
+                // The proxy rejects streamed function-call arguments.
+                vec![ModelTemplate {
+                    id: "gemini-3.8-flash",
+                    config: serde_json::json!({ "tool_config": { "function_calling_config": {
+                        "mode": "AUTO", "stream_function_call_arguments": null
+                    } } }),
+                }],
             ),
         ],
         context_requirement: ContextRequirement::SapUser,
@@ -243,7 +268,7 @@ fn anthropic_suggestion() -> ProviderSuggestion {
             label: "Anthropic",
             provider_type: "anthropic",
             static_config: base_url("https://api.anthropic.com/v1"),
-            models: vec!["claude-opus-5-5", "claude-sonnet-5-5"],
+            models: models(&["claude-opus-5-5", "claude-sonnet-5-5"]),
         }],
         context_requirement: ContextRequirement::None,
     }
@@ -267,7 +292,7 @@ fn openai_suggestion() -> ProviderSuggestion {
             label: "OpenAI",
             provider_type: "openai-responses",
             static_config: base_url("https://api.openai.com/v1"),
-            models: vec!["gpt-5.6"],
+            models: models(&["gpt-5.6"]),
         }],
         context_requirement: ContextRequirement::None,
     }
@@ -285,7 +310,7 @@ fn chatgpt_subscription_suggestion() -> ProviderSuggestion {
             label: "ChatGPT Subscription",
             provider_type: "openai-responses-ws",
             static_config: config_of([("codex_auth", Value::Bool(true))]),
-            models: vec!["gpt-6.1-sol"],
+            models: models(&["gpt-6.1-sol"]),
         }],
         context_requirement: ContextRequirement::None,
     }
@@ -335,16 +360,22 @@ impl ProviderSuggestion {
             entry.insert("config".to_string(), Value::Object(config));
             providers.insert(template.key.to_string(), Value::Object(entry));
 
-            for model_id in &template.models {
-                selection.set_enabled(template.key, model_id, true);
+            for model in &template.models {
+                selection.set_enabled(template.key, model.id, true);
+                if !model.config.is_null()
+                    && let Some(entry) =
+                        selection.get_mut(&ModelConfig::key_for(template.key, model.id))
+                {
+                    entry.config = model.config.clone();
+                }
             }
         }
 
         if default_model.model.is_none()
             && let Some(first) = self.providers.first()
-            && let Some(model_id) = first.models.first()
+            && let Some(model) = first.models.first()
         {
-            default_model.model = Some(ModelConfig::key_for(first.key, model_id));
+            default_model.model = Some(ModelConfig::key_for(first.key, model.id));
         }
     }
 }
@@ -474,6 +505,23 @@ mod tests {
             })
         );
         let offered: Vec<String> = selection.models.iter().map(|m| m.key()).collect();
+        // The HAI Proxy rejects Gemini's streamed function-call arguments.
+        assert_eq!(
+            selection
+                .get("hai-proxy-vertex/gemini-3.8-flash")
+                .unwrap()
+                .config,
+            json!({ "tool_config": { "function_calling_config": {
+                "mode": "AUTO", "stream_function_call_arguments": null
+            } } })
+        );
+        assert_eq!(
+            selection
+                .get("hai-proxy/anthropic--claude-4.8-opus")
+                .unwrap()
+                .config,
+            Value::Null
+        );
         assert_eq!(
             offered,
             [
