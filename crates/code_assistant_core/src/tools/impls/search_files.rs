@@ -1,3 +1,4 @@
+use super::outside_project::Resolved;
 use crate::tools::ToolServicesAccess;
 use crate::tools::core::{
     Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec, capabilities,
@@ -7,7 +8,6 @@ use fs_explorer::{DocumentMatchResult, SearchMode, SearchOptions, SearchResult};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 // Input type for the search_files tool
 #[derive(Deserialize, Serialize)]
@@ -455,39 +455,34 @@ impl Tool for SearchFilesTool {
 
         let root_dir = explorer.root_dir();
 
-        // Determine search paths, noting those that leave the project
+        // Determine search paths. Those that leave the project need the
+        // user's approval (asked once for all of them) before anything about
+        // them reaches the agent, not even whether they exist.
         let search_paths = if let Some(paths) = &input.paths {
-            // Validate and convert relative paths to absolute
-            let mut absolute_paths = Vec::new();
-            for path in paths {
-                let absolute_path = root_dir.join(path);
-                if absolute_path.exists() {
-                    let outside =
-                        fs_explorer::resolve_outside_root(&root_dir, std::path::Path::new(path));
-                    absolute_paths.push((absolute_path, outside));
-                } else {
+            let resolved = super::outside_project::resolve_and_approve(
+                context,
+                "search_files",
+                tools_core::FileAccess::Read,
+                &root_dir,
+                paths.iter().map(std::path::Path::new),
+            )
+            .await;
+            let mut search_paths = Vec::new();
+            for (path, resolved) in paths.iter().zip(resolved) {
+                let (search_path, outside) = match resolved {
+                    Resolved::Refused(denial) => return Err(anyhow!(denial)),
+                    Resolved::Outside(outside) => (outside, true),
+                    Resolved::Inside => (root_dir.join(path), false),
+                };
+                if !search_path.exists() {
                     return Err(anyhow!("Path not found: {path}"));
                 }
+                search_paths.push((search_path, outside));
             }
-            absolute_paths
+            search_paths
         } else {
-            vec![(root_dir.clone(), None)]
+            vec![(root_dir.clone(), false)]
         };
-
-        // Searching outside the project needs the user's approval, asked
-        // once for all such paths of this call.
-        let outside_paths: Vec<PathBuf> = search_paths
-            .iter()
-            .filter_map(|(_, outside)| outside.clone())
-            .collect();
-        super::outside_project::approve(
-            context,
-            "search_files",
-            tools_core::FileAccess::Read,
-            &outside_paths,
-        )
-        .await
-        .map_err(|denial| anyhow!(denial))?;
 
         // Set up search options with a reasonable initial limit
         let options = SearchOptions {
@@ -501,22 +496,13 @@ impl Tool for SearchFilesTool {
         // Perform searches across all specified paths
         let mut all_results = Vec::new();
         for (search_path, outside) in search_paths {
-            let mut path_results = match outside {
+            let mut path_results = if outside {
                 // Approved: search through an explorer rooted at that path.
-                Some(outside) => {
-                    let dir = if outside.is_dir() {
-                        outside.clone()
-                    } else {
-                        outside.parent().unwrap_or(&outside).to_path_buf()
-                    };
-                    fs_explorer::CodeExplorer::search(
-                        &fs_explorer::Explorer::new(dir),
-                        &outside,
-                        options.clone(),
-                    )
+                super::outside_project::explorer_for(&search_path)
+                    .search(&search_path, options.clone())
                     .await?
-                }
-                None => explorer.search(&search_path, options.clone()).await?,
+            } else {
+                explorer.search(&search_path, options.clone()).await?
             };
             all_results.append(&mut path_results);
         }

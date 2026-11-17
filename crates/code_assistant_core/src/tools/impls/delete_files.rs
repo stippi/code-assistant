@@ -1,3 +1,4 @@
+use super::outside_project::Resolved;
 use crate::tools::ToolServicesAccess;
 use crate::tools::core::{
     Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec, capabilities,
@@ -158,39 +159,32 @@ impl Tool for DeleteFilesTool {
         let mut failed = Vec::new();
         let mut deleted_contents = Vec::new();
 
-        // Process each path
         // Deleting outside the project needs the user's approval, asked once
         // for all such paths of this call.
         let root_dir = explorer.root_dir();
-        let outside_paths: Vec<PathBuf> = input
-            .paths
-            .iter()
-            .filter_map(|p| fs_explorer::resolve_outside_root(&root_dir, std::path::Path::new(p)))
-            .collect();
-        let outside_denial = super::outside_project::approve(
+        let resolved = super::outside_project::resolve_and_approve(
             context,
             "delete_files",
             tools_core::FileAccess::Write,
-            &outside_paths,
+            &root_dir,
+            input.paths.iter().map(std::path::Path::new),
         )
-        .await
-        .err();
+        .await;
 
-        for path_str in input.paths.clone() {
+        for (path_str, resolved) in input.paths.clone().into_iter().zip(resolved) {
             let path = PathBuf::from(&path_str);
 
-            let outside = fs_explorer::resolve_outside_root(&root_dir, &path);
             let outside_explorer;
-            let (explorer, full_path) = match (&outside, &outside_denial) {
-                (Some(_), Some(denial)) => {
-                    failed.push((path, denial.clone()));
+            let (explorer, full_path, inside) = match resolved {
+                Resolved::Refused(denial) => {
+                    failed.push((path, denial));
                     continue;
                 }
-                (Some(outside), None) => {
-                    outside_explorer = super::outside_project::explorer_for(outside);
-                    (outside_explorer.as_ref(), outside.clone())
+                Resolved::Outside(outside) => {
+                    outside_explorer = super::outside_project::explorer_for(&outside);
+                    (outside_explorer.as_ref(), outside, false)
                 }
-                (None, _) => (explorer.as_ref(), root_dir.join(&path)),
+                Resolved::Inside => (explorer.as_ref(), root_dir.join(&path), true),
             };
 
             // Capture the content before deletion (best effort; binary or
@@ -210,7 +204,7 @@ impl Tool for DeleteFilesTool {
                     }
 
                     // Emit resource event (files outside the project are no resource of it)
-                    if let Some(ui) = context.ui().filter(|_| outside.is_none()) {
+                    if let Some(ui) = context.ui().filter(|_| inside) {
                         let _ = ui
                             .send_event(crate::ui::UiEvent::ResourceDeleted {
                                 project: input.project.clone(),

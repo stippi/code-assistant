@@ -1,3 +1,4 @@
+use super::outside_project::Resolved;
 use crate::tools::ToolServicesAccess;
 use crate::tools::core::{
     Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec, capabilities,
@@ -397,53 +398,46 @@ impl Tool for ReadFilesTool {
         let mut loaded_files = HashMap::new();
         let mut failed_files = Vec::new();
 
-        // Parse each path string to extract line range information, and note
-        // where the paths that leave the project really point.
+        // Parse each path string to extract line range information
         let root = explorer.root_dir();
         let mut requests = Vec::new();
         for path_str in input.paths.clone() {
             match PathWithLineRange::parse(&path_str) {
-                Ok(parsed) => {
-                    let outside = fs_explorer::resolve_outside_root(&root, &parsed.path);
-                    requests.push((path_str, parsed, outside));
-                }
+                Ok(parsed) => requests.push((path_str, parsed)),
                 Err(e) => failed_files.push((PathBuf::from(path_str), e.to_string())),
             }
         }
 
         // Reading outside the project needs the user's approval, asked once
         // for all such paths of this call.
-        let outside_paths: Vec<PathBuf> = requests
-            .iter()
-            .filter_map(|(_, _, outside)| outside.clone())
-            .collect();
-        let outside_denial = super::outside_project::approve(
+        let resolved = super::outside_project::resolve_and_approve(
             context,
             "read_files",
             tools_core::FileAccess::Read,
-            &outside_paths,
+            &root,
+            requests.iter().map(|(_, parsed)| parsed.path.as_path()),
         )
-        .await
-        .err();
+        .await;
 
-        for (path_str, parsed_path, outside) in requests {
+        // Files inside the project, announced to the UI as resources
+        let mut project_files = Vec::new();
+        for ((path_str, parsed_path), resolved) in requests.into_iter().zip(resolved) {
             // Determine the start line for line numbering
             // If a start_line is specified, use it; otherwise default to 1
             let start_line = parsed_path.start_line.unwrap_or(1);
 
             let outside_explorer;
-            let (file_explorer, full_path) = match (&outside, &outside_denial) {
-                (Some(_), Some(denial)) => {
-                    failed_files.push((PathBuf::from(&path_str), denial.clone()));
+            let (file_explorer, full_path, inside) = match resolved {
+                Resolved::Refused(denial) => {
+                    failed_files.push((PathBuf::from(&path_str), denial));
                     continue;
                 }
                 // Approved: read through an explorer rooted at the file's folder.
-                (Some(full_path), None) => {
-                    let dir = full_path.parent().unwrap_or(full_path).to_path_buf();
-                    outside_explorer = fs_explorer::Explorer::new(dir);
-                    (&outside_explorer as &dyn CodeExplorer, full_path.clone())
+                Resolved::Outside(full_path) => {
+                    outside_explorer = super::outside_project::explorer_for(&full_path);
+                    (outside_explorer.as_ref(), full_path, false)
                 }
-                (None, _) => (explorer.as_ref(), root.join(&parsed_path.path)),
+                Resolved::Inside => (explorer.as_ref(), root.join(&parsed_path.path), true),
             };
             let read_result = read_lines(file_explorer, &full_path, &parsed_path).await;
 
@@ -491,6 +485,9 @@ impl Tool for ReadFilesTool {
                             start_line,
                         },
                     );
+                    if inside {
+                        project_files.push(parsed_path.path);
+                    }
                 }
                 Err(e) => {
                     failed_files.push((PathBuf::from(&path_str), e.to_string()));
@@ -500,21 +497,11 @@ impl Tool for ReadFilesTool {
 
         // Emit resource events for loaded files inside the project
         if let Some(ui) = context.ui() {
-            for path in loaded_files.keys() {
-                // Get the base path without any line range information
-                let base_path =
-                    if let Ok(parsed) = PathWithLineRange::parse(path.to_str().unwrap_or("")) {
-                        parsed.path.clone()
-                    } else {
-                        path.clone()
-                    };
-                if fs_explorer::resolve_outside_root(&root, &base_path).is_some() {
-                    continue;
-                }
+            for path in project_files {
                 let _ = ui
                     .send_event(crate::ui::UiEvent::ResourceLoaded {
                         project: input.project.clone(),
-                        path: base_path,
+                        path,
                     })
                     .await;
             }

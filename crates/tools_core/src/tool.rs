@@ -62,6 +62,12 @@ impl<'a> ToolContext<'a> {
         tool_name: &str,
         reason: PermissionRequestReason<'_>,
     ) -> Result<bool> {
+        // One question at a time per session; the grant is checked after
+        // waiting, since the question before may have granted it.
+        let _turn = match self.permissions {
+            Some(permissions) => Some(permissions.escalation_turn().await),
+            None => None,
+        };
         if self.permissions.is_some_and(|p| p.is_granted(grant_key)) {
             return Ok(true);
         }
@@ -111,5 +117,64 @@ pub trait Tool: Send + Sync + 'static {
     /// Deserialize a JSON value into this tool's output type
     fn deserialize_output(&self, json: serde_json::Value) -> Result<Self::Output> {
         serde_json::from_value(json).map_err(|e| anyhow!("Failed to deserialize output: {e}"))
+    }
+}
+
+#[cfg(test)]
+mod escalation_tests {
+    use super::*;
+    use crate::permissions::FileAccess;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Answers "always (session)" after giving other tasks a chance to run,
+    /// counting the questions.
+    struct SlowSessionGrant {
+        asked: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl PermissionMediator for SlowSessionGrant {
+        async fn request_permission(
+            &self,
+            _request: PermissionRequest<'_>,
+        ) -> Result<PermissionDecision> {
+            self.asked.fetch_add(1, Ordering::SeqCst);
+            for _ in 0..10 {
+                tokio::task::yield_now().await;
+            }
+            Ok(PermissionDecision::GrantedSession)
+        }
+    }
+
+    #[tokio::test]
+    async fn parallel_escalations_ask_once_when_the_first_answer_grants_the_session() {
+        let executor = command_executor::DefaultCommandExecutor;
+        let mediator = SlowSessionGrant {
+            asked: AtomicUsize::new(0),
+        };
+        let permissions = ToolPermissions::default();
+        let paths = [PathBuf::from("/elsewhere")];
+        let context = || ToolContext {
+            command_executor: &executor,
+            tool_id: None,
+            session_id: None,
+            permission_handler: Some(&mediator),
+            permissions: Some(&permissions),
+            extensions: None,
+        };
+        let reason = || PermissionRequestReason::OutsideProject {
+            access: FileAccess::Read,
+            paths: &paths,
+        };
+        let (mut first, mut second) = (context(), context());
+
+        let (a, b) = tokio::join!(
+            first.request_escalation("key", "tool", reason()),
+            second.request_escalation("key", "tool", reason()),
+        );
+
+        assert!(a.unwrap() && b.unwrap());
+        assert_eq!(mediator.asked.load(Ordering::SeqCst), 1);
     }
 }

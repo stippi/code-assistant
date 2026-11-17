@@ -1,3 +1,4 @@
+use super::outside_project::Resolved;
 use crate::tools::ToolServicesAccess;
 use crate::tools::core::{
     ImageData, MAX_IMAGE_EDGE, Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec,
@@ -242,21 +243,16 @@ impl Tool for ViewImagesTool {
 
         // Reading outside the project needs the user's approval, asked once
         // for all such paths of this call.
-        let outside_paths: Vec<PathBuf> = input
-            .paths
-            .iter()
-            .filter_map(|p| fs_explorer::resolve_outside_root(&root_dir, std::path::Path::new(p)))
-            .collect();
-        let outside_denial = super::outside_project::approve(
+        let resolved = super::outside_project::resolve_and_approve(
             context,
             "view_images",
             tools_core::FileAccess::Read,
-            &outside_paths,
+            &root_dir,
+            input.paths.iter().map(std::path::Path::new),
         )
-        .await
-        .err();
+        .await;
 
-        for path_str in &input.paths {
+        for (path_str, resolved) in input.paths.iter().zip(resolved) {
             let path = PathBuf::from(path_str);
 
             // Check extension
@@ -285,16 +281,13 @@ impl Tool for ViewImagesTool {
             };
 
             // Resolve and validate the path stays within the project root
-            let full_path = match (
-                fs_explorer::resolve_outside_root(&root_dir, &path),
-                &outside_denial,
-            ) {
-                (Some(_), Some(denial)) => {
-                    failed_images.push((path_str.clone(), denial.clone()));
+            let full_path = match resolved {
+                Resolved::Refused(denial) => {
+                    failed_images.push((path_str.clone(), denial));
                     continue;
                 }
-                (Some(outside), None) => outside,
-                (None, _) => match resolve_project_path(&root_dir, &path) {
+                Resolved::Outside(outside) => outside,
+                Resolved::Inside => match resolve_project_path(&root_dir, &path) {
                     Ok(p) => p,
                     Err(e) => {
                         failed_images.push((path_str.clone(), e.to_string()));

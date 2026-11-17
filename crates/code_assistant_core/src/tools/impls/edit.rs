@@ -205,9 +205,10 @@ impl Tool for EditTool {
         // Apply with or without formatting, based on project configuration,
         // unless the file changed since this agent last saw it.
         let apply = async {
-            if let Some(format_command) = project_config
-                .format_command_for(&path)
-                .filter(|_| !target.outside)
+            if let Some(format_command) = target
+                .project_path
+                .as_deref()
+                .and_then(|project_path| project_config.format_command_for(project_path))
             {
                 explorer
                     .apply_replacements_with_formatting(
@@ -241,11 +242,11 @@ impl Tool for EditTool {
                 }
 
                 // Emit resource event (files outside the project are no resource of it)
-                if let Some(ui) = context.ui().filter(|_| !target.outside) {
+                if let (Some(ui), Some(project_path)) = (context.ui(), &target.project_path) {
                     let _ = ui
                         .send_event(crate::ui::UiEvent::ResourceWritten {
                             project: input.project.clone(),
-                            path: path.clone(),
+                            path: project_path.clone(),
                         })
                         .await;
                 }

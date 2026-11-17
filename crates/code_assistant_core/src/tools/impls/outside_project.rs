@@ -49,12 +49,52 @@ pub(crate) async fn approve(
     }
 }
 
+/// Where a path a file tool was given leads.
+#[derive(Debug)]
+pub(crate) enum Resolved {
+    /// Inside the project: the tool resolves it as usual.
+    Inside,
+    /// Outside the project, and the user allowed it: where it really points.
+    Outside(PathBuf),
+    /// Outside the project, and refused: the message to report for it.
+    Refused(String),
+}
+
+/// Resolve each of `paths` (relative to `root`, or absolute) and ask the
+/// user, once for all that leave the project, to let `tool_name` reach them.
+/// The result is in the order of `paths`. Each path is resolved only here,
+/// so a tool touches exactly what the user approved, even if a symlink
+/// changes while the question is open.
+pub(crate) async fn resolve_and_approve<'p>(
+    context: &mut ToolContext<'_>,
+    tool_name: &str,
+    access: FileAccess,
+    root: &Path,
+    paths: impl IntoIterator<Item = &'p Path>,
+) -> Vec<Resolved> {
+    let outside: Vec<Option<PathBuf>> = paths
+        .into_iter()
+        .map(|path| fs_explorer::resolve_outside_root(root, path))
+        .collect();
+    let asked: Vec<PathBuf> = outside.iter().flatten().cloned().collect();
+    let denial = approve(context, tool_name, access, &asked).await.err();
+    outside
+        .into_iter()
+        .map(|outside| match (outside, &denial) {
+            (None, _) => Resolved::Inside,
+            (Some(_), Some(denial)) => Resolved::Refused(denial.clone()),
+            (Some(path), None) => Resolved::Outside(path),
+        })
+        .collect()
+}
+
 /// Where a file tool writes a file: inside the project, or outside it.
 pub(crate) struct WriteTarget {
     pub explorer: Box<dyn CodeExplorer>,
     pub full_path: PathBuf,
-    /// Outside the project: no format-on-save, no resource events.
-    pub outside: bool,
+    /// The path relative to the project root, for format-on-save and
+    /// resource events; `None` outside the project, which gets neither.
+    pub project_path: Option<PathBuf>,
 }
 
 /// Where `tool_name` writes `path`: inside the project through `explorer`,
@@ -68,10 +108,11 @@ pub(crate) async fn write_target(
 ) -> Result<WriteTarget, String> {
     let root = explorer.root_dir();
     let Some(outside) = fs_explorer::resolve_outside_root(&root, path) else {
+        let project_path = relative_to_root(&root, path);
         return Ok(WriteTarget {
             explorer,
-            full_path: root.join(path),
-            outside: false,
+            full_path: root.join(&project_path),
+            project_path: Some(project_path),
         });
     };
     approve(
@@ -84,8 +125,31 @@ pub(crate) async fn write_target(
     Ok(WriteTarget {
         explorer: explorer_for(&outside),
         full_path: outside,
-        outside: true,
+        project_path: None,
     })
+}
+
+/// `path`, known to lie inside `root`, relative to it: an absolute path
+/// loses the root (also when it reaches the root through a symlink, such as
+/// macOS's `/tmp`). Falls back to `path` itself when that fails.
+pub(crate) fn relative_to_root(root: &Path, path: &Path) -> PathBuf {
+    if !path.is_absolute() {
+        return path.to_path_buf();
+    }
+    let canonical = || {
+        path.canonicalize().ok().or_else(|| {
+            let parent = path.parent()?.canonicalize().ok()?;
+            Some(parent.join(path.file_name()?))
+        })
+    };
+    path.strip_prefix(root)
+        .ok()
+        .map(Path::to_path_buf)
+        .or_else(|| {
+            canonical()
+                .and_then(|canonical| canonical.strip_prefix(root).ok().map(Path::to_path_buf))
+        })
+        .unwrap_or_else(|| path.to_path_buf())
 }
 
 /// An explorer for a path outside the project: rooted at the path itself
@@ -113,6 +177,8 @@ pub(crate) mod tests {
         decision: PermissionDecision,
         pub(crate) asked: Mutex<Vec<Vec<PathBuf>>>,
         pub(crate) accesses: Mutex<Vec<FileAccess>>,
+        /// Runs while the question is open, before the answer.
+        while_asking: Option<Box<dyn Fn() + Send + Sync>>,
     }
 
     impl OutsideAccessMediator {
@@ -121,6 +187,20 @@ pub(crate) mod tests {
                 decision,
                 asked: Default::default(),
                 accesses: Default::default(),
+                while_asking: None,
+            })
+        }
+
+        /// Like [`Self::new`], running `while_asking` before each answer.
+        pub(crate) fn while_asking(
+            decision: PermissionDecision,
+            while_asking: impl Fn() + Send + Sync + 'static,
+        ) -> Arc<Self> {
+            Arc::new(Self {
+                decision,
+                asked: Default::default(),
+                accesses: Default::default(),
+                while_asking: Some(Box::new(while_asking)),
             })
         }
     }
@@ -136,6 +216,9 @@ pub(crate) mod tests {
             };
             self.asked.lock().unwrap().push(paths.to_vec());
             self.accesses.lock().unwrap().push(access);
+            if let Some(while_asking) = &self.while_asking {
+                while_asking();
+            }
             Ok(self.decision)
         }
     }
@@ -409,5 +492,103 @@ pub(crate) mod tests {
             vec![FileAccess::Read, FileAccess::Write]
         );
         assert!(dir.path().join("other/new.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_tool_uses_the_path_the_user_approved_even_if_a_symlink_changes_meanwhile() {
+        let (dir, fixture) = outside_setup();
+        let first = dir.path().join("first");
+        let second = dir.path().join("second");
+        for folder in [&first, &second] {
+            std::fs::create_dir(folder).unwrap();
+            std::fs::write(folder.join("x.txt"), "x").unwrap();
+        }
+        let link = dir.path().join("proj/link");
+        std::os::unix::fs::symlink(&first, &link).unwrap();
+        let mediator = {
+            let (link, second) = (link.clone(), second.clone());
+            OutsideAccessMediator::while_asking(PermissionDecision::GrantedOnce, move || {
+                std::fs::remove_file(&link).unwrap();
+                std::os::unix::fs::symlink(&second, &link).unwrap();
+            })
+        };
+        let mut fixture = fixture.with_permission_handler(mediator.clone());
+
+        invoke(
+            &mut fixture,
+            "delete_files",
+            json!({"paths": ["link/x.txt"]}),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            !first.join("x.txt").exists(),
+            "the approved file is deleted"
+        );
+        assert!(second.join("x.txt").exists(), "the other file is not");
+    }
+
+    #[tokio::test]
+    async fn search_files_says_nothing_about_an_outside_path_before_it_is_approved() {
+        let (_dir, fixture) = outside_setup();
+        let mediator = OutsideAccessMediator::new(PermissionDecision::Denied);
+        let mut fixture = fixture.with_permission_handler(mediator.clone());
+
+        let error = invoke(
+            &mut fixture,
+            "search_files",
+            json!({"regex": "x", "paths": ["../missing"]}),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("denied"), "{error}");
+        assert!(!error.contains("not found"), "{error}");
+        assert_eq!(mediator.asked.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_absolute_glob_inside_the_project_matches_without_asking() {
+        let (dir, fixture) = outside_setup();
+        let mediator = OutsideAccessMediator::new(PermissionDecision::Denied);
+        let mut fixture = fixture.with_permission_handler(mediator.clone());
+        let pattern = dir.path().join("proj").join("*.txt");
+
+        let output = invoke(
+            &mut fixture,
+            "glob_files",
+            json!({"pattern": pattern.to_str().unwrap()}),
+        )
+        .await
+        .unwrap();
+
+        assert!(output.contains("inside.txt"), "{output}");
+        assert!(mediator.asked.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn absolute_paths_inside_the_root_become_relative() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/lib.rs"), "").unwrap();
+        // The explorer's root is canonical; on macOS the temp dir is not.
+        let root = dir.path().canonicalize().unwrap();
+
+        for path in [
+            dir.path().join("src/lib.rs"),
+            root.join("src/lib.rs"),
+            dir.path().join("src/new.rs"),
+        ] {
+            let relative = relative_to_root(&root, &path);
+            assert!(relative.is_relative(), "{}", path.display());
+            assert!(relative.starts_with("src"), "{}", relative.display());
+        }
+        assert_eq!(
+            relative_to_root(&root, Path::new("src/lib.rs")),
+            Path::new("src/lib.rs")
+        );
     }
 }

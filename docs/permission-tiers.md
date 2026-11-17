@@ -108,7 +108,10 @@ parent gave them.
   `ToolPermissions` (reached by tools through
   `ToolContext::request_escalation`). Files written outside get no
   format-on-save and no resource events. Without a mediator the access is
-  rejected as before.
+  rejected as before. Each path is resolved once, before the question, and
+  the tool uses exactly that path. Parallel calls ask one after another
+  (`ToolPermissions::escalation_turn`), so a call behind an *always* answer
+  does not ask again.
 
 ## Frontend surfaces
 

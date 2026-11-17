@@ -5,7 +5,7 @@ use crate::tools::core::{
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 
 // Input type for the glob_files tool
 #[derive(Deserialize, Serialize)]
@@ -127,23 +127,27 @@ impl Tool for GlobFilesTool {
         let root_dir = explorer.root_dir();
 
         // A pattern whose leading directories leave the project (absolute, or
-        // `..`) matches below that folder, once the user approves it.
-        let (base, pattern) = split_literal_base(&input.pattern);
-        let (walk_root, pattern) =
-            match fs_explorer::resolve_outside_root(&root_dir, std::path::Path::new(&base)) {
-                Some(outside) => {
-                    super::outside_project::approve(
-                        context,
-                        "glob_files",
-                        tools_core::FileAccess::Read,
-                        std::slice::from_ref(&outside),
-                    )
-                    .await
-                    .map_err(|denial| anyhow!(denial))?;
-                    (outside, pattern)
-                }
-                None => (root_dir.clone(), input.pattern.clone()),
-            };
+        // `..`) matches below that folder, once the user approves it. An
+        // absolute pattern inside the project matches like its relative form.
+        let (base, rest) = split_literal_base(&input.pattern);
+        let (walk_root, pattern) = match fs_explorer::resolve_outside_root(&root_dir, &base) {
+            Some(outside) => {
+                super::outside_project::approve(
+                    context,
+                    "glob_files",
+                    tools_core::FileAccess::Read,
+                    std::slice::from_ref(&outside),
+                )
+                .await
+                .map_err(|denial| anyhow!(denial))?;
+                (outside, rest)
+            }
+            None if base.is_absolute() => {
+                let base = super::outside_project::relative_to_root(&root_dir, &base);
+                (root_dir.clone(), join_pattern(&base, &rest))
+            }
+            None => (root_dir.clone(), input.pattern.clone()),
+        };
 
         // Find files matching the glob pattern
         let files = find_files_matching_pattern(&walk_root, &pattern)?;
@@ -168,25 +172,38 @@ impl Tool for GlobFilesTool {
 
 /// Split a glob pattern into its leading directories without wildcards and
 /// the rest, e.g. `../other/src/**/*.rs` into `../other/src` and `**/*.rs`.
-/// The last component always stays in the pattern.
-fn split_literal_base(pattern: &str) -> (String, String) {
-    let components: Vec<&str> = pattern.split('/').collect();
+/// The last component always stays in the pattern. Splits at the platform's
+/// separators, so `..\\other\\*.rs` works on Windows too.
+fn split_literal_base(pattern: &str) -> (PathBuf, String) {
+    let components: Vec<Component> = Path::new(pattern).components().collect();
     let literal = components
         .iter()
         .take(components.len().saturating_sub(1))
-        .take_while(|c| !c.contains(['*', '?', '[', '{']))
+        .take_while(|c| {
+            !c.as_os_str()
+                .to_string_lossy()
+                .contains(['*', '?', '[', '{'])
+        })
         .count();
-    let base = components[..literal].join("/");
-    let base = if base.is_empty() && pattern.starts_with('/') {
-        "/".to_string()
-    } else {
-        base
-    };
-    (base, components[literal..].join("/"))
+    let rest: PathBuf = components[literal..].iter().collect();
+    (components[..literal].iter().collect(), glob_string(&rest))
+}
+
+/// `rest` below the folder `base`, as a glob pattern.
+fn join_pattern(base: &Path, rest: &str) -> String {
+    glob_string(&base.join(rest))
+}
+
+/// A relative path as a glob pattern: components joined with `/`.
+fn glob_string(path: &Path) -> String {
+    path.components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 // Helper function to find all files (text and binary) matching a glob pattern
-fn find_files_matching_pattern(root_dir: &std::path::Path, pattern: &str) -> Result<Vec<PathBuf>> {
+fn find_files_matching_pattern(root_dir: &Path, pattern: &str) -> Result<Vec<PathBuf>> {
     use glob::{MatchOptions, Pattern};
     use ignore::WalkBuilder;
 
@@ -436,5 +453,30 @@ mod tests {
         assert_eq!(docs_matches, vec!["docs/nested.md".to_string()]);
 
         Ok(())
+    }
+
+    #[test]
+    fn splits_a_pattern_at_its_first_wildcard_folder() {
+        let split = |pattern| {
+            let (base, rest) = split_literal_base(pattern);
+            (base.to_string_lossy().into_owned(), rest)
+        };
+        assert_eq!(
+            split("../other/src/**/*.rs"),
+            ("../other/src".into(), "**/*.rs".into())
+        );
+        assert_eq!(split("*.rs"), ("".into(), "*.rs".into()));
+        assert_eq!(split("src/*.rs"), ("src".into(), "*.rs".into()));
+        assert_eq!(split("/abs/dir/*.rs"), ("/abs/dir".into(), "*.rs".into()));
+        assert_eq!(split("../note.txt"), ("..".into(), "note.txt".into()));
+        assert_eq!(split("src/{a,b}/*.rs"), ("src".into(), "{a,b}/*.rs".into()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn splits_a_windows_pattern() {
+        let (base, rest) = split_literal_base(r"..\other\*.rs");
+        assert_eq!(base, std::path::Path::new(r"..\other"));
+        assert_eq!(rest, "*.rs");
     }
 }

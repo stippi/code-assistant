@@ -1,3 +1,4 @@
+use super::outside_project::Resolved;
 use crate::tools::ToolServicesAccess;
 use crate::tools::core::{
     Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec, capabilities,
@@ -175,42 +176,30 @@ impl Tool for ListFilesTool {
         // Listing outside the project needs the user's approval, asked once
         // for all such paths of this call.
         let root_dir = explorer.root_dir();
-        let outside_paths: Vec<PathBuf> = input
-            .paths
-            .iter()
-            .filter_map(|p| fs_explorer::resolve_outside_root(&root_dir, std::path::Path::new(p)))
-            .collect();
-        let outside_denial = super::outside_project::approve(
+        let resolved = super::outside_project::resolve_and_approve(
             context,
             "list_files",
             tools_core::FileAccess::Read,
-            &outside_paths,
+            &root_dir,
+            input.paths.iter().map(std::path::Path::new),
         )
-        .await
-        .err();
+        .await;
 
-        for path_str in input.paths.clone() {
+        for (path_str, resolved) in input.paths.clone().into_iter().zip(resolved) {
             let path = PathBuf::from(&path_str);
 
-            let listing = match (
-                fs_explorer::resolve_outside_root(&root_dir, &path),
-                &outside_denial,
-            ) {
-                (Some(_), Some(denial)) => {
-                    failed_paths.push((path_str, denial.clone()));
+            let listing = match resolved {
+                Resolved::Refused(denial) => {
+                    failed_paths.push((path_str, denial));
                     continue;
                 }
                 // Approved: list through an explorer rooted at that folder.
-                (Some(outside), None) => {
-                    let mut outside_explorer = fs_explorer::Explorer::new(outside.clone());
-                    fs_explorer::CodeExplorer::list_files(
-                        &mut outside_explorer,
-                        &outside,
-                        max_depth,
-                    )
-                    .await
+                Resolved::Outside(outside) => {
+                    super::outside_project::explorer_for(&outside)
+                        .list_files(&outside, max_depth)
+                        .await
                 }
-                (None, _) => explorer.list_files(&root_dir.join(&path), max_depth).await,
+                Resolved::Inside => explorer.list_files(&root_dir.join(&path), max_depth).await,
             };
             match listing {
                 Ok(tree_entry) => {

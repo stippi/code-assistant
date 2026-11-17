@@ -129,6 +129,9 @@ pub struct ToolPermissions {
     /// asks the user about every call it would have reviewed.
     pub reviewer: Option<Arc<dyn ToolCallReviewer>>,
     granted_tools: Arc<Mutex<HashSet<String>>>,
+    /// Held while a tool asks for an escalation of its own, see
+    /// [`ToolPermissions::escalation_turn`].
+    escalations: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl ToolPermissions {
@@ -137,7 +140,15 @@ impl ToolPermissions {
             tier,
             reviewer: None,
             granted_tools: Arc::default(),
+            escalations: Arc::default(),
         }
+    }
+
+    /// Wait until no other tool call of the session is asking the user for
+    /// an escalation. Parallel calls so ask one after another, and a call
+    /// waiting behind an "always (session)" answer passes without asking.
+    pub async fn escalation_turn(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.escalations.clone().lock_owned().await
     }
 
     pub fn is_granted(&self, tool_name: &str) -> bool {

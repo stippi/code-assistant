@@ -177,7 +177,6 @@ impl Tool for WriteFileTool {
         // entry (and thus no format-on-save).
         let project_config = context.project_manager().get_project(&input.project)?;
 
-        // Check for absolute path
         let path = PathBuf::from(&input.path);
         let project_root = explorer.root_dir();
 
@@ -215,8 +214,8 @@ impl Tool for WriteFileTool {
         // one change, so the formatted content counts as seen.
         let format_command = project_config
             .as_ref()
-            .filter(|_| !target.outside)
-            .and_then(|config| config.format_command_for(&path));
+            .zip(target.project_path.as_deref())
+            .and_then(|(config, project_path)| config.format_command_for(project_path));
         let write = async {
             explorer
                 .write_file(&full_path, &input.content, input.append)
@@ -246,11 +245,11 @@ impl Tool for WriteFileTool {
                 }
 
                 // Emit resource event (files outside the project are no resource of it)
-                if let Some(ui) = context.ui().filter(|_| !target.outside) {
+                if let (Some(ui), Some(project_path)) = (context.ui(), &target.project_path) {
                     let _ = ui
                         .send_event(crate::ui::UiEvent::ResourceWritten {
                             project: input.project.clone(),
-                            path: path.clone(),
+                            path: project_path.clone(),
                         })
                         .await;
                 }
