@@ -1,5 +1,6 @@
 use crate::{
     ApiError, ApiErrorContext, RateLimitHandler, RetryPolicy, StreamingCallback, StreamingChunk,
+    retry::RetriesExhausted,
 };
 use anyhow::Result;
 use reqwest::{Client, RequestBuilder, Response, StatusCode};
@@ -128,9 +129,11 @@ pub async fn check_response_error<T: RateLimitHandler + std::fmt::Debug + Send +
     .into())
 }
 
-/// Handle retryable errors and rate limiting for LLM providers.
-/// Returns true if the error is retryable and we should continue the retry loop.
-/// Returns false if we should exit the retry loop.
+/// Handle retryable errors and rate limiting for LLM providers: waits and
+/// returns `Ok` when the request should be sent again, else the error to
+/// give up with — marked [`RetriesExhausted`] when it was retryable but the
+/// policy allows no further retry, so the agent loop does not retry it on
+/// top.
 ///
 /// `attempts` counts the retries already made; `policy` bounds their number
 /// and the wait before each. If a streaming_callback is provided, rate limit
@@ -138,27 +141,61 @@ pub async fn check_response_error<T: RateLimitHandler + std::fmt::Debug + Send +
 pub async fn handle_retryable_error<
     T: RateLimitHandler + std::fmt::Debug + Send + Sync + 'static,
 >(
+    error: anyhow::Error,
+    attempts: u32,
+    policy: &RetryPolicy,
+    streaming_callback: Option<&StreamingCallback>,
+) -> anyhow::Result<()> {
+    if retry_after_wait::<T>(&error, attempts, policy, streaming_callback).await {
+        return Ok(());
+    }
+    if is_retryable::<T>(&error) {
+        return Err(error.context(RetriesExhausted { retries: attempts }));
+    }
+    Err(error)
+}
+
+/// The provider error behind `error`, with its rate limit context.
+fn api_error<T: RateLimitHandler + std::fmt::Debug + Send + Sync + 'static>(
+    error: &anyhow::Error,
+) -> Option<(&ApiError, Option<&T>)> {
+    if let Some(ctx) = error.downcast_ref::<ApiErrorContext<T>>() {
+        Some((&ctx.error, ctx.rate_limits.as_ref()))
+    } else {
+        // Raised before a response arrived (connect failure, timeout while
+        // waiting for headers), so there is no rate limit context.
+        error.downcast_ref::<ApiError>().map(|e| (e, None))
+    }
+}
+
+fn is_retryable<T: RateLimitHandler + std::fmt::Debug + Send + Sync + 'static>(
+    error: &anyhow::Error,
+) -> bool {
+    match api_error::<T>(error) {
+        Some((ApiError::Authentication(msg), _)) => is_transient_auth_error(msg),
+        Some((
+            ApiError::RateLimit(_)
+            | ApiError::ServiceError(_)
+            | ApiError::NetworkError(_)
+            | ApiError::Overloaded(_),
+            _,
+        )) => true,
+        _ => false,
+    }
+}
+
+/// Wait before the next retry when `error` is retryable and the policy
+/// allows one; false when not, or when the user cancelled while waiting.
+async fn retry_after_wait<T: RateLimitHandler + std::fmt::Debug + Send + Sync + 'static>(
     error: &anyhow::Error,
     attempts: u32,
     policy: &RetryPolicy,
     streaming_callback: Option<&StreamingCallback>,
 ) -> bool {
-    let (api_error, rate_limits) = if let Some(ctx) = error.downcast_ref::<ApiErrorContext<T>>() {
-        (&ctx.error, ctx.rate_limits.as_ref())
-    } else if let Some(api_error) = error.downcast_ref::<ApiError>() {
-        // Raised before a response arrived (connect failure, timeout while
-        // waiting for headers), so there is no rate limit context.
-        (api_error, None)
-    } else {
+    let Some((api_error, rate_limits)) = api_error::<T>(error) else {
         return false;
     };
-    let retryable = match api_error {
-        ApiError::RateLimit(_) => true,
-        ApiError::Authentication(msg) => is_transient_auth_error(msg),
-        ApiError::ServiceError(_) | ApiError::NetworkError(_) | ApiError::Overloaded(_) => true,
-        _ => false,
-    };
-    if !retryable {
+    if !is_retryable::<T>(error) {
         warn!("Unhandled error (attempt {attempts}): {error:?}");
         return false;
     }
@@ -269,6 +306,33 @@ mod tests {
         fn log_status(&self) {}
     }
 
+    /// A copy of a test error, which carries one `ApiError` or plain text.
+    fn clone(error: &anyhow::Error) -> anyhow::Error {
+        match error.downcast_ref::<ApiError>() {
+            Some(ApiError::NetworkError(m)) => ApiError::NetworkError(m.clone()).into(),
+            Some(ApiError::RateLimit(m)) => ApiError::RateLimit(m.clone()).into(),
+            Some(ApiError::InvalidRequest(m)) => ApiError::InvalidRequest(m.clone()).into(),
+            _ => anyhow::anyhow!("{error:#}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn giving_up_on_a_retryable_error_marks_it_exhausted() {
+        let policy = three_retries();
+        let error: anyhow::Error = ApiError::NetworkError("connection reset".into()).into();
+        let given_up = handle_retryable_error::<NoRateLimits>(error, 3, &policy, None)
+            .await
+            .unwrap_err();
+        assert!(given_up.is::<RetriesExhausted>(), "{given_up:#}");
+        assert!(given_up.is::<ApiError>(), "the cause stays reachable");
+
+        let error: anyhow::Error = ApiError::InvalidRequest("bad".into()).into();
+        let given_up = handle_retryable_error::<NoRateLimits>(error, 0, &policy, None)
+            .await
+            .unwrap_err();
+        assert!(!given_up.is::<RetriesExhausted>(), "never retryable");
+    }
+
     /// Three retries without waiting.
     fn three_retries() -> RetryPolicy {
         RetryPolicy {
@@ -282,12 +346,24 @@ mod tests {
     async fn bare_network_errors_are_retried() {
         let error: anyhow::Error = ApiError::NetworkError("connection reset".into()).into();
         let policy = three_retries();
-        assert!(handle_retryable_error::<NoRateLimits>(&error, 0, &policy, None).await);
-        assert!(!handle_retryable_error::<NoRateLimits>(&error, 3, &policy, None).await);
+        assert!(
+            handle_retryable_error::<NoRateLimits>(clone(&error), 0, &policy, None)
+                .await
+                .is_ok()
+        );
+        assert!(
+            handle_retryable_error::<NoRateLimits>(clone(&error), 3, &policy, None)
+                .await
+                .is_err()
+        );
 
         // Context added on the way up must not hide the error.
         let error = error.context("LLM request failed");
-        assert!(handle_retryable_error::<NoRateLimits>(&error, 1, &policy, None).await);
+        assert!(
+            handle_retryable_error::<NoRateLimits>(clone(&error), 1, &policy, None)
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]
@@ -298,7 +374,11 @@ mod tests {
             max_retries: 0,
             max_delay_secs: 0,
         };
-        assert!(handle_retryable_error::<NoRateLimits>(&error, 1000, &policy, None).await);
+        assert!(
+            handle_retryable_error::<NoRateLimits>(clone(&error), 1000, &policy, None)
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]
@@ -324,7 +404,11 @@ mod tests {
         });
         let error: anyhow::Error = ApiError::NetworkError("connection reset".into()).into();
         let policy = three_retries();
-        assert!(handle_retryable_error::<NoRateLimits>(&error, 0, &policy, Some(&callback)).await);
+        assert!(
+            handle_retryable_error::<NoRateLimits>(clone(&error), 0, &policy, Some(&callback))
+                .await
+                .is_ok()
+        );
         assert_eq!(
             *seen.lock().unwrap(),
             vec![("Network error: connection reset".to_string(), 1, Some(3))]
@@ -334,7 +418,9 @@ mod tests {
         let cancelled: StreamingCallback =
             Box::new(|_: &StreamingChunk| Err(anyhow::anyhow!("stopped")));
         assert!(
-            !handle_retryable_error::<NoRateLimits>(&error, 0, &policy, Some(&cancelled)).await
+            handle_retryable_error::<NoRateLimits>(clone(&error), 0, &policy, Some(&cancelled))
+                .await
+                .is_err()
         );
     }
 
@@ -342,10 +428,18 @@ mod tests {
     async fn other_errors_are_not_retried() {
         let error = anyhow::anyhow!("LLM stream stalled: no data received for 300s");
         let policy = three_retries();
-        assert!(!handle_retryable_error::<NoRateLimits>(&error, 0, &policy, None).await);
+        assert!(
+            handle_retryable_error::<NoRateLimits>(clone(&error), 0, &policy, None)
+                .await
+                .is_err()
+        );
 
         let error: anyhow::Error = ApiError::InvalidRequest("bad".into()).into();
-        assert!(!handle_retryable_error::<NoRateLimits>(&error, 0, &policy, None).await);
+        assert!(
+            handle_retryable_error::<NoRateLimits>(clone(&error), 0, &policy, None)
+                .await
+                .is_err()
+        );
     }
 
     #[test]

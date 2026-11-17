@@ -20,7 +20,7 @@ pub struct RetryPolicy {
     /// Retries of one request before the run fails.
     pub max_retries: u32,
     /// Upper bound for the wait before a retry, also when the provider asks
-    /// for a longer one.
+    /// for a longer one; at least one second.
     pub max_delay_secs: u64,
 }
 
@@ -77,9 +77,10 @@ impl RetryPolicy {
         (!self.retry_forever).then_some(self.max_retries)
     }
 
-    /// `delay` cut to the configured maximum.
+    /// `delay` cut to the configured maximum. A maximum below one second
+    /// counts as one, so retrying forever never turns into a busy loop.
     pub fn cap(&self, delay: Duration) -> Duration {
-        delay.min(Duration::from_secs(self.max_delay_secs))
+        delay.min(Duration::from_secs(self.max_delay_secs.max(1)))
     }
 
     /// Exponential backoff for the retry after `completed` ones: `base`,
@@ -88,6 +89,14 @@ impl RetryPolicy {
         let factor = 2u32.saturating_pow(completed.min(31));
         self.cap(base.saturating_mul(factor))
     }
+}
+
+/// Context on an error the client sent again as often as the policy
+/// allows; whoever receives it should not retry it once more.
+#[derive(Debug, thiserror::Error)]
+#[error("gave up after {retries} retries")]
+pub struct RetriesExhausted {
+    pub retries: u32,
 }
 
 /// "3/5" for the third of five retries, "3" without a limit.
@@ -152,6 +161,16 @@ mod tests {
             Duration::from_secs(30)
         );
         assert_eq!(policy.cap(Duration::from_secs(5)), Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_maximum_of_zero_still_waits_a_second() {
+        let policy = RetryPolicy {
+            max_delay_secs: 0,
+            ..RetryPolicy::default()
+        };
+        assert_eq!(policy.cap(Duration::from_secs(60)), Duration::from_secs(1));
+        assert_eq!(policy.cap(Duration::ZERO), Duration::ZERO);
     }
 
     #[test]

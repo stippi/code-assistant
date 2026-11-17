@@ -658,18 +658,14 @@ impl AnthropicClient {
                     return Ok(response);
                 }
                 Err(e) => {
-                    if utils::handle_retryable_error::<AnthropicRateLimitInfo>(
-                        &e,
+                    utils::handle_retryable_error::<AnthropicRateLimitInfo>(
+                        e,
                         attempts,
                         &policy,
                         streaming_callback,
                     )
-                    .await
-                    {
-                        attempts += 1;
-                        continue;
-                    }
-                    return Err(e);
+                    .await?;
+                    attempts += 1;
                 }
             }
         }

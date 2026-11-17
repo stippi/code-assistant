@@ -648,18 +648,14 @@ impl OpenAIClient {
                     return Ok(response);
                 }
                 Err(e) => {
-                    if utils::handle_retryable_error::<OpenAIRateLimitInfo>(
-                        &e,
+                    utils::handle_retryable_error::<OpenAIRateLimitInfo>(
+                        e,
                         attempts,
                         &policy,
                         streaming_callback,
                     )
-                    .await
-                    {
-                        attempts += 1;
-                        continue;
-                    }
-                    return Err(e);
+                    .await?;
+                    attempts += 1;
                 }
             }
         }

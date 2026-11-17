@@ -3,6 +3,7 @@
 use agent_core::hooks::{RecoveryAction, RecoveryPolicy};
 use agent_core::types::EmptyResponse;
 use llm::RetryPolicy;
+use llm::retry::RetriesExhausted;
 use std::time::Duration;
 
 /// Wait before the first retry of a broken stream or an empty answer
@@ -28,6 +29,10 @@ impl RecoveryPolicy for DefaultRecovery {
         }
         if is_prompt_too_long_error(error) {
             return RecoveryAction::ReduceContext;
+        }
+        // The client already sent it again as often as the policy allows.
+        if error.is::<RetriesExhausted>() {
+            return RecoveryAction::Fail;
         }
         let retryable = error.is::<EmptyResponse>() || is_retryable_streaming_error(error);
         if retryable && self.policy.allows_retry(completed_retries) {
@@ -213,6 +218,16 @@ mod tests {
             }
             _ => panic!("expected RetryStream"),
         }
+    }
+
+    #[test]
+    fn errors_the_client_gave_up_on_are_not_retried_again() {
+        let err = anyhow::anyhow!("Service overloaded: overloaded_error")
+            .context(RetriesExhausted { retries: 2 });
+        assert!(matches!(
+            two_retries().classify(&err, 0),
+            RecoveryAction::Fail
+        ));
     }
 
     #[test]
