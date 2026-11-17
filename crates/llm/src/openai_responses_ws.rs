@@ -41,6 +41,7 @@
 //! [`OpenAIResponsesWsClient::with_customization`] (custom auth, e.g. Codex OAuth).
 //! It implements the same [`LLMProvider`] trait as all other providers.
 
+use crate::utils::connect_websocket;
 use crate::{
     LLMProvider, StreamingCallback, StreamingChunk,
     openai_responses::{ApiKeyAuth, AuthProvider, RequestCustomizer},
@@ -55,13 +56,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 use tokio::sync::{Mutex as TokioMutex, mpsc};
-use tokio_tungstenite::{
-    connect_async_with_config,
-    tungstenite::{
-        client::IntoClientRequest,
-        http::{HeaderName, HeaderValue},
-        protocol::Message as WsMessage,
-    },
+use tokio_tungstenite::tungstenite::{
+    client::IntoClientRequest,
+    http::{HeaderName, HeaderValue},
+    protocol::Message as WsMessage,
 };
 use tracing::{debug, info, warn};
 
@@ -719,12 +717,10 @@ impl OpenAIResponsesWsClient {
             );
         }
 
-        let (ws_stream, response) = connect_async_with_config(request, None, false)
-            .await
-            .map_err(|e| {
-                warn!("WebSocket connection to {} failed: {:#}", url_str, e);
-                anyhow::anyhow!("WebSocket connection failed: {}", e)
-            })?;
+        let (ws_stream, response) = connect_websocket(request).await.map_err(|e| {
+            warn!("WebSocket connection to {} failed: {:#}", url_str, e);
+            anyhow::anyhow!("WebSocket connection failed: {}", e)
+        })?;
 
         // Log handshake response details for debugging
         info!(
