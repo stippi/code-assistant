@@ -12,6 +12,7 @@ pub mod list_skills;
 mod mcp_resources;
 pub mod monitor;
 pub mod name_session;
+mod outside_project;
 pub mod perplexity_ask;
 pub mod read_files;
 pub mod read_skill;

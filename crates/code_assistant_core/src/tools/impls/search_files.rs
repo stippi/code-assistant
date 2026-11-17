@@ -1,3 +1,4 @@
+use super::outside_project::Resolved;
 use crate::tools::ToolServicesAccess;
 use crate::tools::core::{
     Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec, capabilities,
@@ -413,7 +414,7 @@ impl Tool for SearchFilesTool {
                         "items": {
                             "type": "string"
                         },
-                        "description": "Optional: Restrict search to specific paths within the project (e.g., ['src/', 'tests/']). Use with caution - only when you're certain the search should be limited to specific directories. Omitting this parameter searches the entire project, which is usually preferred to avoid missing relevant matches."
+                        "description": "Optional: Restrict search to specific paths within the project (e.g., ['src/', 'tests/']). Use with caution - only when you're certain the search should be limited to specific directories. Omitting this parameter searches the entire project, which is usually preferred to avoid missing relevant matches. A path outside the project (absolute, or leading out with `..`) is searched only after the user approves it."
                     }
                 },
                 "required": ["project", "regex"]
@@ -454,21 +455,33 @@ impl Tool for SearchFilesTool {
 
         let root_dir = explorer.root_dir();
 
-        // Determine search paths
+        // Determine search paths. Those that leave the project need the
+        // user's approval (asked once for all of them) before anything about
+        // them reaches the agent, not even whether they exist.
         let search_paths = if let Some(paths) = &input.paths {
-            // Validate and convert relative paths to absolute
-            let mut absolute_paths = Vec::new();
-            for path in paths {
-                let absolute_path = root_dir.join(path);
-                if absolute_path.exists() {
-                    absolute_paths.push(absolute_path);
-                } else {
+            let resolved = super::outside_project::resolve_and_approve(
+                context,
+                "search_files",
+                tools_core::FileAccess::Read,
+                &root_dir,
+                paths.iter().map(std::path::Path::new),
+            )
+            .await;
+            let mut search_paths = Vec::new();
+            for (path, resolved) in paths.iter().zip(resolved) {
+                let (search_path, outside) = match resolved {
+                    Resolved::Refused(denial) => return Err(anyhow!(denial)),
+                    Resolved::Outside(outside) => (outside, true),
+                    Resolved::Inside => (root_dir.join(path), false),
+                };
+                if !search_path.exists() {
                     return Err(anyhow!("Path not found: {path}"));
                 }
+                search_paths.push((search_path, outside));
             }
-            absolute_paths
+            search_paths
         } else {
-            vec![root_dir.clone()]
+            vec![(root_dir.clone(), false)]
         };
 
         // Set up search options with a reasonable initial limit
@@ -482,8 +495,15 @@ impl Tool for SearchFilesTool {
 
         // Perform searches across all specified paths
         let mut all_results = Vec::new();
-        for search_path in search_paths {
-            let mut path_results = explorer.search(&search_path, options.clone()).await?;
+        for (search_path, outside) in search_paths {
+            let mut path_results = if outside {
+                // Approved: search through an explorer rooted at that path.
+                super::outside_project::explorer_for(&search_path)
+                    .search(&search_path, options.clone())
+                    .await?
+            } else {
+                explorer.search(&search_path, options.clone()).await?
+            };
             all_results.append(&mut path_results);
         }
 

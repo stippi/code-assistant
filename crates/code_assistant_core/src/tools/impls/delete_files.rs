@@ -1,3 +1,4 @@
+use super::outside_project::Resolved;
 use crate::tools::ToolServicesAccess;
 use crate::tools::core::{
     Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec, capabilities,
@@ -110,7 +111,7 @@ impl Tool for DeleteFilesTool {
                     "paths": {
                         "examples": ["File path here"],
                         "type": "array",
-                        "description": "Paths to the files relative to the project root directory",
+                        "description": "Paths to the files relative to the project root directory. A path outside the project (absolute, or leading out with `..`) is deleted only after the user approves it.",
                         "items": {
                             "type": "string"
                         }
@@ -158,18 +159,33 @@ impl Tool for DeleteFilesTool {
         let mut failed = Vec::new();
         let mut deleted_contents = Vec::new();
 
-        // Process each path
-        for path_str in input.paths.clone() {
+        // Deleting outside the project needs the user's approval, asked once
+        // for all such paths of this call.
+        let root_dir = explorer.root_dir();
+        let resolved = super::outside_project::resolve_and_approve(
+            context,
+            "delete_files",
+            tools_core::FileAccess::Write,
+            &root_dir,
+            input.paths.iter().map(std::path::Path::new),
+        )
+        .await;
+
+        for (path_str, resolved) in input.paths.clone().into_iter().zip(resolved) {
             let path = PathBuf::from(&path_str);
 
-            // Check for absolute paths
-            if path.is_absolute() {
-                failed.push((path.clone(), "Absolute paths are not allowed".to_string()));
-                continue;
-            }
-
-            // Join with root_dir to get full path
-            let full_path = explorer.root_dir().join(&path);
+            let outside_explorer;
+            let (explorer, full_path, inside) = match resolved {
+                Resolved::Refused(denial) => {
+                    failed.push((path, denial));
+                    continue;
+                }
+                Resolved::Outside(outside) => {
+                    outside_explorer = super::outside_project::explorer_for(&outside);
+                    (outside_explorer.as_ref(), outside, false)
+                }
+                Resolved::Inside => (explorer.as_ref(), root_dir.join(&path), true),
+            };
 
             // Capture the content before deletion (best effort; binary or
             // unreadable files simply render without a diff)
@@ -178,11 +194,7 @@ impl Tool for DeleteFilesTool {
             // Delete the file, unless it changed since this agent last saw it
             match context
                 .seen_files()
-                .change(
-                    explorer.as_ref(),
-                    &full_path,
-                    explorer.delete_file(&full_path),
-                )
+                .change(explorer, &full_path, explorer.delete_file(&full_path))
                 .await
             {
                 Ok(_) => {
@@ -191,8 +203,8 @@ impl Tool for DeleteFilesTool {
                         deleted_contents.push((path.clone(), content));
                     }
 
-                    // Emit resource event
-                    if let Some(ui) = context.ui() {
+                    // Emit resource event (files outside the project are no resource of it)
+                    if let Some(ui) = context.ui().filter(|_| inside) {
                         let _ = ui
                             .send_event(crate::ui::UiEvent::ResourceDeleted {
                                 project: input.project.clone(),
@@ -352,10 +364,11 @@ mod tests {
             .find(|(path, _)| path == &PathBuf::from("non-existing.txt"));
         assert!(non_existing.is_some());
 
-        // One failure should be the absolute path
+        // One failure should be the path outside the project, since nobody
+        // can approve deleting it
         let absolute_path = result.failed.iter().find(|(path, error)| {
             path == &PathBuf::from("/absolute/path.txt")
-                && error.contains("Absolute paths are not allowed")
+                && error.contains("Access outside project root is not allowed")
         });
         assert!(absolute_path.is_some());
 

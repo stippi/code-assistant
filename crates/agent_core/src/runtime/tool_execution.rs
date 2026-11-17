@@ -12,6 +12,7 @@ struct Invocation {
     registry: Arc<ToolRegistry>,
     command_executor: Arc<dyn CommandExecutor>,
     permission_handler: Option<Arc<dyn PermissionMediator>>,
+    permissions: ToolPermissions,
     cancellation: tools_core::RunCancellation,
     session_id: Option<String>,
     services: Box<dyn Any + Send>,
@@ -59,6 +60,7 @@ impl Invocation {
                 tool_id: Some(self.request.id.clone()),
                 session_id: self.session_id,
                 permission_handler: self.permission_handler.as_deref(),
+                permissions: Some(&self.permissions),
                 extensions: Some(self.services.as_mut()),
             };
             // The registry is immutable for this run and was checked in prepare.
@@ -320,6 +322,7 @@ impl AgentRuntime {
                 }),
                 tools_core::Clearance::Allowed => self.permission_handler.clone(),
             },
+            permissions: self.permissions.clone(),
             cancellation: self.cancellation.clone(),
             session_id: self.session_id.clone(),
             services,

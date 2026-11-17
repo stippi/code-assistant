@@ -107,6 +107,15 @@ impl AcpPermissionMediator {
                     serde_json::to_string_pretty(params).unwrap_or_else(|_| params.to_string())
                 )
             }
+            PermissionRequestReason::OutsideProject { access, paths } => format!(
+                "{} files outside the project:\n{}",
+                access.label(),
+                paths
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
             PermissionRequestReason::TrustLocalMcp {
                 project_dir,
                 server_names,
@@ -140,6 +149,11 @@ impl AcpPermissionMediator {
                 "type": "auto_mode_blocked",
                 "params": params,
                 "reason": reason,
+            }),
+            PermissionRequestReason::OutsideProject { access, paths } => json!({
+                "type": "outside_project",
+                "access": access.verb(),
+                "paths": paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
             }),
             PermissionRequestReason::TrustLocalMcp {
                 project_dir,

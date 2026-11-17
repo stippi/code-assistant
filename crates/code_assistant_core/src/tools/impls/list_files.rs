@@ -1,3 +1,4 @@
+use super::outside_project::Resolved;
 use crate::tools::ToolServicesAccess;
 use crate::tools::core::{
     Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec, capabilities,
@@ -104,7 +105,7 @@ impl Tool for ListFilesTool {
                     "paths": {
                         "examples": ["File path here"],
                         "type": "array",
-                        "description": "Directory paths relative to project root",
+                        "description": "Directory paths relative to project root. A path outside the project (absolute, or leading out with `..`) is listed only after the user approves it.",
                         "items": {
                             "type": "string"
                         }
@@ -172,20 +173,35 @@ impl Tool for ListFilesTool {
         // Convert max_depth from u64 to usize if present
         let max_depth = input.max_depth.map(|d| d as usize);
 
-        for path_str in input.paths.clone() {
+        // Listing outside the project needs the user's approval, asked once
+        // for all such paths of this call.
+        let root_dir = explorer.root_dir();
+        let resolved = super::outside_project::resolve_and_approve(
+            context,
+            "list_files",
+            tools_core::FileAccess::Read,
+            &root_dir,
+            input.paths.iter().map(std::path::Path::new),
+        )
+        .await;
+
+        for (path_str, resolved) in input.paths.clone().into_iter().zip(resolved) {
             let path = PathBuf::from(&path_str);
 
-            // Check if path is absolute and handle it properly
-            if path.is_absolute() {
-                failed_paths.push((
-                    path.display().to_string(),
-                    "Path must be relative to project root".to_string(),
-                ));
-                continue;
-            }
-
-            let full_path = explorer.root_dir().join(&path);
-            match explorer.list_files(&full_path, max_depth).await {
+            let listing = match resolved {
+                Resolved::Refused(denial) => {
+                    failed_paths.push((path_str, denial));
+                    continue;
+                }
+                // Approved: list through an explorer rooted at that folder.
+                Resolved::Outside(outside) => {
+                    super::outside_project::explorer_for(&outside)
+                        .list_files(&outside, max_depth)
+                        .await
+                }
+                Resolved::Inside => explorer.list_files(&root_dir.join(&path), max_depth).await,
+            };
+            match listing {
                 Ok(tree_entry) => {
                     expanded_paths.push((path, tree_entry));
                 }

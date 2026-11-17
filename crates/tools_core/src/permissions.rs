@@ -5,7 +5,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 /// When to ask the user for permission before running a tool.
@@ -129,6 +129,9 @@ pub struct ToolPermissions {
     /// asks the user about every call it would have reviewed.
     pub reviewer: Option<Arc<dyn ToolCallReviewer>>,
     granted_tools: Arc<Mutex<HashSet<String>>>,
+    /// Held while a tool asks for an escalation of its own, see
+    /// [`ToolPermissions::escalation_turn`].
+    escalations: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl ToolPermissions {
@@ -137,7 +140,15 @@ impl ToolPermissions {
             tier,
             reviewer: None,
             granted_tools: Arc::default(),
+            escalations: Arc::default(),
         }
+    }
+
+    /// Wait until no other tool call of the session is asking the user for
+    /// an escalation. Parallel calls so ask one after another, and a call
+    /// waiting behind an "always (session)" answer passes without asking.
+    pub async fn escalation_turn(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.escalations.clone().lock_owned().await
     }
 
     pub fn is_granted(&self, tool_name: &str) -> bool {
@@ -251,6 +262,13 @@ pub enum PermissionRequestReason<'a> {
         params: &'a serde_json::Value,
         reason: &'a str,
     },
+    /// A tool wants to read or write files outside the project it works in.
+    /// Asked independently of the tier, since the project root is the
+    /// boundary the file tools otherwise enforce.
+    OutsideProject {
+        access: FileAccess,
+        paths: &'a [PathBuf],
+    },
     /// Approve loading a project's local `.mcp.json`, which launches the MCP
     /// servers it defines — i.e. runs project-supplied commands. Not tied to a
     /// tool invocation; raised before a project's registry is built.
@@ -258,6 +276,31 @@ pub enum PermissionRequestReason<'a> {
         project_dir: &'a Path,
         server_names: Vec<String>,
     },
+}
+
+/// What a tool wants to do with files outside its project.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileAccess {
+    Read,
+    Write,
+}
+
+impl FileAccess {
+    /// `"read"` or `"write"`, for prompts and request metadata.
+    pub fn verb(self) -> &'static str {
+        match self {
+            FileAccess::Read => "read",
+            FileAccess::Write => "write",
+        }
+    }
+
+    /// `"Read"` or `"Write"`, to start a prompt with.
+    pub fn label(self) -> &'static str {
+        match self {
+            FileAccess::Read => "Read",
+            FileAccess::Write => "Write",
+        }
+    }
 }
 
 /// Request payload passed to a [`PermissionMediator`].

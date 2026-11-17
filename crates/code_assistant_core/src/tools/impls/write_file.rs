@@ -99,7 +99,7 @@ impl Tool for WriteFileTool {
                     "path": {
                         "examples": ["File path here"],
                         "type": "string",
-                        "description": "Path to create or overwrite (relative to project root)"
+                        "description": "Path to create or overwrite (relative to project root). A path outside the project (absolute, or leading out with `..`) is written only after the user approves it."
                     },
                     "content": {
                         "type": "string",
@@ -177,21 +177,30 @@ impl Tool for WriteFileTool {
         // entry (and thus no format-on-save).
         let project_config = context.project_manager().get_project(&input.project)?;
 
-        // Check for absolute path
         let path = PathBuf::from(&input.path);
-        if path.is_absolute() {
-            return Ok(WriteFileOutput {
-                path,
-                content: String::new(),
-                error: Some("Absolute paths are not allowed".to_string()),
-                original_content: None,
-            });
-        }
-
         let project_root = explorer.root_dir();
 
-        // Join with root_dir to get full path
-        let full_path = project_root.join(&path);
+        // A path outside the project is written only once the user approves.
+        let target = match super::outside_project::write_target(
+            context,
+            "write_file",
+            explorer,
+            &path,
+        )
+        .await
+        {
+            Ok(target) => target,
+            Err(error) => {
+                return Ok(WriteFileOutput {
+                    path,
+                    content: String::new(),
+                    error: Some(error),
+                    original_content: None,
+                });
+            }
+        };
+        let explorer = target.explorer;
+        let full_path = target.full_path;
 
         // Read the original content before writing (if the file exists and we're not appending).
         // This allows the UI to show a proper diff for overwrites.
@@ -205,7 +214,8 @@ impl Tool for WriteFileTool {
         // one change, so the formatted content counts as seen.
         let format_command = project_config
             .as_ref()
-            .and_then(|config| config.format_command_for(&path));
+            .zip(target.project_path.as_deref())
+            .and_then(|(config, project_path)| config.format_command_for(project_path));
         let write = async {
             explorer
                 .write_file(&full_path, &input.content, input.append)
@@ -234,12 +244,12 @@ impl Tool for WriteFileTool {
                     input.content = updated;
                 }
 
-                // Emit resource event
-                if let Some(ui) = context.ui() {
+                // Emit resource event (files outside the project are no resource of it)
+                if let (Some(ui), Some(project_path)) = (context.ui(), &target.project_path) {
                     let _ = ui
                         .send_event(crate::ui::UiEvent::ResourceWritten {
                             project: input.project.clone(),
-                            path: path.clone(),
+                            path: project_path.clone(),
                         })
                         .await;
                 }

@@ -1,3 +1,4 @@
+use super::outside_project::Resolved;
 use crate::tools::ToolServicesAccess;
 use crate::tools::core::{
     Render, ResourcesTracker, Tool, ToolContext, ToolResult, ToolSpec, capabilities,
@@ -32,10 +33,6 @@ fn document_format_for_extension(ext: &str) -> Option<&'static str> {
 
 /// Resolve a path relative to the project root and verify it stays within bounds.
 fn resolve_project_path(root_dir: &std::path::Path, rel_path: &std::path::Path) -> Result<PathBuf> {
-    if rel_path.is_absolute() {
-        anyhow::bail!("Absolute paths are not allowed");
-    }
-
     let candidate = root_dir.join(rel_path);
 
     let canonical = candidate
@@ -182,7 +179,7 @@ impl Tool for ViewDocumentsTool {
                     "paths": {
                         "examples": ["File path here"],
                         "type": "array",
-                        "description": "Paths to document files relative to the project root directory",
+                        "description": "Paths to document files relative to the project root directory. A path outside the project (absolute, or leading out with `..`) is read only after the user approves it.",
                         "items": {
                             "type": "string"
                         }
@@ -227,9 +224,20 @@ impl Tool for ViewDocumentsTool {
         let mut converted_documents = Vec::new();
         let mut failed_documents = Vec::new();
         let root_dir = explorer.root_dir();
+
+        // Reading outside the project needs the user's approval, asked once
+        // for all such paths of this call.
+        let resolved = super::outside_project::resolve_and_approve(
+            context,
+            "view_documents",
+            tools_core::FileAccess::Read,
+            &root_dir,
+            input.paths.iter().map(std::path::Path::new),
+        )
+        .await;
         let mut total_output_chars: usize = 0;
 
-        for path_str in &input.paths {
+        for (path_str, resolved) in input.paths.iter().zip(resolved) {
             let path = PathBuf::from(path_str);
 
             // Check extension
@@ -258,12 +266,19 @@ impl Tool for ViewDocumentsTool {
             };
 
             // Resolve and validate the path
-            let full_path = match resolve_project_path(&root_dir, &path) {
-                Ok(p) => p,
-                Err(e) => {
-                    failed_documents.push((path_str.clone(), e.to_string()));
+            let full_path = match resolved {
+                Resolved::Refused(denial) => {
+                    failed_documents.push((path_str.clone(), denial));
                     continue;
                 }
+                Resolved::Outside(outside) => outside,
+                Resolved::Inside => match resolve_project_path(&root_dir, &path) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        failed_documents.push((path_str.clone(), e.to_string()));
+                        continue;
+                    }
+                },
             };
 
             // Check file size before reading

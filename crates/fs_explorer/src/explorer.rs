@@ -400,6 +400,20 @@ impl Explorer {
     }
 }
 
+/// Where `path` (relative to `root`, or absolute) really points when that
+/// lies outside `root`, following symlinks. `None` when it stays inside, or
+/// when it cannot be resolved (reading it then fails as usual).
+pub fn resolve_outside_root(root: &Path, path: &Path) -> Option<PathBuf> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.clean());
+    let candidate = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    let canonical = canonicalize_with_existing_parent(&candidate.clean()).ok()?;
+    (!canonical.starts_with(&root)).then_some(canonical)
+}
+
 fn canonicalize_with_existing_parent(path: &Path) -> std::io::Result<PathBuf> {
     if path.exists() {
         return path.canonicalize();

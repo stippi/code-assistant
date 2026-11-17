@@ -194,6 +194,7 @@ async fn test_edit_tool_parameter_update_after_formatting() -> Result<()> {
         tool_id: None,
         session_id: None,
         permission_handler: None,
+        permissions: None,
         extensions: Some(&mut services),
     };
 
@@ -266,6 +267,7 @@ async fn test_write_file_with_format_on_save() -> Result<()> {
         tool_id: None,
         session_id: None,
         permission_handler: None,
+        permissions: None,
         extensions: Some(&mut services),
     };
 
@@ -335,6 +337,7 @@ async fn test_replace_in_file_with_format_on_save() -> Result<()> {
         tool_id: None,
         session_id: None,
         permission_handler: None,
+        permissions: None,
         extensions: Some(&mut services),
     };
 
@@ -411,6 +414,7 @@ async fn test_no_format_when_pattern_doesnt_match() -> Result<()> {
         tool_id: None,
         session_id: None,
         permission_handler: None,
+        permissions: None,
         extensions: Some(&mut services),
     };
 
@@ -481,6 +485,7 @@ async fn test_format_on_save_multiple_patterns() -> Result<()> {
         tool_id: None,
         session_id: None,
         permission_handler: None,
+        permissions: None,
         extensions: Some(&mut services),
     };
 
@@ -575,6 +580,7 @@ async fn test_format_on_save_glob_patterns() -> Result<()> {
         tool_id: None,
         session_id: None,
         permission_handler: None,
+        permissions: None,
         extensions: Some(&mut services),
     };
 
@@ -661,6 +667,7 @@ async fn test_format_on_save_with_conflicting_matches() -> Result<()> {
         tool_id: None,
         session_id: None,
         permission_handler: None,
+        permissions: None,
         extensions: Some(&mut services),
     };
 

@@ -273,6 +273,7 @@ impl MessageHandler {
                 tool_id: None,
                 session_id: None,
                 permission_handler: None,
+                permissions: None,
                 extensions: Some(&mut services),
             };
 

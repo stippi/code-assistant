@@ -96,6 +96,22 @@ parent gave them.
   `ask_user_approval` (sandbox bypass) keeps using the mediator directly,
   independent of the tier — except under `auto`, where a call the reviewer
   allowed gets its escalation granted (see above).
+- **Files outside the project**: the file tools ask before reaching a
+  path that leads out of the project (absolute, `..`, or a symlink), in
+  every tier including `bypass-all` — one prompt per call for all such
+  paths (`PermissionRequestReason::OutsideProject`, shared helper
+  `tools::impls::outside_project`). Reading (`read_files`, `list_files`,
+  `search_files`, `glob_files`, `view_images`, `view_documents`) and
+  writing (`write_file`, `edit`, `replace_in_file`, `delete_files`) are
+  asked and granted separately (`FileAccess`). *Always (session)* covers
+  every tool of that kind and is remembered in the session's
+  `ToolPermissions` (reached by tools through
+  `ToolContext::request_escalation`). Files written outside get no
+  format-on-save and no resource events. Without a mediator the access is
+  rejected as before. Each path is resolved once, before the question, and
+  the tool uses exactly that path. Parallel calls ask one after another
+  (`ToolPermissions::escalation_turn`), so a call behind an *always* answer
+  does not ask again.
 
 ## Frontend surfaces
 
