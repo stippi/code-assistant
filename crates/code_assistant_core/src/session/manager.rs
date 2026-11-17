@@ -12,7 +12,7 @@ use crate::session::effort::EffortChoice;
 use crate::session::instance::SessionInstance;
 use crate::session::sleep_inhibitor::SleepInhibitor;
 use crate::session::{SessionCheckpoint, SessionConfig};
-use crate::ui::ui_events::UiEvent;
+use crate::ui::ui_events::{MessageData, ToolResultData, UiEvent};
 use crate::utils::file_utils;
 use command_executor::{CommandExecutor, SandboxedCommandExecutor};
 use llm::LLMProvider;
@@ -137,6 +137,13 @@ pub struct ModelSwitchOutcome {
 
 /// Yields the user's current default model, if one is configured.
 pub type DefaultModelLookup = Arc<dyn Fn() -> Option<String> + Send + Sync>;
+
+/// A transcript snapshot: messages plus tool results for one active path.
+#[derive(Debug, Clone)]
+pub struct TranscriptData {
+    pub messages: Vec<MessageData>,
+    pub tool_results: Vec<ToolResultData>,
+}
 
 /// The main SessionManager that manages multiple active sessions with on-demand agents
 pub struct SessionManager {
@@ -337,6 +344,35 @@ impl SessionManager {
         })?;
         self.replace_instance_session(session);
         Ok(retracted)
+    }
+
+    /// The transcript of a resident session's active path.
+    pub(crate) fn transcript(&self, session_id: &str) -> Result<TranscriptData> {
+        let instance = self
+            .active_sessions
+            .get(session_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_id}"))?;
+        let messages = instance
+            .convert_messages_to_ui_data(instance.session.config.tool_syntax)
+            .context("Failed to convert messages")?;
+        let tool_results = self
+            .tool_results_ui_data(session_id)
+            .context("Failed to convert tool results")?;
+        Ok(TranscriptData {
+            messages,
+            tool_results,
+        })
+    }
+
+    /// The session's transcript as a [`UiEvent::SetMessages`], for views to
+    /// show it again after its history changed outside a run's stream.
+    pub(crate) fn transcript_event(&self, session_id: &str) -> Result<UiEvent> {
+        let transcript = self.transcript(session_id)?;
+        Ok(UiEvent::SetMessages {
+            messages: transcript.messages,
+            session_id: Some(session_id.to_string()),
+            tool_results: transcript.tool_results,
+        })
     }
 
     /// Whether the session should get a prepared handoff now: idle (not
@@ -1589,7 +1625,33 @@ impl SessionManager {
                             &events_clone,
                             &pending_target,
                         );
-                        run.run(&mut agent, target, &pending_message_for_task).await
+                        let outcome = run
+                            .run(&mut agent, target, &pending_message_for_task)
+                            .await?;
+                        use crate::session::new_context::NewContextOutcome;
+                        if outcome == (NewContextOutcome::HandedOver { generated: true }) {
+                            // The new session continues; this one goes on as
+                            // if the handoff had not happened, also for a
+                            // message queued meanwhile. Taken back through
+                            // the run's own manager, like the agent's saves;
+                            // the owner reloads from storage.
+                            let mut manager = manager_for_outcome.lock().await;
+                            manager.ensure_session_loaded(&session_id_clone)?;
+                            if manager.retract_unanswered_handoff(&session_id_clone)? {
+                                let session = &manager
+                                    .get_session(&session_id_clone)
+                                    .ok_or_else(|| anyhow::anyhow!("Session not found"))?
+                                    .session;
+                                agent.restore_conversation(
+                                    session.message_nodes.clone(),
+                                    session.active_path.clone(),
+                                    session.next_node_id,
+                                );
+                                let transcript = manager.transcript_event(&session_id_clone)?;
+                                events_clone.publish_ui(&session_id_clone, transcript);
+                            }
+                        }
+                        Ok(outcome == NewContextOutcome::Answered)
                     }
                     RunTask::PrepareHandoff => {
                         use crate::session::new_context::{Prepared, prepare_handoff};

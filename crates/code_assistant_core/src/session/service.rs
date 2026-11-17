@@ -28,7 +28,7 @@ use crate::skills::{
 };
 use crate::types::{PlanState, Project};
 use crate::ui::UiEvent;
-use crate::ui::ui_events::{MessageData, ToolResultData};
+use crate::ui::ui_events::ToolResultData;
 use crate::utils::content::content_blocks_from;
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use command_executor::CommandExecutor;
@@ -105,12 +105,7 @@ pub struct ModelSwitchResult {
     pub allowed_models: Vec<String>,
 }
 
-/// A transcript snapshot: messages plus tool results for one active path.
-#[derive(Debug, Clone)]
-pub struct TranscriptData {
-    pub messages: Vec<MessageData>,
-    pub tool_results: Vec<ToolResultData>,
-}
+pub use crate::session::manager::TranscriptData;
 
 /// Everything the UI needs to start editing a past message.
 #[derive(Debug, Clone)]
@@ -1445,7 +1440,7 @@ impl SessionService {
             let session_instance = manager
                 .get_session(&session_id)
                 .ok_or_else(|| anyhow!("Session {session_id} not found after save"))?;
-            let transcript = transcript_data(&manager, session_instance)?;
+            let transcript = manager.transcript(&session_id)?;
             Ok(BranchSwitchData {
                 transcript,
                 plan: session_instance.session.plan.clone(),
@@ -1458,11 +1453,7 @@ impl SessionService {
     /// path.
     pub async fn cancel_message_edit(&self, session_id: String) -> Result<TranscriptData> {
         self.call_session(session_id.clone(), move |ctx| async move {
-            let manager = ctx.manager.lock().await;
-            let session_instance = manager
-                .get_session(&session_id)
-                .ok_or_else(|| anyhow!("Session {session_id} not found"))?;
-            transcript_data(&manager, session_instance)
+            ctx.manager.lock().await.transcript(&session_id)
         })
         .await
     }
@@ -1759,22 +1750,6 @@ impl SessionService {
         })
         .await
     }
-}
-
-fn transcript_data(
-    manager: &SessionManager,
-    session_instance: &crate::session::instance::SessionInstance,
-) -> Result<TranscriptData> {
-    let messages = session_instance
-        .convert_messages_to_ui_data(session_instance.session.config.tool_syntax)
-        .context("Failed to convert messages")?;
-    let tool_results = manager
-        .tool_results_ui_data(&session_instance.session.id)
-        .context("Failed to convert tool results")?;
-    Ok(TranscriptData {
-        messages,
-        tool_results,
-    })
 }
 
 /// Resolve the project root path for a session (init_path, not
