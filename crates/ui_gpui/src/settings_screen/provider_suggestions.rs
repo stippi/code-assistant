@@ -7,6 +7,7 @@
 #![allow(dead_code)] // Fields are part of the public API, used by UI code
 
 use code_assistant_core::session::default_model::DefaultModelConfig;
+use llm::model_selection::ModelSelection;
 use llm::provider_config::ModelConfig;
 use serde_json::{Map, Value};
 
@@ -21,13 +22,12 @@ pub struct ProviderSuggestion {
     pub description: &'static str,
     /// Icon path for the provider.
     pub icon: &'static str,
-    /// Which fields the user needs to fill in before applying.
+    /// Which fields the user needs to fill in before applying. Their
+    /// values go into the config of every provider below.
     pub required_fields: Vec<SuggestionField>,
-    /// The provider entry to write to providers.json (template with placeholders).
-    pub provider_key: &'static str,
-    pub provider_config: ProviderTemplate,
-    /// IDs of the provider's models to offer in the picker right away.
-    pub models: Vec<&'static str>,
+    /// The provider entries to write to providers.json. The first model of
+    /// the first provider becomes the default model if there is none yet.
+    pub providers: Vec<ProviderTemplate>,
     /// Whether this suggestion requires a specific user context (e.g. SAP user).
     pub context_requirement: ContextRequirement,
 }
@@ -47,10 +47,26 @@ pub struct SuggestionField {
 /// Template for a provider entry in providers.json.
 #[derive(Clone, Debug)]
 pub struct ProviderTemplate {
+    /// The provider's key in providers.json.
+    pub key: &'static str,
     pub label: &'static str,
     pub provider_type: &'static str,
     /// Static config fields (base_url, etc.). Does NOT include user-provided fields.
     pub static_config: Map<String, Value>,
+    /// IDs of the provider's models to offer in the picker right away.
+    pub models: Vec<&'static str>,
+}
+
+/// A config object from `(key, value)` pairs.
+fn config_of<const N: usize>(entries: [(&str, Value); N]) -> Map<String, Value> {
+    entries
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value))
+        .collect()
+}
+
+fn base_url(url: &str) -> Map<String, Value> {
+    config_of([("base_url", Value::from(url))])
 }
 
 /// What environment context is needed to show this suggestion.
@@ -157,16 +173,20 @@ pub fn get_suggestions(env: &UserEnvironment) -> Vec<ProviderSuggestion> {
 }
 
 fn hai_proxy_suggestion() -> ProviderSuggestion {
-    let mut static_config = Map::new();
-    static_config.insert(
-        "base_url".to_string(),
-        Value::String("http://localhost:6655/anthropic/v1".to_string()),
-    );
+    // One provider per API the proxy offers, all with the same key. The
+    // `hai-proxy` key predates the others; configs and sessions refer to it.
+    let provider = |key, provider_type, static_config, models| ProviderTemplate {
+        key,
+        label: "HAI Proxy",
+        provider_type,
+        static_config,
+        models,
+    };
 
     ProviderSuggestion {
         id: "suggestion-hai-proxy",
         title: "SAP Hyperspace AI Proxy",
-        description: "Use Claude via SAP's HAI Proxy running locally. Requires the Hyperspace AI Proxy tool to be installed and running.",
+        description: "Use Claude, GPT and Gemini via SAP's HAI Proxy running locally. Requires the Hyperspace AI Proxy tool to be installed and running.",
         icon: "icons/ai_sap.svg",
         required_fields: vec![SuggestionField {
             key: "api_key",
@@ -175,24 +195,37 @@ fn hai_proxy_suggestion() -> ProviderSuggestion {
             is_secret: false,
             help_text: Some("Find your machine-specific API key in the HAI Proxy settings."),
         }],
-        provider_key: "hai-proxy",
-        provider_config: ProviderTemplate {
-            label: "HAI Proxy",
-            provider_type: "anthropic",
-            static_config,
-        },
-        models: vec!["anthropic--claude-4.8-opus", "anthropic--claude-4.6-sonnet"],
+        providers: vec![
+            provider(
+                "hai-proxy",
+                "anthropic",
+                base_url("http://localhost:6655/anthropic/v1"),
+                vec!["anthropic--claude-4.8-opus", "anthropic--claude-4.6-sonnet"],
+            ),
+            provider(
+                "hai-proxy-openai",
+                "openai-responses",
+                base_url("http://localhost:6655/openai/v1"),
+                vec!["gpt-6.1-sol"],
+            ),
+            provider(
+                "hai-proxy-vertex",
+                "vertex",
+                config_of([
+                    (
+                        "base_url",
+                        Value::from("http://localhost:6655/gemini/v1beta"),
+                    ),
+                    ("bearer_auth", Value::Bool(true)),
+                ]),
+                vec!["gemini-3.8-flash"],
+            ),
+        ],
         context_requirement: ContextRequirement::SapUser,
     }
 }
 
 fn anthropic_suggestion() -> ProviderSuggestion {
-    let mut static_config = Map::new();
-    static_config.insert(
-        "base_url".to_string(),
-        Value::String("https://api.anthropic.com/v1".to_string()),
-    );
-
     ProviderSuggestion {
         id: "suggestion-anthropic",
         title: "Anthropic",
@@ -205,24 +238,18 @@ fn anthropic_suggestion() -> ProviderSuggestion {
             is_secret: true,
             help_text: Some("Get your API key at console.anthropic.com"),
         }],
-        provider_key: "anthropic",
-        provider_config: ProviderTemplate {
+        providers: vec![ProviderTemplate {
+            key: "anthropic",
             label: "Anthropic",
             provider_type: "anthropic",
-            static_config,
-        },
-        models: vec!["claude-opus-5-5", "claude-sonnet-5-5"],
+            static_config: base_url("https://api.anthropic.com/v1"),
+            models: vec!["claude-opus-5-5", "claude-sonnet-5-5"],
+        }],
         context_requirement: ContextRequirement::None,
     }
 }
 
 fn openai_suggestion() -> ProviderSuggestion {
-    let mut static_config = Map::new();
-    static_config.insert(
-        "base_url".to_string(),
-        Value::String("https://api.openai.com/v1".to_string()),
-    );
-
     ProviderSuggestion {
         id: "suggestion-openai",
         title: "OpenAI",
@@ -235,13 +262,13 @@ fn openai_suggestion() -> ProviderSuggestion {
             is_secret: true,
             help_text: Some("Get your API key at platform.openai.com"),
         }],
-        provider_key: "openai",
-        provider_config: ProviderTemplate {
+        providers: vec![ProviderTemplate {
+            key: "openai",
             label: "OpenAI",
             provider_type: "openai-responses",
-            static_config,
-        },
-        models: vec!["gpt-5.6"],
+            static_config: base_url("https://api.openai.com/v1"),
+            models: vec!["gpt-5.6"],
+        }],
         context_requirement: ContextRequirement::None,
     }
 }
@@ -253,17 +280,13 @@ fn chatgpt_subscription_suggestion() -> ProviderSuggestion {
         description: "Use your existing ChatGPT Plus/Pro subscription. Requires browser login via OAuth.",
         icon: "icons/ai_open_ai.svg",
         required_fields: vec![], // No fields needed - uses OAuth flow
-        provider_key: "openai-chatgpt",
-        provider_config: ProviderTemplate {
+        providers: vec![ProviderTemplate {
+            key: "openai-chatgpt",
             label: "ChatGPT Subscription",
             provider_type: "openai-responses-ws",
-            static_config: {
-                let mut m = Map::new();
-                m.insert("codex_auth".to_string(), Value::Bool(true));
-                m
-            },
-        },
-        models: vec!["gpt-6.1-sol"],
+            static_config: config_of([("codex_auth", Value::Bool(true))]),
+            models: vec!["gpt-6.1-sol"],
+        }],
         context_requirement: ContextRequirement::None,
     }
 }
@@ -272,64 +295,89 @@ fn chatgpt_subscription_suggestion() -> ProviderSuggestion {
 // Apply suggestion: writes provider + models to config files
 // ---------------------------------------------------------------------------
 
+impl ProviderSuggestion {
+    /// What applying the suggestion creates, for the card.
+    pub fn summary(&self) -> String {
+        let models: usize = self.providers.iter().map(|p| p.models.len()).sum();
+        let models = format!("{models} model{}", if models == 1 { "" } else { "s" });
+        match self.providers.as_slice() {
+            [provider] => format!(
+                "This will create the provider \"{}\" and {models}.",
+                provider.label
+            ),
+            providers => format!(
+                "This will create {} providers and {models}.",
+                providers.len()
+            ),
+        }
+    }
+
+    /// Add the suggestion's providers to `providers` (the providers.json
+    /// object), offer their models in `selection` and, if there is no
+    /// default model yet, make the first one the default.
+    ///
+    /// `user_fields` maps field key -> user-provided value (e.g. "api_key" ->
+    /// "sk-...") and goes into every provider's config.
+    pub fn apply_to(
+        &self,
+        user_fields: &Map<String, Value>,
+        providers: &mut Map<String, Value>,
+        selection: &mut ModelSelection,
+        default_model: &mut DefaultModelConfig,
+    ) {
+        for template in &self.providers {
+            let mut config = template.static_config.clone();
+            config.extend(user_fields.clone());
+
+            let mut entry = Map::new();
+            entry.insert("label".to_string(), Value::from(template.label));
+            entry.insert("provider".to_string(), Value::from(template.provider_type));
+            entry.insert("config".to_string(), Value::Object(config));
+            providers.insert(template.key.to_string(), Value::Object(entry));
+
+            for model_id in &template.models {
+                selection.set_enabled(template.key, model_id, true);
+            }
+        }
+
+        if default_model.model.is_none()
+            && let Some(first) = self.providers.first()
+            && let Some(model_id) = first.models.first()
+        {
+            default_model.model = Some(ModelConfig::key_for(first.key, model_id));
+        }
+    }
+}
+
 /// Apply a suggestion by writing its provider and model configs to disk.
-///
-/// `user_fields` is a map of field key -> user-provided value (e.g. "api_key" -> "sk-...").
 pub fn apply_suggestion(
     suggestion: &ProviderSuggestion,
     user_fields: &Map<String, Value>,
 ) -> anyhow::Result<()> {
-    // Build provider config object
-    let mut config = suggestion.provider_config.static_config.clone();
-    for (key, value) in user_fields {
-        config.insert(key.clone(), value.clone());
-    }
-
-    let mut provider_entry = Map::new();
-    provider_entry.insert(
-        "label".to_string(),
-        Value::String(suggestion.provider_config.label.to_string()),
-    );
-    provider_entry.insert(
-        "provider".to_string(),
-        Value::String(suggestion.provider_config.provider_type.to_string()),
-    );
-    provider_entry.insert("config".to_string(), Value::Object(config));
-
-    // Write to providers.json
     let providers_path = llm::provider_config::ConfigurationSystem::providers_config_path();
-    let mut providers_map: Map<String, Value> = if providers_path.exists() {
+    let mut providers: Map<String, Value> = if providers_path.exists() {
         let content = std::fs::read_to_string(&providers_path)?;
         serde_json::from_str(&content).unwrap_or_default()
     } else {
         Map::new()
     };
+    let mut selection = ModelSelection::load_or_import()?;
+    let mut default_model = DefaultModelConfig::load();
+    let had_default = default_model.model.is_some();
 
-    providers_map.insert(
-        suggestion.provider_key.to_string(),
-        Value::Object(provider_entry),
+    suggestion.apply_to(
+        user_fields,
+        &mut providers,
+        &mut selection,
+        &mut default_model,
     );
 
-    // Ensure parent directory exists
     if let Some(parent) = providers_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let providers_json = serde_json::to_string_pretty(&providers_map)?;
-    std::fs::write(&providers_path, providers_json)?;
-
-    // Offer the suggested models in the picker
-    let mut selection = llm::model_selection::ModelSelection::load_or_import()?;
-    for model_id in &suggestion.models {
-        selection.set_enabled(suggestion.provider_key, model_id, true);
-    }
+    std::fs::write(&providers_path, serde_json::to_string_pretty(&providers)?)?;
     selection.save()?;
-
-    // Set the first model as default if no default is configured yet
-    let mut default_model = DefaultModelConfig::load();
-    if default_model.model.is_none()
-        && let Some(first_model) = suggestion.models.first()
-    {
-        default_model.model = Some(ModelConfig::key_for(suggestion.provider_key, first_model));
+    if !had_default && default_model.model.is_some() {
         default_model.save()?;
     }
 
@@ -339,6 +387,8 @@ pub fn apply_suggestion(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use llm::model_selection::ModelSelection;
+    use serde_json::json;
 
     #[test]
     fn test_sap_username_detection() {
@@ -372,5 +422,109 @@ mod tests {
         let suggestions = get_suggestions(&env);
         assert!(!suggestions.iter().any(|s| s.id == "suggestion-hai-proxy"));
         assert!(suggestions.iter().any(|s| s.id == "suggestion-anthropic"));
+    }
+
+    fn api_key_fields() -> Map<String, Value> {
+        let mut fields = Map::new();
+        fields.insert("api_key".into(), json!("machine-key"));
+        fields
+    }
+
+    #[test]
+    fn hai_proxy_creates_a_provider_per_api() {
+        let mut providers = Map::new();
+        let mut selection = ModelSelection::default();
+        let mut default_model = DefaultModelConfig::default();
+
+        hai_proxy_suggestion().apply_to(
+            &api_key_fields(),
+            &mut providers,
+            &mut selection,
+            &mut default_model,
+        );
+
+        assert_eq!(
+            Value::Object(providers),
+            json!({
+                "hai-proxy": {
+                    "label": "HAI Proxy",
+                    "provider": "anthropic",
+                    "config": {
+                        "api_key": "machine-key",
+                        "base_url": "http://localhost:6655/anthropic/v1"
+                    }
+                },
+                "hai-proxy-openai": {
+                    "label": "HAI Proxy",
+                    "provider": "openai-responses",
+                    "config": {
+                        "api_key": "machine-key",
+                        "base_url": "http://localhost:6655/openai/v1"
+                    }
+                },
+                "hai-proxy-vertex": {
+                    "label": "HAI Proxy",
+                    "provider": "vertex",
+                    "config": {
+                        "api_key": "machine-key",
+                        "base_url": "http://localhost:6655/gemini/v1beta",
+                        "bearer_auth": true
+                    }
+                }
+            })
+        );
+        let offered: Vec<String> = selection.models.iter().map(|m| m.key()).collect();
+        assert_eq!(
+            offered,
+            [
+                "hai-proxy/anthropic--claude-4.8-opus",
+                "hai-proxy/anthropic--claude-4.6-sonnet",
+                "hai-proxy-openai/gpt-6.1-sol",
+                "hai-proxy-vertex/gemini-3.8-flash",
+            ]
+        );
+        assert_eq!(
+            default_model.model.as_deref(),
+            Some("hai-proxy/anthropic--claude-4.8-opus")
+        );
+    }
+
+    #[test]
+    fn applying_keeps_other_providers_and_the_default_model() {
+        let mut providers = Map::new();
+        providers.insert("anthropic".into(), json!({ "provider": "anthropic" }));
+        let mut selection = ModelSelection::default();
+        let mut default_model = DefaultModelConfig {
+            model: Some("anthropic/claude-opus-5-5".into()),
+        };
+
+        hai_proxy_suggestion().apply_to(
+            &api_key_fields(),
+            &mut providers,
+            &mut selection,
+            &mut default_model,
+        );
+
+        assert!(providers.contains_key("anthropic"));
+        assert_eq!(
+            default_model.model.as_deref(),
+            Some("anthropic/claude-opus-5-5")
+        );
+    }
+
+    #[test]
+    fn summary_names_a_single_provider_and_counts_several() {
+        assert_eq!(
+            anthropic_suggestion().summary(),
+            "This will create the provider \"Anthropic\" and 2 models."
+        );
+        assert_eq!(
+            openai_suggestion().summary(),
+            "This will create the provider \"OpenAI\" and 1 model."
+        );
+        assert_eq!(
+            hai_proxy_suggestion().summary(),
+            "This will create 3 providers and 4 models."
+        );
     }
 }
