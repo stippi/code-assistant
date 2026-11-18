@@ -818,7 +818,7 @@ mod tests {
                 Value::Null,
                 None
             ),
-            json!({ "reasoning": { "effort": "high", "summary": "auto" } })
+            json!({ "reasoning": { "effort": "high", "summary": "concise", "context": "all_turns" } })
         );
     }
 }

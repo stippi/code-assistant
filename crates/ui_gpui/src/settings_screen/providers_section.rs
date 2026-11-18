@@ -1027,16 +1027,7 @@ impl ProvidersSection {
                     div()
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
-                        .child(SharedString::from(format!(
-                            "This will create the provider \"{}\" and {} model{}.",
-                            suggestion.provider_config.label,
-                            suggestion.models.len(),
-                            if suggestion.models.len() == 1 {
-                                ""
-                            } else {
-                                "s"
-                            }
-                        ))),
+                        .child(SharedString::from(suggestion.summary())),
                 ),
             )
             // Apply button

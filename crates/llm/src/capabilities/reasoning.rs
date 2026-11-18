@@ -12,7 +12,8 @@ pub enum ReasoningStyle {
     /// Anthropic `thinking: {type: "enabled", budget_tokens: N}`, the budget
     /// derived from the level (models before Claude 4.6).
     AnthropicBudget,
-    /// OpenAI Responses API `reasoning: {effort, summary}`.
+    /// OpenAI Responses API `reasoning: {effort, summary, context}`, with
+    /// concise summaries and the reasoning of all turns kept in context.
     #[serde(rename = "openai-responses")]
     OpenAiResponses,
     /// Chat Completions `reasoning_effort` (OpenAI, Groq, Cerebras, Moonshot, ...).
@@ -41,7 +42,11 @@ impl ReasoningStyle {
             },
             ReasoningStyle::OpenAiResponses => match effort {
                 Effort::Off => json!({ "reasoning": { "effort": "none" } }),
-                level => json!({ "reasoning": { "effort": level.as_str(), "summary": "auto" } }),
+                level => json!({ "reasoning": {
+                    "effort": level.as_str(),
+                    "summary": "concise",
+                    "context": "all_turns",
+                } }),
             },
             ReasoningStyle::ChatCompletionsEffort => match effort {
                 Effort::Off => json!({ "reasoning_effort": "none" }),
@@ -163,7 +168,11 @@ mod tests {
         );
         assert_eq!(
             gpt.request_patch(Some(Effort::High)),
-            json!({ "reasoning": { "effort": "high", "summary": "auto" } })
+            json!({ "reasoning": { "effort": "high", "summary": "concise", "context": "all_turns" } })
+        );
+        assert_eq!(
+            ReasoningStyle::OpenAiResponses.request_patch(Effort::Off),
+            json!({ "reasoning": { "effort": "none" } })
         );
         assert_eq!(
             ReasoningStyle::ChatCompletionsEffort.request_patch(Effort::Low),
