@@ -250,6 +250,10 @@ when a login expires" switch):
   missing — the connect retries without it and the server's `401` reports
   *login required*. The server contributes no tools to that run; the login starts in the
   background, and the new token file rebuilds the registry for the next run.
+  The registry is shared, so it connects servers a session has switched off
+  too: the login starts only once a session that has the server switched on
+  asks for a registry (`RegistryRequest::session_disabled_mcp_servers`) —
+  never for the startup pre-warm.
 
 Only servers with a previous login are renewed, global and project-local
 alike (the renewal uses the configuration the connection was made with). Concurrent requests for one

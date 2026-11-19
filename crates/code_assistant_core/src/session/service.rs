@@ -1245,17 +1245,24 @@ impl SessionService {
         Arc<dyn crate::session::manager::McpServerControl>,
         crate::session::manager::RegistryRequest,
     )> {
-        let (control, project_dir, mediator) = {
+        let (control, project_dir, disabled, mediator) = {
             let mut manager = ctx.manager.lock().await;
             let control = manager
                 .mcp_server_control()
                 .ok_or_else(|| anyhow!("MCP servers cannot be managed here"))?;
             manager.ensure_session_loaded(session_id)?;
-            let project_dir = manager
+            let config = manager
                 .get_session(session_id)
-                .and_then(|instance| instance.session.config.effective_project_path().cloned());
+                .map(|instance| instance.session.config.clone());
+            let project_dir = config
+                .as_ref()
+                .and_then(|config| config.effective_project_path().cloned());
+            let disabled = config
+                .as_ref()
+                .map(crate::tools::mcp_selection::session_disabled_mcp_servers)
+                .unwrap_or_default();
             let mediator = manager.permission_mediator(session_id)?;
-            (control, project_dir, mediator)
+            (control, project_dir, disabled, mediator)
         };
         // Connecting is network or process work: not under the manager lock.
         let include_local_mcp = SessionManager::resolve_local_mcp_trust(
@@ -1268,6 +1275,7 @@ impl SessionService {
             crate::session::manager::RegistryRequest {
                 project_dir,
                 include_local_mcp,
+                session_disabled_mcp_servers: Some(disabled),
             },
         ))
     }
@@ -2518,6 +2526,8 @@ fn schedule_agent_impl(
     let instance = manager.get_session(session_id).unwrap();
     let run_session_config = instance.session.config.clone();
     let project_dir = run_session_config.effective_project_path().cloned();
+    let disabled_mcp_servers =
+        crate::tools::mcp_selection::session_disabled_mcp_servers(&run_session_config);
     let permission_handler = manager.permission_mediator(session_id)?;
     // The manager owns setup_task; the task must not own the manager back.
     let owner = Arc::downgrade(&ctx.manager);
@@ -2568,6 +2578,7 @@ fn schedule_agent_impl(
             let registry = loader(crate::session::manager::RegistryRequest {
                 project_dir: project_dir.clone(),
                 include_local_mcp,
+                session_disabled_mcp_servers: Some(disabled_mcp_servers),
             })
             .await;
             Ok::<_, anyhow::Error>((llm_client, registry, session_config, original_model))
