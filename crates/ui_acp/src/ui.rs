@@ -978,6 +978,7 @@ impl UserInterface for ACPUserUI {
             | UiEvent::UpdatePermissionTier { .. }
             | UiEvent::UpdateMcpServers { .. }
             | UiEvent::McpServerStatusChanged { .. }
+            | UiEvent::McpLoginsRequested { .. }
             | UiEvent::UpdateBuiltinTools { .. }
             | UiEvent::BrowsersChanged { .. }
             // Permission prompts reach ACP clients through the protocol's

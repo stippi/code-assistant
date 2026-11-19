@@ -39,6 +39,7 @@ use crate::session::event_stream::EventStream;
 use crate::session::manager::{McpServerControl, RegistryRequest, ToolRegistryProvider};
 use crate::tools::config::ToolsConfig;
 use crate::tools::core::ToolRegistry;
+use crate::tools::mcp_auth::{LoginConsent, LoginRequests};
 use crate::ui::ui_events::{McpServerHealth, UiEvent};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -76,6 +77,9 @@ pub struct ConfigToolRegistry {
     expired_logins: std::sync::Mutex<HashMap<String, (String, McpServerConfig)>>,
     /// Renews the login of a server, without waiting for it.
     renew_login: RenewLogin,
+    /// Where automatic renewals ask the user first; only for a frontend that
+    /// can answer (see [`Self::new_interactive`]).
+    login_requests: Option<Arc<LoginRequests>>,
     /// Where status changes are published, once wired.
     events: OnceLock<EventStream>,
     /// Whether built registries include the
@@ -96,19 +100,37 @@ impl ConfigToolRegistry {
     }
 
     fn build(interactive: bool) -> Arc<Self> {
-        Self::with_login_renewal(
+        // Only a frontend that renders the question can answer it.
+        let login_requests = interactive.then(|| Arc::new(LoginRequests::default()));
+        let consent = login_requests
+            .clone()
+            .map(|requests| requests as Arc<dyn LoginConsent>);
+        Self::assemble(
             interactive,
-            Box::new(crate::tools::mcp_auth::reauthorize_in_background),
+            login_requests,
+            Box::new(move |name, config| {
+                crate::tools::mcp_auth::reauthorize_in_background(name, config, consent.clone())
+            }),
         )
     }
 
+    #[cfg(test)]
     fn with_login_renewal(interactive: bool, renew_login: RenewLogin) -> Arc<Self> {
+        Self::assemble(interactive, None, renew_login)
+    }
+
+    fn assemble(
+        interactive: bool,
+        login_requests: Option<Arc<LoginRequests>>,
+        renew_login: RenewLogin,
+    ) -> Arc<Self> {
         Arc::new(Self {
             cached: Mutex::new(HashMap::new()),
             connections: std::sync::Mutex::new(HashMap::new()),
             health: std::sync::Mutex::new(BTreeMap::new()),
             expired_logins: std::sync::Mutex::new(HashMap::new()),
             renew_login,
+            login_requests,
             events: OnceLock::new(),
             interactive,
         })
@@ -116,6 +138,9 @@ impl ConfigToolRegistry {
 
     /// Publish server status changes to `events`.
     pub fn set_event_stream(&self, events: EventStream) {
+        if let Some(requests) = &self.login_requests {
+            requests.set_event_stream(events.clone());
+        }
         let _ = self.events.set(events);
     }
 
@@ -324,6 +349,19 @@ fn server_of_key(key: &str) -> &str {
 
 #[async_trait]
 impl McpServerControl for ConfigToolRegistry {
+    fn login_requests(&self) -> Vec<String> {
+        self.login_requests
+            .as_ref()
+            .map(|requests| requests.servers())
+            .unwrap_or_default()
+    }
+
+    fn answer_login(&self, name: &str, ok: bool) {
+        if let Some(requests) = &self.login_requests {
+            requests.answer(name, ok);
+        }
+    }
+
     /// The recorded states, checked against the pool: a server whose
     /// connections all closed (its process exited) reads as failed, one that
     /// no registry holds any more as not connected.
@@ -444,8 +482,12 @@ impl ConnectionProvider for ConfigToolRegistry {
         self.locked_expired_logins().remove(&key);
         // A login that expires while the connection is in use is renewed when
         // a tool call hits it.
+        let consent = self
+            .login_requests
+            .clone()
+            .map(|requests| requests as Arc<dyn LoginConsent>);
         let connection = Arc::new(connection.with_reauthorizer(Arc::new(
-            crate::tools::mcp_auth::AutoReauthorizer::new(config.clone()),
+            crate::tools::mcp_auth::AutoReauthorizer::new(config.clone(), consent),
         )));
         // Re-check under the lock: if another caller connected the same server
         // meanwhile, keep theirs and drop ours (shut down on drop).

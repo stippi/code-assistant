@@ -1224,12 +1224,28 @@ impl SessionService {
             let (control, req) = Self::mcp_registry_request(&ctx, &session_id).await?;
             let local_mcp_dir = req.project_dir.as_deref().filter(|_| req.include_local_mcp);
             let server = crate::tools::mcp::resolve_mcp_server(&name, local_mcp_dir)?;
+            // Logging in by hand answers a pending question for the server.
+            control.answer_login(&name, true);
             crate::tools::mcp_auth::login_shared(&name, &server).await?;
             let registry = control.restart(&name, req).await;
             ctx.manager
                 .lock()
                 .await
                 .adopt_tool_registry(&session_id, registry);
+            Ok(())
+        })
+        .await
+    }
+
+    /// Answer the question whether MCP server `name`'s expired login may
+    /// open the browser now (see [`UiEvent::McpLoginsRequested`]). The
+    /// remaining questions follow as another `McpLoginsRequested`.
+    pub async fn answer_mcp_login(&self, name: String, ok: bool) -> Result<()> {
+        self.call_io(move |ctx| async move {
+            let control = ctx.manager.lock().await.mcp_server_control();
+            if let Some(control) = control {
+                control.answer_login(&name, ok);
+            }
             Ok(())
         })
         .await
@@ -1289,6 +1305,9 @@ impl SessionService {
             if let Some(control) = control {
                 ctx.events.publish_app(UiEvent::McpServerStatusChanged {
                     statuses: control.statuses(),
+                });
+                ctx.events.publish_app(UiEvent::McpLoginsRequested {
+                    servers: control.login_requests(),
                 });
             }
             Ok(())

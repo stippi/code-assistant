@@ -97,6 +97,15 @@ pub trait McpServerControl: Send + Sync {
         name: &str,
         req: RegistryRequest,
     ) -> Arc<crate::tools::core::ToolRegistry>;
+
+    /// The servers whose expired login waits for the user's go-ahead (see
+    /// [`UiEvent::McpLoginsRequested`](crate::ui::ui_events::UiEvent::McpLoginsRequested)).
+    fn login_requests(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Answer the request to log `name` in again: `ok` opens the browser.
+    fn answer_login(&self, _name: &str, _ok: bool) {}
 }
 
 /// Result of checking whether a session may switch to another model.

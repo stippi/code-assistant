@@ -947,6 +947,10 @@ impl Gpui {
                 *self.mcp_server_statuses.lock().unwrap() = statuses;
                 cx.refresh();
             }
+            UiEvent::McpLoginsRequested { servers } => {
+                *self.mcp_login_requests.lock().unwrap() = servers;
+                cx.refresh();
+            }
             UiEvent::UpdateBuiltinTools { groups } => {
                 debug!(
                     "UI: UpdateBuiltinTools event with {} group(s)",

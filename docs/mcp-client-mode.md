@@ -255,6 +255,16 @@ when a login expires" switch):
   asks for a registry (`RegistryRequest::session_disabled_mcp_servers`) —
   never for the startup pre-warm.
 
+In the GPUI frontend a renewal asks before the browser opens: a prompt
+below the title bar names the server (*Log in* / *Not now*). The core
+publishes the waiting servers as the app-scoped `UiEvent::McpLoginsRequested`
+(`tools::mcp_auth::LoginRequests`, a `LoginConsent`), the frontend answers
+with `SessionService::answer_mcp_login`. *Not now* — or no answer within five
+minutes — fails the renewal: a waiting tool call fails with a hint, the server
+keeps its *Log in* button. Logging in from the *Tools* menu answers a waiting
+question. Frontends without the prompt (terminal, ACP) open the browser at
+once.
+
 Only servers with a previous login are renewed, global and project-local
 alike (the renewal uses the configuration the connection was made with). Concurrent requests for one
 server share one browser login, which runs to completion even if the tool

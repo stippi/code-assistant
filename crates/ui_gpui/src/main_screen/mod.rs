@@ -1,5 +1,6 @@
 mod about_dialog;
 pub(crate) mod agents_panel;
+mod mcp_login_prompt;
 pub mod project_dialog;
 mod question_prompt;
 pub mod right_panel;
@@ -2279,6 +2280,8 @@ impl Render for MainScreen {
             .children(self.render_voice_transcript(cx))
             // Restart-to-update confirmation below the title bar
             .children(self.render_update_confirm(cx))
+            // An expired MCP login asks before switching to the browser
+            .children(self.render_mcp_login_prompt(cx))
             // Modal dialog overlay for new project creation
             .when_some(new_project_dialog, |el, dialog| el.child(dialog))
             // Modal "About" dialog overlay

@@ -83,7 +83,8 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
   `ToolServices::mcp_resources`, and the system prompt lists their catalog
 - An expired OAuth login is renewed by a browser login when a call or
   connect hits it (`mcp_client::Reauthorizer`, `tools::mcp_auth`), unless
-  `auto_reauthorize` is off in `mcp-servers.json`; a server without a login
+  `auto_reauthorize` is off in `mcp-servers.json`; GPUI asks first
+  (`UiEvent::McpLoginsRequested`, `SessionService::answer_mcp_login`); a server without a login
   shows as `McpServerHealth::NeedsLogin` with a *Log in* button in the
   *Tools* menu (`SessionService::login_mcp_server`, also for `.mcp.json`
   servers)
