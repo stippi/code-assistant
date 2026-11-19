@@ -1932,6 +1932,7 @@ impl Render for MainScreen {
         self.sync_question_prompt(window, cx);
         let question_prompt = self.question_prompt.clone();
         let new_context_prompt = self.render_new_context_target_prompt(cx);
+        let mcp_login_prompt = self.render_mcp_login_prompt(cx);
 
         // Main container with titlebar and content
         div()
@@ -2198,6 +2199,8 @@ impl Render for MainScreen {
                             .children(permission_prompts)
                             .children(question_prompt)
                             .children(new_context_prompt)
+                            // An expired MCP login asks before the browser opens
+                            .children(mcp_login_prompt)
                             // Input area sits at the bottom
                             .child(
                                 div()
@@ -2280,8 +2283,6 @@ impl Render for MainScreen {
             .children(self.render_voice_transcript(cx))
             // Restart-to-update confirmation below the title bar
             .children(self.render_update_confirm(cx))
-            // An expired MCP login asks before switching to the browser
-            .children(self.render_mcp_login_prompt(cx))
             // Modal dialog overlay for new project creation
             .when_some(new_project_dialog, |el, dialog| el.child(dialog))
             // Modal "About" dialog overlay

@@ -256,7 +256,7 @@ when a login expires" switch):
   never for the startup pre-warm.
 
 In the GPUI frontend a renewal asks before the browser opens: a prompt
-below the title bar names the server (*Log in* / *Not now*). The core
+above the input names the server (*Log in* / *Not now*). The core
 publishes the waiting servers as the app-scoped `UiEvent::McpLoginsRequested`
 (`tools::mcp_auth::LoginRequests`, a `LoginConsent`), the frontend answers
 with `SessionService::answer_mcp_login`. *Not now* — or no answer within five

@@ -195,7 +195,7 @@ pub struct Gpui {
         >,
     >,
     // MCP servers whose expired login waits for the user's go-ahead before
-    // the browser opens (app-wide), asked below the title bar.
+    // the browser opens (app-wide), asked above the input.
     mcp_login_requests: Arc<Mutex<Vec<String>>>,
     // Built-in tool groups available to the active session and their
     // per-session state, shown in the same input-bar menu.
