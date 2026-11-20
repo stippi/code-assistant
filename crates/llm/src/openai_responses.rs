@@ -677,6 +677,37 @@ impl OpenAIResponsesClient {
             .customize_url(&self.base_url, streaming)
     }
 
+    /// The request's full `input`: the system prompt as a leading developer
+    /// message, then the converted history. Never the top-level
+    /// `instructions` field: newer models (gpt-6.2) render it after the input
+    /// and never cache it, while a leading developer message is cached with
+    /// every model.
+    fn request_input(
+        &self,
+        system_prompt: String,
+        messages: Vec<Message>,
+        explicit_cache: bool,
+    ) -> Vec<ResponseInputItem> {
+        let mut input = self.convert_messages_with_cache(messages, explicit_cache);
+        if !system_prompt.is_empty() {
+            // The system prompt (plus tools rendered before it) is the largest
+            // stable prefix — always mark it, mirroring the Anthropic client.
+            let mut system_item = ResponseContentItem::input_text(system_prompt);
+            if explicit_cache {
+                system_item.try_mark_cache_breakpoint();
+            }
+            input.insert(
+                0,
+                ResponseInputItem::Message {
+                    role: "developer".to_string(),
+                    content: vec![system_item],
+                    phase: None,
+                },
+            );
+        }
+        input
+    }
+
     /// Convert internal messages to Responses API format, optionally placing
     /// explicit cache breakpoints at stable history positions.
     fn convert_messages_with_cache(
@@ -1438,25 +1469,7 @@ impl LLMProvider for OpenAIResponsesClient {
         let explicit_cache = model_supports_explicit_cache(&self.model.to_lowercase())
             && self.explicit_cache_enabled;
 
-        let mut input = self.convert_messages_with_cache(request.messages, explicit_cache);
-
-        // Add system prompt as developer message at the beginning
-        if !request.system_prompt.is_empty() {
-            // The system prompt (plus tools rendered before it) is the largest
-            // stable prefix — always mark it, mirroring the Anthropic client.
-            let mut system_item = ResponseContentItem::input_text(request.system_prompt);
-            if explicit_cache {
-                system_item.try_mark_cache_breakpoint();
-            }
-            input.insert(
-                0,
-                ResponseInputItem::Message {
-                    role: "developer".to_string(),
-                    content: vec![system_item],
-                    phase: None,
-                },
-            );
-        }
+        let input = self.request_input(request.system_prompt, request.messages, explicit_cache);
 
         let tools = request
             .tools
@@ -2122,61 +2135,37 @@ mod tests {
     }
 
     #[test]
-    fn test_system_prompt_as_developer_message() {
+    fn test_system_prompt_leads_input_as_developer_message() {
         let client = OpenAIResponsesClient::new(
             "test_key".to_string(),
-            "gpt-5".to_string(),
+            "gpt-6.2-sol".to_string(),
             "https://api.openai.com/v1".to_string(),
         );
-
-        // Simulate converting messages with a system prompt
         let messages = vec![Message::new_user("Hello")];
-        let mut input = client.convert_messages_with_cache(messages, false);
 
-        // Add system prompt as developer message (simulating what send_message does)
-        let system_prompt = "You are a helpful assistant.";
-        if !system_prompt.is_empty() {
-            input.insert(
-                0,
-                ResponseInputItem::Message {
-                    phase: None,
-                    role: "developer".to_string(),
-                    content: vec![ResponseContentItem::input_text(system_prompt.to_string())],
-                },
-            );
-        }
+        let input = client.request_input("You are helpful.".to_string(), messages.clone(), true);
+        let json = serde_json::to_value(&input).unwrap();
+        assert_eq!(json.as_array().unwrap().len(), 2);
+        assert_eq!(json[0]["role"], "developer");
+        assert_eq!(json[0]["content"][0]["text"], "You are helpful.");
+        assert_eq!(
+            json[0]["content"][0]["prompt_cache_breakpoint"]["mode"],
+            "explicit"
+        );
+        assert_eq!(json[1]["role"], "user");
 
-        assert_eq!(input.len(), 2);
+        let input = client.request_input("You are helpful.".to_string(), messages.clone(), false);
+        let json = serde_json::to_value(&input).unwrap();
+        assert!(
+            json[0]["content"][0]
+                .get("prompt_cache_breakpoint")
+                .is_none()
+        );
 
-        // First should be the developer message with system prompt
-        match &input[0] {
-            ResponseInputItem::Message { role, content, .. } => {
-                assert_eq!(role, "developer");
-                assert_eq!(content.len(), 1);
-                match &content[0] {
-                    ResponseContentItem::InputText { text, .. } => {
-                        assert_eq!(text, "You are a helpful assistant.");
-                    }
-                    _ => panic!("Expected InputText"),
-                }
-            }
-            _ => panic!("Expected Message"),
-        }
-
-        // Second should be the user message
-        match &input[1] {
-            ResponseInputItem::Message { role, content, .. } => {
-                assert_eq!(role, "user");
-                assert_eq!(content.len(), 1);
-                match &content[0] {
-                    ResponseContentItem::InputText { text, .. } => {
-                        assert_eq!(text, "Hello");
-                    }
-                    _ => panic!("Expected InputText"),
-                }
-            }
-            _ => panic!("Expected Message"),
-        }
+        let input = client.request_input(String::new(), messages, false);
+        let json = serde_json::to_value(&input).unwrap();
+        assert_eq!(json.as_array().unwrap().len(), 1);
+        assert_eq!(json[0]["role"], "user");
     }
 
     #[test]
