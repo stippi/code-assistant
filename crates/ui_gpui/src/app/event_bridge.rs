@@ -25,6 +25,11 @@ impl Gpui {
         self.dispatch(async move {
             let mut subscription = service.subscribe();
             debug!("Event bridge started");
+            // App-scoped state published before this subscription (an MCP
+            // server waiting for a login, its connection state) arrives anew.
+            if let Err(e) = service.refresh_mcp_server_statuses().await {
+                warn!("Failed to fetch the MCP server states: {e:#}");
+            }
             loop {
                 match subscription.recv().await {
                     Ok(event) => gpui.handle_stream_event(event).await,

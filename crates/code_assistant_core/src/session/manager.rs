@@ -25,12 +25,17 @@ use tracing::{debug, error, info, warn};
 
 /// What registry a run needs: the project it operates in, and whether that
 /// project's local `.mcp.json` servers should be included (i.e. the user has
-/// approved them). `Default` — no project, no local MCP — is the global-only
-/// registry used for the process-startup pre-warm.
+/// approved them). `Default` — no project, no local MCP, no session — is the
+/// global-only registry used for the process-startup pre-warm.
 #[derive(Debug, Clone, Default)]
 pub struct RegistryRequest {
     pub project_dir: Option<PathBuf>,
     pub include_local_mcp: bool,
+    /// The MCP servers the requesting session has switched off, `None` when
+    /// no session asks (the pre-warm). The registry still connects them —
+    /// it is shared — but an expired login is renewed through the browser
+    /// only for a server a session has switched on.
+    pub session_disabled_mcp_servers: Option<Vec<String>>,
 }
 
 /// Immutable configuration captured when a run reserves its session.
@@ -92,6 +97,15 @@ pub trait McpServerControl: Send + Sync {
         name: &str,
         req: RegistryRequest,
     ) -> Arc<crate::tools::core::ToolRegistry>;
+
+    /// The servers whose expired login waits for the user's go-ahead (see
+    /// [`UiEvent::McpLoginsRequested`](crate::ui::ui_events::UiEvent::McpLoginsRequested)).
+    fn login_requests(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Answer the request to log `name` in again: `ok` opens the browser.
+    fn answer_login(&self, _name: &str, _ok: bool) {}
 }
 
 /// Result of checking whether a session may switch to another model.

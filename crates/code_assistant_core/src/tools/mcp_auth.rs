@@ -10,7 +10,9 @@
 //! flow.
 //!
 //! [`AutoReauthorizer`] runs that same login on its own when a server's login
-//! expired, if `auto_reauthorize` is on in `mcp-servers.json`.
+//! expired, if `auto_reauthorize` is on in `mcp-servers.json`. With a
+//! [`LoginConsent`] (the GPUI frontend's [`LoginRequests`]), the user is asked
+//! first, so the switch to the browser never comes out of the blue.
 
 use super::mcp::{self, AuthorizationOutcome, McpServerConfig, OAuthAuthorizer};
 use anyhow::{Context, Result};
@@ -21,6 +23,94 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 use tokio::net::TcpListener;
+
+use crate::session::event_stream::EventStream;
+use crate::ui::ui_events::UiEvent;
+
+/// Asks the user before an automatic renewal opens the browser.
+#[async_trait::async_trait]
+pub trait LoginConsent: Send + Sync {
+    /// Whether the login of `server` may start now.
+    async fn confirm(&self, server: &str) -> bool;
+}
+
+/// How long a renewal waits for the user's answer before giving up.
+const CONSENT_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// A [`LoginConsent`] that asks through the app-scoped
+/// [`UiEvent::McpLoginsRequested`]; a frontend answers with
+/// [`LoginRequests::answer`] (via `SessionService::answer_mcp_login`).
+#[derive(Default)]
+pub struct LoginRequests {
+    /// Waiting renewals by server name, in the order they asked.
+    pending: Mutex<Vec<(String, Vec<tokio::sync::oneshot::Sender<bool>>)>>,
+    events: std::sync::OnceLock<EventStream>,
+}
+
+impl LoginRequests {
+    /// Publish the requests to `events`.
+    pub fn set_event_stream(&self, events: EventStream) {
+        let _ = self.events.set(events);
+    }
+
+    /// The servers waiting for an answer, in the order they asked.
+    pub fn servers(&self) -> Vec<String> {
+        self.locked().iter().map(|(name, _)| name.clone()).collect()
+    }
+
+    /// Answer the request for `server`: `ok` starts its login. Without a
+    /// request for it, nothing happens.
+    pub fn answer(&self, server: &str, ok: bool) {
+        let waiters = {
+            let mut pending = self.locked();
+            let Some(index) = pending.iter().position(|(name, _)| name == server) else {
+                return;
+            };
+            pending.remove(index).1
+        };
+        for waiter in waiters {
+            let _ = waiter.send(ok);
+        }
+        self.publish();
+    }
+
+    fn locked(
+        &self,
+    ) -> std::sync::MutexGuard<'_, Vec<(String, Vec<tokio::sync::oneshot::Sender<bool>>)>> {
+        self.pending.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn publish(&self) {
+        if let Some(events) = self.events.get() {
+            events.publish_app(UiEvent::McpLoginsRequested {
+                servers: self.servers(),
+            });
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl LoginConsent for LoginRequests {
+    async fn confirm(&self, server: &str) -> bool {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        {
+            let mut pending = self.locked();
+            match pending.iter_mut().find(|(name, _)| name == server) {
+                Some((_, waiters)) => waiters.push(sender),
+                None => pending.push((server.to_string(), vec![sender])),
+            }
+        }
+        self.publish();
+        match tokio::time::timeout(CONSENT_TIMEOUT, receiver).await {
+            Ok(answer) => answer.unwrap_or(false),
+            Err(_) => {
+                // Nobody answered: withdraw the question.
+                self.answer(server, false);
+                false
+            }
+        }
+    }
+}
 
 /// An [`OAuthAuthorizer`] that runs a one-shot loopback HTTP server for the
 /// OAuth redirect and opens the user's browser to the authorization URL.
@@ -152,11 +242,13 @@ async fn login_reporting_url(name: &str, server: &McpServerConfig, url: UrlSlot)
 /// server from a project's `.mcp.json` is renewed as well.
 pub struct AutoReauthorizer {
     server: McpServerConfig,
+    /// Asked before the browser opens; `None` opens it at once.
+    consent: Option<Arc<dyn LoginConsent>>,
 }
 
 impl AutoReauthorizer {
-    pub fn new(server: McpServerConfig) -> Self {
-        Self { server }
+    pub fn new(server: McpServerConfig, consent: Option<Arc<dyn LoginConsent>>) -> Self {
+        Self { server, consent }
     }
 }
 
@@ -173,7 +265,7 @@ impl mcp_client::Reauthorizer for AutoReauthorizer {
                  `code-assistant mcp-login {server}`)"
             );
         }
-        relogin(server, &self.server)
+        relogin(server, &self.server, self.consent.clone())
             .0
             .await
             .map_err(anyhow::Error::msg)
@@ -188,13 +280,17 @@ pub fn auto_reauthorize_enabled() -> bool {
 }
 
 /// Start re-authorizing `server` in the background when its login expired and
-/// automatic re-authorization is on, without waiting for it. For a connect
-/// that found the login expired: the server's tools appear on the next run,
-/// once the new token is stored.
-pub fn reauthorize_in_background(server: &str, config: &McpServerConfig) {
+/// automatic re-authorization is on, without waiting for it — after asking
+/// `consent`, when given. For a connect that found the login expired: the
+/// server's tools appear on the next run, once the new token is stored.
+pub fn reauthorize_in_background(
+    server: &str,
+    config: &McpServerConfig,
+    consent: Option<Arc<dyn LoginConsent>>,
+) {
     if mcp::has_mcp_oauth_tokens(server, config) && auto_reauthorize_enabled() {
         tracing::info!("MCP server '{server}' login expired; re-authorizing");
-        drop(relogin(server, config).0);
+        drop(relogin(server, config, consent).0);
     }
 }
 
@@ -203,7 +299,7 @@ pub fn reauthorize_in_background(server: &str, config: &McpServerConfig) {
 /// opens the browser at its page again: the user may have closed it, and the
 /// waiting login still takes the callback.
 pub async fn login_shared(server: &str, config: &McpServerConfig) -> Result<()> {
-    let (login, joined) = relogin(server, config);
+    let (login, joined) = relogin(server, config, None);
     let url = joined.and_then(|url| url.lock().unwrap_or_else(|e| e.into_inner()).clone());
     if let Some(url) = url {
         tracing::info!("MCP server '{server}' login is waiting; opening its page again");
@@ -222,9 +318,14 @@ static LOGINS: LazyLock<Mutex<HashMap<PathBuf, (Login, UrlSlot)>>> =
 
 /// Join or start the browser login for `server`. It runs as its own task: a
 /// caller that gives up (a cancelled tool call) does not abandon a login the
-/// user may be completing in the browser. Returns the login and, when it
+/// user may be completing in the browser. A new login asks `consent` first,
+/// when given; one the user postpones fails. Returns the login and, when it
 /// joined one already running, that login's URL slot.
-fn relogin(server: &str, config: &McpServerConfig) -> (Login, Option<UrlSlot>) {
+fn relogin(
+    server: &str,
+    config: &McpServerConfig,
+    consent: Option<Arc<dyn LoginConsent>>,
+) -> (Login, Option<UrlSlot>) {
     let key = mcp::mcp_oauth_token_path(server, config);
     let mut logins = LOGINS.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((login, url)) = logins.get(&key) {
@@ -236,9 +337,20 @@ fn relogin(server: &str, config: &McpServerConfig) -> (Login, Option<UrlSlot>) {
     let task_url = url.clone();
     let task_key = key.clone();
     let task = tokio::spawn(async move {
-        let result = login_reporting_url(&name, &config, task_url)
-            .await
-            .map_err(|e| format!("{e:#}"));
+        let confirmed = match &consent {
+            Some(consent) => consent.confirm(&name).await,
+            None => true,
+        };
+        let result = if confirmed {
+            login_reporting_url(&name, &config, task_url)
+                .await
+                .map_err(|e| format!("{e:#}"))
+        } else {
+            Err(format!(
+                "the login of MCP server '{name}' expired and logging in again was \
+                 postponed; log in from the Tools menu"
+            ))
+        };
         LOGINS
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -319,13 +431,16 @@ mod tests {
         temp_env::async_with_vars(
             [("CODE_ASSISTANT_CONFIG_DIR", Some(config.path()))],
             async {
-                let reauthorizer = AutoReauthorizer::new(McpServerConfig {
-                    transport: mcp::McpTransport::http("https://mcp.example.com/mcp"),
-                    enabled: true,
-                    off_in_new_sessions: false,
-                    enabled_tools: None,
-                    disabled_tools: Vec::new(),
-                });
+                let reauthorizer = AutoReauthorizer::new(
+                    McpServerConfig {
+                        transport: mcp::McpTransport::http("https://mcp.example.com/mcp"),
+                        enabled: true,
+                        off_in_new_sessions: false,
+                        enabled_tools: None,
+                        disabled_tools: Vec::new(),
+                    },
+                    None,
+                );
                 let error = reauthorizer.reauthorize("remote").await.unwrap_err();
                 assert!(
                     error.to_string().contains("requires authorization"),
@@ -346,6 +461,94 @@ mod tests {
                 assert!(!auto_reauthorize_enabled());
                 let error = reauthorizer.reauthorize("remote").await.unwrap_err();
                 assert!(error.to_string().contains("is off"), "{error}");
+            },
+        )
+        .await;
+    }
+
+    fn login_requests_published(
+        subscription: &mut crate::session::event_stream::Subscription,
+    ) -> Vec<Vec<String>> {
+        use futures::FutureExt;
+        let mut seen = Vec::new();
+        while let Some(Ok(event)) = subscription.recv().now_or_never() {
+            if let crate::session::event_stream::EventPayload::Ui(UiEvent::McpLoginsRequested {
+                servers,
+            }) = event.payload
+            {
+                assert!(event.session_id.is_none(), "requests are app-scoped");
+                seen.push(servers);
+            }
+        }
+        seen
+    }
+
+    /// A renewal asks through the event stream and waits; requests for one
+    /// server share one question, and the answer reaches all of them.
+    #[tokio::test]
+    async fn login_requests_ask_once_per_server_and_pass_the_answer_on() {
+        let requests = LoginRequests::default();
+        let events = EventStream::new();
+        let mut subscription = events.subscribe();
+        requests.set_event_stream(events);
+
+        // Polled once each, so all three have asked before anyone answers.
+        let mut first = requests.confirm("jira");
+        let mut second = requests.confirm("jira");
+        let mut other = requests.confirm("wiki");
+        assert!(futures::poll!(&mut first).is_pending());
+        assert!(futures::poll!(&mut second).is_pending());
+        assert!(futures::poll!(&mut other).is_pending());
+        assert_eq!(requests.servers(), vec!["jira", "wiki"]);
+        assert_eq!(
+            login_requests_published(&mut subscription).last(),
+            Some(&vec!["jira".to_string(), "wiki".to_string()])
+        );
+
+        requests.answer("jira", true);
+        assert!(first.await);
+        assert!(second.await);
+        assert_eq!(
+            login_requests_published(&mut subscription).last(),
+            Some(&vec!["wiki".to_string()])
+        );
+
+        requests.answer("wiki", false);
+        assert!(!other.await);
+        assert!(requests.servers().is_empty());
+        requests.answer("wiki", true); // nothing waits: no effect
+    }
+
+    struct Decline;
+
+    #[async_trait::async_trait]
+    impl LoginConsent for Decline {
+        async fn confirm(&self, _server: &str) -> bool {
+            false
+        }
+    }
+
+    /// A postponed login fails the call with a hint, and the browser never
+    /// opens (the authorizer is not even bound).
+    #[tokio::test]
+    async fn a_postponed_login_fails_without_opening_the_browser() {
+        use mcp_client::Reauthorizer;
+        let config = tempfile::tempdir().unwrap();
+        temp_env::async_with_vars(
+            [("CODE_ASSISTANT_CONFIG_DIR", Some(config.path()))],
+            async {
+                let server = McpServerConfig {
+                    transport: mcp::McpTransport::http("https://postponed.example.com/mcp"),
+                    enabled: true,
+                    off_in_new_sessions: false,
+                    enabled_tools: None,
+                    disabled_tools: Vec::new(),
+                };
+                std::fs::create_dir_all(mcp::mcp_oauth_dir()).unwrap();
+                std::fs::write(mcp::mcp_oauth_token_path("postponed", &server), "{}").unwrap();
+                let reauthorizer = AutoReauthorizer::new(server, Some(Arc::new(Decline)));
+                let error = reauthorizer.reauthorize("postponed").await.unwrap_err();
+                assert!(error.to_string().contains("postponed"), "{error}");
             },
         )
         .await;

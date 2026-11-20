@@ -24,6 +24,11 @@
 //!
 //! It also tracks how each server fared ([`McpServerHealth`]) and publishes
 //! changes as app-scoped [`UiEvent::McpServerStatusChanged`] events.
+//!
+//! A server whose login expired is connected for every session alike, but
+//! its login is renewed through the browser only once a session that has the
+//! server switched on asks for a registry — never for the pre-warm, and never
+//! for a session that switched it off.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -34,6 +39,7 @@ use crate::session::event_stream::EventStream;
 use crate::session::manager::{McpServerControl, RegistryRequest, ToolRegistryProvider};
 use crate::tools::config::ToolsConfig;
 use crate::tools::core::ToolRegistry;
+use crate::tools::mcp_auth::{LoginConsent, LoginRequests};
 use crate::ui::ui_events::{McpServerHealth, UiEvent};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -52,6 +58,8 @@ struct Cached {
     registry: Weak<ToolRegistry>,
 }
 
+type RenewLogin = Box<dyn Fn(&str, &McpServerConfig) + Send + Sync>;
+
 /// Rebuilds the tool registry from disk on demand, caching per project by a
 /// fingerprint of the tool-relevant configuration files, and pooling MCP
 /// connections across builds.
@@ -63,6 +71,15 @@ pub struct ConfigToolRegistry {
     connections: std::sync::Mutex<HashMap<String, Weak<McpServerConnection>>>,
     /// The last known state of each server that was connected (or tried).
     health: std::sync::Mutex<BTreeMap<String, McpServerHealth>>,
+    /// Servers whose connect found the login expired (or missing), by
+    /// [`connection_key`], until a session that wants one renews it or a
+    /// later connect succeeds.
+    expired_logins: std::sync::Mutex<HashMap<String, (String, McpServerConfig)>>,
+    /// Renews the login of a server, without waiting for it.
+    renew_login: RenewLogin,
+    /// Where automatic renewals ask the user first; only for a frontend that
+    /// can answer (see [`Self::new_interactive`]).
+    login_requests: Option<Arc<LoginRequests>>,
     /// Where status changes are published, once wired.
     events: OnceLock<EventStream>,
     /// Whether built registries include the
@@ -83,10 +100,37 @@ impl ConfigToolRegistry {
     }
 
     fn build(interactive: bool) -> Arc<Self> {
+        // Only a frontend that renders the question can answer it.
+        let login_requests = interactive.then(|| Arc::new(LoginRequests::default()));
+        let consent = login_requests
+            .clone()
+            .map(|requests| requests as Arc<dyn LoginConsent>);
+        Self::assemble(
+            interactive,
+            login_requests,
+            Box::new(move |name, config| {
+                crate::tools::mcp_auth::reauthorize_in_background(name, config, consent.clone())
+            }),
+        )
+    }
+
+    #[cfg(test)]
+    fn with_login_renewal(interactive: bool, renew_login: RenewLogin) -> Arc<Self> {
+        Self::assemble(interactive, None, renew_login)
+    }
+
+    fn assemble(
+        interactive: bool,
+        login_requests: Option<Arc<LoginRequests>>,
+        renew_login: RenewLogin,
+    ) -> Arc<Self> {
         Arc::new(Self {
             cached: Mutex::new(HashMap::new()),
             connections: std::sync::Mutex::new(HashMap::new()),
             health: std::sync::Mutex::new(BTreeMap::new()),
+            expired_logins: std::sync::Mutex::new(HashMap::new()),
+            renew_login,
+            login_requests,
             events: OnceLock::new(),
             interactive,
         })
@@ -94,6 +138,9 @@ impl ConfigToolRegistry {
 
     /// Publish server status changes to `events`.
     pub fn set_event_stream(&self, events: EventStream) {
+        if let Some(requests) = &self.login_requests {
+            requests.set_event_stream(events.clone());
+        }
         let _ = self.events.set(events);
     }
 
@@ -115,12 +162,41 @@ impl ConfigToolRegistry {
     /// project's `.mcp.json` changed since that project's last build (or when
     /// nothing holds the cached registry any more). Shared MCP servers are
     /// reused from the connection pool.
+    ///
+    /// Renews the expired logins of the servers the requesting session has
+    /// switched on (see [`RegistryRequest::session_disabled_mcp_servers`]).
     pub async fn current_for(&self, req: RegistryRequest) -> Arc<ToolRegistry> {
-        let local_mcp_dir: CacheKey = if req.include_local_mcp {
-            req.project_dir
-        } else {
-            None
+        let registry = self
+            .registry_for(req.include_local_mcp, req.project_dir)
+            .await;
+        if let Some(disabled) = &req.session_disabled_mcp_servers {
+            self.renew_expired_logins(disabled);
+        }
+        registry
+    }
+
+    /// Start renewing the expired logins of all servers except `disabled`.
+    fn renew_expired_logins(&self, disabled: &[String]) {
+        let wanted: Vec<_> = {
+            let mut expired = self.locked_expired_logins();
+            let keys: Vec<String> = expired
+                .iter()
+                .filter(|(_, (name, _))| !disabled.contains(name))
+                .map(|(key, _)| key.clone())
+                .collect();
+            keys.iter().filter_map(|key| expired.remove(key)).collect()
         };
+        for (name, config) in wanted {
+            (self.renew_login)(&name, &config);
+        }
+    }
+
+    async fn registry_for(
+        &self,
+        include_local_mcp: bool,
+        project_dir: Option<PathBuf>,
+    ) -> Arc<ToolRegistry> {
+        let local_mcp_dir: CacheKey = if include_local_mcp { project_dir } else { None };
         let fingerprint = Self::fingerprint(local_mcp_dir.as_deref());
         // The lock is held across the (occasional) rebuild so concurrent
         // callers never build the same registry twice; in practice agent runs
@@ -169,6 +245,14 @@ impl ConfigToolRegistry {
 
     fn locked_health(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, McpServerHealth>> {
         self.health.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn locked_expired_logins(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<String, (String, McpServerConfig)>> {
+        self.expired_logins
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     fn locked_connections(
@@ -265,6 +349,19 @@ fn server_of_key(key: &str) -> &str {
 
 #[async_trait]
 impl McpServerControl for ConfigToolRegistry {
+    fn login_requests(&self) -> Vec<String> {
+        self.login_requests
+            .as_ref()
+            .map(|requests| requests.servers())
+            .unwrap_or_default()
+    }
+
+    fn answer_login(&self, name: &str, ok: bool) {
+        if let Some(requests) = &self.login_requests {
+            requests.answer(name, ok);
+        }
+    }
+
     /// The recorded states, checked against the pool: a server whose
     /// connections all closed (its process exited) reads as failed, one that
     /// no registry holds any more as not connected.
@@ -357,14 +454,17 @@ impl ConnectionProvider for ConfigToolRegistry {
             .then(|| crate::tools::mcp::mcp_oauth_credential_store(name, config));
         let connection = match McpServerConnection::connect(name, config, credentials).await {
             // No login, or one that expired while the app was closed: an
-            // expired one is renewed in the background, the tools appear on
-            // the next run; a missing one waits for the user to log in.
+            // expired one is renewed in the background once a session that
+            // has the server on asks for a registry (see `current_for`), the
+            // tools appear on the next run; a missing one waits for the user
+            // to log in.
             Err(error)
                 if error
                     .downcast_ref::<mcp_client::AuthorizationRequired>()
                     .is_some() =>
             {
-                crate::tools::mcp_auth::reauthorize_in_background(name, config);
+                self.locked_expired_logins()
+                    .insert(key, (name.to_string(), config.clone()));
                 self.set_health(name, McpServerHealth::NeedsLogin);
                 return Err(error);
             }
@@ -379,10 +479,15 @@ impl ConnectionProvider for ConfigToolRegistry {
             }
             Ok(connection) => connection,
         };
+        self.locked_expired_logins().remove(&key);
         // A login that expires while the connection is in use is renewed when
         // a tool call hits it.
+        let consent = self
+            .login_requests
+            .clone()
+            .map(|requests| requests as Arc<dyn LoginConsent>);
         let connection = Arc::new(connection.with_reauthorizer(Arc::new(
-            crate::tools::mcp_auth::AutoReauthorizer::new(config.clone()),
+            crate::tools::mcp_auth::AutoReauthorizer::new(config.clone(), consent),
         )));
         // Re-check under the lock: if another caller connected the same server
         // meanwhile, keep theirs and drop ours (shut down on drop).
@@ -437,6 +542,7 @@ mod tests {
         RegistryRequest {
             project_dir: Some(dir.to_path_buf()),
             include_local_mcp: true,
+            ..RegistryRequest::default()
         }
     }
 
@@ -501,6 +607,7 @@ mod tests {
                     .current_for(RegistryRequest {
                         project_dir: Some(project.path().to_path_buf()),
                         include_local_mcp: false,
+                        ..RegistryRequest::default()
                     })
                     .await;
                 assert!(Arc::ptr_eq(&global, &projected));
@@ -659,6 +766,7 @@ mod tests {
                     .current_for(RegistryRequest {
                         project_dir: Some(project.path().to_path_buf()),
                         include_local_mcp: true,
+                        ..RegistryRequest::default()
                     })
                     .await;
                 assert_eq!(
@@ -669,6 +777,81 @@ mod tests {
                     std::fs::read_dir(crate::tools::mcp::mcp_oauth_dir())
                         .map_or(true, |mut entries| entries.next().is_none())
                 );
+            },
+        )
+        .await;
+        server.abort();
+    }
+
+    /// An expired login is renewed only for a session that has the server
+    /// switched on — not for the pre-warm, not for a session that switched
+    /// it off — and only once per failed connect.
+    #[tokio::test]
+    async fn expired_login_is_renewed_only_for_a_session_that_wants_the_server() {
+        use axum::http::StatusCode;
+        use std::sync::Mutex as StdMutex;
+
+        let router = axum::Router::new().route(
+            "/mcp",
+            axum::routing::any(|| async {
+                (
+                    StatusCode::UNAUTHORIZED,
+                    [(
+                        "WWW-Authenticate",
+                        "Bearer resource_metadata=\"https://auth.example.com/.well-known/oauth-protected-resource\"",
+                    )],
+                    "authorization required",
+                )
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+
+        let config = tempfile::tempdir().unwrap();
+        std::fs::write(
+            config.path().join("mcp-servers.json"),
+            format!(r#"{{ "servers": {{ "remote": {{ "url": "http://{addr}/mcp" }} }} }}"#),
+        )
+        .unwrap();
+        temp_env::async_with_vars(
+            [("CODE_ASSISTANT_CONFIG_DIR", Some(config.path()))],
+            async {
+                let renewed = Arc::new(StdMutex::new(Vec::<String>::new()));
+                let provider = ConfigToolRegistry::with_login_renewal(false, {
+                    let renewed = renewed.clone();
+                    Box::new(move |name, _| renewed.lock().unwrap().push(name.to_string()))
+                });
+                let session = |disabled: &[&str]| RegistryRequest {
+                    session_disabled_mcp_servers: Some(
+                        disabled.iter().map(|name| name.to_string()).collect(),
+                    ),
+                    ..RegistryRequest::default()
+                };
+
+                let _warm = provider.current().await;
+                assert_eq!(
+                    provider.statuses().remove("remote"),
+                    Some(McpServerHealth::NeedsLogin)
+                );
+                assert!(
+                    renewed.lock().unwrap().is_empty(),
+                    "the pre-warm renews nothing"
+                );
+
+                let _off = provider.current_for(session(&["remote"])).await;
+                assert!(
+                    renewed.lock().unwrap().is_empty(),
+                    "a session with the server off renews nothing"
+                );
+
+                let _on = provider.current_for(session(&[])).await;
+                assert_eq!(*renewed.lock().unwrap(), vec!["remote".to_string()]);
+
+                let _again = provider.current_for(session(&[])).await;
+                assert_eq!(renewed.lock().unwrap().len(), 1, "renewed once per connect");
             },
         )
         .await;

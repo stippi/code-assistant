@@ -346,6 +346,10 @@ pub enum UiEvent {
     McpServerStatusChanged {
         statuses: std::collections::BTreeMap<String, McpServerHealth>,
     },
+    /// App-scoped: the MCP servers whose expired login waits for the user's
+    /// go-ahead before the browser opens, in the order they asked (empty when
+    /// none waits). Answered via `SessionService::answer_mcp_login`.
+    McpLoginsRequested { servers: Vec<String> },
     /// Update the built-in tool groups available to the active session and
     /// whether each is currently on for it (see [`BuiltinToolToggle`]).
     UpdateBuiltinTools { groups: Vec<BuiltinToolToggle> },

@@ -194,6 +194,9 @@ pub struct Gpui {
             std::collections::BTreeMap<String, code_assistant_core::ui::ui_events::McpServerHealth>,
         >,
     >,
+    // MCP servers whose expired login waits for the user's go-ahead before
+    // the browser opens (app-wide), asked above the input.
+    mcp_login_requests: Arc<Mutex<Vec<String>>>,
     // Built-in tool groups available to the active session and their
     // per-session state, shown in the same input-bar menu.
     current_builtin_tools: Arc<Mutex<Vec<code_assistant_core::ui::ui_events::BuiltinToolToggle>>>,
@@ -570,6 +573,7 @@ impl Gpui {
             current_permission_tier: Arc::new(Mutex::new(None)),
             current_mcp_servers: Arc::new(Mutex::new(Vec::new())),
             mcp_server_statuses: Arc::new(Mutex::new(Default::default())),
+            mcp_login_requests: Arc::new(Mutex::new(Vec::new())),
             current_builtin_tools: Arc::new(Mutex::new(Vec::new())),
             pending_permission_requests: Arc::new(Mutex::new(Vec::new())),
             pending_user_questions: Arc::new(Mutex::new(Vec::new())),
@@ -961,6 +965,10 @@ impl Gpui {
     ) -> std::collections::BTreeMap<String, code_assistant_core::ui::ui_events::McpServerHealth>
     {
         self.mcp_server_statuses.lock().unwrap().clone()
+    }
+
+    pub fn get_mcp_login_requests(&self) -> Vec<String> {
+        self.mcp_login_requests.lock().unwrap().clone()
     }
 
     pub fn get_current_builtin_tools(

@@ -524,6 +524,25 @@ impl Gpui {
         });
     }
 
+    /// Answer whether MCP server `name`'s expired login may open the browser
+    /// now; the remaining questions arrive via `McpLoginsRequested`.
+    pub(crate) fn cmd_answer_mcp_login(&self, name: String, ok: bool) {
+        let Some(service) = self.session_service() else {
+            return;
+        };
+        // Hide the question at once; the backend confirms the rest.
+        self.mcp_login_requests
+            .lock()
+            .unwrap()
+            .retain(|n| n != &name);
+        let gpui = self.clone();
+        self.dispatch(async move {
+            if let Err(e) = service.answer_mcp_login(name, ok).await {
+                gpui.display_error(format!("{e:#}"));
+            }
+        });
+    }
+
     /// Ask for the current MCP server states (e.g. when the MCP menu opens).
     pub(crate) fn cmd_refresh_mcp_server_statuses(&self) {
         let Some(service) = self.session_service() else {

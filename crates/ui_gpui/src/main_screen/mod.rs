@@ -1,5 +1,6 @@
 mod about_dialog;
 pub(crate) mod agents_panel;
+mod mcp_login_prompt;
 pub mod project_dialog;
 mod question_prompt;
 pub mod right_panel;
@@ -1931,6 +1932,7 @@ impl Render for MainScreen {
         self.sync_question_prompt(window, cx);
         let question_prompt = self.question_prompt.clone();
         let new_context_prompt = self.render_new_context_target_prompt(cx);
+        let mcp_login_prompt = self.render_mcp_login_prompt(cx);
 
         // Main container with titlebar and content
         div()
@@ -2197,6 +2199,8 @@ impl Render for MainScreen {
                             .children(permission_prompts)
                             .children(question_prompt)
                             .children(new_context_prompt)
+                            // An expired MCP login asks before the browser opens
+                            .children(mcp_login_prompt)
                             // Input area sits at the bottom
                             .child(
                                 div()
