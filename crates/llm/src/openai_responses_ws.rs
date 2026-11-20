@@ -86,8 +86,6 @@ enum WsRequest {
 struct WsResponseCreateRequest {
     model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    instructions: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     previous_response_id: Option<String>,
     input: Vec<WsInputItem>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -759,6 +757,38 @@ impl OpenAIResponsesWsClient {
     // Message conversion (internal types → WS input items)
     // -----------------------------------------------------------------------
 
+    /// The request's full `input`: the system prompt as a leading developer
+    /// message, then the converted history. Newer models (gpt-6.2) render a
+    /// top-level `instructions` field after the input and never cache it; a
+    /// leading developer message is cached with every model, as in the HTTP
+    /// client. Being the first item, it also belongs to the prefix the
+    /// incremental delta compares.
+    fn request_input(
+        &self,
+        system_prompt: String,
+        messages: Vec<Message>,
+        explicit_cache: bool,
+    ) -> Vec<WsInputItem> {
+        let mut input = self.convert_messages_with_cache(messages, explicit_cache);
+        if !system_prompt.is_empty() {
+            // The system prompt (plus tools rendered before it) is the largest
+            // stable prefix — always mark it, mirroring the HTTP client.
+            let mut system_item = WsContentItem::input_text(system_prompt);
+            if explicit_cache {
+                system_item.try_mark_cache_breakpoint();
+            }
+            input.insert(
+                0,
+                WsInputItem::Message {
+                    role: "developer".to_string(),
+                    content: vec![system_item],
+                    phase: None,
+                },
+            );
+        }
+        input
+    }
+
     /// Convert internal messages to WS input items, optionally placing
     /// explicit cache breakpoints at stable history positions.
     fn convert_messages_with_cache(
@@ -860,22 +890,10 @@ impl OpenAIResponsesWsClient {
     ) -> Result<LLMResponse> {
         // Explicit cache breakpoints are only sent to models that support
         // them (older models reject the field) and only when the client
-        // allows them (some backends reject the field for every model). The
-        // system prompt travels as `instructions` (a plain string, no
-        // breakpoint possible); a marker on a history message still caches
-        // instructions and tools, since a breakpoint covers everything
-        // rendered before it.
+        // allows them (some backends reject the field for every model).
         let explicit_cache = model_supports_explicit_cache(&self.model.to_lowercase())
             && self.explicit_cache_enabled;
-        let input = self.convert_messages_with_cache(request.messages, explicit_cache);
-
-        // Add system prompt as the top-level `instructions` field (WebSocket style)
-        // but also keep it as a developer message in `input` for compatibility.
-        let instructions = if !request.system_prompt.is_empty() {
-            Some(request.system_prompt.clone())
-        } else {
-            None
-        };
+        let input = self.request_input(request.system_prompt, request.messages, explicit_cache);
 
         let tools = request
             .tools
@@ -905,7 +923,6 @@ impl OpenAIResponsesWsClient {
 
         let ws_request = WsResponseCreateRequest {
             model: self.model.clone(),
-            instructions,
             previous_response_id,
             input: send_input,
             // The API rejects a tool choice for a request without tools.
@@ -1791,7 +1808,6 @@ mod tests {
     fn test_ws_request_serialization() {
         let req = WsRequest::ResponseCreate(WsResponseCreateRequest {
             model: "gpt-5".to_string(),
-            instructions: Some("You are helpful.".to_string()),
             previous_response_id: None,
             input: vec![WsInputItem::Message {
                 phase: None,
@@ -1809,7 +1825,7 @@ mod tests {
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["type"], "response.create");
         assert_eq!(json["model"], "gpt-5");
-        assert_eq!(json["instructions"], "You are helpful.");
+        assert!(json.get("instructions").is_none());
         assert_eq!(json["input"][0]["type"], "message");
         assert_eq!(json["input"][0]["role"], "user");
     }
@@ -1818,7 +1834,6 @@ mod tests {
     fn test_ws_request_incremental() {
         let req = WsRequest::ResponseCreate(WsResponseCreateRequest {
             model: "gpt-5".to_string(),
-            instructions: None,
             previous_response_id: Some("resp_abc123".to_string()),
             input: vec![WsInputItem::Message {
                 phase: None,
@@ -2207,6 +2222,40 @@ mod tests {
             .collect();
         let items = client.convert_messages_with_cache(messages, false);
         assert!(ws_items_with_breakpoint(&items).is_empty());
+    }
+
+    #[test]
+    fn test_system_prompt_leads_input_as_developer_message() {
+        let client = OpenAIResponsesWsClient::new(
+            "sk-test".to_string(),
+            "gpt-6.2-sol".to_string(),
+            "https://api.openai.com/v1".to_string(),
+        );
+        let messages = vec![Message::new_user("Hello".to_string())];
+
+        let input = client.request_input("You are helpful.".to_string(), messages.clone(), true);
+        let json = serde_json::to_value(&input).unwrap();
+        assert_eq!(json.as_array().unwrap().len(), 2);
+        assert_eq!(json[0]["role"], "developer");
+        assert_eq!(json[0]["content"][0]["text"], "You are helpful.");
+        assert_eq!(
+            json[0]["content"][0]["prompt_cache_breakpoint"]["mode"],
+            "explicit"
+        );
+        assert_eq!(json[1]["role"], "user");
+
+        let input = client.request_input("You are helpful.".to_string(), messages.clone(), false);
+        let json = serde_json::to_value(&input).unwrap();
+        assert!(
+            json[0]["content"][0]
+                .get("prompt_cache_breakpoint")
+                .is_none()
+        );
+
+        let input = client.request_input(String::new(), messages, false);
+        let json = serde_json::to_value(&input).unwrap();
+        assert_eq!(json.as_array().unwrap().len(), 1);
+        assert_eq!(json[0]["role"], "user");
     }
 
     /// Moving cache markers must invalidate the incremental-input delta so

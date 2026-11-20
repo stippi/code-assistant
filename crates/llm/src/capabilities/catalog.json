@@ -97,6 +97,13 @@
     "reasoning": { "style": "anthropic-budget", "levels": ["off", "low", "medium", "high"], "default": "medium" }
   },
   {
+    "id": "gpt-6.2-sol",
+    "name": "GPT-6.2 Sol",
+    "context_window": 272000,
+    "edit_format": "diff",
+    "reasoning": { "style": "openai-responses", "levels": ["low", "medium", "high", "xhigh", "max"], "default": "high" }
+  },
+  {
     "id": "gpt-6.1-sol",
     "name": "GPT-6.1 Sol",
     "context_window": 272000,
