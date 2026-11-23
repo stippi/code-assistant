@@ -50,10 +50,13 @@ async fn asset(
         .ok_or(StatusCode::NOT_FOUND)
 }
 
+/// The same content always gives the same archive (and checksum): with
+/// zip's `time` feature on, the default options stamp the current time.
 fn zip_of(content: &[u8]) -> Vec<u8> {
     let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-    zip.start_file("code-assistant", zip::write::SimpleFileOptions::default())
-        .unwrap();
+    let options =
+        zip::write::SimpleFileOptions::default().last_modified_time(zip::DateTime::DEFAULT);
+    zip.start_file("code-assistant", options).unwrap();
     zip.write_all(content).unwrap();
     zip.finish().unwrap().into_inner()
 }
