@@ -1,6 +1,6 @@
 [package]
 name = "ui_acp"
-version = "0.2.21"
+version = "0.2.22"
 edition = "2024"
 license = "MIT"
 
