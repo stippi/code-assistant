@@ -4,6 +4,7 @@ mod mcp_login_prompt;
 pub mod project_dialog;
 mod question_prompt;
 pub mod right_panel;
+pub mod session_title;
 mod status_popover;
 mod update_control;
 mod voice_control;
@@ -146,6 +147,9 @@ pub struct MainScreen {
     _input_area_subscription: Subscription,
     /// The running agents, above the input.
     agents_panel: Entity<agents_panel::AgentsPanel>,
+    /// The viewed session's name in the title bar, renamed in place.
+    session_title: Entity<session_title::SessionTitle>,
+    _session_title_subscription: Subscription,
     _right_panel_subscription: Subscription,
     _open_file_subscription: Subscription,
     _comment_bus_subscription: Subscription,
@@ -173,6 +177,15 @@ impl MainScreen {
 
         // Create the input area
         let input_area = cx.new(|cx| InputArea::new(window, cx));
+
+        let session_title = cx.new(|cx| session_title::SessionTitle::new(window, cx));
+        let session_title_subscription =
+            cx.subscribe(&session_title, |_this: &mut Self, _, event, cx| {
+                let session_title::SessionTitleEvent::Renamed { session_id, name } = event;
+                if let Some(gpui) = cx.try_global::<Gpui>() {
+                    gpui.cmd_rename_session(session_id.clone(), name.clone());
+                }
+            });
 
         // Subscribe to input area events
         let input_area_subscription =
@@ -239,6 +252,8 @@ impl MainScreen {
             project_sidebar,
             messages_view,
             agents_panel,
+            session_title,
+            _session_title_subscription: session_title_subscription,
             plan_banner,
             recent_keystrokes: vec![],
             focus_handle: cx.focus_handle(),
@@ -1711,6 +1726,15 @@ impl Render for MainScreen {
             }
         }
 
+        let session_name = current_session_id
+            .as_ref()
+            .and_then(|id| self.sessions.iter().find(|session| &session.id == id))
+            .map(|session| SharedString::from(session.name.clone()))
+            .unwrap_or_default();
+        self.session_title.update(cx, |title, cx| {
+            title.set_session(current_session_id.clone(), session_name, cx)
+        });
+
         self.offer_prepared_handoff(window, cx);
 
         // Check for pending edit (message editing)
@@ -1963,9 +1987,11 @@ impl Render for MainScreen {
                     // Left padding for macOS traffic lights (doubled for more space)
                     .pl(px(86.))
                     .pr(px(16.))
-                    // Left side - controls
+                    // Left side - controls, then the session's name
                     .child(
                         div()
+                            .flex_1()
+                            .min_w_0()
                             .flex()
                             .items_center()
                             .gap_1()
@@ -2065,11 +2091,20 @@ impl Render for MainScreen {
                                             .text_color(cx.theme().muted_foreground),
                                     )
                                     .on_click(cx.listener(Self::on_zoom_in)),
+                            )
+                            .child(
+                                div()
+                                    .ml_4()
+                                    .min_w_0()
+                                    .flex()
+                                    .child(self.session_title.clone()),
                             ),
                     )
                     // Right side - about + settings buttons
                     .child(
                         div()
+                            .flex_none()
+                            .ml_4()
                             .flex()
                             .items_center()
                             .gap_1()

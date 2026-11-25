@@ -11,10 +11,16 @@ use crate::tools::core::ToolScope;
 use crate::types::PlanState;
 use std::any::Any;
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub struct AgentAppState {
     /// The actual session name (empty if not named yet).
     pub session_name: String,
+    /// Whether the user named the session. Shared with the session instance,
+    /// so a rename while the agent runs reaches it at once; the agent then
+    /// no longer names the session (see [`super::NameSessionAvailability`]).
+    pub name_set_by_user: Arc<AtomicBool>,
     /// Whether to inject naming reminders (disabled for tests).
     pub naming_reminders_enabled: bool,
     /// State of the `update_plan` tool.
@@ -48,6 +54,7 @@ impl AgentAppState {
         };
         Self {
             session_name: String::new(),
+            name_set_by_user: Arc::default(),
 
             naming_reminders_enabled: true,
             plan: PlanState::default(),
@@ -67,6 +74,11 @@ impl AgentAppState {
     pub fn of(ext: &mut (dyn Any + Send)) -> &mut Self {
         ext.downcast_mut()
             .expect("agent loop is missing code-assistant's AgentAppState")
+    }
+
+    /// Whether the user named the session.
+    pub fn is_name_set_by_user(&self) -> bool {
+        self.name_set_by_user.load(Ordering::Acquire)
     }
 
     /// Shared-access variant of [`Self::of`].

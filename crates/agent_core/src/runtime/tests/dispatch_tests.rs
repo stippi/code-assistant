@@ -64,10 +64,10 @@ impl Tool for Probe {
     }
 }
 
-struct Fixture {
-    agent: AgentRuntime,
-    saved: Capture,
-    calls: Arc<Mutex<Vec<String>>>,
+pub(super) struct Fixture {
+    pub(super) agent: AgentRuntime,
+    pub(super) saved: Capture,
+    pub(super) calls: Arc<Mutex<Vec<String>>>,
     entered: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
 }
@@ -83,7 +83,7 @@ fn probe_registry(f: &Fixture, capabilities: &[&str]) -> ToolRegistry {
     registry
 }
 
-fn fixture(requests: &[ToolRequest]) -> Fixture {
+pub(super) fn fixture(requests: &[ToolRequest]) -> Fixture {
     let (agent, saved) = runtime();
     let mut f = Fixture {
         agent,
@@ -106,7 +106,7 @@ fn fixture(requests: &[ToolRequest]) -> Fixture {
     f
 }
 
-fn request(id: &str, wait: bool) -> ToolRequest {
+pub(super) fn request(id: &str, wait: bool) -> ToolRequest {
     ToolRequest {
         id: id.into(),
         name: "probe".into(),

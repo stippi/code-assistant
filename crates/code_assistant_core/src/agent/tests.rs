@@ -2875,3 +2875,61 @@ async fn a_disabled_builtin_tool_group_is_not_offered() -> Result<()> {
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn name_session_is_withdrawn_once_the_user_named_the_session() -> Result<()> {
+    let mock_llm = MockLLMProvider::new(vec![
+        Ok(create_test_response_text("Done.")),
+        Ok(create_test_response(
+            "name-id",
+            "name_session",
+            serde_json::json!({ "title": "Named by the agent" }),
+            "Naming the session",
+        )),
+    ]);
+    let mock_llm_ref = mock_llm.clone();
+    let components = AgentComponents::new(
+        Box::new(mock_llm),
+        Arc::new(MockProjectManager::new()),
+        Arc::new(create_command_executor_mock()),
+        Arc::new(MockUI::default()),
+        Box::new(NoOpStatePersistence),
+        crate::tools::test_registry(),
+    );
+    // The user named the session; the run's own copy of the name may lag.
+    let mut agent = Agent::new(components, SessionConfig::default());
+    agent
+        .app_state()
+        .name_set_by_user
+        .store(true, std::sync::atomic::Ordering::Release);
+
+    agent.start_with_task("Test task".to_string()).await?;
+
+    let requests = mock_llm_ref.get_requests();
+    assert_eq!(requests.len(), 2);
+    // A conversation without an earlier request has no cache to keep warm.
+    let offered: Vec<_> = requests[0]
+        .tools
+        .iter()
+        .flatten()
+        .map(|tool| tool.name.as_str())
+        .collect();
+    assert!(!offered.contains(&"name_session"), "{offered:?}");
+    // No reminder to call a tool the agent must not use.
+    assert!(!format!("{:?}", requests[0].messages).contains("system-reminder"));
+
+    // A call anyway is refused and changes nothing.
+    let MessageContent::Structured(blocks) = &requests[1].messages[2].content else {
+        panic!("expected the tool result");
+    };
+    let ContentBlock::ToolResult {
+        content, is_error, ..
+    } = &blocks[0]
+    else {
+        panic!("expected the tool result");
+    };
+    assert_eq!(*is_error, Some(true));
+    assert!(content.contains("has been disabled"), "{content:?}");
+    assert_eq!(agent.app_state().session_name, "");
+    Ok(())
+}

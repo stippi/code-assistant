@@ -4,11 +4,16 @@
 use crate::plugins::AgentAppState;
 use crate::tools::ToolRequest;
 use crate::tools::impls::name_session::NameSessionOutput;
+use agent_core::ToolAvailability;
 use agent_core::hooks::{IterationHook, LoopCtx, ToolInterceptor};
 use anyhow::Result;
 use llm::{ContentBlock, Message, MessageContent, MessageRole};
+use std::any::Any;
+use std::collections::BTreeSet;
 use tools_core::AnyOutput;
 use tracing::{trace, warn};
+
+const NAME_SESSION: &str = "name_session";
 
 /// Handles the `name_session` tool at the agent level: the title is session
 /// state, not a real tool execution.
@@ -20,7 +25,7 @@ impl ToolInterceptor for NameSessionInterceptor {
         request: &ToolRequest,
         ctx: &mut LoopCtx,
     ) -> Option<Result<Box<dyn AnyOutput>>> {
-        if request.name != "name_session" {
+        if request.name != NAME_SESSION {
             return None;
         }
         Some(apply_session_name(request, ctx))
@@ -44,6 +49,20 @@ fn apply_session_name(request: &ToolRequest, ctx: &mut LoopCtx) -> Result<Box<dy
     }))
 }
 
+/// Withdraws `name_session` once the user named the session. The agent core
+/// changes the offer lazily and refuses calls in the meantime.
+pub struct NameSessionAvailability;
+
+impl ToolAvailability for NameSessionAvailability {
+    fn withdrawn(&self, extensions: &(dyn Any + Send)) -> BTreeSet<String> {
+        if AgentAppState::of_ref(extensions).is_name_set_by_user() {
+            BTreeSet::from([NAME_SESSION.to_string()])
+        } else {
+            BTreeSet::new()
+        }
+    }
+}
+
 /// Appends a system reminder to the last actual user message while the
 /// session has no name yet.
 pub struct NameSessionReminderHook;
@@ -53,7 +72,10 @@ impl IterationHook for NameSessionReminderHook {
         let state = AgentAppState::of_ref(&*ctx.extensions);
 
         // Only inject if enabled, session is not named yet, and we have messages
-        if !state.naming_reminders_enabled || !state.session_name.is_empty() || messages.is_empty()
+        if !state.naming_reminders_enabled
+            || !state.session_name.is_empty()
+            || state.is_name_set_by_user()
+            || messages.is_empty()
         {
             return Ok(());
         }
@@ -63,7 +85,7 @@ impl IterationHook for NameSessionReminderHook {
         // to call a tool it cannot use.
         if !ctx
             .registry
-            .tool_has_capability("name_session", state.tool_scope.tag())
+            .tool_has_capability(NAME_SESSION, state.tool_scope.tag())
         {
             return Ok(());
         }

@@ -1,4 +1,5 @@
 mod dispatch_tests;
+mod tool_offer_tests;
 
 use super::*;
 use crate::hooks::*;
@@ -91,6 +92,7 @@ struct Saved {
     /// Sizes of the most recent checkpoint: changed nodes, changed executions.
     last_delta: (usize, usize),
     commits: usize,
+    withheld_tools: std::collections::BTreeSet<String>,
 }
 
 /// Merges checkpoints the way a session store does.
@@ -128,6 +130,7 @@ impl CheckpointPersistence for Capture {
             checkpoint.changed_executions.len(),
         );
         saved.commits += 1;
+        saved.withheld_tools = checkpoint.withheld_tools.clone();
         Ok(())
     }
 }
@@ -155,6 +158,7 @@ fn runtime() -> (AgentRuntime, Capture) {
             compaction: Box::new(Stub),
             recovery: Box::new(Stub),
             system_prompt: Box::new(Stub),
+            tool_availability: Box::new(crate::tool_offer::AllToolsAvailable),
         },
         extensions: Box::new(()),
     });

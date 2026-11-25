@@ -16,6 +16,7 @@ pub mod hooks;
 pub mod native;
 pub mod persistence;
 pub mod runtime;
+pub mod tool_offer;
 pub mod tree;
 pub mod types;
 pub mod ui;
@@ -23,6 +24,7 @@ pub mod ui;
 pub use dialect::ToolDialect;
 pub use persistence::{AgentCheckpoint, CheckpointPersistence};
 pub use runtime::{AgentRuntime, AgentRuntimeComponents};
+pub use tool_offer::{AllToolsAvailable, ToolAvailability, ToolDisabled};
 pub use tree::{Conversation, ConversationPath, MessageNode, NodeId};
 pub use types::{
     ParseError, PromptTooLongError, SerializedToolExecution, ToolExecution, ToolRequest,

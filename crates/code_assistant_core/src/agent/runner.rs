@@ -208,7 +208,7 @@ impl Agent {
     }
 
     /// The application state riding on the loop.
-    fn app_state(&self) -> &AgentAppState {
+    pub(crate) fn app_state(&self) -> &AgentAppState {
         AgentAppState::of_ref(self.runtime.extensions())
     }
 
@@ -356,6 +356,8 @@ impl Agent {
         );
         self.runtime
             .set_tool_executions(session_state.tool_executions);
+        self.runtime
+            .set_withheld_tools(session_state.withheld_tools);
 
         {
             let state = self.app_state_mut();
@@ -377,6 +379,7 @@ impl Agent {
         {
             let state = self.app_state_mut();
             state.session_name = session_state.name;
+            state.name_set_by_user = session_state.name_set_by_user;
             state.model_config = session_state.model_config;
             state.context_limit_override = None;
         }

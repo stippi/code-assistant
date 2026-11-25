@@ -76,8 +76,8 @@ impl ToolDialect for NativeDialect {
 
     fn render_tool_section_for_prompt(
         &self,
+        _tools: &[tools_core::spec::AnnotatedToolDefinition],
         _registry: &ToolRegistry,
-        _capability: &str,
     ) -> Option<String> {
         // Native mode uses API-provided tool definitions, no custom documentation needed
         None

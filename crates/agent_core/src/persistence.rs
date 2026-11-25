@@ -10,6 +10,7 @@ use crate::tree::{MessageNode, NodeId};
 use crate::types::ToolExecution;
 use anyhow::Result;
 use std::any::Any;
+use std::collections::BTreeSet;
 
 /// What changed since the previous checkpoint of this run.
 pub struct AgentCheckpoint<'a> {
@@ -21,6 +22,10 @@ pub struct AgentCheckpoint<'a> {
     /// Journal entries recorded or updated since the previous checkpoint.
     pub changed_executions: Vec<&'a ToolExecution>,
     pub next_request_id: u64,
+    /// Tools the requests of this conversation hold back (see
+    /// [`crate::tool_offer`]); restored with
+    /// [`crate::AgentRuntime::set_withheld_tools`].
+    pub withheld_tools: &'a BTreeSet<String>,
 }
 
 /// Persistence used by the agent loop.

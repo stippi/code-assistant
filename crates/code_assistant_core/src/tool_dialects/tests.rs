@@ -1,15 +1,20 @@
 //! Cross-dialect tests: prompt documentation generation and mixed-syntax
 //! scenarios.
 
+/// The definitions of the main agent's tools.
+fn agent_tools() -> Vec<tools_core::spec::AnnotatedToolDefinition> {
+    crate::tools::test_registry()
+        .get_tool_definitions_with_capability(crate::tools::core::ToolScope::Agent.tag())
+}
+
 #[test]
 fn test_tool_use_docs_generation() {
     use crate::agent::ToolSyntax;
-    use crate::tools::core::ToolScope;
 
     // Test XML documentation
     let xml_parser = crate::tool_dialects::dialect_for(ToolSyntax::Xml);
-    if let Some(xml_docs) = xml_parser
-        .render_tool_section_for_prompt(&crate::tools::test_registry(), ToolScope::Agent.tag())
+    if let Some(xml_docs) =
+        xml_parser.render_tool_section_for_prompt(&agent_tools(), &crate::tools::test_registry())
     {
         println!("=== XML Tool Documentation ===");
         println!("{}", &xml_docs[..xml_docs.floor_char_boundary(1500)]);
@@ -18,8 +23,8 @@ fn test_tool_use_docs_generation() {
 
     // Test Caret documentation
     let caret_parser = crate::tool_dialects::dialect_for(ToolSyntax::Caret);
-    if let Some(caret_docs) = caret_parser
-        .render_tool_section_for_prompt(&crate::tools::test_registry(), ToolScope::Agent.tag())
+    if let Some(caret_docs) =
+        caret_parser.render_tool_section_for_prompt(&agent_tools(), &crate::tools::test_registry())
     {
         println!("=== Caret Tool Documentation ===");
         println!("{}", &caret_docs[..caret_docs.floor_char_boundary(1500)]);
@@ -29,7 +34,7 @@ fn test_tool_use_docs_generation() {
     // Test Native documentation (should be None)
     let native_parser = crate::tool_dialects::dialect_for(ToolSyntax::Native);
     if native_parser
-        .render_tool_section_for_prompt(&crate::tools::test_registry(), ToolScope::Agent.tag())
+        .render_tool_section_for_prompt(&agent_tools(), &crate::tools::test_registry())
         .is_some()
     {
         println!("Native parser unexpectedly returned documentation");
@@ -86,10 +91,9 @@ fn test_parameter_documentation_formatting() {
     });
 
     // Test that array parameters work correctly by checking generated docs contain proper examples
-    if let Some(docs) = xml_parser.render_tool_section_for_prompt(
-        &crate::tools::test_registry(),
-        crate::tools::core::ToolScope::Agent.tag(),
-    ) {
+    if let Some(docs) =
+        xml_parser.render_tool_section_for_prompt(&agent_tools(), &crate::tools::test_registry())
+    {
         // Should contain XML-style parameter examples
         assert!(
             docs.contains("<param:"),
@@ -117,10 +121,9 @@ fn test_parameter_documentation_formatting() {
 
     // Test with Caret parser
     let caret_parser = crate::tool_dialects::dialect_for(ToolSyntax::Caret);
-    if let Some(docs) = caret_parser.render_tool_section_for_prompt(
-        &crate::tools::test_registry(),
-        crate::tools::core::ToolScope::Agent.tag(),
-    ) {
+    if let Some(docs) =
+        caret_parser.render_tool_section_for_prompt(&agent_tools(), &crate::tools::test_registry())
+    {
         // Should contain caret-style parameter examples
         assert!(
             docs.contains("^^^"),
@@ -165,10 +168,9 @@ fn test_usage_example_generation() {
     let xml_parser = crate::tool_dialects::dialect_for(ToolSyntax::Xml);
     let caret_parser = crate::tool_dialects::dialect_for(ToolSyntax::Caret);
 
-    if let Some(xml_docs) = xml_parser.render_tool_section_for_prompt(
-        &crate::tools::test_registry(),
-        crate::tools::core::ToolScope::Agent.tag(),
-    ) {
+    if let Some(xml_docs) =
+        xml_parser.render_tool_section_for_prompt(&agent_tools(), &crate::tools::test_registry())
+    {
         // XML usage examples should be properly formatted
         assert!(
             xml_docs.contains("<tool:"),
@@ -196,10 +198,9 @@ fn test_usage_example_generation() {
         println!("✓ XML usage example generation verified");
     }
 
-    if let Some(caret_docs) = caret_parser.render_tool_section_for_prompt(
-        &crate::tools::test_registry(),
-        crate::tools::core::ToolScope::Agent.tag(),
-    ) {
+    if let Some(caret_docs) =
+        caret_parser.render_tool_section_for_prompt(&agent_tools(), &crate::tools::test_registry())
+    {
         // Caret usage examples should be properly formatted
         assert!(
             caret_docs.contains("^^^"),

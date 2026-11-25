@@ -52,6 +52,7 @@ impl CheckpointPersistence for SessionStateAdapter {
             plan: &state.plan,
             active_skills: &state.active_skills,
             next_request_id: checkpoint.next_request_id,
+            withheld_tools: checkpoint.withheld_tools,
         })
     }
 }

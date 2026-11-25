@@ -13,7 +13,7 @@ mod tool_services;
 
 pub use app_state::AgentAppState;
 pub use compaction::TokenRatioCompaction;
-pub use name_session::{NameSessionInterceptor, NameSessionReminderHook};
+pub use name_session::{NameSessionAvailability, NameSessionInterceptor, NameSessionReminderHook};
 pub use plan::PlanSnapshotHook;
 
 pub use recovery::DefaultRecovery;
@@ -38,5 +38,6 @@ pub fn default_hooks() -> HookRegistry {
         compaction: Box::new(TokenRatioCompaction::new(0.8)),
         recovery: Box::new(DefaultRecovery::new(llm::RetryPolicy::load())),
         system_prompt: Box::new(CodeAssistantSystemPrompt::new()),
+        tool_availability: Box::new(NameSessionAvailability),
     }
 }

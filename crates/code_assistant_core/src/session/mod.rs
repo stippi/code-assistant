@@ -272,6 +272,11 @@ impl SessionConfig {
 pub struct SessionState {
     pub session_id: String,
     pub name: String,
+    /// Whether the user named the session, shared with the session instance
+    /// so a rename reaches the running agent.
+    pub name_set_by_user: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Tools the agent's requests held back so far.
+    pub withheld_tools: std::collections::BTreeSet<String>,
 
     // ========================================================================
     // Branching: Tree-based message storage
@@ -316,6 +321,8 @@ pub struct SessionCheckpoint<'a> {
     pub plan: &'a PlanState,
     pub active_skills: &'a [String],
     pub next_request_id: u64,
+    /// Tools the agent's requests hold back (see `agent_core::tool_offer`).
+    pub withheld_tools: &'a std::collections::BTreeSet<String>,
 }
 
 #[cfg(test)]
@@ -361,6 +368,8 @@ impl SessionState {
         Self {
             session_id: session_id.into(),
             name: name.into(),
+            name_set_by_user: Default::default(),
+            withheld_tools: Default::default(),
             message_nodes,
             active_path,
             next_node_id,

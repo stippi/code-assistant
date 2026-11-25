@@ -178,6 +178,10 @@ pub struct PromptCtx<'a> {
     pub session_id: Option<&'a str>,
     /// The agent's tool registry, for rendering tool documentation.
     pub registry: &'a ToolRegistry,
+    /// The tools this run offers, in registry order: what text dialects
+    /// document in the prompt (native tool calling sends the same list as
+    /// the request's tool definitions).
+    pub tools: &'a [tools_core::spec::AnnotatedToolDefinition],
     /// Application-specific state (projects, scope, …); see
     /// [`LoopCtx::extensions`].
     pub extensions: &'a (dyn Any + Send),
@@ -197,6 +201,9 @@ pub struct HookRegistry {
     pub compaction: Box<dyn CompactionPolicy>,
     pub recovery: Box<dyn RecoveryPolicy>,
     pub system_prompt: Box<dyn SystemPromptProvider>,
+    /// Which tools the application has withdrawn; the loop changes the
+    /// offer lazily (see [`crate::tool_offer`]).
+    pub tool_availability: Box<dyn crate::tool_offer::ToolAvailability>,
 }
 
 /// Builds a fresh [`HookRegistry`] per agent instance. Embedders install one
