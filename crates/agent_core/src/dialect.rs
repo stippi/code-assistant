@@ -14,6 +14,7 @@ use anyhow::Result;
 use llm::LLMResponse;
 use std::sync::Arc;
 use tools_core::ToolRegistry;
+use tools_core::spec::AnnotatedToolDefinition;
 
 pub trait ToolDialect: Send + Sync {
     /// Extract `ToolRequest`s from a completed LLM response and return a
@@ -58,11 +59,12 @@ pub trait ToolDialect: Send + Sync {
     /// tools…"). `None` for native tool calling.
     fn render_format_section_for_prompt(&self) -> Option<String>;
 
-    /// Tool documentation block for the system prompt, covering the tools in
-    /// `registry` that carry `capability`. `None` for native tool calling.
+    /// Tool documentation block for the system prompt, covering `tools` (the
+    /// tools the run offers; `registry` holds their metadata). `None` for
+    /// native tool calling.
     fn render_tool_section_for_prompt(
         &self,
+        tools: &[AnnotatedToolDefinition],
         registry: &ToolRegistry,
-        capability: &str,
     ) -> Option<String>;
 }

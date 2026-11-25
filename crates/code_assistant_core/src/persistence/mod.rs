@@ -2,7 +2,7 @@ use anyhow::Result;
 use llm::Message;
 use llm::capabilities::Effort;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::time::SystemTime;
 use tracing::{debug, info, warn};
@@ -174,6 +174,10 @@ pub struct ChatSession {
     pub id: String,
     /// User-friendly name for the chat
     pub name: String,
+    /// Whether the user gave the name. The agent then no longer names the
+    /// session, and its checkpoints leave the name alone.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub name_set_by_user: bool,
     /// Creation timestamp
     pub created_at: SystemTime,
     /// Last updated timestamp
@@ -222,6 +226,10 @@ pub struct ChatSession {
     /// Counter for generating unique request IDs within this session
     #[serde(default)]
     pub next_request_id: u64,
+    /// Tools the agent's requests hold back, settled lazily for the prompt
+    /// cache (see `agent_core::tool_offer`).
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub withheld_tools: BTreeSet<String>,
     /// Model configuration for this session
     #[serde(default)]
     pub model_config: Option<SessionModelConfig>,
@@ -316,6 +324,7 @@ impl ChatSession {
         Self {
             id,
             name,
+            name_set_by_user: false,
             created_at: SystemTime::now(),
             updated_at: SystemTime::now(),
             message_nodes: BTreeMap::new(),
@@ -329,6 +338,7 @@ impl ChatSession {
             plan_collapsed: false,
             config,
             next_request_id: 1,
+            withheld_tools: BTreeSet::new(),
             model_config,
             legacy_init_path: None,
             legacy_initial_project: None,
@@ -658,6 +668,7 @@ impl ChatSession {
         ChatSession {
             id: self.id.clone(),
             name: self.name.clone(),
+            name_set_by_user: self.name_set_by_user,
             created_at: self.created_at,
             updated_at: self.updated_at,
             message_nodes: BTreeMap::new(),
@@ -670,6 +681,7 @@ impl ChatSession {
             plan_collapsed: self.plan_collapsed,
             config: self.config.clone(),
             next_request_id: self.next_request_id,
+            withheld_tools: self.withheld_tools.clone(),
             model_config: self.model_config.clone(),
             legacy_init_path: self.legacy_init_path.clone(),
             legacy_initial_project: self.legacy_initial_project.clone(),
@@ -679,11 +691,21 @@ impl ChatSession {
         }
     }
 
+    /// Name the session as the user asked; the agent no longer names it.
+    pub fn set_name_by_user(&mut self, name: String) {
+        self.name = name;
+        self.name_set_by_user = true;
+    }
+
     /// Merge a running agent's checkpoint. Nodes and journal entries are
     /// replaced by id, so branches and records the run never touched
     /// survive; counters only ever grow.
     pub fn apply_checkpoint(&mut self, checkpoint: &crate::session::SessionCheckpoint<'_>) {
-        self.name = checkpoint.name.to_string();
+        // A run may have started before the user renamed the session.
+        if !self.name_set_by_user {
+            self.name = checkpoint.name.to_string();
+        }
+        self.withheld_tools = checkpoint.withheld_tools.clone();
         for node in checkpoint.changed_nodes {
             self.message_nodes.insert(node.id, (*node).clone());
         }
@@ -1741,6 +1763,7 @@ mod tests {
                 plan: &PlanState::default(),
                 active_skills: &[],
                 next_request_id: 1,
+                withheld_tools: &BTreeSet::new(),
             })
             .unwrap();
 
@@ -1749,6 +1772,43 @@ mod tests {
         assert_eq!(blob_count(&persistence, "p/s"), 1);
         // header + node + exec appended to header + exec
         assert_eq!(journal_lines(&persistence, "p/s"), 5);
+    }
+
+    #[test]
+    fn a_checkpoint_keeps_the_name_the_user_gave() {
+        let dir = tempdir().unwrap();
+        let mut persistence = FileSessionPersistence::new_with_root_dir(dir.path().to_path_buf());
+        let session =
+            ChatSession::new_empty("p/s".into(), String::new(), SessionConfig::default(), None);
+        persistence.create_chat_session(&session).unwrap();
+        persistence
+            .update_entry("p/s", |session| {
+                session.set_name_by_user("Chosen by the user".into());
+                Ok(())
+            })
+            .unwrap();
+
+        let withheld = BTreeSet::from(["name_session".to_string()]);
+        let metadata = persistence
+            .commit_checkpoint(&crate::session::SessionCheckpoint {
+                session_id: "p/s",
+                name: "stale name of the run",
+                changed_nodes: &[],
+                active_path: &[],
+                next_node_id: 1,
+                changed_executions: vec![],
+                plan: &PlanState::default(),
+                active_skills: &[],
+                next_request_id: 1,
+                withheld_tools: &withheld,
+            })
+            .unwrap();
+
+        assert_eq!(metadata.name, "Chosen by the user");
+        let loaded = persistence.load_chat_session("p/s").unwrap().unwrap();
+        assert_eq!(loaded.name, "Chosen by the user");
+        assert!(loaded.name_set_by_user);
+        assert_eq!(loaded.withheld_tools, withheld);
     }
 
     #[test]
@@ -2151,6 +2211,7 @@ mod tests {
         let mut session = ChatSession {
             id: "test".to_string(),
             name: "Test".to_string(),
+            name_set_by_user: false,
             created_at: SystemTime::now(),
             updated_at: SystemTime::now(),
             message_nodes: BTreeMap::new(),
@@ -2167,6 +2228,7 @@ mod tests {
             plan_collapsed: false,
             config: SessionConfig::default(),
             next_request_id: 1,
+            withheld_tools: BTreeSet::new(),
             model_config: None,
             legacy_init_path: None,
             legacy_initial_project: None,

@@ -193,6 +193,9 @@ impl AgentRuntime {
             "Tool '{}' is not available in the current scope",
             request.name
         );
+        if self.is_tool_withdrawn(&request.name) {
+            return Err(crate::tool_offer::ToolDisabled(request.name.clone()).into());
+        }
         // A stop must not wait for the user to answer a permission prompt;
         // dropping the mediator's future settles the prompt as denied.
         let spec = tool.spec();

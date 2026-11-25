@@ -23,9 +23,10 @@ use llm::{
     StreamingChunk, ToolResultContent, ToolResultImage,
 };
 use std::any::Any;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
+use tools_core::spec::AnnotatedToolDefinition;
 use tools_core::{
     PermissionMediator, ResourcesTracker, ToolContext, ToolError, ToolPermissions, ToolRegistry,
 };
@@ -92,6 +93,9 @@ pub struct AgentRuntime {
     registry: Arc<ToolRegistry>,
     tool_capability: String,
     excluded_tool_capabilities: Vec<String>,
+    /// Tools the requests hold back although the scope includes them,
+    /// settled when a run starts (see [`crate::tool_offer`]).
+    withheld_tools: BTreeSet<String>,
     stream_hidden_tools: HiddenTools,
     command_executor: Arc<dyn CommandExecutor>,
     ui: Arc<dyn AgentUi>,
@@ -140,6 +144,8 @@ impl AgentRuntime {
                     format!("Tool error: {msg}. Please try again.")
                 }
             }
+        } else if let Some(disabled) = error.downcast_ref::<crate::tool_offer::ToolDisabled>() {
+            disabled.to_string()
         } else {
             // Generic fallback for other error types
             format!("Error in tool request: {error}")
@@ -172,6 +178,7 @@ impl AgentRuntime {
             registry,
             tool_capability,
             excluded_tool_capabilities,
+            withheld_tools: BTreeSet::new(),
             stream_hidden_tools,
             command_executor,
             ui,
@@ -248,6 +255,59 @@ impl AgentRuntime {
     }
 
     /// Restore the request id counter from persisted state.
+    /// Restore the tools the conversation's requests held back so far.
+    pub fn set_withheld_tools(&mut self, withheld_tools: BTreeSet<String>) {
+        self.withheld_tools = withheld_tools;
+    }
+
+    /// Settle which tools this run offers: what the application withdrew,
+    /// unless the prompt cache of the previous request may still be warm —
+    /// then the offer stays as it was (see [`crate::tool_offer`]).
+    pub(crate) fn settle_tool_offer(&mut self) {
+        let availability = &self.hooks.tool_availability;
+        let last_request = self
+            .conversation
+            .last_assistant_id()
+            .and_then(|id| self.conversation.node(id))
+            .map(|node| node.created_at);
+        let settled = crate::tool_offer::settle_withheld(
+            &self.withheld_tools,
+            availability.withdrawn(self.extensions.as_ref()),
+            last_request,
+            SystemTime::now(),
+            availability.cache_ttl(),
+        );
+        if settled != self.withheld_tools {
+            debug!("Tools held back from now on: {settled:?}");
+            self.withheld_tools = settled;
+            // Text dialects document the offered tools in the system prompt.
+            self.invalidate_system_message_cache();
+        }
+    }
+
+    /// Whether a call of `tool` must be refused because the application
+    /// withdrew it (now, or before this run settled its offer).
+    fn is_tool_withdrawn(&self, tool: &str) -> bool {
+        self.withheld_tools.contains(tool)
+            || self
+                .hooks
+                .tool_availability
+                .withdrawn(self.extensions.as_ref())
+                .contains(tool)
+    }
+
+    /// The definitions of the tools this run offers, in registry order.
+    pub(crate) fn offered_tool_definitions(&self) -> Vec<AnnotatedToolDefinition> {
+        self.registry
+            .get_tool_definitions_with_capability_excluding(
+                self.tool_capability.as_str(),
+                &self.excluded_tool_capabilities,
+            )
+            .into_iter()
+            .filter(|definition| !self.withheld_tools.contains(&definition.name))
+            .collect()
+    }
+
     pub fn set_next_request_id(&mut self, next_request_id: u64) {
         self.next_request_id = next_request_id;
     }
@@ -339,6 +399,7 @@ impl AgentRuntime {
             next_node_id: self.conversation.next_id(),
             changed_executions: self.journal.changed().collect(),
             next_request_id: self.next_request_id,
+            withheld_tools: &self.withheld_tools,
         };
         trace!(
             "checkpoint: {} changed node(s), {} changed execution(s)",
@@ -395,6 +456,9 @@ impl AgentRuntime {
         // Compactions after an image-limit rejection since the last
         // successful request; a second one in a row would not help.
         let mut image_recoveries: u32 = 0;
+        // The offer changes only here, between runs: never while the model
+        // works with it.
+        self.settle_tool_offer();
 
         loop {
             self.cancellation.check()?;
@@ -618,11 +682,13 @@ impl AgentRuntime {
             return cached.clone();
         }
 
+        let tools = self.offered_tool_definitions();
         let ctx = crate::hooks::PromptCtx {
             dialect: self.dialect.as_ref(),
             model_hint: self.model_hint.as_deref(),
             session_id: self.session_id.as_deref(),
             registry: self.registry.as_ref(),
+            tools: &tools,
             extensions: self.extensions.as_ref(),
         };
         let system_message = self.hooks.system_prompt.build(&ctx);
@@ -722,14 +788,7 @@ impl AgentRuntime {
             messages: converted_messages,
             system_prompt: self.get_system_prompt(),
             tools: if self.dialect.uses_native_tools() {
-                Some(to_tool_definitions(
-                    self.registry
-                        .as_ref()
-                        .get_tool_definitions_with_capability_excluding(
-                            self.tool_capability.as_str(),
-                            &self.excluded_tool_capabilities,
-                        ),
-                ))
+                Some(to_tool_definitions(self.offered_tool_definitions()))
             } else {
                 None
             },
@@ -872,14 +931,7 @@ impl AgentRuntime {
             messages: converted_messages,
             system_prompt: self.get_system_prompt(),
             tools: if self.dialect.uses_native_tools() {
-                Some(to_tool_definitions(
-                    self.registry
-                        .as_ref()
-                        .get_tool_definitions_with_capability_excluding(
-                            self.tool_capability.as_str(),
-                            &self.excluded_tool_capabilities,
-                        ),
-                ))
+                Some(to_tool_definitions(self.offered_tool_definitions()))
             } else {
                 None
             },

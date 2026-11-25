@@ -1363,6 +1363,8 @@ impl SessionManager {
             let session_state = crate::session::SessionState {
                 session_id: session_id.to_string(),
                 name,
+                name_set_by_user: session_instance.name_set_by_user.clone(),
+                withheld_tools: session_instance.session.withheld_tools.clone(),
                 message_nodes: session_instance.session.message_nodes.clone(),
                 active_path: session_instance.session.active_path.clone(),
                 next_node_id: session_instance.session.next_node_id,
@@ -2293,6 +2295,32 @@ impl SessionManager {
             .context("session has no model config after setting its effort")
     }
 
+    /// Name the session as the user asked. From then on the agent no longer
+    /// names it: a running agent's `name_session` calls are refused, and its
+    /// checkpoints keep this name.
+    pub fn rename_session(&mut self, session_id: &str, name: &str) -> Result<ChatMetadata> {
+        let name = name.trim();
+        anyhow::ensure!(!name.is_empty(), "A session name cannot be empty");
+        let session = self.persistence.update_entry(session_id, |session| {
+            session.set_name_by_user(name.to_string());
+            Ok(())
+        })?;
+        if let Some(instance) = self.active_sessions.get_mut(session_id) {
+            instance.session.set_name_by_user(session.name.clone());
+            instance
+                .name_set_by_user
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        let metadata = session.metadata();
+        self.events.publish_ui(
+            session_id,
+            UiEvent::UpdateSessionMetadata {
+                metadata: metadata.clone(),
+            },
+        );
+        Ok(metadata)
+    }
+
     pub fn set_session_sandbox_policy(
         &mut self,
         session_id: &str,
@@ -3024,6 +3052,7 @@ mod tests {
                 plan: &crate::types::PlanState::default(),
                 active_skills: &[],
                 next_request_id: 1,
+                withheld_tools: &Default::default(),
             })
             .unwrap();
     }
@@ -3112,6 +3141,39 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    /// A rename reaches a running agent through the instance's shared flag,
+    /// and the run's later checkpoints keep the user's name.
+    #[tokio::test]
+    async fn a_rename_outlasts_the_checkpoints_of_a_running_agent() {
+        let (mut owner, dir) = build_manager(false);
+        let id = owner.create_session(None).unwrap();
+        let flag = owner.active_sessions[&id].name_set_by_user.clone();
+        let mut subscription = owner.events.subscribe();
+
+        assert!(owner.rename_session(&id, "   ").is_err());
+        let metadata = owner.rename_session(&id, "  Chosen name ").unwrap();
+        assert_eq!(metadata.name, "Chosen name");
+        assert!(flag.load(std::sync::atomic::Ordering::Acquire));
+        match subscription.recv().await.unwrap().payload {
+            crate::session::EventPayload::Ui(UiEvent::UpdateSessionMetadata { metadata }) => {
+                assert_eq!(metadata.name, "Chosen name");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        let mut run_manager = SessionManager::new(
+            FileSessionPersistence::new_with_root_dir(dir.path().to_path_buf()),
+            SessionConfig::default(),
+            "test-model".into(),
+            crate::tools::test_registry(),
+            crate::session::event_stream::EventStream::new(),
+        );
+        commit_messages(&mut run_manager, &id, vec![Message::new_user("task")]);
+        let stored = owner.persistence.load_chat_session(&id).unwrap().unwrap();
+        assert_eq!(stored.name, "Chosen name");
+        assert!(stored.name_set_by_user);
     }
 
     /// A run commits through a manager of its own, so the owner's instance

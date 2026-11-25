@@ -1135,6 +1135,20 @@ impl SessionService {
         .await
     }
 
+    /// Rename the session. The agent no longer names it afterwards; the new
+    /// name arrives as `UpdateSessionMetadata`.
+    pub async fn rename_session(&self, session_id: String, name: String) -> Result<()> {
+        self.call_session(session_id.clone(), move |ctx| async move {
+            ctx.manager
+                .lock()
+                .await
+                .rename_session(&session_id, &name)?;
+            info!("User renamed session {session_id}");
+            Ok(())
+        })
+        .await
+    }
+
     pub async fn change_sandbox_policy(
         &self,
         session_id: String,

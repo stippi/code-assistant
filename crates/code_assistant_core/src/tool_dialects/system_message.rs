@@ -1,6 +1,5 @@
 //! System message generation functionality
 
-use crate::tools::core::ToolScope;
 use agent_core::ToolDialect;
 use rust_embed::RustEmbed;
 use serde::Deserialize;
@@ -47,11 +46,12 @@ fn default_prompt_name() -> String {
 
 static PROMPT_MAPPING: OnceLock<PromptMapping> = OnceLock::new();
 
-/// Generate a system message for the given tool dialect, scope, and optional model hint
+/// Generate a system message for the given tool dialect and optional model
+/// hint. Text dialects document `tools`, the tools the run offers.
 pub fn generate_system_message(
     dialect: &dyn ToolDialect,
-    scope: ToolScope,
     model_hint: Option<&str>,
+    tools: &[tools_core::spec::AnnotatedToolDefinition],
     registry: &crate::tools::core::ToolRegistry,
 ) -> String {
     let mut base = load_base_prompt(model_hint).replace("{{environment}}", &environment_section());
@@ -73,7 +73,7 @@ pub fn generate_system_message(
         }
 
         // Replace tools documentation with header + tools doc
-        if let Some(tools_doc) = dialect.render_tool_section_for_prompt(registry, scope.tag()) {
+        if let Some(tools_doc) = dialect.render_tool_section_for_prompt(tools, registry) {
             let tools_content = format!("{tool_use_header}{tools_doc}");
             base = base.replace("{{tools}}", &tools_content);
         } else {
@@ -245,17 +245,23 @@ fn prepare_prompt_mapping(raw: RawPromptMapping) -> PromptMapping {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::core::ToolScope;
+
+    /// The system message for the main agent's tool set.
+    fn agent_system_message(dialect: &dyn ToolDialect, model_hint: Option<&str>) -> String {
+        let registry = crate::tools::test_registry();
+        let tools = registry.get_tool_definitions_with_capability(ToolScope::Agent.tag());
+        generate_system_message(dialect, model_hint, &tools, &registry)
+    }
 
     #[test]
     fn test_system_message_generation() {
         use crate::types::ToolSyntax;
 
         // Test Native mode
-        let native_msg = generate_system_message(
+        let native_msg = agent_system_message(
             &*crate::tool_dialects::dialect_for(ToolSyntax::Native),
-            ToolScope::Agent,
             None,
-            &crate::tools::test_registry(),
         );
         assert!(!native_msg.contains("{{tools}}"));
         assert!(!native_msg.contains("{{syntax}}"));
@@ -264,12 +270,8 @@ mod tests {
         assert!(!native_msg.contains("TOOL USE"));
 
         // Test XML mode
-        let xml_msg = generate_system_message(
-            &*crate::tool_dialects::dialect_for(ToolSyntax::Xml),
-            ToolScope::Agent,
-            None,
-            &crate::tools::test_registry(),
-        );
+        let xml_msg =
+            agent_system_message(&*crate::tool_dialects::dialect_for(ToolSyntax::Xml), None);
         assert!(
             !xml_msg.contains("{{tools}}"),
             "XML message contains unreplaced {{tools}} placeholder"
@@ -292,12 +294,8 @@ mod tests {
         );
 
         // Test Caret mode
-        let caret_msg = generate_system_message(
-            &*crate::tool_dialects::dialect_for(ToolSyntax::Caret),
-            ToolScope::Agent,
-            None,
-            &crate::tools::test_registry(),
-        );
+        let caret_msg =
+            agent_system_message(&*crate::tool_dialects::dialect_for(ToolSyntax::Caret), None);
         assert!(
             !caret_msg.contains("{{tools}}"),
             "Caret message contains unreplaced {{tools}} placeholder"
@@ -351,12 +349,8 @@ mod tests {
 
         for syntax in [ToolSyntax::Native, ToolSyntax::Xml, ToolSyntax::Caret] {
             for hint in [None, Some("claude-sonnet"), Some("gpt-5-codex")] {
-                let message = generate_system_message(
-                    &*crate::tool_dialects::dialect_for(syntax),
-                    ToolScope::Agent,
-                    hint,
-                    &crate::tools::test_registry(),
-                );
+                let message =
+                    agent_system_message(&*crate::tool_dialects::dialect_for(syntax), hint);
                 assert!(!message.contains("{{environment}}"), "{syntax:?} {hint:?}");
                 assert!(message.contains("# Environment"), "{syntax:?} {hint:?}");
                 assert!(

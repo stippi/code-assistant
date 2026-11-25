@@ -43,6 +43,15 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
 ### Tool Architecture
 - `ToolRegistry` is an instance, not a singleton; `ToolSpec` carries capability tags (e.g. `read_only`)
 - Tools reach the model in registration order (built-ins by topic in `register_default_tools`, then each MCP server in config order with its tools as listed); capability tags only filter. The order is part of the prompt-cache prefix, so it must not vary between registries
+- Withdrawing tools at runtime: `agent_core::tool_offer` — the application
+  names withdrawn tools (`ToolAvailability`, a hook in `HookRegistry`); the
+  loop changes the offered set only when a run starts and the prompt cache of
+  the last request has expired, persists it with the checkpoint
+  (`withheld_tools`), and refuses calls of withdrawn tools in the dispatch
+  check (`ToolDisabled`), so no tool implements this itself
+- Example: once the user renames a session (title bar, `SessionService::
+  rename_session`, `ChatSession::name_set_by_user`), `name_session` is
+  withdrawn and agent checkpoints keep the user's name
 - **Tool modes** (configured per agent instance via `ToolDialect`):
   - `native` — LLM provider's native tool calling (default in `agent_core`)
   - `xml` — XML-based tool syntax in system messages

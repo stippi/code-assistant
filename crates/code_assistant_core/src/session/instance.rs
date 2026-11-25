@@ -293,6 +293,11 @@ pub struct SessionInstance {
     /// agent at streaming checkpoints. Cleared when a new agent starts.
     pub stop_requested: Arc<std::sync::atomic::AtomicBool>,
 
+    /// Whether the user named the session. Shared with running agents, so a
+    /// rename while one works withdraws its `name_session` tool at once.
+    /// Only ever turns on.
+    pub name_set_by_user: Arc<std::sync::atomic::AtomicBool>,
+
     /// Pending user message (structured content blocks) that will be processed by the next agent iteration
     pub pending_message: Arc<Mutex<Option<Vec<ContentBlock>>>>,
 
@@ -402,9 +407,12 @@ impl SessionInstance {
             &session.tool_executions,
         ));
 
+        let name_set_by_user =
+            Arc::new(std::sync::atomic::AtomicBool::new(session.name_set_by_user));
         Self {
             session,
             loaded_version: None,
+            name_set_by_user,
             task_handle: None,
             setup_task: None,
             sleep_guard: None,
@@ -628,6 +636,10 @@ impl SessionInstance {
         if let Some(session) = persistence.load_chat_session_unresolved(&self.session.id)? {
             debug!("Reloading session {} from persistence", self.session.id);
             self.session = session;
+            if self.session.name_set_by_user {
+                self.name_set_by_user
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
             if let Some(path) = self.session.config.effective_project_path() {
                 let _ = self.sandbox_context.register_root(path);
             }

@@ -22,6 +22,7 @@ use agent_core::ui::{AgentUi, HiddenTools, StreamProcessorTrait};
 use anyhow::Result;
 use llm::{ContentBlock, LLMResponse};
 use std::sync::Arc;
+use tools_core::spec::AnnotatedToolDefinition;
 
 /// Parse Caret tool requests from LLM response and return both requests and truncated response after first tool
 fn parse_and_truncate_caret_response(
@@ -120,11 +121,11 @@ impl ToolDialect for CaretDialect {
 
     fn render_tool_section_for_prompt(
         &self,
+        tools: &[AnnotatedToolDefinition],
         registry: &ToolRegistry,
-        capability: &str,
     ) -> Option<String> {
         // Generate caret-style documentation
-        Some(self.generate_caret_tool_documentation(registry, capability))
+        Some(self.generate_caret_tool_documentation(tools, registry))
     }
 
     fn render_format_section_for_prompt(&self) -> Option<String> {
@@ -135,11 +136,9 @@ impl ToolDialect for CaretDialect {
 impl CaretDialect {
     fn generate_caret_tool_documentation(
         &self,
+        tool_defs: &[AnnotatedToolDefinition],
         registry: &ToolRegistry,
-        capability: &str,
     ) -> String {
-        let tool_defs = registry.get_tool_definitions_with_capability(capability);
-
         let mut docs = String::new();
 
         for tool in tool_defs {

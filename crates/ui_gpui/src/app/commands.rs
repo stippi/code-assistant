@@ -423,6 +423,19 @@ impl Gpui {
         });
     }
 
+    /// Rename a session; the new name arrives as session metadata.
+    pub(crate) fn cmd_rename_session(&self, session_id: String, name: String) {
+        let Some(service) = self.session_service() else {
+            return;
+        };
+        let gpui = self.clone();
+        self.dispatch(async move {
+            if let Err(e) = service.rename_session(session_id, name).await {
+                gpui.display_error(format!("{e:#}"));
+            }
+        });
+    }
+
     pub(crate) fn cmd_set_effort(&self, session_id: String, effort: llm::capabilities::Effort) {
         let Some(service) = self.session_service() else {
             return;

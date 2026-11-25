@@ -21,6 +21,7 @@ use agent_core::ui::{AgentUi, HiddenTools, StreamProcessorTrait};
 use anyhow::Result;
 use llm::{ContentBlock, LLMResponse};
 use std::sync::Arc;
+use tools_core::spec::AnnotatedToolDefinition;
 
 /// Parse XML tool requests from LLM response and return both requests and truncated response after first tool
 fn parse_and_truncate_xml_response(
@@ -119,11 +120,11 @@ impl ToolDialect for XmlDialect {
 
     fn render_tool_section_for_prompt(
         &self,
+        tools: &[AnnotatedToolDefinition],
         registry: &ToolRegistry,
-        capability: &str,
     ) -> Option<String> {
         // Generate XML-style documentation
-        Some(self.generate_xml_tool_documentation(registry, capability))
+        Some(self.generate_xml_tool_documentation(tools, registry))
     }
 
     fn render_format_section_for_prompt(&self) -> Option<String> {
@@ -132,9 +133,11 @@ impl ToolDialect for XmlDialect {
 }
 
 impl XmlDialect {
-    fn generate_xml_tool_documentation(&self, registry: &ToolRegistry, capability: &str) -> String {
-        let tool_defs = registry.get_tool_definitions_with_capability(capability);
-
+    fn generate_xml_tool_documentation(
+        &self,
+        tool_defs: &[AnnotatedToolDefinition],
+        registry: &ToolRegistry,
+    ) -> String {
         let mut docs = String::new();
 
         for tool in tool_defs {
