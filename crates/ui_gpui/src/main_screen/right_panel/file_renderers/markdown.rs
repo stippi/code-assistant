@@ -405,7 +405,7 @@ impl Render for MarkdownPreview {
             )
             // The pill stays where the mouse was released; scrolling moves
             // the text away from it.
-            .on_scroll_wheel(cx.listener(|this, _, _, cx| {
+            .on_scroll(cx.listener(|this, _, _, cx| {
                 if this.selection.take().is_some() {
                     cx.notify();
                 }

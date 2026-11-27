@@ -46,7 +46,7 @@ pub const EDGE_SCROLL_MIN_SPEED: f32 = 2.0;
 
 /// Install the scroll handler on the list state.
 ///
-/// This handler is ONLY called on real ScrollWheelEvent (mouse/trackpad),
+/// This handler is ONLY called on real ScrollEvent (mouse/trackpad),
 /// never for programmatic offset changes (set_offset_from_scrollbar).
 ///
 /// Strategy: we only care about *direction*. If the user scrolls upward

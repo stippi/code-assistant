@@ -248,7 +248,7 @@ impl Render for MarkdownEditor {
                 }
                 let keystroke = &event.keystroke;
                 match keystroke.key.as_str() {
-                    "enter" if keystroke.modifiers.secondary() => this.submit(cx),
+                    "enter" if keystroke.modifiers.secondary(cx) => this.submit(cx),
                     "escape" => this.cancel(cx),
                     _ => return,
                 }

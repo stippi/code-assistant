@@ -346,7 +346,7 @@ impl ToolBlockRenderer for DiffCardRenderer {
             .track_focus(&card_ctx.diff_focus_handle)
             .on_key_down(cx.listener(|view, event: &KeyDownEvent, _window, cx| {
                 let ks = &event.keystroke;
-                if ks.modifiers.secondary() && ks.key == "c" {
+                if ks.modifiers.secondary(cx) && ks.key == "c" {
                     view.copy_diff_selection(cx);
                     cx.stop_propagation();
                 }

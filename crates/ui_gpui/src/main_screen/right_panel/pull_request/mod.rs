@@ -998,7 +998,7 @@ mod tests {
     fn a_long_list_of_repositories_scrolls(cx: &mut TestAppContext) {
         fn scrolls(cx: &mut gpui_kit::VisualTestContext) -> bool {
             let before = cx.debug_bounds("pr-repo-repo000").unwrap();
-            cx.simulate_event(gpui_kit::ScrollWheelEvent {
+            cx.simulate_event(gpui_kit::ScrollEvent {
                 position: before.center(),
                 delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
                     gpui_kit::px(0.),

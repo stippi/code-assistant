@@ -5,6 +5,7 @@
 //! thinking, tool-use, compaction, image).
 
 use super::{BlockData, BlockView, ToolBlockState, ToolUseBlock};
+use crate::shared::spinner::spinner;
 use crate::shared::text::single_line;
 use crate::shared::{file_icons, frame_profile};
 use code_assistant_core::ui::ToolStatus;
@@ -15,11 +16,10 @@ const MAX_IMAGE_HEIGHT: f32 = 80.0;
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Animation, AnimationExt, ClickEvent, Context, ImageSource, IntoElement, ObjectFit,
-    SharedString, Styled, Transformation, div, img, percentage, px, rems, svg,
+    ClickEvent, Context, ImageSource, IntoElement, ObjectFit, SharedString, Styled, div, img, px,
+    rems, svg,
 };
 use std::rc::Rc;
-use std::time::Duration;
 
 impl BlockView {
     // ------------------------------------------------------------------
@@ -260,19 +260,9 @@ impl BlockView {
                                 .items_center()
                                 .justify_center()
                                 .child(
-                                    gpui_kit::svg()
+                                    spinner("icons/arrow_circle.svg")
                                         .size(px(14.))
-                                        .path(SharedString::from("icons/arrow_circle.svg"))
-                                        .text_color(icon_color)
-                                        .with_animation(
-                                            "inline_spinner",
-                                            Animation::new(Duration::from_secs(2)).repeat(),
-                                            |svg, delta| {
-                                                svg.with_transformation(Transformation::rotate(
-                                                    percentage(delta),
-                                                ))
-                                            },
-                                        ),
+                                        .text_color(icon_color),
                                 ),
                         )
                     })
@@ -630,19 +620,9 @@ impl BlockView {
                         .items_center()
                         .justify_center()
                         .child(
-                            svg()
+                            spinner("icons/arrow_circle.svg")
                                 .size(px(14.))
-                                .path(SharedString::from("icons/arrow_circle.svg"))
-                                .text_color(muted)
-                                .with_animation(
-                                    "thinking_spinner",
-                                    Animation::new(Duration::from_secs(2)).repeat(),
-                                    |svg, delta| {
-                                        svg.with_transformation(Transformation::rotate(percentage(
-                                            delta,
-                                        )))
-                                    },
-                                ),
+                                .text_color(muted),
                         )
                         .into_any_element()
                 };

@@ -895,10 +895,10 @@ impl Render for FileViewer {
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let ks = &event.keystroke;
-                if ks.modifiers.secondary() && !ks.modifiers.shift && ks.key == "s" {
+                if ks.modifiers.secondary(cx) && !ks.modifiers.shift && ks.key == "s" {
                     this.save(cx);
                     cx.stop_propagation();
-                } else if ks.modifiers.secondary() && ks.modifiers.shift && ks.key == "m" {
+                } else if ks.modifiers.secondary(cx) && ks.modifiers.shift && ks.key == "m" {
                     match &this.renderer {
                         Some((_, renderer)) => renderer.start_comment(window, cx),
                         None => this.start_comment(window, cx),

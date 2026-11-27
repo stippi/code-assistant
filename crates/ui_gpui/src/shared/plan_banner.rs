@@ -1,13 +1,13 @@
 use super::collapse_animation::CollapseAnimator;
 use super::file_icons;
+use super::spinner::spinner;
 use super::text::single_line;
 use code_assistant_core::types::{PlanItemStatus, PlanState};
 use gpui_kit::prelude::*;
 
 use gpui_kit::component::{ActiveTheme, StyledExt};
 use gpui_kit::{
-    Animation, AnimationExt, Bounds, ClickEvent, Context, EventEmitter, Pixels, Render,
-    SharedString, Transformation, Window, div, percentage, px, rems,
+    Bounds, ClickEvent, Context, EventEmitter, Pixels, Render, SharedString, Window, div, px, rems,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -153,20 +153,10 @@ impl Render for PlanBanner {
                                     .child("•"),
                             )
                             .child(
-                                gpui_kit::svg()
+                                spinner("icons/arrow_circle.svg")
                                     .flex_none()
                                     .size(rems(0.75))
-                                    .path("icons/arrow_circle.svg")
-                                    .text_color(cx.theme().info)
-                                    .with_animation(
-                                        "plan-active-spin-header",
-                                        Animation::new(Duration::from_secs(2)).repeat(),
-                                        |svg, delta| {
-                                            svg.with_transformation(Transformation::rotate(
-                                                percentage(delta),
-                                            ))
-                                        },
-                                    ),
+                                    .text_color(cx.theme().info),
                             )
                             .child(
                                 div()
@@ -318,7 +308,7 @@ fn render_plan_items(plan: &PlanState, cx: &mut Context<PlanBanner>) -> gpui_kit
         .flex_col()
         .pt(rems(0.125))
         .gap(rems(0.0625))
-        .children(plan.entries.iter().enumerate().map(|(idx, entry)| {
+        .children(plan.entries.iter().map(|entry| {
             let is_in_progress = entry.status == PlanItemStatus::InProgress;
             let is_completed = entry.status == PlanItemStatus::Completed;
 
@@ -359,19 +349,9 @@ fn render_plan_items(plan: &PlanState, cx: &mut Context<PlanBanner>) -> gpui_kit
                         })
                         .when(is_in_progress, |el| {
                             el.child(
-                                gpui_kit::svg()
+                                spinner("icons/arrow_circle.svg")
                                     .size(rems(0.875))
-                                    .path("icons/arrow_circle.svg")
-                                    .text_color(icon_color)
-                                    .with_animation(
-                                        SharedString::from(format!("plan-spin-{idx}")),
-                                        Animation::new(Duration::from_secs(2)).repeat(),
-                                        |svg, delta| {
-                                            svg.with_transformation(Transformation::rotate(
-                                                percentage(delta),
-                                            ))
-                                        },
-                                    ),
+                                    .text_color(icon_color),
                             )
                         })
                         .when(!is_completed && !is_in_progress, |el| {

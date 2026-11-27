@@ -103,11 +103,17 @@ static SYNTAX_THEMES: LazyLock<HashMap<ThemeMode, Arc<HighlightTheme>>> = LazyLo
     styles
         .into_iter()
         .map(|(mode, style)| {
-            let theme = HighlightTheme {
-                name: format!("code-assistant {}", mode.name()),
-                appearance: mode,
-                style,
+            // `HighlightTheme` is non-exhaustive: start from gpui-component's
+            // theme of the mode and put our name and style in.
+            let base = if mode.is_dark() {
+                HighlightTheme::default_dark()
+            } else {
+                HighlightTheme::default_light()
             };
+            let mut theme = HighlightTheme::clone(&base);
+            theme.name = format!("code-assistant {}", mode.name());
+            theme.appearance = mode;
+            theme.style = style;
             (mode, Arc::new(theme))
         })
         .collect()

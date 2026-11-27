@@ -10,15 +10,15 @@ use super::{CardRenderContext, ToolBlockRenderer, ToolBlockStyle, animated_card_
 use crate::Gpui;
 use crate::blocks::{BlockView, ToolUseBlock};
 use crate::shared::file_icons;
+use crate::shared::spinner::spinner;
 use crate::shared::text::{single_line, visible_head};
 use crate::terminal::pool::TerminalPool;
 use code_assistant_core::ui::ToolStatus;
 use gpui_kit::AppContext as _; // brings .new() into scope on Context
 use gpui_kit::prelude::FluentBuilder;
-use gpui_kit::{Animation, AnimationExt, Transformation, svg};
 use gpui_kit::{
     ClickEvent, Context, Entity, InteractiveElement, IntoElement, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, percentage, px, rems,
+    StatefulInteractiveElement, Styled, Window, div, px, rems,
 };
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -335,19 +335,9 @@ impl ToolBlockRenderer for TerminalCardRenderer {
                     .items_center()
                     .gap_1()
                     .child(
-                        svg()
+                        spinner("icons/arrow_circle.svg")
                             .size(px(12.))
-                            .path(SharedString::from("icons/arrow_circle.svg"))
-                            .text_color(header_text_color)
-                            .with_animation(
-                                SharedString::from(format!("term-spin-{}", tool.id)),
-                                Animation::new(Duration::from_secs(2)).repeat(),
-                                |svg, delta| {
-                                    svg.with_transformation(Transformation::rotate(percentage(
-                                        delta,
-                                    )))
-                                },
-                            ),
+                            .text_color(header_text_color),
                     )
                     .when_some(elapsed_str, |el, text| {
                         el.child(

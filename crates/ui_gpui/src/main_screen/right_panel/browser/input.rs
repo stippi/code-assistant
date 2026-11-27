@@ -8,7 +8,7 @@ use super::{BrowserPanel, geometry};
 use gpui_kit::{
     Bounds, ClipboardItem, Context, Div, EntityInputHandler, InteractiveElement, KeyDownEvent,
     KeyUpEvent, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    ScrollWheelEvent, Stateful, Styled, UTF16Selection, Window, px,
+    ScrollEvent, Stateful, Styled, UTF16Selection, Window, px,
 };
 use std::ops::Range;
 use web::{Button, Point, UserInput};
@@ -64,7 +64,7 @@ impl BrowserPanel {
                     });
                 }
             }))
-            .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
+            .on_scroll(cx.listener(|this, event: &ScrollEvent, window, cx| {
                 let Some(at) = this.page_point(event.position) else {
                     return;
                 };
