@@ -3,8 +3,8 @@
 
 use super::super::conversation::fixtures::{commit, data, thread, window};
 use super::super::fixtures::hours_ago;
-use super::super::preferences::DiffLayout;
 use super::*;
+use crate::main_screen::right_panel::code_view::preferences::DiffLayout;
 use github::model::{DiffPage, DiffSide};
 use gpui_kit::{Modifiers, MouseButton, TestAppContext, VisualTestContext};
 

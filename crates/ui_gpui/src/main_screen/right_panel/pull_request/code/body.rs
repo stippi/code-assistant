@@ -3,10 +3,10 @@
 //! states shown instead of the list, the strip of threads not on the diff
 //! and the header that stays on top while its file scrolls.
 
-use super::context::{Reveal, ShownGap, gap_reveals};
-use super::rows::{CodeRow, gap_label};
 use super::{CodeTab, Shown};
 use crate::diff::render::{GutterNumbers, render_diff_chunk_rows, render_split_chunk_rows};
+use crate::main_screen::right_panel::code_view::context::{Reveal, ShownGap, gap_reveals};
+use crate::main_screen::right_panel::code_view::rows::{CodeRow, gap_label};
 use crate::main_screen::right_panel::line_selection::{ChunkMarks, row_selection};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::{ActiveTheme, Icon, Sizable};
@@ -151,7 +151,11 @@ impl CodeTab {
             }));
         let button = match reveal {
             // Between hunks a large gap offers "Expand all" as text.
-            Reveal::All if gap.hidden.is_some_and(|h| h > super::context::EXPAND_STEP) => {
+            Reveal::All
+                if gap.hidden.is_some_and(|h| {
+                    h > crate::main_screen::right_panel::code_view::context::EXPAND_STEP
+                }) =>
+            {
                 button.label("Expand all")
             }
             _ => button.icon(Icon::default().path(icon)),

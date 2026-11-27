@@ -6,7 +6,7 @@
 //! the next.
 
 use super::CodeTab;
-use super::tree::{TreeRow, tree_rows};
+use crate::main_screen::right_panel::code_view::tree::{TreeRow, tree_rows};
 use crate::shared::file_icons;
 use git::ChangeStatus;
 use gpui_kit::component::button::{Button, ButtonVariants};

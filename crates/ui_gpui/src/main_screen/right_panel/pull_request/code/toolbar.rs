@@ -4,8 +4,8 @@
 //! split, wrap (folded into one menu when the toolbar is narrow), collapse
 //! / expand all, hide tests and the file tree.
 
-use super::super::preferences::DiffLayout;
 use super::CodeTab;
+use crate::main_screen::right_panel::code_view::preferences::DiffLayout;
 use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::popover::{Popover, PopoverState};

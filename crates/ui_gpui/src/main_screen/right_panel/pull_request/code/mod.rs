@@ -25,19 +25,12 @@
 //!   the agent's draft ([`comments`]). Not in a commit's scope: GitHub
 //!   anchors comments to the whole change.
 
-mod anchors;
 mod aside;
 mod body;
 mod comments;
-mod context;
 mod file_header;
-mod file_kind;
-mod file_order;
-mod folds;
 mod pages;
-mod rows;
 mod toolbar;
-mod tree;
 mod viewed;
 
 use super::PullRequestIntent;
@@ -50,6 +43,8 @@ use super::review_draft::{ReviewDrafts, review_drafts};
 use crate::comments::AnchorTracker;
 use crate::diff::prepare::highlight_patch;
 use crate::diff::syntax::DiffSyntax;
+use crate::main_screen::right_panel::code_view::file::{DiffView, FileText, LoadedFile};
+use crate::main_screen::right_panel::code_view::{anchors, context, file_order, folds, rows, tree};
 use crate::main_screen::right_panel::line_selection::{LineSelection, Selected, SelectsLines};
 use crate::main_screen::right_panel::review_rows::changed_span;
 use anchors::{Annotation, LineRef, place};
@@ -66,7 +61,7 @@ use gpui_kit::{
     ListAlignment, ListOffset, ListState, Pixels, Render, SharedString, Subscription, Task,
     UniformListScrollHandle, Window, div, list, prelude::*, px,
 };
-use pages::{Arrival, DiffView, FileText, LoadedFile, Page, arrival, fingerprint, parse_page};
+use pages::{Arrival, Page, arrival, fingerprint, parse_page};
 use rows::{ChunkOutline, CodeRow, FileBody, FileOutline, files_by_proximity, flatten};
 use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap, HashSet};

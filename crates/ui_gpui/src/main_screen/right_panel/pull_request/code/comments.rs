@@ -8,12 +8,12 @@
 //! GitHub anchors comments to.
 
 use super::CodeTab;
-use super::anchors::{RangeRef, range_of};
 use super::body::annotation;
-use super::pages::LoadedFile;
 use crate::comments::{CommentChange, floating, selection_pill};
 use crate::diff::model::DiffLine;
 use crate::diff::rows::GutterAdd;
+use crate::main_screen::right_panel::code_view::anchors::{RangeRef, range_of};
+use crate::main_screen::right_panel::code_view::file::LoadedFile;
 use code_assistant_core::line_comments::LineComment;
 use github::model::DiffSide;
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -288,14 +288,23 @@ impl CodeTab {
             .iter()
             .filter(|c| c.path == file.path)
             .filter_map(|c| {
-                let end = file.lines.row(super::anchors::LineRef {
-                    side: c.side,
-                    line: c.line,
-                })?;
+                let end = file.lines.row(
+                    crate::main_screen::right_panel::code_view::anchors::LineRef {
+                        side: c.side,
+                        line: c.line,
+                    },
+                )?;
                 let start = c
                     .start_side
                     .zip(c.start_line)
-                    .and_then(|(side, line)| file.lines.row(super::anchors::LineRef { side, line }))
+                    .and_then(|(side, line)| {
+                        file.lines.row(
+                            crate::main_screen::right_panel::code_view::anchors::LineRef {
+                                side,
+                                line,
+                            },
+                        )
+                    })
                     .unwrap_or(end);
                 let covered = start.max(chunk.start)..(end + 1).min(chunk.end);
                 (covered.start < covered.end).then_some(covered)
@@ -425,16 +434,19 @@ impl CodeTab {
             return div().into_any_element();
         };
         let theme = cx.theme();
-        let at = RangeRef {
-            start: comment
-                .start_side
-                .zip(comment.start_line)
-                .map(|(side, line)| super::anchors::LineRef { side, line }),
-            end: super::anchors::LineRef {
-                side: comment.side,
-                line: comment.line,
-            },
-        };
+        let at =
+            RangeRef {
+                start: comment
+                    .start_side
+                    .zip(comment.start_line)
+                    .map(|(side, line)| {
+                        crate::main_screen::right_panel::code_view::anchors::LineRef { side, line }
+                    }),
+                end: crate::main_screen::right_panel::code_view::anchors::LineRef {
+                    side: comment.side,
+                    line: comment.line,
+                },
+            };
         let card = div()
             .debug_selector(move || format!("pr-code-pending-{id}"))
             .flex()
@@ -487,8 +499,8 @@ impl CodeTab {
 
 #[cfg(test)]
 mod tests {
-    use super::super::anchors::LineRef;
     use super::*;
+    use crate::main_screen::right_panel::code_view::anchors::LineRef;
     use ChangeTag::*;
 
     #[test]
