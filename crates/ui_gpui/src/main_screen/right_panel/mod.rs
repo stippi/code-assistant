@@ -16,6 +16,7 @@ mod file_viewer;
 pub mod files_view;
 mod line_selection;
 pub mod pull_request;
+mod repo_picker;
 mod review_rows;
 pub mod review_view;
 
