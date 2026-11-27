@@ -6,7 +6,6 @@
 //! applied to the shared state and pushed into the UI event queue, which is
 //! the single ingestion point for display updates on the foreground thread.
 
-use crate::diff::prepare::PreparedFileDiff;
 use code_assistant_core::persistence::{DraftAttachment, NodeId};
 use code_assistant_core::session::service::{AddProjectOutcome, SessionService};
 use std::future::Future;
@@ -42,7 +41,7 @@ impl Gpui {
         }
     }
 
-    fn display_error(&self, message: String) {
+    pub(crate) fn display_error(&self, message: String) {
         self.push_event(UiEvent::DisplayError { message });
     }
 
@@ -931,58 +930,6 @@ impl Gpui {
                     }
                 }
                 push(&repos, is_git_repo);
-            }
-        });
-    }
-
-    /// Fetch the diff for a single file selected in the Review panel; its
-    /// line styles are computed for `theme`.
-    pub(crate) fn cmd_get_review_file_diff(
-        &self,
-        session_id: String,
-        repo_root: PathBuf,
-        mode: code_assistant_core::session::ReviewMode,
-        base: Option<String>,
-        file: git::ChangedFile,
-        theme: Arc<gpui_kit::component::highlighter::HighlightTheme>,
-    ) {
-        let Some(service) = self.session_service() else {
-            return;
-        };
-        let gpui = self.clone();
-        let path = file.path.clone();
-        let event_repo_root = repo_root.clone();
-        self.dispatch(async move {
-            let result = service
-                .get_review_file_diff(session_id.clone(), repo_root, mode, base, file)
-                .await;
-            // Hunks and line styles are computed HERE, on the background
-            // executor — the UI thread only ever renders prepared hunks.
-            let prepared = match &result {
-                Ok(diff) => PreparedFileDiff::from_content(&path, diff, Some(&theme)),
-                // An empty prepared diff still completes the view's one-at-a-
-                // time request pipeline; the error itself is surfaced below.
-                Err(_) => PreparedFileDiff::from_content(
-                    &path,
-                    &git::FileDiffContent {
-                        old_text: None,
-                        new_text: None,
-                        is_binary: false,
-                        too_large: false,
-                    },
-                    None,
-                ),
-            };
-            if let Err(e) = &result {
-                gpui.display_error(format!("Failed to load diff: {e:#}"));
-            }
-            if gpui.is_current_session(&session_id) {
-                gpui.set_current_review_diff(Some(crate::ReviewDiff {
-                    repo_root: event_repo_root,
-                    path,
-                    prepared,
-                }));
-                gpui.push_event(UiEvent::UpdateReviewDiff);
             }
         });
     }

@@ -84,11 +84,6 @@ pub struct UiSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_default_base: Option<String>,
 
-    /// Repo roots whose Review section the user expanded — sections default
-    /// to collapsed. Absolute paths, so the state is per project/repo.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub review_expanded_repos: Vec<PathBuf>,
-
     /// The session sidebar's view and project folders.
     #[serde(default)]
     pub sidebar: SidebarSettings,
@@ -139,7 +134,6 @@ impl Default for UiSettings {
             legacy_default_model: None,
             right_sidebar_width: None,
             review_default_base: None,
-            review_expanded_repos: Vec::new(),
             sidebar: SidebarSettings::default(),
             pull_requests: Default::default(),
         }

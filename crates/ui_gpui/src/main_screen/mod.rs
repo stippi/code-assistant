@@ -1563,7 +1563,6 @@ impl MainScreen {
             let gpui_handle = if let Some(gpui) = &gpui {
                 *gpui.current_worktree_data.lock().unwrap() = None;
                 gpui.set_current_review_listing(None);
-                gpui.set_current_review_diff(None);
                 Some((*gpui).clone())
             } else {
                 None

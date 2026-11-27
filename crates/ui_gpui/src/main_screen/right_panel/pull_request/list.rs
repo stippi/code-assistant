@@ -31,8 +31,9 @@ use super::preferences;
 use super::presentation::{
     GLYPH_SIZE, Tone, checks_glyph, conflict_glyph, diff_stat, relative_time, review_glyph,
 };
-use super::repo_picker::{RepoPicked, RepoPicker};
+use super::repo_picker::picker_repo;
 use super::stack::{LAYERS_ICON, base_row, layer_row, position_label};
+use crate::main_screen::right_panel::repo_picker::{RepoPicked, RepoPicker};
 use chrono::Utc;
 use code_assistant_core::pull_requests::RepoCheckout;
 use github::RepoRef;
@@ -106,7 +107,7 @@ pub struct PullRequestList {
     involvement: Involvement,
     sort: SortMode,
     filters: Filters,
-    repo_picker: Entity<RepoPicker>,
+    repo_picker: Entity<RepoPicker<RepoRef>>,
     repo_picker_open: bool,
     search: Entity<InputState>,
     /// The search field's text.
@@ -126,10 +127,11 @@ impl PullRequestList {
         let search = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Search pull requests, or label:bug")
         });
-        let repo_picker = cx.new(|cx| RepoPicker::new(window, cx));
+        let repo_picker =
+            cx.new(|cx| RepoPicker::new("Which repository's pull requests?", "pr", window, cx));
         let subscriptions = vec![
             cx.subscribe_in(&search, window, Self::on_search_event),
-            cx.subscribe(&repo_picker, |this, _, picked: &RepoPicked, cx| {
+            cx.subscribe(&repo_picker, |this, _, picked: &RepoPicked<RepoRef>, cx| {
                 this.repo_picker_open = false;
                 cx.emit(PullRequestIntent::Focus(picked.0.clone()));
             }),
@@ -195,8 +197,9 @@ impl PullRequestList {
 
     /// The repositories to choose from, recent ones first.
     pub fn set_checkouts(&mut self, checkouts: Vec<RepoCheckout>, cx: &mut Context<Self>) {
-        self.repo_picker
-            .update(cx, |picker, cx| picker.set_checkouts(checkouts, cx));
+        self.repo_picker.update(cx, |picker, cx| {
+            picker.set_repos(checkouts.iter().map(picker_repo).collect(), cx)
+        });
         cx.notify();
     }
 

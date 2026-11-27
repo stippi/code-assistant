@@ -996,9 +996,9 @@ impl Gpui {
                 cx.refresh();
             }
 
-            // Pure notifications — the command layer already mirrored the
-            // review data (listing / prepared diff) into the Gpui globals.
-            UiEvent::UpdateReviewFiles | UiEvent::UpdateReviewDiff => {
+            // A pure notification — the command layer already mirrored the
+            // review listing into the Gpui global.
+            UiEvent::UpdateReviewFiles => {
                 cx.refresh();
             }
 

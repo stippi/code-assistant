@@ -5,6 +5,7 @@
 //! Kept with the other UI settings ([`UiSettings`](crate::shared::settings::UiSettings)).
 
 use super::list_logic::{Filters, SortMode};
+pub use crate::main_screen::right_panel::code_view::preferences::{CodePreferences, DiffLayout};
 use github::RepoRef;
 use github::model::{Involvement, ListState, MergeMethod};
 use gpui_kit::App;
@@ -29,41 +30,6 @@ pub struct PullRequestPreferences {
     /// The Summary's comment filter and order, the Timeline's order.
     pub conversation: super::conversation::preferences::ConversationPreferences,
     pub code: CodePreferences,
-}
-
-/// Stacked rows (old and new lines one below the other) or split (side
-/// by side).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum DiffLayout {
-    #[default]
-    Stacked,
-    Split,
-}
-
-/// How the Code tab shows diffs. T3 Code takes the defaults from its
-/// settings (lines wrap, whitespace changes hidden); here the toggles
-/// themselves are remembered.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct CodePreferences {
-    pub layout: DiffLayout,
-    pub wrap: bool,
-    pub hide_whitespace: bool,
-    pub hide_tests: bool,
-    pub file_tree: bool,
-}
-
-impl Default for CodePreferences {
-    fn default() -> Self {
-        Self {
-            layout: DiffLayout::Stacked,
-            wrap: true,
-            hide_whitespace: true,
-            hide_tests: false,
-            file_tree: false,
-        }
-    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

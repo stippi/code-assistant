@@ -121,15 +121,6 @@ pub struct RepoReviewData {
     pub scan_state: code_assistant_core::session::ReviewScanState,
 }
 
-/// Latest loaded diff for a single file in the Review panel, already prepared
-/// for rendering.
-#[derive(Debug, Clone)]
-pub struct ReviewDiff {
-    pub repo_root: std::path::PathBuf,
-    pub path: String,
-    pub prepared: diff::prepare::PreparedFileDiff,
-}
-
 // Our main UI struct that implements the UserInterface trait
 #[derive(Clone)]
 pub struct Gpui {
@@ -231,7 +222,6 @@ pub struct Gpui {
     // generation counter bumped on every write so the view can detect changes
     // with a plain integer compare instead of deep-cloning per frame.
     current_review_listing: Arc<Mutex<(u64, Option<ReviewData>)>>,
-    current_review_diff: Arc<Mutex<(u64, Option<ReviewDiff>)>>,
 
     // Monotonic id of the latest review-scan request. A streaming scan task
     // compares its captured epoch against this and stops when superseded, so
@@ -495,7 +485,6 @@ impl Gpui {
         *self.pending_new_context_target.lock().unwrap() = None;
         *self.current_worktree_data.lock().unwrap() = None;
         self.set_current_review_listing(None);
-        self.set_current_review_diff(None);
         *self.current_session_last_usage.lock().unwrap() = None;
         *self.current_session_total_usage.lock().unwrap() = None;
     }
@@ -586,7 +575,6 @@ impl Gpui {
             // Current worktree state
             current_worktree_data: Arc::new(Mutex::new(None)),
             current_review_listing: Arc::new(Mutex::new((0, None))),
-            current_review_diff: Arc::new(Mutex::new((0, None))),
             review_scan_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
 
             // Current session last usage
@@ -1042,18 +1030,6 @@ impl Gpui {
         let mut slot = self.current_review_listing.lock().unwrap();
         slot.0 = slot.0.wrapping_add(1);
         slot.1 = data;
-    }
-
-    /// Generation-gated access to the review diff; see [`Self::review_listing_if_newer`].
-    pub fn review_diff_if_newer(&self, seen: u64) -> Option<(u64, Option<ReviewDiff>)> {
-        let slot = self.current_review_diff.lock().unwrap();
-        (slot.0 != seen).then(|| (slot.0, slot.1.clone()))
-    }
-
-    pub fn set_current_review_diff(&self, diff: Option<ReviewDiff>) {
-        let mut slot = self.current_review_diff.lock().unwrap();
-        slot.0 = slot.0.wrapping_add(1);
-        slot.1 = diff;
     }
 
     pub fn get_current_session_last_usage(&self) -> Option<llm::Usage> {

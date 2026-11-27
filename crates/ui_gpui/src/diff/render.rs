@@ -9,9 +9,7 @@ use super::rows::{DiffRow, DiffRows, HScroll, RowCell, RowGeometry, RowSelection
 use super::split::{SplitChunk, SplitHunks};
 use super::syntax::{DiffSyntax, SyntaxOrigin};
 use gpui_kit::component::theme::Theme;
-use gpui_kit::{
-    AnyElement, Element, Hsla, ParentElement, Pixels, SharedString, Styled, div, px, rems,
-};
+use gpui_kit::{AnyElement, Element, Hsla, Pixels, SharedString, div, px, rems};
 use similar::ChangeTag;
 
 /// Which line numbers the gutter shows.
@@ -23,48 +21,8 @@ pub enum GutterNumbers {
     OldAndNew,
 }
 
-/// Render one chunk of a prepared file diff with real line numbers,
-/// preceded by a slim separator where a later hunk begins (or any hunk
-/// with a header, which the separator then shows). With the diff's syntax,
-/// rows are highlighted. `selection` makes the rows selectable.
-pub(crate) fn render_diff_chunk(
-    diff: &PreparedFileDiff,
-    chunk: &DiffChunk,
-    numbers: GutterNumbers,
-    theme: &Theme,
-    rem_size: Pixels,
-    selection: Option<RowSelection>,
-) -> AnyElement {
-    let rows = render_diff_chunk_rows(diff, chunk, numbers, theme, rem_size, selection, None);
-    let Some(hunk) = diff.hunks.get(chunk.hunk) else {
-        return rows;
-    };
-    let header = (chunk.lines.start == 0)
-        .then_some(hunk.header.as_ref())
-        .flatten();
-    if !chunk.starts_later_hunk() && header.is_none() {
-        return rows;
-    }
-    let (_, ctx_color) = unchanged_row_colors(theme);
-    let separator = div().w_full().text_color(ctx_color.opacity(0.5));
-    let separator = match header {
-        // Not a flex container: text directly in one doesn't shrink.
-        Some(header) => separator
-            .px_3()
-            .truncate()
-            .child(SharedString::from(format!("⋯  {header}"))),
-        None => separator.flex().justify_center().child("⋯"),
-    };
-    div()
-        .flex()
-        .flex_col()
-        .child(separator)
-        .child(rows)
-        .into_any()
-}
-
-/// The rows of one chunk as [`render_diff_chunk`] draws them, without the
-/// separator: for views that draw hunk boundaries themselves. With
+/// The rows of one chunk of a prepared file diff, with real line numbers;
+/// with the diff's syntax highlighted, selectable with `selection`. With
 /// `scroll`, lines do not wrap but scroll sideways.
 pub(crate) fn render_diff_chunk_rows(
     diff: &PreparedFileDiff,
