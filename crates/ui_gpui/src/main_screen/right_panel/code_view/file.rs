@@ -5,7 +5,7 @@
 //! added, cut into chunks, side by side for the split layout.
 
 use super::anchors::LineIndex;
-use super::context::{Revealed, ShownGap, shape};
+use super::context::{Reveal, Revealed, ShownGap, shape};
 use super::preferences::DiffLayout;
 use crate::diff::model::DiffHunk;
 use crate::diff::prepare::{CHUNK_MAX_LINES, PreparedFileDiff};
@@ -48,6 +48,8 @@ pub struct LoadedFile {
     pub split: Option<SplitHunks>,
     /// Unchanged lines revealed, by gap.
     pub revealed: BTreeMap<usize, Revealed>,
+    /// Clicks on a gap made before the file's text was read.
+    pub queued_reveals: Vec<(usize, Reveal)>,
     pub text: Option<FileText>,
     /// The patch hunks' syntax, once highlighted.
     pub hunk_syntax: Option<Arc<DiffSyntax>>,
@@ -66,6 +68,9 @@ pub struct LoadedFile {
     pub breaks: Vec<usize>,
     /// The syntax was looked for (there may be no grammar).
     pub highlighted: bool,
+    /// The diff is there; a file listed before its diff is read has a
+    /// header only.
+    pub loaded: bool,
 }
 
 impl LoadedFile {

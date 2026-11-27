@@ -4,7 +4,7 @@
 //! list needs, so untouched rows keep their measured heights and the scroll
 //! position survives.
 
-use std::ops::Range;
+pub(super) use super::code_view::rows::changed_span;
 
 /// One item of the Review list. Rows address their data by index into the
 /// view's sections; `stamp` identifies the loaded diff a row was built from,
@@ -105,22 +105,6 @@ pub(super) fn flatten(repos: &[RepoOutline]) -> Vec<ReviewRow> {
         }
     }
     rows
-}
-
-/// The smallest splice turning `old` into `new`: the range of `old` to
-/// replace and the number of rows replacing it. `None` when nothing changed.
-pub(super) fn changed_span<T: PartialEq>(old: &[T], new: &[T]) -> Option<(Range<usize>, usize)> {
-    let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
-    if prefix == old.len() && prefix == new.len() {
-        return None;
-    }
-    let suffix = old[prefix..]
-        .iter()
-        .rev()
-        .zip(new[prefix..].iter().rev())
-        .take_while(|(a, b)| a == b)
-        .count();
-    Some((prefix..old.len() - suffix, new.len() - suffix - prefix))
 }
 
 /// The listed files as `(repo, file)`, in the order their diffs should load

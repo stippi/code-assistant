@@ -101,6 +101,7 @@ pub fn parse_page(page: &DiffPage, view: DiffView) -> Vec<LoadedFile> {
                 gaps: Vec::new(),
                 split: None,
                 revealed: BTreeMap::new(),
+                queued_reveals: Vec::new(),
                 text: None,
                 hunk_syntax: None,
                 scroll: HScroll::default(),
@@ -112,6 +113,7 @@ pub fn parse_page(page: &DiffPage, view: DiffView) -> Vec<LoadedFile> {
                 stamp: 0,
                 breaks: Vec::new(),
                 highlighted: false,
+                loaded: true,
             };
             file.reshape(view);
             Some(file)

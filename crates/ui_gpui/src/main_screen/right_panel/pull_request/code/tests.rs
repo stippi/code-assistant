@@ -4,6 +4,7 @@
 use super::super::conversation::fixtures::{commit, data, thread, window};
 use super::super::fixtures::hours_ago;
 use super::*;
+use crate::main_screen::right_panel::code_view::context::Reveal;
 use crate::main_screen::right_panel::code_view::preferences::DiffLayout;
 use github::model::{DiffPage, DiffSide};
 use gpui_kit::{Modifiers, MouseButton, TestAppContext, VisualTestContext};
@@ -51,7 +52,7 @@ fn arrive(
         omitted_file_stats: Vec::new(),
     };
     tab.update(cx, |tab, cx| {
-        let files = parse_page(&page, tab.diff_view());
+        let files = parse_page(&page, tab.list.diff_view());
         tab.page_arrived(
             Page {
                 cursor: cursor.map(str::to_owned),
@@ -91,8 +92,8 @@ fn set_activity(
 
 fn rows(tab: &Entity<CodeTab>, cx: &mut VisualTestContext) -> Vec<CodeRow> {
     tab.read_with(cx, |tab, _| {
-        assert_eq!(tab.list_state.item_count(), tab.rows.len());
-        tab.rows.clone()
+        assert_eq!(tab.list.list_state.item_count(), tab.list.rows.len());
+        tab.list.rows.clone()
     })
 }
 
@@ -248,9 +249,9 @@ fn a_selection_becomes_a_pending_review_comment(cx: &mut TestAppContext) {
     arrive(&tab, cx, None, &["src/a.rs"], None);
     // Rows 1 and 2: `-old` (old line 11) and `+new` (new line 11).
     tab.update(cx, |tab, cx| {
-        tab.selection.begin("src/a.rs".into(), 1, false);
-        tab.selection.extend(&"src/a.rs".into(), 2);
-        tab.selection.end();
+        tab.list.selection.begin("src/a.rs".into(), 1, false);
+        tab.list.selection.extend(&"src/a.rs".into(), 2);
+        tab.list.selection.end();
         cx.notify();
     });
     // The first frame paints the rows and records the selection's end;
@@ -292,7 +293,7 @@ fn a_selection_becomes_a_pending_review_comment(cx: &mut TestAppContext) {
         ))
         .is_some()
     );
-    tab.read_with(cx, |tab, _| assert!(tab.selection.get().is_none()));
+    tab.read_with(cx, |tab, _| assert!(tab.list.selection.get().is_none()));
 }
 
 /// The row of flat line `line` of `path`, where it is painted.
@@ -303,15 +304,15 @@ fn row_bounds(
     line: usize,
 ) -> gpui_kit::Bounds<gpui_kit::Pixels> {
     tab.update(cx, |tab, cx| {
-        tab.selection.begin(path.into(), line, false);
-        tab.selection.end();
-        tab.pill_dismissed = None;
+        tab.list.selection.begin(path.into(), line, false);
+        tab.list.selection.end();
+        tab.list.pill_dismissed = None;
         cx.notify();
     });
     cx.run_until_parked();
-    let bounds = tab.read_with(cx, |tab, _| tab.selection_anchor.get());
+    let bounds = tab.read_with(cx, |tab, _| tab.list.selection_anchor.get());
     tab.update(cx, |tab, cx| {
-        tab.selection.clear();
+        tab.list.selection.clear();
         cx.notify();
     });
     cx.run_until_parked();
@@ -338,13 +339,13 @@ fn the_plus_over_a_line_number_opens_the_box_on_one_row_or_a_dragged_range(
     cx.simulate_mouse_up(plus(first), MouseButton::Left, Modifiers::none());
     cx.run_until_parked();
     tab.read_with(cx, |tab, _| {
-        let draft = tab.draft.as_ref().expect("the box opened");
+        let draft = tab.list.draft.as_ref().expect("the box opened");
         assert_eq!((draft.lo, draft.hi), (1, 1));
     });
 
     tab.update(cx, |tab, cx| {
-        tab.draft = None;
-        tab.selection.clear();
+        tab.list.draft = None;
+        tab.list.selection.clear();
         cx.notify();
     });
     cx.run_until_parked();
@@ -353,7 +354,7 @@ fn the_plus_over_a_line_number_opens_the_box_on_one_row_or_a_dragged_range(
     cx.simulate_mouse_up(plus(second), MouseButton::Left, Modifiers::none());
     cx.run_until_parked();
     tab.read_with(cx, |tab, _| {
-        let draft = tab.draft.as_ref().expect("the box opened");
+        let draft = tab.list.draft.as_ref().expect("the box opened");
         assert_eq!((draft.lo, draft.hi), (1, 2));
     });
 }
@@ -368,8 +369,8 @@ fn a_press_on_the_code_only_selects(cx: &mut TestAppContext) {
     cx.simulate_mouse_up(code, MouseButton::Left, Modifiers::none());
     cx.run_until_parked();
     tab.read_with(cx, |tab, _| {
-        assert!(tab.draft.is_none());
-        assert!(tab.selection.get().is_some());
+        assert!(tab.list.draft.is_none());
+        assert!(tab.list.selection.get().is_some());
     });
 }
 
@@ -393,10 +394,10 @@ fn a_commit_scope_starts_over_without_comments(cx: &mut TestAppContext) {
     arrive(&tab, cx, None, &["src/lib.rs"], None);
     tab.update_in(cx, |tab, window, cx| {
         assert_eq!(tab.off_diff, [0], "a commit's lines are not the change's");
-        tab.selection.begin("src/lib.rs".into(), 1, false);
-        tab.selection.end();
-        tab.start_comment(window, cx);
-        assert!(tab.draft.is_none());
+        tab.list.selection.begin("src/lib.rs".into(), 1, false);
+        tab.list.selection.end();
+        start_comment(tab, window, cx);
+        assert!(tab.list.draft.is_none());
     });
 }
 
@@ -404,7 +405,7 @@ fn a_commit_scope_starts_over_without_comments(cx: &mut TestAppContext) {
 fn hidden_tests_leave_the_list(cx: &mut TestAppContext) {
     let (tab, _, cx) = tab(cx);
     arrive(&tab, cx, None, &["src/a.rs", "tests/a.rs"], None);
-    tab.update(cx, |tab, cx| tab.set_hide_tests(true, cx));
+    tab.update(cx, |tab, cx| code_list::set_hide_tests(tab, true, cx));
     cx.run_until_parked();
     tab.read_with(cx, |tab, _| {
         assert_eq!(tab.test_files, 1);
@@ -429,11 +430,11 @@ fn rows_show_plain_first_and_highlight_file_by_file(cx: &mut TestAppContext) {
                 fingerprint: fingerprint(&page),
                 next_cursor: None,
                 truncated: false,
-                files: parse_page(&page, tab.diff_view()),
+                files: parse_page(&page, tab.list.diff_view()),
             },
             cx,
         );
-        tab.sync_rows();
+        code_list::sync_rows(tab);
         assert!(tab.shown.iter().all(|&s| tab.file(s).diff.syntax.is_none()));
     });
     let plain = rows(&tab, cx);
@@ -460,7 +461,7 @@ fn arrive_patch(tab: &Entity<CodeTab>, cx: &mut VisualTestContext, patch: &str) 
         omitted_file_stats: Vec::new(),
     };
     tab.update(cx, |tab, cx| {
-        let files = parse_page(&page, tab.diff_view());
+        let files = parse_page(&page, tab.list.diff_view());
         tab.page_arrived(
             Page {
                 cursor: None,
@@ -500,9 +501,9 @@ fn whitespace_changes_hide_and_show_again(cx: &mut TestAppContext) {
     arrive_patch(&tab, cx, patch);
     // Hidden by default, as in T3 Code.
     assert_eq!(tags(&tab, cx), "  -+");
-    tab.update(cx, |tab, cx| tab.set_hide_whitespace(false, cx));
+    tab.update(cx, |tab, cx| code_list::set_hide_whitespace(tab, false, cx));
     assert_eq!(tags(&tab, cx), " -+-+");
-    tab.update(cx, |tab, cx| tab.set_hide_whitespace(true, cx));
+    tab.update(cx, |tab, cx| code_list::set_hide_whitespace(tab, true, cx));
     assert_eq!(tags(&tab, cx), "  -+");
 }
 
@@ -515,7 +516,9 @@ fn the_split_layout_pairs_rows_but_keeps_new_files_stacked(cx: &mut TestAppConte
                  @@ -0,0 +1,2 @@\n+one\n+two\n";
     arrive_patch(&tab, cx, patch);
     let stacked = rows(&tab, cx);
-    tab.update(cx, |tab, cx| tab.set_layout(DiffLayout::Split, cx));
+    tab.update(cx, |tab, cx| {
+        code_list::set_layout(tab, DiffLayout::Split, cx)
+    });
     cx.run_until_parked();
     tab.read_with(cx, |tab, _| {
         let split: Vec<_> = tab
@@ -535,7 +538,7 @@ fn a_gap_reveals_lines_once_the_file_is_read(cx: &mut TestAppContext) {
     arrive(&tab, cx, None, &["src/a.rs"], None);
     let shown = tab.read_with(cx, |tab, _| tab.shown[0]);
     // The first click queues itself until the text is read.
-    tab.update(cx, |tab, cx| tab.reveal(shown, 0, Reveal::All, cx));
+    tab.update(cx, |tab, cx| code_list::reveal(tab, 0, 0, Reveal::All, cx));
     tab.read_with(cx, |tab, _| {
         assert_eq!(tab.file(shown).gaps[0].hidden, Some(9));
     });
@@ -556,8 +559,8 @@ fn a_gap_reveals_lines_once_the_file_is_read(cx: &mut TestAppContext) {
     });
     // The gap shown whole is gone, section and all; the tail can be
     // revealed.
-    assert!(cx.debug_bounds("pr-code-expand-0-0-0-all").is_none());
-    assert!(cx.debug_bounds("pr-code-expand-0-0-1-all").is_some());
+    assert!(cx.debug_bounds("pr-code-expand-0-0-all").is_none());
+    assert!(cx.debug_bounds("pr-code-expand-0-1-all").is_some());
 }
 
 #[gpui_kit::test]
@@ -567,7 +570,7 @@ fn the_file_tree_shows_a_file_from_its_header(cx: &mut TestAppContext) {
     let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
     arrive(&tab, cx, None, &paths, None);
     assert!(cx.debug_bounds("pr-code-tree").is_none());
-    tab.update(cx, |tab, cx| tab.set_file_tree(true, cx));
+    tab.update(cx, |tab, cx| code_list::set_file_tree(tab, true, cx));
     cx.run_until_parked();
     assert!(cx.debug_bounds("pr-code-tree").is_some());
     let target = tab.read_with(cx, |tab, _| {
@@ -576,17 +579,20 @@ fn the_file_tree_shows_a_file_from_its_header(cx: &mut TestAppContext) {
             .position(|&s| tab.file(s).path == "src/f05.rs")
             .unwrap()
     });
-    tab.update(cx, |tab, cx| tab.toggle_fold(target, cx));
+    tab.update(cx, |tab, cx| code_list::toggle_fold(tab, target, cx));
     click(
         cx,
         &format!("pr-code-tree-file-{target}"),
         Modifiers::none(),
     );
     tab.read_with(cx, |tab, _| {
-        assert_eq!(tab.tree_selected.as_deref(), Some("src/f05.rs"));
-        assert!(!tab.folds.is_folded("src/f05.rs"), "unfolded to show it");
-        let top = tab.list_state.logical_scroll_top().item_ix;
-        assert_eq!(tab.rows[top], CodeRow::File { file: target });
+        assert_eq!(tab.list.tree_selected.as_deref(), Some("src/f05.rs"));
+        assert!(
+            !tab.list.folds.is_folded("src/f05.rs"),
+            "unfolded to show it"
+        );
+        let top = tab.list.list_state.logical_scroll_top().item_ix;
+        assert_eq!(tab.list.rows[top], CodeRow::File { file: target });
     });
 }
 
@@ -595,7 +601,7 @@ fn unwrapping_gives_every_file_new_rows(cx: &mut TestAppContext) {
     let (tab, _, cx) = tab(cx);
     arrive(&tab, cx, None, &["src/a.rs"], None);
     let wrapped = rows(&tab, cx);
-    tab.update(cx, |tab, cx| tab.set_wrap(false, cx));
+    tab.update(cx, |tab, cx| code_list::set_wrap(tab, false, cx));
     cx.run_until_parked();
     let unwrapped = rows(&tab, cx);
     assert_eq!(unwrapped.len(), wrapped.len());
@@ -608,12 +614,14 @@ fn the_file_in_view_stays_in_view_when_the_layout_changes(cx: &mut TestAppContex
     let paths: Vec<String> = (0..30).map(|n| format!("src/f{n:02}.rs")).collect();
     let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
     arrive(&tab, cx, None, &paths, None);
-    tab.update(cx, |tab, cx| tab.reveal_file(12, cx));
+    tab.update(cx, |tab, cx| code_list::reveal_file(tab, 12, cx));
     cx.run_until_parked();
-    tab.update(cx, |tab, cx| tab.set_layout(DiffLayout::Split, cx));
+    tab.update(cx, |tab, cx| {
+        code_list::set_layout(tab, DiffLayout::Split, cx)
+    });
     cx.run_until_parked();
     tab.read_with(cx, |tab, _| {
-        let top = tab.list_state.logical_scroll_top().item_ix;
-        assert_eq!(tab.rows[top], CodeRow::File { file: 12 });
+        let top = tab.list.list_state.logical_scroll_top().item_ix;
+        assert_eq!(tab.list.rows[top], CodeRow::File { file: 12 });
     });
 }

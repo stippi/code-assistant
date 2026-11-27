@@ -1,6 +1,7 @@
 //! How the code views (a pull request's Code tab, the Review tab) show
 //! diffs. Kept with the pull request preferences in the UI settings.
 
+use gpui_kit::App;
 use serde::{Deserialize, Serialize};
 
 /// Stacked rows (old and new lines one below the other) or split (side
@@ -36,4 +37,16 @@ impl Default for CodePreferences {
             file_tree: false,
         }
     }
+}
+
+/// The remembered preferences; the defaults before settings are loaded.
+pub fn read(cx: &App) -> CodePreferences {
+    cx.try_global::<crate::UiSettingsGlobal>()
+        .map(|settings| settings.0.pull_requests.code)
+        .unwrap_or_default()
+}
+
+/// Change the preferences; they are saved with the UI settings.
+pub fn update(cx: &mut App, change: impl FnOnce(&mut CodePreferences)) {
+    crate::update_ui_settings(cx, |settings| change(&mut settings.pull_requests.code));
 }

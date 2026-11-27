@@ -4,12 +4,13 @@
 //! it has one, threads and comments right below the row they are on, and
 //! the loading footer at the end. Rows that stay the same compare equal,
 //! so a change reaches the list as one splice
-//! ([`changed_span`](crate::main_screen::right_panel::review_rows::changed_span))
+//! ([`changed_span`])
 //! and the scroll position survives.
 
 use super::anchors::Annotation;
 use super::context::ShownGap;
 use std::collections::BTreeMap;
+use std::ops::Range;
 
 /// One item of the list. `file` indexes the shown files; `stamp` names
 /// the cut of a file's diff a row was built from (a new diff or new cut
@@ -67,6 +68,8 @@ pub struct ChunkOutline {
 
 /// What a file contributes below its header.
 pub enum FileBody<'a> {
+    /// The diff is not read yet: nothing below the header.
+    Pending,
     /// Binary, too large or no content change: a note says which.
     Note,
     Diff {
@@ -95,6 +98,7 @@ pub fn flatten(files: &[FileOutline], footer: bool) -> Vec<CodeRow> {
         }
         let stamp = outline.stamp;
         match &outline.body {
+            FileBody::Pending => {}
             FileBody::Note => rows.push(CodeRow::Note { file, stamp }),
             FileBody::Diff {
                 hunk_count,
@@ -158,6 +162,22 @@ impl CodeRow {
             CodeRow::Footer => None,
         }
     }
+}
+
+/// The smallest splice turning `old` into `new`: the range of `old` to
+/// replace and the number of rows replacing it. `None` when nothing changed.
+pub fn changed_span<T: PartialEq>(old: &[T], new: &[T]) -> Option<(Range<usize>, usize)> {
+    let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+    if prefix == old.len() && prefix == new.len() {
+        return None;
+    }
+    let suffix = old[prefix..]
+        .iter()
+        .rev()
+        .zip(new[prefix..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    Some((prefix..old.len() - suffix, new.len() - suffix - prefix))
 }
 
 /// The shown files (`0..files`) in the order to highlight them when
