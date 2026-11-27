@@ -250,7 +250,8 @@ fn ticking_folds_and_a_changed_file_shows_it(cx: &mut TestAppContext) {
                 viewed: false,
                 stale: true
             }
-        )
+        );
+        assert!(!view.list.folds.is_folded("a.rs"), "a changed file opens");
     });
 }
 

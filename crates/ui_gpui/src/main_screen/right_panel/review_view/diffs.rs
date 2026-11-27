@@ -107,6 +107,7 @@ impl ReviewView {
         // Shaped for the options then; they may have changed meanwhile.
         file.reshape(self.list.diff_view());
         file.stamp = self.list.stamp();
+        let waited = self.tick_of(&self.files[ix]) == Tick::Unconfirmed;
         let entry = &mut self.files[ix];
         entry.file = file;
         entry.read_for = Some(listed.clone());
@@ -117,6 +118,10 @@ impl ReviewView {
             token.as_deref(),
         ) {
             self.save_ticks(cx);
+        }
+        // Folded while it looked viewed; changed since, it opens.
+        if waited && self.tick_of(&self.files[ix]) == Tick::Changed {
+            self.list.folds.set(&listed.path, false);
         }
         self.place_annotations(cx);
         self.ensure_diff_request(cx);
