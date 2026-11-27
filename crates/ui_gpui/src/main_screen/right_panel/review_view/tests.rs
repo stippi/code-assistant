@@ -371,3 +371,34 @@ fn the_header_stays_on_top_while_its_file_scrolls(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(cx.debug_bounds("review-sticky-file-0").is_some());
 }
+
+#[gpui_kit::test]
+fn another_mode_reads_the_diffs_again(cx: &mut TestAppContext) {
+    let (view, cx) = view(cx);
+    let repos = || {
+        vec![repo(
+            "/work",
+            vec![listed("a.rs", ChangeStatus::Added, "f1")],
+        )]
+    };
+    list(&view, repos(), cx);
+    arrive(&view, "a.rs", None, Some(&text(3, false)), cx);
+    view.update(cx, |view, cx| view.set_mode(ReviewMode::BranchVsBase, cx));
+    view.update_in(cx, |view, window, cx| {
+        view.take_listing(
+            crate::ReviewData {
+                repos: repos(),
+                is_git_repo: true,
+                mode: ReviewMode::BranchVsBase,
+            },
+            window,
+            cx,
+        )
+    });
+    view.read_with(cx, |view, _| {
+        let file = view.review_file("a.rs").unwrap();
+        assert!(!file.current(), "read for the old mode");
+        // Without a session nothing is read; the old diff keeps showing.
+        assert!(file.file.loaded);
+    });
+}

@@ -409,7 +409,8 @@ impl ReviewView {
         let unchanged = listed.len() == self.files.len()
             && listed.iter().zip(&self.files).all(|(l, f)| *l == f.listed);
         if unchanged {
-            return;
+            // Diffs read for another mode or base go again.
+            return self.ensure_diff_request(cx);
         }
         let mut old: Vec<ReviewFile> = std::mem::take(&mut self.files);
         let mut files = Vec::with_capacity(listed.len());
