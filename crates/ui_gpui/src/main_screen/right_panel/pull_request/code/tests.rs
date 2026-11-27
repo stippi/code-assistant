@@ -118,6 +118,8 @@ fn file_rows(file: usize, stamp: u64) -> Vec<CodeRow> {
             file,
             chunk: 0,
             stamp,
+            hunk: 0,
+            span: (0, 4),
         },
         CodeRow::Tail { file, stamp },
     ]

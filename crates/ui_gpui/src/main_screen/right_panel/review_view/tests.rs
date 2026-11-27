@@ -403,3 +403,90 @@ fn another_mode_reads_the_diffs_again(cx: &mut TestAppContext) {
         assert!(file.file.loaded);
     });
 }
+
+#[gpui_kit::test]
+fn opening_the_comment_box_keeps_the_view_where_it_is(cx: &mut TestAppContext) {
+    let (view, cx) = view(cx);
+    list(
+        &view,
+        vec![repo(
+            "/work",
+            vec![listed("a.rs", ChangeStatus::Added, "f1")],
+        )],
+        cx,
+    );
+    arrive(&view, "a.rs", None, Some(&text(200, false)), cx);
+    rows(&view, cx);
+    // Scrolled into the third chunk (lines 80..120).
+    let top = gpui_kit::ListOffset {
+        item_ix: 3,
+        offset_in_item: gpui_kit::px(40.),
+    };
+    view.update(cx, |view, cx| {
+        view.list.list_state.scroll_to(top);
+        cx.notify();
+    });
+    rows(&view, cx);
+    view.update_in(cx, |view, window, cx| {
+        view.list.selection.begin("a.rs".into(), 90, false);
+        view.list.selection.end();
+        start_comment(view, window, cx);
+    });
+    let rows = rows(&view, cx);
+    assert!(rows.contains(&CodeRow::Draft { file: 0 }));
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.list.list_state.logical_scroll_top(), top)
+    });
+}
+
+#[gpui_kit::test]
+fn closing_the_comment_box_keeps_the_view_where_it_is(cx: &mut TestAppContext) {
+    let (view, cx) = view(cx);
+    list(
+        &view,
+        vec![repo(
+            "/work",
+            vec![listed("a.rs", ChangeStatus::Added, "f1")],
+        )],
+        cx,
+    );
+    arrive(&view, "a.rs", None, Some(&text(200, false)), cx);
+    rows(&view, cx);
+    view.update_in(cx, |view, window, cx| {
+        view.list.selection.begin("a.rs".into(), 90, false);
+        view.list.selection.end();
+        start_comment(view, window, cx);
+    });
+    let rows_open = rows(&view, cx);
+    // Scrolled into the part of the chunk below the box (lines 91..120).
+    let below = rows_open
+        .iter()
+        .position(|row| row.chunk_start().is_some_and(|start| start.3 == 91))
+        .expect("the chunk is cut below the box");
+    view.update(cx, |view, cx| {
+        view.list.list_state.scroll_to(gpui_kit::ListOffset {
+            item_ix: below,
+            offset_in_item: gpui_kit::px(40.),
+        });
+        cx.notify();
+    });
+    rows(&view, cx);
+    let line_at_top = |view: &Entity<ReviewView>, cx: &mut VisualTestContext| {
+        // A line is 20px high.
+        view.read_with(cx, |view, _| {
+            let top = view.list.list_state.logical_scroll_top();
+            let start = view.list.rows[top.item_ix]
+                .chunk_start()
+                .expect("a chunk")
+                .3;
+            start as f32 + top.offset_in_item.as_f32() / 20.
+        })
+    };
+    let before = line_at_top(&view, cx);
+    view.update(cx, |view, cx| {
+        crate::main_screen::right_panel::code_view::draft::close_draft(view, cx)
+    });
+    rows(&view, cx);
+    let after = line_at_top(&view, cx);
+    assert!((before - after).abs() < 1., "{before} → {after}");
+}

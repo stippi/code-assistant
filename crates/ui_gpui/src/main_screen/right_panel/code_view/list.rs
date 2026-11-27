@@ -490,13 +490,18 @@ pub fn place_annotations<V: CodeHost>(
             items.push((draft.at.end, Annotation::Draft));
         }
         let (placed, missed) = place(&file.lines, items);
-        let breaks: Vec<usize> = placed.keys().copied().collect();
+        // Breaks only add up while the rows are the same: one left behind
+        // (a closed comment box) is invisible, and merging the chunks again
+        // would move the view.
+        let mut breaks: Vec<usize> = file.breaks.iter().chain(placed.keys()).copied().collect();
+        breaks.sort_unstable();
+        breaks.dedup();
         if file.breaks != breaks {
-            let stamp = this.list_mut().stamp();
+            // Same stamp: the chunks above the first changed break stay
+            // the same rows.
             let layout = this.list().code.layout;
-            let file = this.shown_file_mut(ix);
-            file.cut(&breaks, layout);
-            file.stamp = stamp;
+            this.shown_file_mut(ix).cut(&breaks, layout);
+            this.list_mut().dirty = true;
         }
         annotations.push(placed);
         off.push(missed);
@@ -535,7 +540,7 @@ pub fn sync_rows<V: CodeHost>(this: &mut V) {
                         .iter()
                         .map(|chunk| ChunkOutline {
                             hunk: chunk.hunk,
-                            starts_hunk: chunk.rows.start == 0,
+                            span: chunk.rows.clone(),
                             last_lines: split.last_lines(chunk),
                         })
                         .collect(),
@@ -545,7 +550,7 @@ pub fn sync_rows<V: CodeHost>(this: &mut V) {
                         .iter()
                         .map(|chunk| ChunkOutline {
                             hunk: chunk.hunk,
-                            starts_hunk: chunk.lines.start == 0,
+                            span: chunk.lines.clone(),
                             last_lines: vec![
                                 chunk.flat_start + chunk.lines.len().saturating_sub(1),
                             ],
@@ -570,7 +575,22 @@ pub fn sync_rows<V: CodeHost>(this: &mut V) {
     let rows = flatten(&outlines, host.has_footer());
     let list = this.list_mut();
     list.dirty = false;
+    let top = list.list_state.logical_scroll_top();
+    let mut keep_top = None;
     if let Some((old, count)) = changed_span(&list.rows, &rows) {
+        // The chunk at the top cut anew (a comment box below one of its
+        // lines): its first part stays where it was.
+        if old.contains(&top.item_ix) {
+            keep_top = list.rows.get(top.item_ix).and_then(|row| {
+                let first = row.chunk_start()?;
+                (old.start..old.start + count)
+                    .find(|&ix| rows[ix].chunk_start() == Some(first))
+                    .map(|item_ix| ListOffset {
+                        item_ix,
+                        offset_in_item: top.offset_in_item,
+                    })
+            });
+        }
         list.list_state.splice(old, count);
     }
     let keep = match list.keep_in_view.take() {
@@ -578,11 +598,13 @@ pub fn sync_rows<V: CodeHost>(this: &mut V) {
         Some(KeepInView::File(file)) => rows.iter().position(|r| *r == CodeRow::File { file }),
         None => None,
     };
-    if let Some(item_ix) = keep {
-        list.list_state.scroll_to(ListOffset {
+    match (keep, keep_top) {
+        (Some(item_ix), _) => list.list_state.scroll_to(ListOffset {
             item_ix,
             offset_in_item: px(0.),
-        });
+        }),
+        (None, Some(top)) => list.list_state.scroll_to(top),
+        (None, None) => {}
     }
     list.rows = rows;
 }

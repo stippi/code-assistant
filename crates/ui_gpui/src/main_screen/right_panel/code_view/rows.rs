@@ -31,10 +31,15 @@ pub enum CodeRow {
         hunk: usize,
         stamp: u64,
     },
+    /// Chunk `chunk` of the file, lines (rows, when split) `span` of hunk
+    /// `hunk`: cutting the chunks anew below a line keeps the rows above
+    /// it equal, so the list keeps them (and the scroll position).
     Chunk {
         file: usize,
         chunk: usize,
         stamp: u64,
+        hunk: usize,
+        span: (usize, usize),
     },
     /// Below the last hunk of a file that may have lines past it.
     Tail {
@@ -60,8 +65,8 @@ pub enum CodeRow {
 /// A chunk as the rows need it.
 pub struct ChunkOutline {
     pub hunk: usize,
-    /// The chunk opens its hunk.
-    pub starts_hunk: bool,
+    /// Its lines (rows, when split) within the hunk.
+    pub span: Range<usize>,
     /// The flat lines its last row shows: what goes below it.
     pub last_lines: Vec<usize>,
 }
@@ -109,7 +114,7 @@ pub fn flatten(files: &[FileOutline], footer: bool) -> Vec<CodeRow> {
             } => {
                 let gap_before = |hunk: usize| gaps.iter().any(|gap| gap.before == hunk);
                 for (ix, chunk) in chunks.iter().enumerate() {
-                    if chunk.starts_hunk && gap_before(chunk.hunk) {
+                    if chunk.span.start == 0 && gap_before(chunk.hunk) {
                         rows.push(CodeRow::Gap {
                             file,
                             hunk: chunk.hunk,
@@ -120,6 +125,8 @@ pub fn flatten(files: &[FileOutline], footer: bool) -> Vec<CodeRow> {
                         file,
                         chunk: ix,
                         stamp,
+                        hunk: chunk.hunk,
+                        span: (chunk.span.start, chunk.span.end),
                     });
                     for &line in &chunk.last_lines {
                         for annotation in annotations.get(&line).into_iter().flatten() {
@@ -148,6 +155,21 @@ pub fn flatten(files: &[FileOutline], footer: bool) -> Vec<CodeRow> {
 }
 
 impl CodeRow {
+    /// Where a chunk row starts: its file, the diff it was built from, its
+    /// hunk and first line (row) there.
+    pub fn chunk_start(&self) -> Option<(usize, u64, usize, usize)> {
+        match *self {
+            CodeRow::Chunk {
+                file,
+                stamp,
+                hunk,
+                span,
+                ..
+            } => Some((file, stamp, hunk, span.0)),
+            _ => None,
+        }
+    }
+
     /// The shown file a row belongs to (`None` for the footer).
     pub fn file(&self) -> Option<usize> {
         match *self {
@@ -227,6 +249,8 @@ mod tests {
                 file: 1,
                 chunk: 0,
                 stamp: 1,
+                hunk: 0,
+                span: (0, 1),
             },
             File { file: 2 },
             File { file: 3 },
@@ -275,7 +299,7 @@ mod tests {
         let gaps = [gap(0, Some(4)), gap(1, Some(1)), gap(2, None)];
         let chunk = |hunk, starts_hunk, last_lines: &[usize]| ChunkOutline {
             hunk,
-            starts_hunk,
+            span: if starts_hunk { 0..1 } else { 1..2 },
             last_lines: last_lines.to_vec(),
         };
         let version = |thread: usize| thread as u64 * 10;
@@ -320,7 +344,9 @@ mod tests {
                 Chunk {
                     file: 0,
                     chunk: 0,
-                    stamp: 7
+                    stamp: 7,
+                    hunk: 0,
+                    span: (0, 1)
                 },
                 Thread {
                     file: 0,
@@ -331,7 +357,9 @@ mod tests {
                 Chunk {
                     file: 0,
                     chunk: 1,
-                    stamp: 7
+                    stamp: 7,
+                    hunk: 0,
+                    span: (1, 2)
                 },
                 Gap {
                     file: 0,
@@ -341,7 +369,9 @@ mod tests {
                 Chunk {
                     file: 0,
                     chunk: 2,
-                    stamp: 7
+                    stamp: 7,
+                    hunk: 1,
+                    span: (0, 1)
                 },
                 Pending { file: 0, id: 9 },
                 Tail { file: 0, stamp: 7 },
