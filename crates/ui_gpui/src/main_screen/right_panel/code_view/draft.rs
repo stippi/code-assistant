@@ -30,6 +30,8 @@ pub struct Draft {
     pub lo: usize,
     pub hi: usize,
     pub at: RangeRef,
+    /// The agent's comment it edits (0: a new one).
+    pub editing: u64,
     input: Entity<TextareaState>,
     _subscription: Subscription,
 }
@@ -178,6 +180,17 @@ pub fn gutter_add<V: CodeHost>(this: &V, path: String, cx: &Context<V>) -> Gutte
 
 /// Open the comment box below the selection.
 pub fn start_comment<V: CodeHost>(this: &mut V, window: &mut Window, cx: &mut Context<V>) {
+    open_comment(this, None, window, cx);
+}
+
+/// Open the comment box below the selection, holding `editing`'s text
+/// when it edits one of the agent's comments.
+pub fn open_comment<V: CodeHost>(
+    this: &mut V,
+    editing: Option<&LineComment>,
+    window: &mut Window,
+    cx: &mut Context<V>,
+) {
     if !this.can_comment() {
         return;
     }
@@ -189,10 +202,15 @@ pub fn start_comment<V: CodeHost>(this: &mut V, window: &mut Window, cx: &mut Co
         return;
     };
     let path = file.path.clone();
+    let text = editing.map(|comment| comment.text.clone());
     let input = cx.new(|cx| {
-        TextareaState::new(window, cx)
+        let mut input = TextareaState::new(window, cx)
             .auto_grow(2, 8)
-            .placeholder("Add a comment…")
+            .placeholder("Add a comment…");
+        if let Some(text) = text {
+            input.set_value(text, window, cx);
+        }
+        input
     });
     input.update(cx, |input, cx| input.focus(window, cx));
     let subscription = cx.subscribe(&input, |this, _, event: &InputEvent, cx| {
@@ -211,6 +229,7 @@ pub fn start_comment<V: CodeHost>(this: &mut V, window: &mut Window, cx: &mut Co
         lo,
         hi,
         at,
+        editing: editing.map_or(0, |comment| comment.id),
         input,
         _subscription: subscription,
     });
@@ -246,6 +265,10 @@ pub fn add_to_agent<V: CodeHost>(this: &mut V, cx: &mut Context<V>) {
             excerpt,
             text,
         )
+        .map(|comment| LineComment {
+            id: draft.editing,
+            ..comment
+        })
     });
     if let Some(comment) = comment {
         crate::comments::report(CommentChange::Upsert(comment), cx);
@@ -319,7 +342,8 @@ pub fn render_draft<V: CodeHost>(this: &V, cx: &mut Context<V>) -> AnyElement {
     let prefix = list.prefix;
     let theme = cx.theme();
     let host_target = this.comment_host_target();
-    let agent = Button::new(SharedString::from(format!("{prefix}-draft-agent")))
+    let agent_id = format!("{prefix}-draft-agent");
+    let agent = Button::new(SharedString::from(agent_id.clone()))
         .label("Add to agent")
         .xsmall()
         .on_click(cx.listener(|this, _, _, cx| add_to_agent(this, cx)));
@@ -366,7 +390,7 @@ pub fn render_draft<V: CodeHost>(this: &V, cx: &mut Context<V>) -> AnyElement {
                         .ghost()
                         .on_click(cx.listener(|this, _, _, cx| close_draft(this, cx))),
                 )
-                .child(agent)
+                .child(div().debug_selector(move || agent_id).child(agent))
                 .children(host_target.map(|label| {
                     Button::new(SharedString::from(format!("{prefix}-draft-host")))
                         .label(label)

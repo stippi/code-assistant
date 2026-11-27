@@ -17,7 +17,6 @@ pub mod files_view;
 mod line_selection;
 pub mod pull_request;
 mod repo_picker;
-mod review_rows;
 pub mod review_view;
 
 pub use crate::comments::CommentChange;
@@ -95,9 +94,6 @@ impl RightPanel {
         let files_view = cx.new(|cx| FilesView::new(window, cx));
         let pull_request = cx.new(|cx| PullRequestPanel::new(window, cx));
         let comment_subscriptions = vec![
-            cx.subscribe(&review_view, |_, _, change: &CommentChange, cx| {
-                cx.emit(change.clone())
-            }),
             cx.subscribe(&files_view, |_, _, change: &CommentChange, cx| {
                 cx.emit(change.clone())
             }),

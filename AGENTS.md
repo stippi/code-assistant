@@ -181,6 +181,18 @@ Layer 5 (binary):     code_assistant    — CLI, config, feature-gated frontend 
   worktree session) and stack rebases (`git::stack_rebase`, scratch repo)
   are git-crate work the core drives
 
+### Code Views (PR Code tab, Review tab)
+- Both show changed files stacked under sticky headers in one virtualized
+  list, built on `ui_gpui::main_screen::right_panel::code_view`: a view holds
+  a `CodeList` (diff options, folds, rows, selection, comment box, file
+  tree) and implements `CodeHost` for what differs (files, "Viewed" ticks,
+  annotations, text reads, footers)
+- The PR tab reads GitHub (pages, ticks, threads, pending review); the
+  Review tab reads the local repository, one repository at a time (the
+  shared `repo_picker`), and keeps its ticks per repository in
+  `Stores::reviewed_files` (fingerprint, else content hash decides
+  "Changed")
+
 ### Self-update
 - Release builds (the workflow compiles in `CODE_ASSISTANT_UPDATE_FEED`)
   read `update-manifest.json` from the latest GitHub release; all other

@@ -4,6 +4,7 @@
 //! so tests can inject in-memory stores (and simulate their failures).
 
 use crate::shared::review_draft_store::{FileReviewDraftStore, ReviewDraftStore};
+use crate::shared::reviewed_files_store::{FileReviewedFilesStore, ReviewedFilesStore};
 use crate::shared::ui_state::{FileUiStatePersistence, UiStatePersistence};
 use code_assistant_core::persistence::{DraftStore, FileDraftStore, FileSessionPersistence};
 use std::sync::Arc;
@@ -17,6 +18,8 @@ pub struct Stores {
     pub ui_state: Arc<dyn UiStatePersistence>,
     /// Unsent comments and reviews per pull request.
     pub review_drafts: Arc<dyn ReviewDraftStore>,
+    /// The Review tab's "Viewed" ticks per repository.
+    pub reviewed_files: Arc<dyn ReviewedFilesStore>,
 }
 
 impl Stores {
@@ -27,6 +30,7 @@ impl Stores {
         Self {
             drafts: Arc::new(FileDraftStore::new(layout.clone())),
             review_drafts: Arc::new(FileReviewDraftStore::new(&layout)),
+            reviewed_files: Arc::new(FileReviewedFilesStore::new(&layout)),
             ui_state: Arc::new(FileUiStatePersistence::new(layout)),
         }
     }

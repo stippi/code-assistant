@@ -7,6 +7,7 @@ pub use self::core::TestCore;
 pub use main_screen::MainScreenTest;
 
 use crate::shared::review_draft_store::{ReviewDraftStore, SavedReviewDraft};
+use crate::shared::reviewed_files_store::{ReviewedFilesStore, ViewedFiles};
 use crate::shared::ui_state::{UiSessionState, UiStatePersistence};
 use crate::stores::Stores;
 use anyhow::Result;
@@ -22,6 +23,7 @@ pub struct MockStores {
     pub drafts: MockDraftStore,
     pub ui_state: MockUiStatePersistence,
     pub review_drafts: MockReviewDraftStore,
+    pub reviewed_files: MockReviewedFilesStore,
 }
 
 impl MockStores {
@@ -30,6 +32,7 @@ impl MockStores {
             drafts: Arc::new(self.drafts.clone()),
             ui_state: Arc::new(self.ui_state.clone()),
             review_drafts: Arc::new(self.review_drafts.clone()),
+            reviewed_files: Arc::new(self.reviewed_files.clone()),
         }
     }
 }
@@ -53,6 +56,37 @@ impl ReviewDraftStore for MockReviewDraftStore {
 
     fn save(&self, drafts: &[SavedReviewDraft]) -> Result<()> {
         *self.drafts.lock().unwrap() = drafts.to_vec();
+        Ok(())
+    }
+}
+
+/// In-memory [`ReviewedFilesStore`].
+#[derive(Default, Clone)]
+pub struct MockReviewedFilesStore {
+    repos: Arc<Mutex<HashMap<std::path::PathBuf, ViewedFiles>>>,
+}
+
+impl MockReviewedFilesStore {
+    pub fn saved(&self, repo_root: &std::path::Path) -> ViewedFiles {
+        self.repos
+            .lock()
+            .unwrap()
+            .get(repo_root)
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
+impl ReviewedFilesStore for MockReviewedFilesStore {
+    fn load(&self, repo_root: &std::path::Path) -> Result<ViewedFiles> {
+        Ok(self.saved(repo_root))
+    }
+
+    fn save(&self, repo_root: &std::path::Path, files: &ViewedFiles) -> Result<()> {
+        self.repos
+            .lock()
+            .unwrap()
+            .insert(repo_root.to_path_buf(), files.clone());
         Ok(())
     }
 }

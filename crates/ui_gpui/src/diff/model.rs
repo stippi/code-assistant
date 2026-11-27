@@ -258,9 +258,15 @@ pub fn single_sided_hunk(text: &str, tag: ChangeTag) -> Vec<DiffHunk> {
     if lines.is_empty() {
         return Vec::new();
     }
+    // Like git's `@@ -0,0 +1,n @@`: the empty side starts before line 1.
+    let (old_start, new_start) = match tag {
+        ChangeTag::Insert => (0, 1),
+        ChangeTag::Delete => (1, 0),
+        ChangeTag::Equal => (1, 1),
+    };
     vec![DiffHunk {
-        old_start: 1,
-        new_start: 1,
+        old_start,
+        new_start,
         header: None,
         lines,
     }]

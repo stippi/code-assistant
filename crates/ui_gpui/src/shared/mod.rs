@@ -11,6 +11,7 @@ pub mod open_file;
 pub mod plan_banner;
 pub mod review_cache;
 pub mod review_draft_store;
+pub mod reviewed_files_store;
 pub mod segmented_switch;
 pub mod settings;
 pub mod spinner;

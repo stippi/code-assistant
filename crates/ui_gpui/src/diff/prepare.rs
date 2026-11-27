@@ -98,7 +98,7 @@ impl PreparedFileDiff {
         }
     }
 
-    fn from_hunks(
+    pub(crate) fn from_hunks(
         hunks: Vec<DiffHunk>,
         theme: Option<&HighlightTheme>,
         parse: impl FnOnce(&[DiffHunk]) -> Option<DiffSyntax>,

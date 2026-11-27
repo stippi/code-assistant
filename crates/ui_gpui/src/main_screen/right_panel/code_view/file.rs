@@ -5,15 +5,18 @@
 //! added, cut into chunks, side by side for the split layout.
 
 use super::anchors::LineIndex;
-use super::context::{Reveal, Revealed, ShownGap, shape};
+use super::context::{Reveal, Revealed, ShownGap, lines_of, shape};
+use super::file_kind::is_test_file;
 use super::preferences::DiffLayout;
-use crate::diff::model::DiffHunk;
+use crate::diff::model::{DiffHunk, normalize_for_diff};
 use crate::diff::prepare::{CHUNK_MAX_LINES, PreparedFileDiff};
 use crate::diff::rows::HScroll;
 use crate::diff::split::SplitHunks;
 use crate::diff::syntax::DiffSyntax;
+use crate::diff::whitespace::hide_whitespace_changes;
 use git::ChangeStatus;
 use gpui_kit::SharedString;
+use gpui_kit::component::highlighter::HighlightTheme;
 use similar::ChangeTag;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -74,6 +77,89 @@ pub struct LoadedFile {
 }
 
 impl LoadedFile {
+    /// A file with its diff as it came; `counts` are its added and removed
+    /// lines. Shape it with [`Self::reshape`] before showing it.
+    pub fn new(
+        path: String,
+        orig_path: Option<String>,
+        status: ChangeStatus,
+        diff: PreparedFileDiff,
+        (additions, deletions): (u64, u64),
+    ) -> Self {
+        let numbers = diff.row_numbers();
+        let patch_hunks = diff.hunks.clone();
+        Self {
+            is_test: is_test_file(&path),
+            lines: LineIndex::new(&numbers),
+            numbers,
+            quiet_hunks: hide_whitespace_changes(&patch_hunks),
+            patch_hunks,
+            diff,
+            gaps: Vec::new(),
+            split: None,
+            revealed: BTreeMap::new(),
+            queued_reveals: Vec::new(),
+            text: None,
+            hunk_syntax: None,
+            scroll: HScroll::default(),
+            additions,
+            deletions,
+            path,
+            orig_path,
+            status,
+            stamp: 0,
+            breaks: Vec::new(),
+            highlighted: false,
+            loaded: true,
+        }
+    }
+
+    /// A listed file whose diff is not read yet: a header only.
+    pub fn pending(path: String, orig_path: Option<String>, status: ChangeStatus) -> Self {
+        let mut file = Self::new(
+            path,
+            orig_path,
+            status,
+            PreparedFileDiff::from_hunks(Vec::new(), None, |_| None),
+            (0, 0),
+        );
+        file.loaded = false;
+        file
+    }
+
+    /// A local file from both its sides: hunks with context lines, both
+    /// sides highlighted for `theme`, the new text at hand to reveal
+    /// unchanged lines without reading it. CPU-heavy — call on a
+    /// background thread.
+    pub fn from_content(
+        file: &git::ChangedFile,
+        content: &git::FileDiffContent,
+        theme: &HighlightTheme,
+        view: DiffView,
+    ) -> Self {
+        let diff = PreparedFileDiff::from_content(&file.path, content, Some(theme));
+        let counts = (diff.additions as u64, diff.deletions as u64);
+        let syntax = diff.syntax.clone();
+        let mut loaded = Self::new(
+            file.path.clone(),
+            file.orig_path.clone(),
+            file.status,
+            diff,
+            counts,
+        );
+        loaded.hunk_syntax = syntax.clone();
+        loaded.highlighted = true;
+        if !content.is_binary && !content.too_large {
+            let new = content.new_text.as_deref().unwrap_or_default();
+            loaded.text = Some(FileText {
+                new_lines: lines_of(&normalize_for_diff(new)),
+                syntax,
+            });
+        }
+        loaded.reshape(view);
+        loaded
+    }
+
     /// Whether lines may follow the last hunk, and unchanged lines can be
     /// revealed (T3 Code: changed and renamed files).
     pub fn has_context(&self) -> bool {

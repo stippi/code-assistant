@@ -7,15 +7,10 @@
 //! the old diff).
 
 use crate::diff::prepare::PreparedFileDiff;
-use crate::diff::rows::HScroll;
-use crate::diff::whitespace::hide_whitespace_changes;
-use crate::main_screen::right_panel::code_view::anchors::LineIndex;
 use crate::main_screen::right_panel::code_view::file::{DiffView, LoadedFile};
-use crate::main_screen::right_panel::code_view::file_kind::is_test_file;
 use crate::main_screen::right_panel::code_view::file_order::order_files;
 use github::model::DiffPage;
 use similar::ChangeTag;
-use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 
 pub struct Page {
@@ -79,7 +74,6 @@ pub fn parse_page(page: &DiffPage, view: DiffView) -> Vec<LoadedFile> {
         .into_iter()
         .map(|patch| {
             let diff = PreparedFileDiff::from_patch_plain(&patch);
-            let numbers = diff.row_numbers();
             let (mut additions, mut deletions) = (diff.additions as u64, diff.deletions as u64);
             if additions == 0
                 && deletions == 0
@@ -90,31 +84,13 @@ pub fn parse_page(page: &DiffPage, view: DiffView) -> Vec<LoadedFile> {
             {
                 (additions, deletions) = (stat.additions, stat.deletions);
             }
-            let patch_hunks = diff.hunks.clone();
-            let mut file = LoadedFile {
-                is_test: is_test_file(&patch.path),
-                lines: LineIndex::new(&numbers),
-                numbers,
-                quiet_hunks: hide_whitespace_changes(&patch_hunks),
-                patch_hunks,
+            let mut file = LoadedFile::new(
+                patch.path,
+                patch.orig_path,
+                patch.status,
                 diff,
-                gaps: Vec::new(),
-                split: None,
-                revealed: BTreeMap::new(),
-                queued_reveals: Vec::new(),
-                text: None,
-                hunk_syntax: None,
-                scroll: HScroll::default(),
-                additions,
-                deletions,
-                path: patch.path,
-                orig_path: patch.orig_path,
-                status: patch.status,
-                stamp: 0,
-                breaks: Vec::new(),
-                highlighted: false,
-                loaded: true,
-            };
+                (additions, deletions),
+            );
             file.reshape(view);
             Some(file)
         })

@@ -49,6 +49,7 @@ open = "5"
 
 # Diff visualization
 similar = { version = "2.7.0", features = ["unicode"] }
+sha2 = "0.11.0"
 
 # Image handling (pasted/attached images)
 image = "0.25"

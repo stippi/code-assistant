@@ -89,6 +89,10 @@ pub struct UiSessionState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_compare_mode: Option<String>,
 
+    /// The repository the Review tab showed last (its root).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_repo: Option<PathBuf>,
+
     /// What the Files view showed: open file, expanded directories, whether
     /// gitignored entries were shown.
     #[serde(default, skip_serializing_if = "FilesViewState::is_default")]
@@ -386,6 +390,20 @@ impl UiStateStore {
     /// Return the persisted review compare mode for a session.
     pub fn get_review_compare_mode(&mut self, session_id: &str) -> Option<String> {
         self.get(session_id).review_compare_mode
+    }
+
+    /// The repository the Review tab showed last in a session.
+    pub fn get_review_repo(&mut self, session_id: &str) -> Option<PathBuf> {
+        self.get(session_id).review_repo
+    }
+
+    pub fn set_review_repo(&mut self, session_id: &str, repo: PathBuf) {
+        let state = self.states.entry(session_id.to_owned()).or_default();
+        if state.review_repo.as_ref() == Some(&repo) {
+            return;
+        }
+        state.review_repo = Some(repo);
+        self.dirty.insert(session_id.to_owned());
     }
 
     /// Persist the review compare mode for a session.

@@ -452,8 +452,6 @@ pub enum UiEvent {
     /// The Review panel's changed-files listing changed. Pure notification —
     /// the data itself is mirrored into the UI layer's state by the sender.
     UpdateReviewFiles,
-    /// A prepared file diff for the Review panel arrived (same mirror scheme).
-    UpdateReviewDiff,
 
     // === Configuration Events ===
     /// Configuration files (providers, model selection, ...) were changed on disk.
