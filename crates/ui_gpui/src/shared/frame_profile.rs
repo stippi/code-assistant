@@ -242,14 +242,6 @@ pub struct Timed {
     child: AnyElement,
 }
 
-impl IntoElement for Timed {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
-    }
-}
-
 impl Element for Timed {
     type RequestLayoutState = ();
     type PrepaintState = ();

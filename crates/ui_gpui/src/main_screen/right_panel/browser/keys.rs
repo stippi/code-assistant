@@ -32,7 +32,7 @@ pub fn modifier_mask(m: &Modifiers) -> i64 {
 pub fn key_down(ks: &Keystroke) -> KeyAction {
     let m = &ks.modifiers;
     let key = ks.key.as_str();
-    if m.secondary() && !m.alt {
+    if secondary(m) && !m.alt {
         match key {
             "c" => return KeyAction::Copy,
             "x" => return KeyAction::Cut,
@@ -60,6 +60,17 @@ pub fn key_down(ks: &Keystroke) -> KeyAction {
         key: key.to_string(),
         text: text.filter(|_| !m.control && !m.platform),
         commands,
+    }
+}
+
+/// Whether the platform's secondary modifier is held: Cmd on macOS, Ctrl
+/// elsewhere. Like [`mac_command`] this goes by the build target, so the key
+/// mapping stays a pure function without an `App`.
+fn secondary(m: &Modifiers) -> bool {
+    if cfg!(target_os = "macos") {
+        m.platform
+    } else {
+        m.control
     }
 }
 
@@ -97,9 +108,10 @@ fn mac_command(ks: &Keystroke) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui_kit::OperatingSystem;
 
     fn ks(spec: &str, key_char: Option<&str>) -> Keystroke {
-        let mut ks = Keystroke::parse(spec).unwrap();
+        let mut ks = Keystroke::parse_with_os(spec, OperatingSystem::Mac).unwrap();
         ks.key_char = key_char.map(str::to_string);
         ks
     }

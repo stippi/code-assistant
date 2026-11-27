@@ -1163,10 +1163,10 @@ impl Render for CodeTab {
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let keys = &event.keystroke;
-                if keys.modifiers.secondary() && keys.key == "c" {
+                if keys.modifiers.secondary(cx) && keys.key == "c" {
                     this.copy_selection(cx);
                     cx.stop_propagation();
-                } else if keys.modifiers.secondary() && keys.modifiers.shift && keys.key == "m" {
+                } else if keys.modifiers.secondary(cx) && keys.modifiers.shift && keys.key == "m" {
                     this.start_comment(window, cx);
                     cx.stop_propagation();
                 }

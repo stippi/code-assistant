@@ -11,10 +11,9 @@
 
 use gpui_kit::{
     App, AvailableSpace, Bounds, ContentMask, DispatchPhase, Element, GlobalElementId,
-    HighlightStyle, Hsla, InspectorElementId, IntoElement, LayoutId, Length, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollWheelEvent, ShapedLine,
-    SharedString, Size, Style, TextAlign, TextRun, TextStyle, Window, WrappedLine, fill, point, px,
-    relative, size,
+    HighlightStyle, Hsla, InspectorElementId, LayoutId, Length, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollEvent, ShapedLine, SharedString, Size,
+    Style, TextAlign, TextRun, TextStyle, Window, WrappedLine, fill, point, px, relative, size,
 };
 use std::cell::{Cell, RefCell};
 use std::ops::Range;
@@ -522,14 +521,6 @@ fn paint_plus(bounds: Bounds<Pixels>, add: &GutterAdd, window: &mut Window) {
     }
 }
 
-impl IntoElement for DiffRows {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
-    }
-}
-
 impl DiffRows {
     fn shape(&self) -> Shape {
         Shape {
@@ -638,7 +629,7 @@ impl Element for DiffRows {
             let visible = column_width - shape.geometry.gutter_width;
             let line_height = layout.line_height;
             let hitbox = hitbox.clone();
-            window.on_mouse_event(move |e: &ScrollWheelEvent, phase, window, cx| {
+            window.on_mouse_event(move |e: &ScrollEvent, phase, window, cx| {
                 let hovered = hitbox
                     .as_ref()
                     .map_or(bounds.contains(&e.position), |h| h.is_hovered(window));
@@ -801,8 +792,8 @@ impl Element for DiffRows {
 mod tests {
     use super::*;
     use gpui_kit::{
-        Context, ParentElement as _, Render, Styled as _, TestAppContext, VisualTestContext, div,
-        red, white,
+        Context, IntoElement, ParentElement as _, Render, Styled as _, TestAppContext,
+        VisualTestContext, div, red, white,
     };
 
     #[test]

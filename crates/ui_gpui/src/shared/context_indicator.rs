@@ -67,7 +67,9 @@ const CIRCLE_SEGMENTS: usize = 64;
 /// Uses a polygon approximation with `CIRCLE_SEGMENTS` segments for each
 /// circle, connected so the fill rule produces a ring.
 fn build_ring(center_x: Pixels, center_y: Pixels, outer_r: Pixels, inner_r: Pixels) -> PathBuilder {
-    let fill_opts = FillOptions::default().with_fill_rule(FillRule::EvenOdd);
+    let fill_opts = FillOptions {
+        fill_rule: FillRule::EvenOdd,
+    };
     let mut pb = PathBuilder::fill().with_style(PathStyle::Fill(fill_opts));
 
     // Outer circle – clockwise

@@ -1335,10 +1335,10 @@ impl Render for ReviewView {
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let ks = &event.keystroke;
-                if ks.modifiers.secondary() && ks.key == "c" {
+                if ks.modifiers.secondary(cx) && ks.key == "c" {
                     this.copy_selection(cx);
                     cx.stop_propagation();
-                } else if ks.modifiers.secondary() && ks.modifiers.shift && ks.key == "m" {
+                } else if ks.modifiers.secondary(cx) && ks.modifiers.shift && ks.key == "m" {
                     this.start_comment(window, cx);
                     cx.stop_propagation();
                 }

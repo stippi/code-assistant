@@ -839,7 +839,7 @@ impl MessagesView {
                         // A wheel delta is the content movement: negative
                         // scrolls down, like a real wheel.
                         window.dispatch_event(
-                            gpui_kit::PlatformInput::ScrollWheel(gpui_kit::ScrollWheelEvent {
+                            gpui_kit::PlatformInput::Scroll(gpui_kit::ScrollEvent {
                                 position: view.list_bounds.get().center(),
                                 delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
                                     px(0.),
@@ -847,6 +847,7 @@ impl MessagesView {
                                 )),
                                 modifiers: gpui_kit::Modifiers::default(),
                                 touch_phase: gpui_kit::TouchPhase::Moved,
+                                source: gpui_kit::ScrollSource::Pointer,
                             }),
                             cx,
                         );
