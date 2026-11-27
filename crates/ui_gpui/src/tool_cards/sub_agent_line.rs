@@ -100,7 +100,8 @@ impl ToolBlockRenderer for SubAgentLineRenderer {
         if let Some(text) = text {
             body = body.child(
                 TextView::markdown(SharedString::from(format!("sub-agent-{}", tool.id)), text)
-                    .selectable(true),
+                    .selectable(true)
+                    .on_link_click(|link, _, _, cx| crate::shared::open_file::open_link(link, cx)),
             );
         }
         if let Some(session_id) = transcript {

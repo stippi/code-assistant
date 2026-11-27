@@ -431,9 +431,12 @@ impl BlockView {
         } else {
             SelectionFormat::Plain
         };
+        // Links to files the agent wrote (`analysis/table.md`) open in the
+        // Files view; only links with a URL scheme go to the system.
         TextView::new(&state)
             .selectable(selectable)
             .selection_format(selection_format)
+            .on_link_click(|link, _, _, cx| crate::shared::open_file::open_link(link, cx))
     }
 
     /// Whether the copy button should currently render its "copied" checkmark.
