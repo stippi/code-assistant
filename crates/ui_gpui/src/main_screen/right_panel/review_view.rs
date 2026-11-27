@@ -52,9 +52,8 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    AnimationExt, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
-    KeyDownEvent, ListAlignment, ListState, Render, Subscription, Task, Window, div, list,
-    prelude::*, px, rems,
+    ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, KeyDownEvent,
+    ListAlignment, ListState, Render, Subscription, Task, Window, div, list, prelude::*, px, rems,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -721,21 +720,11 @@ impl ReviewView {
     }
 
     /// The rotating double-arrow used on active sessions, in grey — shown on
-    /// the repo whose scan is currently running. `id` keys the animation.
-    fn scan_spinner(id: impl std::fmt::Display, muted: gpui_kit::Hsla) -> gpui_kit::AnyElement {
-        gpui_kit::svg()
+    /// the repo whose scan is currently running.
+    fn scan_spinner(muted: gpui_kit::Hsla) -> gpui_kit::AnyElement {
+        crate::shared::spinner::spinner("icons/arrow_circle.svg")
             .size(px(12.))
-            .path("icons/arrow_circle.svg")
             .text_color(muted)
-            .with_animation(
-                gpui_kit::SharedString::from(format!("review-scan-spin-{id}")),
-                gpui_kit::Animation::new(std::time::Duration::from_secs(2)).repeat(),
-                |svg, delta| {
-                    svg.with_transformation(gpui_kit::Transformation::rotate(gpui_kit::percentage(
-                        delta,
-                    )))
-                },
-            )
             .into_any_element()
     }
 
@@ -761,7 +750,7 @@ impl ReviewView {
         let muted = theme.muted_foreground;
 
         if matches!(section.scan_state, ReviewScanState::Scanning) {
-            return Self::scan_spinner(section.repo_root.display(), muted);
+            return Self::scan_spinner(muted);
         }
 
         let pending = matches!(section.scan_state, ReviewScanState::Pending);
@@ -1064,9 +1053,7 @@ impl ReviewView {
                         .child(format!("−{}", e.deletions)),
                 )
                 .into_any_element(),
-            None if loading => {
-                Self::scan_spinner(format!("{}:{}", repo_root.display(), file.path), muted)
-            }
+            None if loading => Self::scan_spinner(muted),
             None => Self::pending_marker(muted),
         };
 
@@ -1282,7 +1269,7 @@ impl Render for ReviewView {
                 .p_4()
                 .text_sm()
                 .text_color(muted)
-                .child(Self::scan_spinner("discovery", muted))
+                .child(Self::scan_spinner(muted))
                 .child("Looking for repositories…")
                 .into_any_element();
         }

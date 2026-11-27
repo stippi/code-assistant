@@ -5,16 +5,14 @@
 //! amber, pending checks amber.
 
 use crate::diff::render::{added_row_colors, deleted_row_colors};
+use crate::shared::spinner::spinner_with_period;
 use crate::shared::theme::merged_violet;
 use chrono::{DateTime, Utc};
 use github::model::{
     Check, CheckStatus, ChecksState, MergeMethod, Mergeability, PullRequestState, ReviewDecision,
 };
 use gpui_kit::component::ActiveTheme;
-use gpui_kit::{
-    Animation, AnimationExt, AnyElement, App, Hsla, Pixels, SharedString, Transformation, div,
-    percentage, prelude::*, px, svg,
-};
+use gpui_kit::{AnyElement, App, Hsla, Pixels, SharedString, div, prelude::*, px, svg};
 use std::time::Duration;
 
 /// What a pull request's state is shown as: a draft is open but looks apart.
@@ -70,9 +68,8 @@ pub struct Glyph {
     pub icon: &'static str,
     pub color: Hsla,
     pub label: SharedString,
-    /// Turns while something runs; the id of its animation, unique among
-    /// the glyphs drawn beside it.
-    pub spin: Option<SharedString>,
+    /// Turns while something runs.
+    pub spins: bool,
 }
 
 impl Glyph {
@@ -81,26 +78,21 @@ impl Glyph {
             icon,
             color,
             label: label.into(),
-            spin: None,
+            spins: false,
         }
     }
 
     pub fn render(&self, size: Pixels) -> AnyElement {
-        let glyph = svg()
+        let glyph = if self.spins {
+            spinner_with_period(self.icon, Duration::from_secs(1))
+        } else {
+            svg().path(self.icon)
+        };
+        glyph
             .flex_none()
             .size(size)
-            .path(self.icon)
-            .text_color(self.color);
-        match &self.spin {
-            Some(id) => glyph
-                .with_animation(
-                    id.clone(),
-                    Animation::new(Duration::from_secs(1)).repeat(),
-                    |svg, delta| svg.with_transformation(Transformation::rotate(percentage(delta))),
-                )
-                .into_any_element(),
-            None => glyph.into_any_element(),
-        }
+            .text_color(self.color)
+            .into_any_element()
     }
 }
 
@@ -156,7 +148,7 @@ pub fn check_status_glyph(check: &Check, cx: &App) -> Glyph {
     let glyph = Glyph::new(icon, color, check_status_label(check));
     match check.status {
         CheckStatus::Pending => Glyph {
-            spin: Some(format!("check-spin-{}", check.name).into()),
+            spins: true,
             ..glyph
         },
         _ => glyph,
@@ -417,9 +409,9 @@ mod tests {
         cx.update(|cx| {
             gpui_kit::component::init(cx);
             let running = check_status_glyph(&check("build", CheckStatus::Pending), cx);
-            assert_eq!(running.spin.as_deref(), Some("check-spin-build"));
+            assert!(running.spins);
             let done = check_status_glyph(&check("build", CheckStatus::Success), cx);
-            assert!(done.spin.is_none());
+            assert!(!done.spins);
         });
     }
 

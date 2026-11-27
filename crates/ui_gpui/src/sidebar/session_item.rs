@@ -6,6 +6,7 @@
 //! session the user has not looked at since it changed is unread: its title
 //! stands out and a dot marks it. Everything else recedes.
 
+use crate::shared::spinner::spinner;
 use crate::shared::theme::merged_violet;
 use code_assistant_core::persistence::ChatMetadata;
 use code_assistant_core::session::instance::SessionActivityState;
@@ -14,9 +15,8 @@ use code_assistant_core::session::pull_request::{ChecksState, PullRequestState, 
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme, StyledExt};
 use gpui_kit::{
-    Animation, AnimationExt, ClickEvent, Context, EventEmitter, FocusHandle, Focusable, Hsla,
-    InteractiveElement, SharedString, StatefulInteractiveElement, Styled, Transformation, Window,
-    div, percentage, prelude::*, px,
+    ClickEvent, Context, EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement,
+    SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::*, px,
 };
 use std::time::SystemTime;
 
@@ -469,28 +469,15 @@ impl Render for SessionListItem {
                         ),
                         SessionStatus::Working
                         | SessionStatus::RateLimited
-                        | SessionStatus::Retrying => el.child(
-                            gpui_kit::svg()
-                                .size(px(12.))
-                                .path("icons/arrow_circle.svg")
-                                .text_color(if status == SessionStatus::Working {
+                        | SessionStatus::Retrying => {
+                            el.child(spinner("icons/arrow_circle.svg").size(px(12.)).text_color(
+                                if status == SessionStatus::Working {
                                     cx.theme().info
                                 } else {
                                     status_color
-                                })
-                                .with_animation(
-                                    SharedString::from(format!(
-                                        "activity-spin-{}",
-                                        self.metadata.id
-                                    )),
-                                    Animation::new(std::time::Duration::from_secs(2)).repeat(),
-                                    |svg, delta| {
-                                        svg.with_transformation(Transformation::rotate(percentage(
-                                            delta,
-                                        )))
-                                    },
-                                ),
-                        ),
+                                },
+                            ))
+                        }
                         SessionStatus::Ready => el.children(git.map(|glyph| {
                             let tooltip = glyph.tooltip.clone();
                             let url = glyph.url.clone();
